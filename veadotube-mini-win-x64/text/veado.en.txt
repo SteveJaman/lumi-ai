@@ -1,0 +1,386 @@
+veado:
+  on: on
+  off: off
+  auto: auto
+  ok: ok
+  cancel: cancel
+  proceed: proceed
+  errorcode: error code: <>
+  zoom:
+    in: zoom in
+    out: zoom out
+    reset: reset zoom
+  transform: transform
+    pivot: pivot
+    position: position
+    rotation: rotation
+    skew: skew
+    scale: scale
+    do:
+      move: move
+      rotate: rotate
+      skew: skew
+      scale: scale
+  itemtoggle:
+    visibility: visibility
+    lock: lock
+    flatten: flatten
+    import: import
+  status:
+    editobj: editing object "<>"
+    editobjno: no object selected
+    editstate: editing state "<>" of group "<>"
+    memory: memory usage <>
+      imageram: images in RAM (<>) <>
+      imagegpu: images in GPU (<>) <>
+    websocket: websocket <>
+      clients: <> client(s) connected
+  file: file
+    newx: new <> file
+    newwindow: new window
+    open: open file...
+    openrecent: open recent
+    clearrecent: clear recent files
+    convert: convert to dynamic avatar...
+    save: save file
+    saveas: save file as...
+    close: close file
+    exit: exit
+    untitled: untitled <>
+  edit: edit
+    undo: undo
+    redo: redo
+    copy: copy
+    paste: paste
+    settings: settings...
+  help: help
+    docs: the docs
+    labs: veadotube labs
+    about: about...
+  editor:
+    scene: scene
+    mini: mini avatar
+    dynamic: dynamic avatar
+  signal:
+    waiting: waiting for input...
+    remove: click to remove
+    apply: apply
+    cancel: cancel
+  settings:
+    title: program settings
+    close: close
+    language: language
+    scale: scale
+      auto: system default (<>)
+    open: show on open
+      welcome: welcome screen
+      recent: most recent files
+    websocket: websocket address
+      scene: enable on scene editor
+      editor: enable on dynamic avatar editor
+  welcome:
+    welcome: welcome!
+    line1: welcome to the veadotube early access! everything in here is a work-in-progress, albeit stable enough to be used for creating and streaming and whatnot.
+    line2: do note that *the full version is substantially more complex than mini!* if you're feeling lost, please do take a look at the tutorials in the veadotube labs page:
+    labs: the veadotube labs page
+    line3: thank you for the support, and once again, welcome! hope you enjoy the little program we've been building for a while now.
+    create: create new...
+    recent: recent files
+  error:
+    failedtoopen: failed to open file!
+  save:
+    confirm: would you like to save this file before proceeding? anything not saved will be lost.
+    save: save
+    dont: don't save
+    cancel: cancel
+  about:
+    version: early access version <>
+    line1: created, designed and programmed by *olmewe*
+    line2: designed and illustrated by *BELLA!*
+    line3: with the help and love from friends and supporters
+    thirdparty: please refer to the <> file for third-party licenses!
+    website: official website
+  window:
+    scene: scene
+      setup: scene setup
+      size: scene size
+      color: background color
+      fps: frame rate
+        mode: mode
+        vsync: v-sync
+        uncapped: uncapped
+        capped: capped
+        custom: custom
+      server: full screen and <> server
+      serveron: <> server is active
+      serveroff: <> server is inactive
+      fullscreen: open full screen...
+    sceneproperties: scene setup
+      display: display settings
+      scene: scene properties
+      fps:
+        mode: frame rate mode
+        vsync: v-sync
+        uncapped: uncapped
+        capped: capped
+        custom: custom frame rate
+      spout: spout server
+      syphon: syphon server
+      hideui: hide interface...
+      size: size
+    sceneobjects: objects
+      import: select object file...
+      add: import new object
+      delete: delete selection
+      multiple1: this file has multiple objects!
+      multiple2: choose one to use:
+    sceneobjectproperties: object properties
+      empty: select an object to start!
+      source: source
+      size: size
+      objecttype: <> properties
+      attach: attach
+        to: parent object
+          none: (none)
+        anchor: anchor point
+          none: object center
+        scale: scale with parent
+        rotation: rotate with parent
+      effects: effects
+        opacity: opacity
+        tint: tint color
+        shade: shade color
+    scenestates: states
+      groupnum: state group #<>
+      create: create state group
+      empty: (off)
+      state: state
+      current: current state
+      deletegroup: delete state group
+      delete: delete state
+    nodes: nodes
+      create: create node
+      annotation: annotation
+        create: create annotation
+      node: node
+      nodes: node selection
+      revertsize: revert size
+      delete: delete
+      hide: hide
+      hidden: hidden nodes (<>)
+      dynamicobj:
+        add: create node slot
+        delete: delete node slot
+        input: node input
+        output: node output
+        name: display name
+        usages: usages
+        addusage: add usage...
+        deleteusage: delete usage
+      settings: settings
+        snap: snap to grid
+        bitmap: show bitmap nodes
+    ministates: avatar states
+      new: new state
+      create: create blank state
+      duplicate: duplicate selection
+      delete: delete selection
+      copy: copy selection
+      paste: paste states
+    minipreview: avatar preview
+      toggle: toggle activity
+      shortcuton: listening to shortcuts
+      shortcutoff: not listening to shortcuts
+      settings: settings
+      anchor: anchor preview
+        enable: show selected anchor
+      microphone: microphone preview
+        device: device
+          none: (none)
+        volume: volume cutoff
+        delay: delay duration
+        noisereduction: noise reduction
+          none: (none)
+    ministateproperties: state properties
+      empty: select a state to start!
+      properties: properties
+      name: state name
+      imagemode: image mode
+        smooth: smooth
+        pixel: pixel
+      animation: animation
+      resetimagetime: play from start
+      blinksync: sync blink animation
+      blinkintervalmin: min. blink interval
+      blinkintervalmax: max. blink interval
+      blinkduration: blink duration
+      images: images
+        closed: closed mouth
+        open: open mouth
+        closedblink: closed mouth blinking
+        openblink: open mouth blinking
+        import: import new image...
+        export: export image...
+        remove: remove image
+        error: failed to load image!
+      effects:
+        state: effects
+          activea: active during closed mouth
+          activeb: active during open mouth
+          add: add new effect...
+        transition: transitions
+          activea: active when opening mouth
+          activeb: active when closing mouth
+          add: add new transition...
+        copy: copy parameters
+        paste: paste parameters
+        delete: delete effect
+        preset: preset
+          none: (none)
+      shortcut: default shortcut
+        assign: assign
+        clear: clear
+        listening: listening...
+        mode: activation mode
+          press: on press
+          release: on release
+          hold: while pressed
+          toggle: press to toggle
+    minieffectpresets: effect presets
+      state: <> effect
+      transition: <> transition
+      create: create new preset
+        state: effects
+        transition: transitions
+      copy: copy preset
+      paste: paste preset
+      delete: delete preset
+      name: preset name
+    minianchors: avatar anchors
+      new: new anchor
+      create: create anchor
+      duplicate: duplicate anchor
+      delete: delete anchor
+    minianchor: anchor editor
+      empty: select a non-blank state to start!
+      empty2: create an anchor to start!
+      settings: preview settings
+        preview: anchor preview
+          axis: axis
+          hat: hat
+          glasses: glasses
+      anchor: anchor transform
+        active: visible
+      images: image selection
+        closed: closed mouth image
+        open: open mouth image
+        closedblink: blinking closed mouth image
+        openblink: blinking open mouth image
+        closedfor: closed mouth image for <>
+        openfor: open mouth image for <>
+        closedblinkfor: blinking closed mouth image for <>
+        openblinkfor: blinking open mouth image for <>
+    dynamicexplorer: assets
+      add: new item
+        folder: new folder
+        object: new object
+        import: import media...
+      replace: replace with media
+        import: replace media...
+      duplicate: duplicate selection
+      delete: delete selection
+      exportimage: export image
+      back: go back
+      forward: go forward
+      up: go up one folder
+      root: root
+      none: (none)
+    dynamicmediaimporter:
+      failed: failed to import media "<>"
+      title: load media "<>"
+      settings:
+        flattened: flatten layers
+        importtagsasfolders: tags as separate layers
+      loading: applying settings...
+      failedload: failed to load media
+      flatten: media is flattened
+      import: import
+    dynamiclayers: layers
+      none: (none)
+      name: new layer
+      add: create empty layer
+      delete: delete selection
+      copy: copy selection
+      paste: paste layers
+      duplicate: duplicate selection
+    dynamiclayerproperties: layer properties
+      empty: select a layer to start!
+      source: source
+      sourcemode: source mode
+        unload: unload when not visible
+        keep: keep loaded while not visible
+      size: size
+      parenttransform: affect group
+      effects: effects
+        blend: blend mode
+          normal: normal
+          add: add
+          subtract: subtract
+          multiply: multiply
+          screen: screen
+          overlay: overlay
+        passthrough: group passthrough
+          on: on
+          off: off
+        mask: group mask mode
+          none: none
+          mask: mask
+          clip: clip
+        opacity: opacity
+        tint: tint color
+        shade: shade color
+        imagemode: image mode
+          smooth: smooth
+          pixel: pixel
+        slice: image slice
+          none: none
+          pixel: region
+          grid: grid
+        sliceoffset: slice offset
+        slicesize: slice size
+        slicecount: slice count
+      pins: pins
+        pin: pin #<>
+        none: (none)
+        add: add new pin
+        delete: delete pin
+        position: position
+        anchor: expose as anchor
+        id: anchor name
+      dynamics: dynamics
+        add: add new dynamics...
+        delete: delete dynamics
+        active: active
+    dynamicstates: states
+      groupnum: state group #<>
+      create: create state group
+      empty: (off)
+      state: state
+      current: current state
+      deletegroup: delete state group
+      delete: delete state
+    dynamiccanvas: canvas
+      scale: scale
+      pin: pin #<>
+      pinx: pin #<> of "<>"
+      properties: properties
+        size: object size
+        render: render mode
+          smooth: fractional scale
+          pixel: pixel perfect
+    dynamicpreview: preview
+      settings: settings
+        preview: preview panel
+        grid: grid
+        shadow: shadow
+

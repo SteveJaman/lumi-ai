@@ -1,0 +1,386 @@
+veado:
+  on: ligado
+  off: desligado
+  auto: auto.
+  ok: ok
+  cancel: cancelar
+  proceed: continuar
+  errorcode: código de erro: <>
+  zoom:
+    in: ampliar
+    out: reduzir
+    reset: redefinir zoom
+  transform: transformação
+    pivot: eixo
+    position: posição
+    rotation: rotação
+    skew: inclinação
+    scale: escala
+    do:
+      move: mover
+      rotate: rotacionar
+      skew: inclinar
+      scale: escalar
+  itemtoggle:
+    visibility: visibilidade
+    lock: bloquear
+    flatten: achatar
+    import: importar
+  status:
+    editobj: editando objeto "<>"
+    editobjno: nenhum objeto selecionado
+    editstate: editando estado "<>" do grupo "<>"
+    memory: uso de memória <>
+      imageram: imagens na RAM (<>) <>
+      imagegpu: imagens na GPU (<>) <>
+    websocket: websocket <>
+      clients: <> cliente(s) conectado(s)
+  file: arquivo
+    newx: novo arquivo de <>
+    newwindow: nova janela
+    open: abrir arquivo...
+    openrecent: abrir recente
+    clearrecent: limpar arquivos recentes
+    convert: converter para avatar dinâmico...
+    save: salvar arquivo
+    saveas: salvar arquivo como...
+    close: fechar arquivo
+    exit: sair
+    untitled: <> sem título
+  edit: editar
+    undo: desfazer
+    redo: refazer
+    copy: copiar
+    paste: colar
+    settings: preferências...
+  help: ajuda
+    docs: the docs (em inglês)
+    labs: veadotube labs (em inglês)
+    about: sobre...
+  editor:
+    scene: cena
+    mini: avatar mini
+    dynamic: avatar dinâmico
+  signal:
+    waiting: aguardando input...
+    remove: clique para remover
+    apply: aplicar
+    cancel: cancelar
+  settings:
+    title: preferências do programa
+    close: fechar
+    language: língua
+    scale: escala
+      auto: padrão do sistema (<>)
+    open: ao abrir, mostrar
+      welcome: tela de bem-vinde
+      recent: arquivo mais recente
+    websocket: endereço do websocket
+      scene: ativar no editor de cena
+      editor: ativar no editor de avatar dinâmico
+  welcome:
+    welcome: bem-vinde!
+    line1: seja bem-vinde ao acesso antecipado do veadotube! tudo aqui ainda pode ser provisório, mas tá com tudo pronto o suficiente pra criar e streamar e tudo mais.
+    line2: saiba que *a versão completa do veadotube é bem mais complexa que o mini!* se estiver perdide, refira à página do veadotube labs, tem uns tutoriais em vídeo (em inglês):
+    labs: a página do veadotube labs
+    line3: agradecemos pelo suporte, e mais uma vez, bem-vinde! tomara que goste desse programinha que a gente tá fazendo há um tempo já.
+    create: criar novo...
+    recent: arquivos recentes
+  error:
+    failedtoopen: erro ao abrir arquivo!
+  save:
+    confirm: gostaria de salvar este arquivo antes de prosseguir? tudo que não for salvo será perdido.
+    save: salvar
+    dont: não salvar
+    cancel: cancelar
+  about:
+    version: acesso antecipado, versão <>
+    line1: criado, desenhado, e programado por *olmewe*
+    line2: desenhado e ilustrado por *BELLA!*
+    line3: com a ajuda e o amor de amigues e apoiadores
+    thirdparty: refira ao arquivo <> para as licenças de terceiros!
+    website: website oficial
+  window:
+    scene: cena
+      setup: configuração de cena
+      size: tamanho da cena
+      color: cor de fundo
+      fps: taxa de quadros
+        mode: modo
+        vsync: sincronizado
+        uncapped: ilimitado
+        capped: limitado
+        custom: customizado
+      server: tela cheia e servidor <>
+      serveron: servidor <> ativo
+      serveroff: servidor <> inativo
+      fullscreen: abrir em tela cheia...
+    sceneproperties: configuração de cena
+      display: preferências de exibição
+      scene: propriedades da cena
+      fps: taxa de quadros
+        mode: modo
+        vsync: sincronizado
+        uncapped: ilimitado
+        capped: limitado
+        custom: customizado
+      spout: servidor spout
+      syphon: servidor syphon
+      hideui: esconder interface...
+      size: tamanho
+    sceneobjects: objetos
+      import: selecionar arquivo de objeto...
+      add: importar objeto
+      delete: deletar seleção
+      multiple1: esse arquivo contém múltiplos objetos!
+      multiple2: selecione qual usar:
+    sceneobjectproperties: propriedades de objeto
+      empty: selecione um objeto pra editar!
+      source: fonte
+      size: tamanho
+      objecttype: propriedades de <>
+      attach: anexar
+        to: anexador
+          none: (none)
+        anchor: ponto de âncora
+          none: centro do objeto
+        scale: escalar com anexador
+        rotation: rotacionar com anexador
+      effects: efeitos
+        opacity: opacidade
+        tint: tonalidade
+        shade: sombreamento
+    scenestates: estados
+      groupnum: grupo de estados #<>
+      create: criar grupo de estados
+      empty: (off)
+      state: estado
+      current: estado atual
+      deletegroup: deletar grupo de estados
+      delete: deletar estado
+    nodes: nós
+      create: criar nó
+      annotation: anotação
+        create: criar anotação
+      node: nó
+      nodes: seleção de nós
+      revertsize: reverter tamanho
+      delete: deletar
+      hide: esconder
+      hidden: nós escondidos (<>)
+      dynamicobj:
+        add: criar encaixe de nó
+        delete: deletar encaixe de nó
+        input: entrada de nó
+        output: saída de nó
+        name: nome de exibição
+        usages: usos
+        addusage: adicionar uso...
+        deleteusage: deletar uso
+      settings: configurações
+        snap: prender à grade
+        bitmap: mostrar nós de imagem
+    ministates: estados de avatar
+      new: novo estado
+      create: criar estado em branco
+      duplicate: duplicar seleção
+      delete: deletar seleção
+      copy: copiar seleção
+      paste: colar estados
+    minipreview: pré-visualização
+      toggle: alternar atividade
+      shortcuton: ouvindo atalhos
+      shortcutoff: ignorando atalhos
+      settings: configurações
+      anchor: pré-visualização de âncoras
+        enable: mostrar âncora selecionada
+      microphone: teste com microfone
+        device: dispositivo
+          none: (nenhum)
+        volume: volume mínimo do microfone
+        delay: atraso do microfone
+        noisereduction: redução de ruído
+          none: (nenhuma)
+    ministateproperties: propriedades de estado
+      empty: selecione um estado para editar!
+      properties: propriedades
+      name: nome do estado
+      imagemode: modo de imagem
+        smooth: suavizado
+        pixel: pixelizado
+      animation: animação
+      resetimagetime: tocar do início
+      blinksync: sincronizar piscada
+      blinkintervalmin: intervalo de piscada min.
+      blinkintervalmax: intervalo de piscada máx.
+      blinkduration: duração da piscada
+      images: imagens
+        closed: boca fechada
+        open: boca aberta
+        closedblink: piscando de boca fechada
+        openblink: piscando de boca aberta
+        import: importar nova imagem...
+        export: exportar imagem...
+        remove: remover imagem
+        error: erro ao carregar imagem!
+      effects:
+        state: efeitos
+          activea: ativo durante boca fechada
+          activeb: ativo durante boca aberta
+          add: adicionar novo efeito...
+        transition: transições
+          activea: ativo ao abrir a boca
+          activeb: ativo ao fechar a boca
+          add: adicionar nova transição...
+        copy: copiar parâmetros
+        paste: colar parameters
+        delete: deletar efeito
+        preset: pré-configuração
+          none: (nenhuma)
+      shortcut: atalho padrão
+        assign: escolher
+        clear: remover
+        listening: aguardando sinal...
+        mode: modo de ativação
+            press: ao apertar
+            release: ao soltar
+            hold: enquanto segurar
+            toggle: alternar
+    minieffectpresets: pré-configurações de efeito
+      state: efeito de <>
+      transition: transição de <>
+      create: criar nova pré-configuração
+        state: efeitos
+        transition: transições
+      copy: copiar pré-configuração
+      paste: colar pré-configuração
+      delete: deletar pré-configuração
+      name: nome da pré-configuração
+    minianchors: âncoras do avatar
+      new: nova âncora
+      create: criar âncora
+      duplicate: duplicar âncora
+      delete: deletar âncora
+    minianchor: editor de âncora
+      empty: selecione um estado não-vazio para editar!
+      empty2: crie uma âncora para editar!
+      settings: preferências de visualização
+        preview: exemplo de âncora
+          axis: eixo
+          hat: chapéu
+          glasses: óculos
+      anchor: transformação da âncora
+        active: visível
+      images: seleção de imagem
+        closed: imagem de boca fechada
+        open: imagem de boca aberta
+        closedblink: imagem piscando de boca fechada
+        openblink: imagem piscando de boca aberta
+        closedfor: imagem de boca fechada para <>
+        openfor: imagem de boca aberta para <>
+        closedblinkfor: imagem piscando de boca fechada para <>
+        openblinkfor: imagem piscando de boca aberta para <>
+    dynamicexplorer: biblioteca
+      add: novo item
+        folder: nova pasta
+        object: novo objeto
+        import: importar mídia...
+      replace: substituir mídia
+        import: substituir mídia...
+      duplicate: duplicar seleção
+      delete: deletar seleção
+      exportimage: exportar imagem
+      back: voltar
+      forward: avançar
+      up: uma pasta acima
+      root: raiz
+      none: (nenhum)
+    dynamicmediaimporter:
+      failed: falha ao importar mídia "<>"
+      title: importar mídia "<>"
+      settings:
+        flattened: achatar camadas
+        importtagsasfolders: tags em camadas separadas
+      loading: aplicando preferências...
+      failedload: falha ao carregar mídia
+      flatten: mídia achatada
+      import: importar
+    dynamiclayers: camadas
+      none: (nenhuma)
+      name: nova camada
+      add: criar camada vazia
+      delete: deletar seleção
+      copy: copiar seleção
+      paste: colar camadas
+      duplicate: duplicar seleção
+    dynamiclayerproperties: propriedades de camada
+      empty: selecione uma camada para editar!
+      source: fonte
+      sourcemode: modo de fonte
+        unload: descarregar quando invisível
+        keep: manter carregado sempre
+      size: tamanho
+      parenttransform: afetar grupo
+      effects: efeitos
+        blend: mesclagem
+          normal: normal
+          add: aditivo
+          subtract: subtrativo
+          multiply: multiplicativo
+          screen: tela
+          overlay: superexposição
+        passthrough: atravessar grupo
+          on: ligado
+          off: desligado
+        mask: modo de máscara de grupo
+          none: nenhum
+          mask: mascarar
+          clip: recortar
+        opacity: opacidade
+        tint: tonalidade
+        shade: sombreamento
+        imagemode: modo de imagem
+          smooth: suavizado
+          pixel: pixelizado
+        slice: corte de imagem
+          none: nenhum
+          pixel: região
+          grid: grade
+        sliceoffset: deslocamento do corte
+        slicesize: tamanho do corte
+        slicecount: número de cortes
+      pins: pinos
+        pin: pino #<>
+        none: (nenhum)
+        add: criar novo pino
+        delete: deletar pino
+        position: posição
+        anchor: âncora
+        id: nome da âncora
+      dynamics: dinâmicas
+        add: adicionar nova dinâmica...
+        delete: deletar dinâmica
+        active: ativa
+    dynamicstates: estados
+      groupnum: grupo de estados #<>
+      create: criar grupo de estados
+      empty: (off)
+      state: estado
+      current: estado atual
+      deletegroup: deletar grupo de estados
+      delete: deletar estado
+    dynamiccanvas: canvas
+      scale: escala
+      pin: pino #<>
+      pinx: pino #<> de "<>"
+      properties: propriedades
+        size: tamanho do objeto
+        render: modo de renderização
+          smooth: escala fracionária
+          pixel: pixels exatos
+    dynamicpreview: pré-visualização
+      settings: configurações
+        preview: painel de pré-visualização
+        grid: grade
+        shadow: sombra
+

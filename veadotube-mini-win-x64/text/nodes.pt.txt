@@ -1,0 +1,996 @@
+nodes:
+  common:
+    any: (qualquer)
+    none: (nenhum)
+    off: desligado
+    on: ligado
+    true: verdadeiro
+    false: falso
+    unknown: nó de id desconhecida _<>_
+  boolean: Booleano
+    desc: utilidades para nós que emitem valores de verdadeiro ou falso
+    constant: Valor
+      desc: emite um valor booleano constante
+      output: valor booleano
+    button: Botão
+      desc: mostra um botão na interface e emite o estado atual dele
+      output: valor booleano
+      hold: segurar para ativar
+      press: pressionar para alternar
+      release: soltar para alternar
+    and: E
+      desc: emite verdadeiro apenas se todas as entradas forem verdadeiras
+      input.input: valor booleano
+      output: verdadeiro se todas as entradas forem verdadeiras
+    not: Negar
+      desc: emite verdadeiro se a entrada for falsa, e vice-versa
+      input.input: valor booleano
+      output: inverso da entrada
+    or: Ou
+      desc: emite verdadeiro desde que qualquer entrada seja verdadeira
+      input.input: valor booleano
+      output: verdadeiro se qualquer entrada for verdadeira
+    latch: Trava
+      desc: guarda um valor verdadeiro ou falso que pode ser alterado pelas entradas
+      input.false: booleano para falso
+      input.true: booleano para verdadeiro
+      input.toggle: booleano para alternar
+      output: valor booleano atual
+    change: Ao Mudar
+      desc: emite verdadeiro no momento que a entrada booleana muda de verdadeiro para falso e vice-versa
+      input.input: valor booleano
+      output: verdadeiro se a entrada mudar
+      true: piscar no verdadeiro
+      false: piscar no falso
+  number: Número
+    desc: utilidades básicas para nós numéricos
+    constant: Valor
+      desc: emite um valor numérico constante definido pelo usuário
+      output: valor numérico
+  string: Texto
+    desc: utilidades para nós que emitem valor textual
+    constant: Valor
+      desc: emite um valor textual constante definido pelo usuário
+      output: valor textual
+    concat: Concatenar
+      desc: combina múltiplos valores textuais em um só
+      input.input: valor textual
+      output: valor textual concatenado
+      separator: separador
+    split: Separar
+      desc: divide um valor textual a patir de dado separador
+      input.input: valor textual
+      input.index: índice a selecionar (a partir de zero)
+      output: segmento textual
+      separator: separador
+    fromnumber: De Número
+      desc: converte um valor numérico em textual
+      input.input: valor numérico
+      output: valor textual convertido
+      digits: dígitos
+    tonumber: Para Número
+      desc: converte um valor textual em numérico
+      input.input: valor textual
+      output: valor numérico convertido
+    frompoint: De Ponto
+      desc: converte um valor de ponto em textual
+      input.input: valor de ponto
+      output: valor textual convertido
+      digits: dígitos
+    topoint: Para Ponto
+      desc: converte um valor textual em ponto
+      input.input: valor textual
+      output: valor de ponto convertido
+    fromboolean: De Booleano
+      desc: converte um valor booleano a um textual "true" ou "false"
+      input.input: valor booleano
+      output: valor textual, "true" ou "false"
+    toboolean: Para Booleano
+      desc: converte um valor textual em booleano
+      input.input: valor textual
+      output: valor booleano convertido
+    fromcolor: De Cor
+      desc: converte um valor de cor em textual
+      input.input: valor de cor
+      output: valor textual convertido
+    tocolor: Para Cor
+      desc: converte um valor textual em cor
+      input.input: valor textual
+      output: valor de cor convertido
+    equals: Igual A
+      desc: compara um valor textual com outros valores textuais
+      input.input: valor textual
+      input.equals: valores textuais a se comparar com
+      output: verdadeiro se o primeiro valor textual é igual a um dos outros
+  point: Ponto
+    desc: utilidades básicas para nós de ponto
+    attinput: ponto
+    x: Valor X
+      desc: extrai o valor x de um ponto em forma numérica
+      output: valor x do ponto
+    y: Valor Y
+      desc: extrai o valor y de um ponto em forma numérica
+      output: valor y do ponto
+    constant: Valor
+      desc: emite um valor numérico constante definido pelo usuário
+      output: valor de ponto
+    create: Construir
+      desc: constrói um valor de ponto a partir de dois números como valores x e y
+      input.x: valor X
+      input.y: valor Y
+      output: ponto
+  color: Cor
+    desc: utilidades para nós que emitem valores de cor
+    attinput: cor
+    r: Vermelho
+      desc: extrai o valor vermelho de uma cor em forma numérica
+      output: valor vermelho da cor
+    g: Verde
+      desc: extrai o valor verde de uma cor em forma numérica
+      output: valor verde da cor
+    b: Azul
+      desc: extrai o valor azul de uma cor em forma numérica
+      output: valor azul da cor
+    a: Alfa
+      desc: extrai o valor alfa de uma cor em forma numérica
+      output: valor alfa da cor
+    constant: Valor
+      desc: emite um valor de cor constante definido pelo usuário
+      output: valor de cor
+    create: Construir
+      desc: constrói um valor de cor a partir de dois números como valores RGBA
+      input.r: valor vermelho (padrão 0)
+      input.g: valor verde (padrão 0)
+      input.b: valor azul (padrão 0)
+      input.a: valor alfa (padrão 1)
+      output: cor
+  audio: Áudio
+    desc: utilidades para nós que emitem dados de áudio
+    channel: Filtro de Canais
+      desc: seleciona canais de um áudio
+      input.input: dados de áudio
+      output: dados de áudio
+    gain: Ganho
+      desc: ajusta o volume de um áudio
+      input.input: dados de áudio
+      input.gain: ganho (em dB, opcional)
+      output: dados de áudio
+      gain: ganho em dB
+    limiter: Limitador
+      desc: limita o volume de um áudio
+      input.input: dados de áudio
+      output: dados de áudio
+      threshold: limite em dB
+      peak: máximo em dB
+    mfcc: MFCC
+      desc: transforma dados de áudio em coeficientes úteis para reconhecimento de fonema/orador
+      input.input: dados de áudio
+      output: pontuações para cada coeficiente, de 1 a 12
+    silerovad: Silero VAD
+      desc: pega dados de áudio e estima se há voz presente ou não
+      input.input: dados de áudio
+      output: atividade vocal
+    rnnoise: RNNoise
+      desc: pega dados de áudio e remove ruído potencial, bem como estima se há voz presente ou não
+      input.input: dados de áudio
+      output: dados de áudio & atividade vocal
+    ovrlipsync: Oculus Lip Sync
+      desc: pega dados de áudio e estima informação de animação de lipsync
+      input.input: dados de áudio
+      output: sujeito & atividade vocal & visema atual do Oculus Lip Sync & porcentagens de visemas
+    cherrylipsync: Cherry Lip Sync
+      desc: pega dados de áudio e estima informação de animação de lipsync
+      input.input: dados de áudio
+      output: sujeito & atividade vocal & visema atual do Cherry Lip Sync & porcentagens de visemas
+  bitmap: Imagem
+    desc: utilidades para nós que emitem valores de imagem
+    aspect: Proporção
+      desc: ajusta a proporção de uma imagem
+      input:
+        input: dado de imagem
+        ratio: valor de proporção da imagem
+      output: dado de imagem
+      ratio: valor
+      fit: encaixar
+      fill: preencher
+      stretch: esticar
+    fliprotate: Inverter & Rotacionar
+      desc: inverte e/ou rotaciona uma imagem
+      input.input: dado de imagem
+      output: dado de imagem
+      flipx: inverter em X
+      flipy: inverter em Y
+      transpose: transpor
+    crop: Cortar
+      desc: corta uma imagem de acordo com valores fixos
+      input.input: dado de imagem
+      output: dado de imagem
+      left: esquerda
+      right: direita
+      top: cima
+      bottom: baixo
+    rate: Limitador de Taxa
+      desc: limita a taxa de quadros de um vídeo
+      input.input: dado de imagem
+      input.rate: taxa de quadros máxima (opcional)
+      output: dado de imagem
+    vitpose: ViTPose
+      desc: pega dados de imagem e estima rastreamento de corpo
+      input.input: dado de imagem
+      output: dado de sujeito
+      version:
+        s: versão S
+        b: versão B
+        l: versão L
+    movenet: MoveNet
+      desc: pega dados de imagem e estima rastreamento de corpo
+      input.input: dado de imagem
+      output: dado de sujeito
+    openseeface: OpenSeeFace
+      desc: pega dados de imagem de um rosto e estima rastreamento
+      input.input: dado de imagem de um rosto, ou dado de sujeito para refinamento
+      output: dado de sujeito
+      crop: rastrear rostos à distância
+      gaze: rastrear direção do olhar
+    mediapipeface: MediaPipe Face Landmarker
+      desc: pega dados de imagem de um rosto de perto e estima rastreamento
+      input.input: dado de imagem de um rosto de perto, ou dado de sujeito para refinamento
+      output: dado de sujeito
+    mediapipefaces: MediaPipe Faces
+      desc: pega dados de imagem e detecta múltiplos rostos
+      input.input: dado de imagem
+      output: grupo de sujeitos
+    mediapipeposes: MediaPipe Poses
+      desc: pega dados de imagem e detecta múltiplos corpos
+      input.input: dado de imagem
+      output: grupo de sujeitos
+    mediapipehands: MediaPipe Hands
+      desc: pega dados de sujeito junto de imagem e detecta mãos
+      input.input: dado de imagem+sujeito
+      output: dado de sujeito
+  subject: Sujeito
+    desc: utilidades para nós que emitem sujeitos
+    attinput: sujeito
+    point:
+      hip: Quadril
+      spine: Coluna
+      shoulder: Ombro
+      head: Cabeça
+      shoulderl: Ombro Esquerdo
+      elbowl: Cotovelo Esquerdo
+      wristl: Pulso Esquerdo
+      handl: Mão Esquerda
+      fingerl: Dedo Esquerdo
+      thumbl: Dedão Esquerdo
+      shoulderr: Ombro Direito
+      elbowr: Cotovelo Direito
+      wristr: Pulso Direito
+      handr: Mão Direito
+      fingerr: Dedo Direito
+      thumbr: Dedão Direito
+      hipl: Quadril Esquerdo
+      kneel: Joelho Esquerdo
+      anklel: Tornozelo Esquerdo
+      heell: Calcanhar Esquerdo
+      footl: Pé Esquerdo
+      hipr: Quadril Direito
+      kneer: Joelho Direito
+      ankler: Tornozelo Direito
+      heelr: Calcanhar Direito
+      footr: Pé Direito
+    point: Ponto do Corpo
+      desc: extrai a posição de um ponto do corpo
+      output: posição (-1 a 1)
+    pointscore: Precisão de Ponto do Corpo
+      desc: extrai a precisão de rastreamento de um ponto do corpo
+      output: precisão de rastreamento (0 a 1)
+    head: Cabeça
+      desc: extrai a posição da cabeça
+      output: posição da cabeça (-1 a 1)
+    headscore: Precisão da Cabeça
+      desc: extrai a precisão de rastreamento da cabeça
+      output: precisão de rastreamento (0 a 1)
+    headlook: Direção da Cabeça
+      desc: extrai a direção que a cabeça está apontando
+      output: direção (-1 a 1)
+    headangle: Ângulo da Cabeça
+      desc: extrai o ângulo de rotação da cabeça
+      output: ângulo de rotação (-π a π)
+    headscale: Tamanho da Cabeça
+      desc: extrai o tamanho da cabeça
+      output: escala (0 a 1)
+    eye: Olho
+      desc: extrai a direção do olhar
+      output: direção do olhar (-1 a 1)
+      alt:
+        left: esq.
+        right: dir.
+      mode:
+        both: ambos os olhos
+        left: esquerda
+        right: direita
+    eyelid: Pálpebra
+      desc: extrai o valor de pálpebra fechada
+      output: valor (0 a 1)
+    eyebrow: Sobrancelha
+      desc: extrai o formato da sobrancelha
+      output: formato (-1 a 1)
+      alt:
+        left: esq.
+        leftouter: esq. ext.
+        leftinner: esq. int.
+        right: dir.
+        rightouter: dir. ext.
+        rightinner: dir. int.
+      mode:
+        both: ambas as sobrancelhas
+        left: sobrancelha esquerda
+        leftouter: lado externo da sobrancelha esquerda
+        leftinner: lado interno da sobrancelha esquerda
+        right: sobrancelha direita
+        rightouter: lado externo da sobrancelha direita
+        rightinner: lado interno da sobrancelha direita
+    mouth: Boca
+      desc: extrai o tamanho da boca
+      output: tamanho da boca (0 a 1)
+    mouthcurve: Curvatura da Boca
+      desc: extrai o formato da curvatura da boca
+      output: valor de curva (-1 a 1, positivo para sorriso e negativo para triste)
+    teeth: Dentes
+      desc: extrai o valor de presença de dentes
+      output: presença de dentes (0 a 1)
+    tongue: Língua
+      desc: extrai o valor de presença de língua
+      output: presença de língua (0 a 1)
+    hand: Mão
+      desc: extrai a posição da cabeça
+      output: posição da cabeça (-1 a 1)
+      left: mão esquerda
+      right: mão direita
+    handscore: Precisão da Mão
+      desc: extrai a precisão de rastreamento da mão
+      output: precisão de rastreamento (0 a 1)
+    handscale: Tamanho da Mão
+      desc: extrai o tamanho da mão
+      output: escala (0 a 1)
+    facescores: Porcentagens de Rosto
+      desc: extrai porcentagens do rosto baseadas na expressão atual
+      output: porcentagens
+      mode:
+        eyebrow: sobrancelhas
+        eyelid: pálpebras
+        eye: direção do olhar
+        mouthshape: formato da boca
+        mouthopen: abertura da boca
+        teeth: presença de dentes
+        tongue: presença de língua
+    handscores: Porcentagens de Mão
+      desc: extrai porcentagens da mão baseadas na orientação e no gesto
+      output: porcentagens
+      mode:
+        orientation: orientação
+        close: dedos fechados
+        distance: distâncias entre dedos
+        thumb: mais dados do dedão
+    combine: Combinar
+      desc: combina múltiplos sujeitos em um só
+      input.input: dado de sujeito
+      output: dado de sujeito combinado, com prioridade às entradas mais à esquerda
+    select: Selecionar por ID
+      desc: seleciona um sujeito de um grupo a partir de sua id
+      input.input: grupo de sujeitos
+      input.id: id para selecionar
+      output: sujeito selecionado
+    selectpos: Selecionar por Posição
+      desc: seleciona um sujeito de um grupo a partir de sua posição
+      input.input: grupo de sujeitos
+      output: sujeito selecionado
+      left: mais à esquerda
+      right: mais à direita
+      custom: customizado
+      rank: ordem
+      x: valor X
+  subjects: Sujeitos
+  scores: Porcentagens
+    desc: utilidades para nós que emitem porcentagens, uma coleção de números de 0 a 1
+    attinput: porcentagens
+    score: Porcentagem
+      desc: extrai uma porcentagem de um nó de porcentagens, dada a id da porcentagem
+      output: valor numérico (0 a 1)
+    match: Correspondência de Porcentagens
+      desc: corresponde um ou mais padrões com um nó de porcentagens
+      input.input: porcentagens
+      output: novas porcentagens, ou uma correspondência (0 a 1) caso só haja um estado
+      add: criar novo estado
+      remove: remover estado
+      name: nome
+      hold: segure para gravar...
+  convert: Comparar & Converter
+    desc: utilidades para conversão de nós, ramificação entre entradas, e análise geral de seus valores
+    compare: Comparar
+      desc: compara o valor de dois nós de entrada
+      input.a: primeiro valor
+      input.b: segundo valor
+      output: resultado booleano
+      equal: igual à
+      notequal: diferente de
+      less: menor que
+      lessequal: menor que ou igual à
+      greater: maior que
+      greaterequal: maior que ou igual à
+    branchboolean: Ramificar por Booleano
+      desc: seleciona uma das duas entradas, dependendo se o booleano de entrada é verdadeiro ou falso
+      input.condition: valor booleano
+      input.false: valor se falso
+      input.true: valor se verdadeiro
+      output: valor selecionado
+    branchnumber: Ramificar por Número
+      desc: seleciona uma das entradas, dependendo do valor atual de dado número
+      input.number: valor numérico
+      input.value: valores
+      output: valor selecionado
+    branchpoint: Ramificar por Ponto
+      desc: seleciona uma das entradas, dependendo do valor atual de dado ponto
+      input.point: valor de ponto
+      input.value: valores
+      output: valor selecionado
+    branchstring: Ramificar por Texto
+      desc: seleciona uma das entradas, dependendo do valor atual de dado texto
+      input.string: valor textual
+      input.value: valores
+      output: valor selecionado
+    branchselect: Ramificar por Seleção
+      desc: seleciona uma das entradas, dependendo da posição atual controlada pelas entradas booleanas
+      input.decrement: move à esquerda quando verdadeiro
+      input.increment: move à direita quando verdadeiro
+      input.value: valores
+      output: valor selecionado
+      clamp: limitar seleção
+      repeat: repetir seleção
+    numberactivity: Deslizadores de Atividade
+      desc: deslizadores que convertem uma entrada numérica (0 a 1) em um booleano, com suporte para atraso. baseado no veadotube mini
+      input.input: entrada numérica (0 a 1)
+      input.volume: valor de corte (opcional)
+      input.delay: valor de atraso (opcional)
+      output: atividade booleana
+    null: Nulo
+      desc: não emite nada
+      output: nada
+    repeat: Retransmitir
+      desc: pega a entrada e emite ela. literalmente não faz nada com o valor
+      input.input: entrada
+      output: valor da entrada
+    available: Disponibilidade
+      desc: emite verdadeiro se o nó de entrada está emitindo algum valor
+      input.input: entrada
+      output: verdadeiro se houver valor na entrada
+    change: Ao Mudar Valor
+      desc: emite verdadeiro no momento que o nó de entrada muda de valor
+      input.input: nó
+      output: verdadeiro quando entrada mudar
+    default: Alternativa
+      desc: pega as entradas e emite a mais da esquerda que emita algum valor
+      input.input: entradas
+      output: entrada disponível mais à esquerda
+  timer: Temporizadores
+    desc: utilidades para contar o tempo, suavizar, e tudo mais
+    time: Tempo do Programa
+      desc: conta o tempo em segundos desde que o programa foi aberto
+      output: tempo em segundos desde a abertura do programa
+    counter: Contador
+      desc: conta o tempo, de acordo com uma escala de tempo e outras limitações dadas pelo usuário
+      input.scale: escala de tempo (padrão 1)
+      input.reset: reinicia o contador se verdadeiro
+      output: valor numérico em segundos
+      step: arredondar
+      range: limite
+        none: nenhum
+        repeat: repetir
+        clamp: travar
+      min: min.
+      max: máx.
+    repeater: Repetidor
+      desc: pisca um valor verdadeiro em um intervalo definido pelo usuário
+      output: valor booleano
+      delay: atraso
+      interval: intervalo
+    booleandelay: Atraso de Booleano
+      desc: adiciona um contador que cresce e/ou decresce de acordo com um booleano de entrada
+      input.input: valor booleano
+      output: booleano com atraso & contador de tempo (0 a 1)
+      mode: modo
+        fillup: preencher
+        emptyout: esvaziar
+        fillandempty: preencher e esvaziar
+      duration: duração
+    delay: Atrasar
+      desc: atrasa o valor de uma dada entrada por um tempo em segundos definido pelo usuário
+      input.input: valor
+      output: valor com atraso
+      duration: intervalo
+    smooth: Suavizar
+      desc: suaviza o valor de uma dada entrada ao decorrer do tempo usando interpolação linear
+      input.input: valor
+      output: valor suavizado
+      angle: entrada é ângulo
+      amount: quantidade
+    oneeuro: Filtro 1€
+      desc: suaviza o valor de uma dada entrada ao decorrer do tempo usando o algoritmo 1€ Filter
+      input.input: valor
+      output: valor suavizado
+      angle: entrada é ângulo
+      beta: valor beta
+      mincutoff: corte mínimo
+    smoothstring: Suavizar Texto
+      desc: ignora valores textuais mudando rapidamente e entrega o valor que se estabelece
+      input.input: valor textual
+      output: valor textual
+      duration: duração
+  input: Entrada
+    desc: nós que capturam dados de dispositivos de entrada como mouse, teclado, controles, etc
+    signal: Sinal
+      desc: pega um sinal de entrada capturando um atalho do usuário
+      output: atividade do sinal
+      assign: registrar
+      clear: limpar
+      listening: aguardando sinal...
+    cursor: Cursor
+      desc: entrega posição do cursor na tela
+      output: posição do cursor
+      all: (área de trabalho inteira)
+      mode: tratamento fora da tela
+      clamp: limitar ponto
+      trim: invalidar valor
+    gamepad: Gamepad
+      desc: entrega dados a partir de uma lista de gamepads conectados
+      output: dados de gamepad
+      attinput: dados de gamepad
+      button: Botão
+        desc: extrai se um dado botão está pressionado ou não, com suporte a sensibilidade do gatilho
+        output: atividade do botão
+      stick: Analógico
+        desc: extrai se um dado direcional ou analógico está pressionado e qual direção ele está apontado para
+        output: posição do analógico & clique
+      north: Norte
+      south: Sul
+      east: Leste
+      west: Oeste
+      start: Iniciar
+      back: Voltar
+      guide: Painel
+      leftshoulder: Superior L
+      rightshoulder: Superior R
+      lefttrigger: Gatilho L
+      righttrigger: Gatilho R
+      dpad: Direcional
+        up: [.] ↑
+        down: [.] ↓
+        left: [.] ←
+        right: [.] →
+      leftstick: Analógico L
+        up: [.] ↑
+        down: [.] ↓
+        left: [.] ←
+        right: [.] →
+      rightstick: Analógico R
+        up: [.] ↑
+        down: [.] ↓
+        left: [.] ←
+        right: [.] →
+    keyboard: Teclado
+      desc: entrega quais teclas estão atualmente pressionadas no teclado
+      output: dados de teclado & atividade
+      attinput: dados de teclado
+      key: Tecla
+        desc: extrai informação de uma data tecla estar pressionada
+        output: atividade da tecla
+    midi: MIDI
+      desc: entrega dados de uma lista de dispositivos MIDI disponíveis
+      output: dados MIDI & atividade
+      attinput: dados MIDI
+      controller: Controlador
+        desc: extrai o estado atual de um dado controlador
+        output: valor do controlador
+      note: Nota
+        desc: extrai informação de uma tecla estar pressionada, com sua velocidade
+        output: pressão da nota & atividade
+      allchannels: Todos os Canais
+      channel: Canal <>
+      pitchwheel: Pitch Wheel
+        desc: extrai o estado atual da pitch wheel
+        positive: [.] +
+        negative: [.] -
+        output: valor da pitch wheel
+    mouse: Mouse
+      desc: entrega dados de mouse, incluindo botões pressionados, movimentação e roda
+      output: dados de mouse & atividade
+      attinput: dados de mouse
+      button: Botão
+        desc: extrai informação de um botão estar pressionado
+        output: atividade do botão do mouse
+      move: Movimento
+        desc: extrai movimentação atual do mouse
+        output: intensidade de movimento do mouse (-1 a 1)
+      scroll: Roda
+        desc: extrai movimentação atual da roda do mouse
+        output: intensidade da roda do mouse (-1 a 1)
+      left: Esquerdo
+      right: Direito
+      middle: Meio
+      side: Lateral <>
+    microphone: Microfone
+      desc: entrega dados de áudio de uma lista de dispositivos de áudio disponíveis
+      output: dados de áudio & volume
+    camera: Câmera
+      desc: entrega dados de imagem de uma lista de dispositivos de vídeo disponíveis
+      resolution: resolução
+      output: dado de imagem
+      notselected: câmera não selecionada
+      notavailable: câmera não está conectada
+      nospecs: erro ao obter formatos
+      error: erro interno: <>
+    kinect: Kinect
+      desc: entrega dados de vídeo e de rastreamento de dispositivos Kinect v1 e v2
+      output: lista de grupos de pontos & dado de imagem
+      unsupported: suporte para Kinect está indisponível em seu sistema
+      notselected: dispositivo não selecionado
+      notavailable: dispositivo não está conectado
+    wiimote: Wiimote
+      desc: entrega dados a partir de uma lista de Wiimotes conectados
+      output: dados de Wiimote
+      attinput: dados de Wiimote
+      button: Botão
+        desc: extrai se um dado botão está pressionado ou não
+        output: atividade do botão
+      stick: Analógico
+        desc: extrai se um dado direcional ou analógico está pressionado e qual direção ele está apontado para
+        output: posição do analógico & clique
+      cursor: Cursor
+        desc: extrai a posição do cursor baseada na barra de sensor
+        output: posição do cursor
+      a: A
+      b: B
+      minus: Menos
+      plus: Mais
+      home: Home
+      one: Um
+      two: Dois
+      dpad: Direcional
+        up: [.] ↑
+        down: [.] ↓
+        left: [.] ←
+        right: [.] →
+  ws: Websocket
+    desc: nós que podem ser expostos pelo websocket e controlados por programas externos
+    name: nome
+    id: id
+    boolean: Booleano
+      desc: nó de websocket que recebe valores booleanos (verdadeiro ou falso), como botões e alternadores
+      output: valor booleano
+    number: Número
+      desc: nó de websocket que recebe valores numéricos
+      output: valor numérico
+    stateevents: Eventos de Estado
+      desc: nó de websocket que recebe valores de eventos de estado para ser usado com nós de estado
+      output: eventos de estado
+  tpi: Integrações
+    desc: nós que integram com outros programas, arquivos, ou serviços
+    media: Mídia
+      desc: carrega arquivos de vídeo/áudio e os entrega para outros nós
+      output: dados de imagem e/ou áudio
+      errorfile: arquivo de mídia não encontrado
+      errorload: falha ao carregar arquivo de mídia
+      play: reproduzir
+      pause: pausar
+      loopon: ligar repetição
+      loopoff: desligar repetição
+      mute: mutar
+      unmute: desmutar
+    discord: Discord
+      desc: conecta com a chamada atual do Discord e entrega dados de atividade de um dado usuário
+      output: atividade do usuário
+      mode: modo de ativação
+      connected: conectado
+      speaking: falando
+      muted: mutado
+      deafened: ensurdecido
+    teamspeak: TeamSpeak
+      desc: conecta com a chamada atual do TeamSpeak e entrega dados de atividade de um dado usuário
+      output: atividade do usuário
+      mode: modo de ativação
+      connected: conectado
+      talking: falando
+      muted: mutado
+      deafened: ensurdecido
+      away: ausente
+    openseeface: OpenSeeFace Externo
+      desc: conecta com uma instância remota do OpenSeeFace e entrega dados de rastreamento
+      output: dado de sujeito
+      ip: endereço ip
+    ifacialmocap: iFacialMocap
+      desc: conecta com uma instância remota do iFacialMocap e entrega dados de rastreamento
+      output: dado de sujeito
+      ip: endereço ip
+      headforward: enviar sinal "head forward"
+  math: Matemática
+    desc: nós para matemática, tanto simples quanto complexa, para números e pontos
+    add: Somar
+      desc: soma dois ou mais números/pontos
+      input.input: termo
+      output: soma das entradas
+    subtract: Subtrair
+      desc: substrai um número/ponto de outro
+      input.input0: minuendo
+      input.input1: subtraendo
+      output: diferença das entradas
+    multiply: Multiplicar
+      desc: multiplica dois ou mais números/pontos
+      input.input: fator
+      output: produto das entradas
+    divide: Dividir
+      desc: divide um número/ponto de outro
+      input.input0: dividendo
+      input.input1: divisor
+      output: quociente das entradas
+    remainder: Resto
+      desc: divide um número/ponto de outro e retorna o resto
+      input.input0: dividendo
+      input.input1: divisor
+      output: resto das entradas
+    modulo: Módulo
+      desc: prende um número/ponto entre zero e o outro dado valor
+      input.input0: dividendo
+      input.input1: divisor
+      output: módulo das entradas
+    negate: Negar
+      desc: nega um número/ponto (mesma coisa que fazer zero menos a entrada)
+      input.input: valor numérico ou de ponto
+      output: entrada negada
+    oneminus: Um Menos
+      desc: nega um número/ponto e soma um (mesma coisa que fazer um menos a entrada)
+      input.input: valor numérico ou de ponto
+      output: um menos a entrada
+    clamp: Limitar
+      desc: limita um número/ponto entre um mínimo e um máximo
+      input.input: valor numérico ou de ponto
+      input.min: valor mínimo
+      input.max: valor máximo
+      output: valor limitado
+    clamp01: Limitar de 0 a 1
+      desc: limita um número/ponto entre 0 e 1
+      input.input: valor numérico ou de ponto
+      output: valor limitado
+    clamp11: Limitar de -1 a 1
+      desc: limita um número/ponto entre -1 e 1
+      input.input: valor numérico ou de ponto
+      output: valor limitado
+    round: Arredondar
+      desc: arredonda um número/ponto pro inteiro mais próximo
+      input.input: valor numérico ou de ponto
+      output: valor arredondado
+    floor: Arredondar para Baixo
+      desc: arredonda um número/ponto em direção ao zero
+      input.input: valor numérico ou de ponto
+      output: valor arredondado
+    ceil: Arredondar para Cima
+      desc: arredonda um número/ponto pra longe do zero
+      input.input: valor numérico ou de ponto
+      output: valor arredondado
+    min: Mínimo
+      desc: pega o menor número/ponto entre as entradas e o emite
+      input.input: valor numérico ou de ponto
+      output: valor mínimo entre as entradas
+    max: Máximo
+      desc: pega o maior número/ponto entre as entradas e o emite
+      input.input: valor numérico ou de ponto
+      output: valor máximo entre as entradas
+    average: Média
+      desc: pega o número/ponto médio entre as entradas e emite
+      input.input: valor numérico ou de ponto
+      output: média das entradas
+    mixweights: Combinar Pesos
+      desc: pega os números/pontos e os soma de acordo com seus respectivos pesos
+      input.input: valor numérico ou de ponto <>
+      input.weight: peso do valor numérico ou de ponto <>
+      output: valores combinados
+    abs: Absoluto
+      desc: garante que um número/ponto é sempre positivo, negando se necessário
+      input.input: valor numérico ou de ponto
+      output: absoluto da entrada
+    length: Comprimento
+      desc: pega o comprimento de um número/ponto
+      input.input: valor numérico ou de ponto
+      output: comprimento da entrada
+    sqrt: Raiz Quadrada
+      desc: tira a raiz quadrada de um número
+      input.input: valor numérico
+      output: raiz da entrada
+    exp: Exponencial
+      desc: tira o exponencial de um número, em base 𝑒
+      input.input: valor numérico
+      output: exponencial da entrada
+    log: Logartimo
+      desc: tira o logaritmo de um número, em base 𝑒
+      input.input: valor numérico
+      output: logaritmo da entrada
+    sin: Seno
+      desc: tira o seno de um número em radianos
+      input.input: valor numérico
+      output: seno da entrada
+    cos: Cosseno
+      desc: tira o cosseno de um número em radianos
+      input.input: valor numérico
+      output: cosseno da entrada
+    tan: Tangente
+      desc: tira a tangente de um número em radianos
+      input.input: valor numérico
+      output: tangente da entrada
+    sincos: Seno & Cosseno
+      desc: emite o seno e o cosseno de um número em forma de ponto
+      input.input: valor numérico
+      output: seno e cosseno da entrada
+    asin: Arco Seno
+      desc: tira o arco seno de um número
+      input.input: valor numérico
+      output: arco seno da entrada
+    acos: Arco Cosseno
+      desc: tira o arco cosseno de um número
+      input.input: valor numérico
+      output: arco cosseno da entrada
+    atan: Arco Tangente
+      desc: tira o arco tangente de um número
+      input.input: valor numérico
+      output: arco tangente da entrada
+    normalize: Normalizar
+      desc: normaliza um valor de ponto para que seu comprimento seja 1
+      input.input: valor de ponto
+      output: ponto normalizado
+    circletosquare: Círculo para Quadrado
+      desc: pega um ponto de comprimento máximo 1 e o mapeia para um quadrado entre -1 e 1
+      input.input: valor de ponto
+      output: resultado enquadrado
+    squaretocircle: Quadrado para Círculo
+      desc: pega um ponto quadrado entre -1 e 1 e o mapeia para um ponto de comprimento máximo 1
+      input.input: valor de ponto
+      output: resultado circular
+    ease: Ease
+      desc: interpola um número entre 0 e 1 para aplicar um efeito de easing in/out
+      input.input: valor numérico (0 a 1)
+      output: valor numérico com easing (0 a 1)
+      in: In
+      out: Out
+      inout: In-Out
+      outin: Out-In
+    lerp: Interpolação
+      desc: interpola um dado valor, onde 0 mapeia para a primeira entrada e 1 à segunda
+      input.a: valor numérico em 0
+      input.b: valor numérico em 1
+      input.t: valor de interpolação
+      output: valor interpolado
+    unlerp: Interpolação Inversa
+      desc: interpola um valor inversamente, onde retorna-se 0 se for igual à primeira entrada e 1 à segunda
+      input.a: valor numérico at 0
+      input.b: valor numérico at 1
+      input.t: valor de interpolação
+      output: valor interpolado
+    remap: Remapear
+      desc: remapeia um valor de um intervalo a outro
+      input.a0: A inicial
+      input.b0: B inicial
+      input.a1: A final
+      input.b1: B final
+      input.t: valor
+      output: valor remapeado
+      noclamp: não limitar
+      clamp: limitar
+    expression: Expressão
+      desc: permite ao usuário escrever sua própria expressão matemática, que será então resolvida usando entradas numéricas
+      input.input: variável <>
+      output: resultado da expressão
+  generator: Geradores
+    desc: utilidades para rapidamente gerar comportamentos comuns
+    common:
+      output: saída
+        x: numérica
+        xy: ponto
+    shaker: Tremedor
+      desc: simula movimento natural de tremer ou só ficar de boa
+      input.time: tempo (opcional)
+      output: valor de ruído perlin
+      amount: quantidade
+      velocity: velocidade
+    waver: Ondulador
+      desc: simula uma animação de onda
+      input.time: tempo (opcional)
+      output: valor senóide
+      amount: quantidade
+      velocity: velocidade
+      offset: desfase
+    blinker: Piscador
+      desc: simula comportamento aleatório alternado, por exemplo para piscar os olhos
+      input.false: forçar valor falso
+      input.true: forçar valor verdadeiro
+      input.falseDuration: duração para falso (opcional)
+      input.trueDuration: duração para verdadeiro (opcional)
+      output: atividade
+      falserange: intervalo de tempo falso
+      truerange: intervalo de tempo verdadeiro
+    jumper: Pulador
+      desc: simula uma animação de pular de acordo com a entrada
+      input.jump: pular quando verdadeiro
+      input.bounce: forçar quicar
+      input.height: altura do pulo
+      input.velocity: velocidade
+      output: valor do pulo
+      velocity: velocidade
+      height: altura do pulo
+      maxHeight: altura máxima
+    bouncer: Quicador
+      desc: simula uma animação de quicar de um lado pro outro
+      input.time: tempo (opcional)
+      output: valor de quicagem
+      amount: quantidade
+      velocity: velocidade
+  state: Estado
+    desc: nós para manipular valores textuais para estados e eventos de estado
+    storage: Armazenamento de Estado
+      desc: guarda uma pilha de valores textuais representando um estado atual
+      input.input: eventos de estado
+      output: estado atualmente armazenado
+      ifempty: se vazio...
+        keep: manter vazio
+        add: adicionar estado padrão
+      ifunspecified: se não especificado...
+        keep: manter estado
+        remove: remover estado
+      stacklimit: limite da pilha
+      actions: ações rápidas
+    signalevents: Eventos de Estado por Sinal
+      desc: emite eventos de estado baseado numa lista de estados e seus sinais respectivos
+      output: eventos de estado
+      mode: modo
+        press: ao apertar
+        release: ao soltar
+        hold: enquanto segurar
+        toggle: alternar
+    booleanevents: Eventos de Estado por Booleano
+      desc: emite eventos de estado baseado numa entrada de booleano
+      input.state: valor de estado textual
+      input.input: valor booleano
+      output: eventos de estado
+      on: quando verdadeiro
+      off: quando falso
+    aggregator: Agregador de Estado
+      desc: combina múltiplas entradas textuais e emite a mais da direita que estiver ativa
+      input.input: valores de estado textual
+      output: estado ativo mais à direita
+  stateevents: Eventos de Estado
+    clear: limpar
+    set: substituir
+    push: empilhar
+    pop: remover
+    toggle: alternar
+  random: Aleatório
+    desc: nós para gerar valores aleatórios
+    number: Número Aleatório
+      desc: gera um número aleatório sob comando, dentro de limites definidos pelo usuário
+      input.gen: gerar quando verdadeiro
+      input.keep: ficar gerando
+      output: valor numérico aleatório
+      mode: modo
+        integer: inteiro
+        decimal: decimal
+      min: min.
+      max: máx.
+      avoid: evitar repetição
+    selector: Seletor Aleatório
+      desc: seleciona uma entrada aleatoriamente sob comando
+      input.gen: gerar quando verdadeiro
+      input.keep: ficar gerando
+      input.input: valores
+      output: valor selecionado
+      avoid: evitar repetição
+    perlin: Ruído Perlin
+      desc: retorna o valor de ruído Perlin para uma dada entrada
+      input.input: valor de ponto
+      output: valor de ruído

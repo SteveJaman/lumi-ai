@@ -1,0 +1,144 @@
+mini:
+  misc:
+    on: ligado
+    off: desligado
+    auto: automático
+    copy: copiar
+    paste: colar
+  alert:
+    windowsize: janela redimensionada para <> x <>
+    errorid: código do erro: <>
+    loadingavatar: carregando avatar...
+    avatarfailed: falha ao carregar avatar!
+    loadingimage: carregando imagem...
+    imagefailed: falha ao carregar imagem!
+    hideui1: a UI está escondida!
+    hideui2: clique duas vezes em qualquer lugar para reativá-la.
+  credits:
+    line1: veadotube mini <> por <>
+    line2: visite <> para mais informações
+  intro:
+    avatar: edite seu avatar!
+      sub: adicione imagens, animações e estados extras
+    settings: configure o app!
+      sub: selecione seu microfone, mude o fundo e muito mais
+    save: salve seu avatar!
+      sub: ou abra um pré-configurado
+    website: visite nosso website!
+      sub: para atualizações e ajuda
+  settings:
+    avatar: opções de avatar
+      load: abrir avatar mini...
+      save: salvar avatar mini...
+      loaddefault: abrir avatar padrão...
+      selectdefault: selecione um avatar
+      author: por <>
+      cancel: cancelar...
+    window: opções do programa
+      language: língua
+      windowname: título da janela
+      windowsize: tamanho da janela
+      framerate: taxa de quadros
+        vsync: sincronizado
+        uncapped: ilimitado
+        capped: limitado
+        at: limitado a
+      stream: stream do <>
+      websocket: servidor websocket
+        address: endereço do servidor
+        status: status do servidor
+      loadallstates: manter estados carregados
+      autohideui: esconder UI ao desfocar
+      hidegrid: esconder grade de fundo
+      hideui: esconder UI...
+    display: opções de visualização
+      avatarscale: tamanho do avatar
+      viewscale: multiplicador
+      viewoffsetx: posição em X
+      viewoffsety: posição em Y
+      movescale: escala do movimento
+      background: fundo
+        color: colorido
+        transparent: transparente
+        image: imagem
+        hue: matiz
+        saturation: saturação
+        value: valor
+        load: selecionar imagem de fundo...
+    microphone: opções de microfone
+      microphone: microfone
+      volumecutoff: volume mínimo do microfone
+      delaycutoff: atraso do microfone
+      source: fonte de entrada
+        device: dispositivo de microfone
+        discord: Discord
+        teamspeak: TeamSpeak
+      auth: enviar pedido de autorização...
+      noisereduction: redução de ruído
+        none: nenhuma
+      devices: dispositivos disponíveis
+        none: (nenhum)
+      users: usuários disponíveis
+        none: (nenhum)
+      pushtotalk: push-to-talk
+        websocket: usar websocket
+  states:
+    state: estado
+    avatarstate: estado do avatar
+    copycurrent: copiar estado atual
+    copyname: cópia de <>
+    addblank: adicionar estado vazio
+    image:
+      closed: imagem de boca fechada
+      open: imagem de boca aberta
+      closedblink: imagem piscando de boca fechada
+      openblink: imagem piscando de boca aberta
+      replace: substituir imagem...
+      export: exportar imagem...
+      remove: remover imagem
+      selectclosed: selecionar imagem de boca fechada...
+      selectopen: selecionar imagem de boca aberta...
+      selectclosedblink: selecionar imagem piscando de boca fechada...
+      selectopenblink: selecionar imagem piscando de boca aberta...
+    properties: propriedades do estado
+      name: nome do estado
+      imagemode: modo de imagem
+        smooth: suavizado
+        pixel: pixelizado
+      resetimagetime: tocar do início
+      blinksync: sincronizar piscada
+      blinkinterval: intervalo de piscada
+      blinkduration: duração da piscada
+    effects: efeitos do estado
+      state: efeitos
+        select: adicionar novo efeito
+        activea: ativo durante boca fechada
+        activeb: ativo durante boca aberta
+        none: nenhum
+      transition: transições
+        select: adicionar nova transição
+        activea: ativo ao abrir a boca
+        activeb: ativo ao fechar a boca
+        none: nenhuma
+      preset: pré-configuração
+      default: padrão
+      custom: customizado
+      cancel: cancelar...
+      delete: deletar
+    shortcuts: atalhos do estado
+      none: (nenhum)
+      assign: escolher atalho...
+      assignnew: escolher novo atalho...
+      remove: remover atalho
+      mode: modo de ativação
+        press: ao apertar
+        release: ao soltar
+        hold: enquanto segurar
+        toggle: alternar
+      screen:
+        waiting: aguardando entrada...
+        supported: suportamos:
+        esc: ...ou pressione [nodes.input.keyboard] Esc para cancelar
+    delete: deletar estado
+      confirm: deletar estado?
+      confirmyes: sim!

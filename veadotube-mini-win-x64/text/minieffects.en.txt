@@ -1,0 +1,29 @@
+minieffects:
+  userpreset: user preset
+  parameter:
+    amount: amount
+    amountx: amount X
+    amounty: amount Y
+    velocity: velocity
+    duration: duration
+    timeperiod: time period
+    periodoffset: period offset
+  state:
+    randommove: random move
+      vibe: vibing
+      shake: shaking
+      shakemore: shaking more
+    wavemove: wave move
+      breathe: breathing
+      circle: circling
+    jump: jump
+      bouncy: bouncy
+      excited: excited
+      nervous: nervous
+    waverotate: wave rotate
+      wobbly: wobbling
+      wobblymore: wobbling more
+    darken: darken
+  transition:
+    jump: jump
+      default: default

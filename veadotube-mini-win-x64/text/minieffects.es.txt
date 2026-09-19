@@ -1,0 +1,28 @@
+minieffects:
+  parameter:
+    amount: cantidad
+    amountx: cantidad en X
+    amounty: cantidad en Y
+    velocity: velocidad
+    duration: duración
+    timeperiod: período de tiempo
+    periodoffset: desfase del período
+  state:
+    randommove: moverse aleatoriamente
+      vibe: relajado
+      shake: temblando
+      shakemore: temblando mucho
+    wavemove: moverse en oleadas
+      breathe: respirando
+      circle: circulando
+    jump: saltar
+      bouncy: saltarín
+      excited: alegre
+      nervous: agitado
+    waverotate: girar en oleadas
+      wobbly: balanceándose
+      wobblymore: balanceándose mucho
+    darken: oscurecer
+  transition:
+    jump: saltar
+      default: estándar

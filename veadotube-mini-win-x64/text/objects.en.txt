@@ -1,0 +1,145 @@
+objects:
+  image: Image
+    desc: basic image, static or animated
+    scalemode: scale mode
+      fit: aspect fit
+      fill: aspect fill
+      stretch: stretch
+    displaymode: display mode
+      smooth: smooth
+      pixel: pixelated
+    time: image time
+      clamp: clamp image time
+    duration: image duration
+    offset: slice offset
+    size: slice size
+    count: slice count
+  miniavatar: Mini Avatar
+    desc: four images for mouth movement and blinking, with multiple states
+    input:
+      state: current state
+      activity: voice activity
+    anchor:
+      avatar: avatar center
+    state:
+      mouth: mouth
+        closed: closed
+        open: open
+      blink: eyes
+        off: open
+        on: closed
+      state: state
+    avatarscale: avatar scale
+    movementscale: movement scale
+    preloadstates: preload states
+      onlycurrent: load only current state
+      loadall: load all states
+  dynamicavatar: Dynamic Avatar
+    desc: unlimited images, unlimited state groups, attach anything to anything
+    dynamics:
+      attach: attach
+        desc: attaches this layer's movement onto another
+      doubleattach: double attach
+        desc: attaches two points of this layer onto another layers
+      lookat: look at
+        desc: rotates this layer towards another
+      squashstretch: squash & stretch
+        desc: applies simple distortion effects according to the layer's movement
+      move: move
+        desc: modifies the layer's position through nodes
+      rotate: rotate
+        desc: modifies the layer's rotation through nodes
+      skew: skew
+        desc: modifies the layer's skew through nodes
+      scale: scale
+        desc: modifies the layer's scale through nodes
+      fade: fade
+        desc: modifies the layer's opacity through nodes
+      tint: tint
+        desc: modifies the layer's tint color through nodes
+      shade: shade
+        desc: modifies the layer's shade color through nodes
+      number: number
+        desc: provides a number value to the node graph
+      point: point
+        desc: provides a point value to the node graph
+    fields:
+      name: name
+      pivot: pivot
+      pivota: pivot A
+      pivotb: pivot B
+      tip: tip
+      target: target
+      layer: layer
+      layera: layer A
+      layerb: layer B
+      multiplier: multiplier
+        rotation: rotation multiplier
+        scale: scale multiplier
+      angleunit: angle unit
+        degrees: degrees
+        radians: radians
+      smooth: smoothing
+      elasticity: elasticity
+      rotatelimit: rotation limit
+      scalelimit: scale limit
+      scaleforward: scale forward
+      scaleside: scale sides
+      position: position
+      rotation: rotation
+      skew: skew
+      scale: scale
+      smoothposition: smooth position
+      smoothrotation: smooth rotation
+      smoothskew: smooth skew
+      smoothscale: smooth scale
+      offset: offset
+      value: value
+    nodes:
+      objinput: object input
+      objoutput: object output
+      position: position
+      rotation: rotation
+      skew: skew
+      scale: scale
+      opacity: opacity
+      color: color
+      value: value
+  honkavatar: HÖNK Avatar
+    desc: avatar created with the HÖNK app
+    input:
+      viseme: Oculus Lipsync viseme
+      look: look point
+      emote: current emote
+    anchor:
+      avatar: avatar center
+    state:
+      viseme: viseme
+      emote: emote
+      eyes: eyes
+        open: open
+        closed: closed
+    avatarscale: avatar scale
+  pngtuberplusavatar: PNGTuber Plus Avatar
+    desc: avatar created with the PNGTuber Plus app
+    input:
+      costume: current costume
+      activity: voice activity
+    anchor:
+      avatar: avatar center
+    state:
+      mouth: mouth
+        closed: closed
+        open: open
+      blink: eyes
+        off: open
+        on: closed
+      costume: costume
+    avatarscale: avatar scale
+    timescale: ticks per second
+    bounceforce: bounce force
+    bouncegravity: bounce gravity
+    blinkchance: blink chance
+    blinkspeed: blink speed
+    costumebounce: bounce on costume change
+    texturefilter: texture filtering

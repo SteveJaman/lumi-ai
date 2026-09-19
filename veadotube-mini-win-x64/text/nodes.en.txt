@@ -1,0 +1,996 @@
+nodes:
+  common:
+    any: (any)
+    none: (none)
+    off: off
+    on: on
+    true: true
+    false: false
+    unknown: unknown node of id _<>_
+  boolean: Boolean
+    desc: utilities for nodes that output true or false values
+    constant: Value
+      desc: outputs a user-defined constant boolean value
+      output: boolean value
+    button: Button
+      desc: gives you a button to press and outputs its current state as a boolean
+      output: boolean value
+      hold: hold to activate
+      press: press to toggle
+      release: release to toggle
+    and: And
+      desc: outputs true only if all the inputs are true
+      input.input: boolean value
+      output: true if all inputs are true
+    not: Negate
+      desc: outputs true if the input is false, and vice-versa
+      input.input: boolean value
+      output: inverse of input
+    or: Or
+      desc: outputs true as long as any of the inputs is true
+      input.input: boolean value
+      output: true if any input is true
+    latch: Latch
+      desc: stores a true or false value that can be changed through inputs
+      input.false: boolean for false
+      input.true: boolean for true
+      input.toggle: boolean for toggle
+      output: current boolean in storage
+    change: On Change
+      desc: outputs true the instant that the boolean input changes from true to false and vice-versa
+      input.input: boolean value
+      output: true if input changes
+      true: blink on true
+      false: blink on false
+  number: Number
+    desc: basic utilities for number nodes
+    constant: Value
+      desc: outputs a user-defined constant number value
+      output: number value
+  string: String
+    desc: utilities for nodes that output string (textual) values
+    constant: Value
+      desc: outputs a user-defined constant string value
+      output: string value
+    concat: Concatenate
+      desc: combines multiple strings into one
+      input.input: string value
+      output: concatenated string value
+      separator: separator
+    split: Split
+      desc: divides a string according to a given separator
+      input.input: string value
+      input.index: index to select (counts from zero)
+      output: string segment
+      separator: separator
+    fromnumber: From Number
+      desc: converts a number value to a string value
+      input.input: number value
+      output: converted string value
+      digits: digits
+    tonumber: To Number
+      desc: converts a string value to a number value
+      input.input: string value
+      output: converted number value
+    frompoint: From Point
+      desc: converts a point value to a string value
+      input.input: point value
+      output: converted string value
+      digits: digits
+    topoint: To Point
+      desc: converts a string value to a point value
+      input.input: string value
+      output: converted point value
+    fromboolean: From Boolean
+      desc: converts a boolean value into either "true" or "false"
+      input.input: boolean value
+      output: string value, "true" or "false"
+    toboolean: To Boolean
+      desc: converts a string value to a boolean value
+      input.input: string value
+      output: converted boolean value
+    fromcolor: From Color
+      desc: converts a color value to a string value
+      input.input: color value
+      output: converted string value
+    tocolor: To Color
+      desc: converts a string value to a color value
+      input.input: string value
+      output: converted color value
+    equals: Equals
+      desc: compares a string to other strings
+      input.input: string value
+      input.equals: string values to compare to
+      output: true if the first string equals any of the other ones
+  point: Point
+    desc: basic utilities for point (x and y values) nodes
+    attinput: point
+    x: X value
+      desc: extracts the x value from a point as a number
+      output: x value from point
+    y: Y value
+      desc: extracts the y value from a point as a number
+      output: y value from point
+    constant: Value
+      desc: outputs a user-defined constant point value
+      output: point value
+    create: Construct
+      desc: constructs a point value from two numbers as the x and y values
+      input.x: X value
+      input.y: Y value
+      output: point
+  color: Color
+    desc: utilities for nodes that output color values
+    attinput: color
+    r: Red value
+      desc: extracts the red value from a color as a number
+      output: red value from color
+    g: Green value
+      desc: extracts the green value from a color as a number
+      output: green value from color
+    b: Blue value
+      desc: extracts the blue value from a color as a number
+      output: blue value from color
+    a: Alpha value
+      desc: extracts the alpha value from a color as a number
+      output: alpha value from color
+    constant: Value
+      desc: outputs a user-defined constant color value
+      output: color value
+    create: Construct
+      desc: constructs a color value from four numbers as the RGBA values
+      input.r: red value (default 0)
+      input.g: green value (default 0)
+      input.b: blue value (default 0)
+      input.a: alpha value (default 1)
+      output: color
+  audio: Audio
+    desc: utilities for nodes that output audio data
+    channel: Channel Filter
+      desc: selects audio channels from audio data
+      input.input: audio data
+      output: audio data
+    gain: Gain
+      desc: adjusts the volume of an audio
+      input.input: audio data
+      input.gain: gain (in dB, optional)
+      output: audio data
+      gain: gain in dB
+    limiter: Limiter
+      desc: limits the audio volume by a threshold
+      input.input: audio data
+      output: audio data
+      threshold: threshold in dB
+      peak: peak in dB
+    mfcc: MFCC
+      desc: turns audio data into coefficients that can be useful for phoneme/speaker recognition
+      input.input: audio data
+      output: scores for each coefficient, from 1 to 12
+    silerovad: Silero VAD
+      desc: takes audio data and estimates whether there's speech present or not
+      input.input: audio data
+      output: voice activity & scores
+    rnnoise: RNNoise
+      desc: takes audio data and removes any potential noise, also estimates whether there's speech present or not
+      input.input: audio data
+      output: audio data & voice activity
+    ovrlipsync: Oculus Lip Sync
+      desc: takes audio data and estimates lipsync animation information
+      input.input: audio data
+      output: subject & voice activity & current Oculus Lip Sync viseme & viseme scores
+    cherrylipsync: Cherry Lip Sync
+      desc: takes audio data and estimates lipsync animation information
+      input.input: audio data
+      output: subject & voice activity & current Cherry Lip Sync viseme & viseme scores
+  bitmap: Bitmap
+    desc: utilities for nodes that output bitmap (image) values
+    aspect: Aspect
+      desc: adjusts the aspect ratio of a bitmap
+      input:
+        input: bitmap data
+        ratio: aspect ratio
+      output: bitmap data
+      ratio: ratio
+      fit: fit
+      fill: fill
+      stretch: stretch
+    fliprotate: Flip & Rotate
+      desc: flips and/or rotates a bitmap
+      input.input: bitmap data
+      output: bitmap data
+      flipx: flip X
+      flipy: flip Y
+      transpose: transpose
+    crop: Crop
+      desc: crops a bitmap according to fixed values
+      input.input: bitmap data
+      output: bitmap data
+      left: left
+      right: right
+      top: top
+      bottom: bottom
+    rate: Rate Limiter
+      desc: limits the frame rate of a bitmap video output
+      input.input: bitmap data
+      input.rate: max. frame rate (optional)
+      output: bitmap data
+    vitpose: ViTPose
+      desc: takes bitmap data and estimates body tracking
+      input.input: bitmap data
+      output: subject data
+      version:
+        s: version S
+        b: version B
+        l: version L
+    movenet: MoveNet
+      desc: takes bitmap data and estimates body tracking
+      input.input: bitmap data
+      output: subject data
+    openseeface: OpenSeeFace
+      desc: takes bitmap data and estimates face tracking
+      input.input: bitmap data of a face, or subject data for refinement
+      output: subject data
+      crop: track distant faces
+      gaze: track eye gaze
+    mediapipeface: MediaPipe Face Landmarker
+      desc: takes bitmap data of a face up close and estimates tracking
+      input.input: bitmap data of a face up close, or subject data for refinement
+      output: subject data
+    mediapipefaces: MediaPipe Faces
+      desc: takes bitmap data and detects multiple faces
+      input.input: bitmap data
+      output: group of subjects
+    mediapipeposes: MediaPipe Poses
+      desc: takes bitmap data and detects multiple bodies
+      input.input: bitmap data
+      output: group of subjects
+    mediapipehands: MediaPipe Hands
+      desc: takes subject data with bitmap data and detects hands
+      input.input: bitmap+subject data
+      output: subject data
+  subject: Subject
+    desc: utilities for nodes that output subjects
+    attinput: subject
+    point:
+      hip: Hip
+      spine: Spine
+      shoulder: Shoulder
+      head: Head
+      shoulderl: Left Shoulder
+      elbowl: Left Elbow
+      wristl: Left Wrist
+      handl: Left Hand
+      fingerl: Left Finger
+      thumbl: Left Thumb
+      shoulderr: Right Shoulder
+      elbowr: Right Elbow
+      wristr: Right Wrist
+      handr: Right Hand
+      fingerr: Right Finger
+      thumbr: Right Thumb
+      hipl: Left Hip
+      kneel: Left Knee
+      anklel: Left Ankle
+      heell: Left Heel
+      footl: Left Foot
+      hipr: Right Hip
+      kneer: Right Knee
+      ankler: Right Ankle
+      heelr: Right Heel
+      footr: Right Foot
+    point: Body Point
+      desc: retrieves the position of a body point
+      output: position (-1 to 1)
+    pointscore: Body Point Score
+      desc: retrieves the tracking score of a body point
+      output: tracking score (0 to 1)
+    head: Head
+      desc: retrieves the position of the head
+      output: head position (-1 to 1)
+    headscore: Head Score
+      desc: retrieves the tracking score of the head
+      output: tracking score (0 to 1)
+    headlook: Head Look
+      desc: retrieves the look orientation of the head
+      output: look point (-1 to 1)
+    headangle: Head Angle
+      desc: retrieves the rotation angle of the head
+      output: rotation angle (-π to π)
+    headscale: Head Scale
+      desc: retrieves the scale of the head
+      output: number scale (0 to 1)
+    eye: Eye
+      desc: retrieves the eye gaze orientation
+      output: look point (-1 to 1)
+      alt:
+        left: L
+        right: R
+      mode:
+        both: both eyes
+        left: left eye
+        right: right eye
+    eyelid: Eyelid
+      desc: retrieves the eyelid score
+      output: eyelid score (0 to 1)
+    eyebrow: Eyebrow
+      desc: retrieves the shape of the eyebrows
+      output: eyebrow shape (-1 to 1)
+      alt:
+        left: L
+        leftouter: outer L
+        leftinner: inner L
+        right: R
+        rightouter: outer R
+        rightinner: inner R
+      mode:
+        both: both eyebrows
+        left: left eyebrow
+        leftouter: outer left eyebrow
+        leftinner: inner left eyebrow
+        right: right eyebrow
+        rightouter: outer right eyebrow
+        rightinner: inner right eyebrow
+    mouth: Mouth
+      desc: retrieves the size of the mouth
+      output: mouth size (0 to 1)
+    mouthcurve: Mouth Curve
+      desc: retrieves the shape of the mouth curve
+      output: curve value (-1 to 1, positive for a smile and negative for a frown)
+    teeth: Teeth
+      desc: retrieves the amount of teeth present in the open mouth
+      output: teeth presence score (0 to 1)
+    tongue: Tongue
+      desc: retrieves the amount of tongue out
+      output: tongue out score (0 to 1)
+    hand: Hand
+      desc: retrieves the position of the hand
+      left: left hand
+      right: right hand
+      output: hand position (-1 to 1)
+    handscore: Hand Score
+      desc: retrieves the tracking score of the hand
+      output: tracking score (0 to 1)
+    handscale: Hand Scale
+      desc: retrieves the scale of the hand
+      output: number scale (0 to 1)
+    facescores: Face Scores
+      desc: retrieves a score list based on the face expression
+      output: scores
+      mode:
+        eyebrow: eyebrows
+        eyelid: eyelids
+        eye: eye gaze
+        mouthshape: mouth shape
+        mouthopen: mouth open
+        teeth: teeth
+        tongue: tongue
+    handscores: Hand Scores
+      desc: retrieves a score list based on the hand orientation and gesture
+      output: scores
+      mode:
+        orientation: orientation
+        close: closed fingers
+        distance: finger distances
+        thumb: more thumb data
+    combine: Combine
+      desc: combines multiple subjects in one
+      input.input: subject data
+      output: combined subject data, with priority to leftmost inputs
+    select: Select by ID
+      desc: selects a subject from a group based on the provided id
+      input.input: group of subjects
+      input.id: id to select
+      output: selected subject
+    selectpos: Select by Position
+      desc: selects a subject from a group according to its position
+      input.input: group of subjects
+      output: selected subject
+      left: leftmost
+      right: rightmost
+      custom: custom
+      rank: rank
+      x: X value
+  subjects: Subjects
+  scores: Scores
+    desc: utilities for nodes that output scores, a collection of numbers from 0 to 1
+    attinput: scores
+    score: Score
+      desc: extracts a score from a scores node, given the score id
+      output: score value (0 to 1)
+    match: Scores Match
+      desc: matches one or more patterns with a scores node
+      input.input: scores
+      output: new scores, or a match value (0 to 1) if only one state is present
+      add: add new state
+      remove: remove state
+      name: name
+      hold: hold to record...
+  convert: Compare & Convert
+    desc: utilities for converting nodes, branching between inputs, and analyzing their values overall
+    compare: Compare
+      desc: compares the value of two given nodes
+      input.a: first value
+      input.b: second value
+      output: boolean result
+      equal: equal to
+      notequal: not equal to
+      less: less than
+      lessequal: less than or equal to
+      greater: greater than
+      greaterequal: greater than or equal to
+    branchboolean: Branch on Boolean
+      desc: selects one of two inputs, depending on whether the supplied boolean is true or false
+      input.condition: boolean value
+      input.false: value if false
+      input.true: value if true
+      output: selected value
+    branchnumber: Branch on Number
+      desc: selects between inputs, depending on the current value of the supplied number
+      input.number: number value
+      input.value: values
+      output: selected value
+    branchpoint: Branch on Point
+      desc: selects between inputs, depending on the current value of the supplied point
+      input.point: point value
+      input.value: values
+      output: selected value
+    branchstring: Branch on String
+      desc: selects between inputs, depending on the current value of the supplied string
+      input.string: string value
+      input.value: values
+      output: selected value
+    branchselect: Branch on Selection
+      desc: selects between inputs, depending on the current position controlled by the supplied booleans
+      input.decrement: move to left when true
+      input.increment: move to right when true
+      input.value: values
+      output: select value
+      clamp: clamp selection
+      repeat: loop selection
+    numberactivity: Activity Sliders
+      desc: sliders to convert a number input (0 to 1) to a boolean, with support for delaying it. inspired by veadotube mini
+      input.input: number input (0 to 1)
+      input.volume: value cutoff (optional)
+      input.delay: delay cutoff (optional)
+      output: output activity
+    null: Null
+      desc: outputs nothing
+      output: nothing
+    repeat: Relay
+      desc: takes the input and outputs it. literally does nothing to the value
+      input.input: node
+      output: input value
+    available: Has Value
+      desc: returns true if the input node currently has a value to output
+      input.input: node
+      output: true if node has a value
+    change: On Value Change
+      desc: returns true the instant that the input node changes its value
+      input.input: node
+      output: true on input change
+    default: Fallback
+      desc: takes a list of input and returns the leftmost input that currently has a value to output
+      input.input: nodes
+      output: leftmost node with a value
+  timer: Timing
+    desc: utilities for counting time, smoothing, and whatnot
+    time: Program Time
+      desc: counts the time in seconds since the program has started
+      output: time in seconds since program start-up
+    counter: Counter
+      desc: counts time, according to a time scale and other user-imposed limitations
+      input.scale: time scale (1 by default)
+      input.reset: resets timer if true
+      output: counter value in seconds
+      step: step
+      range: range mode
+        none: none
+        repeat: repeat
+        clamp: clamp
+      min: min
+      max: max
+    repeater: Repeater
+      desc: blinks a true value in a user-defined interval
+      output: boolean value
+      delay: offset
+      interval: interval
+    booleandelay: Boolean Delayer
+      desc: adds a counter that goes up and/or down according to a boolean input
+      input.input: boolean value
+      output: delayed boolean & timer (0 to 1)
+      mode: mode
+        fillup: fill up
+        emptyout: empty out
+        fillandempty: fill and empty
+      duration: duration
+    delay: Delay
+      desc: delays the value of a given input by a user-defined amount of seconds
+      input.input: value
+      output: delayed value
+      duration: duration
+    smooth: Smooth
+      desc: smooths the value of a given input across time using linear interpolation
+      input.input: value
+      output: smooth value
+      angle: loop angle
+      amount: amount
+    oneeuro: 1€ Filter
+      desc: smooths the value of a given input across time using the 1€ Filter algorithm
+      input.input: value
+      output: smooth value
+      angle: loop angle
+      beta: beta
+      mincutoff: min. cut-off
+    smoothstring: Smooth String
+      desc: ignores fast-changing string values and outputs the one that settles
+      input.input: string value
+      output: string value
+      duration: duration
+  input: Input
+    desc: nodes for capturing data from input devices like mice, keyboards, controllers, etc
+    signal: Signal
+      desc: fetches an input by capturing a hotkey from the user
+      output: signal activity
+      assign: assign
+      clear: clear
+      listening: listening...
+    cursor: Cursor
+      desc: provides the cursor position in the system across the screen
+      output: cursor position
+      all: (entire desktop)
+      mode: out of bounds mode
+      clamp: clamp point
+      trim: invalidate value
+    gamepad: Gamepad
+      desc: provides data from a list of connected gamepads
+      output: gamepad data
+      attinput: gamepad data
+      button: Button
+        desc: extracts whether a button is pressed or not, with support for trigger sensibility
+        output: button activity
+      stick: Stick
+        desc: extracts whether a d-pad or an analog stick is pressed and which direction it is pointing at
+        output: stick position & activity
+      north: North
+      south: South
+      east: East
+      west: West
+      start: Start
+      back: Back
+      guide: Guide
+      leftshoulder: L-Shoulder
+      rightshoulder: R-Shoulder
+      lefttrigger: L-Trigger
+      righttrigger: R-Trigger
+      dpad: D-Pad
+        up: [.] ↑
+        down: [.] ↓
+        left: [.] ←
+        right: [.] →
+      leftstick: L-Stick
+        up: [.] ↑
+        down: [.] ↓
+        left: [.] ←
+        right: [.] →
+      rightstick: R-Stick
+        up: [.] ↑
+        down: [.] ↓
+        left: [.] ←
+        right: [.] →
+    keyboard: Keyboard
+      desc: provides which keys are currently pressed on the keyboard
+      output: keyboard data & activity
+      attinput: keyboard data
+      key: Key
+        desc: extracts whether a given key is pressed or not
+        output: key activity
+    midi: MIDI
+      desc: provides data from a list of currently available MIDI devices
+      output: MIDI data & activity
+      attinput: MIDI data
+      controller: Controller
+        desc: extracts the current state of a given controller
+        output: controller value
+      note: Note
+        desc: extracts whether a note is currently pressed and its velocity
+        output: note value & activity
+      allchannels: All Channels
+      channel: Channel <>
+      pitchwheel: Pitch Wheel
+        desc: extracts the current state of the pitch wheel
+        positive: [.] +
+        negative: [.] -
+        output: pitch wheel value
+    mouse: Mouse
+      desc: provides mouse data, including pressed buttons, movement, and scroll wheel
+      output: mouse data & activity
+      attinput: mouse data
+      button: Button
+        desc: extracts whether a mouse button is currently pressed
+        output: mouse button activity
+      move: Move
+        desc: extracts the current movement of the mouse
+        output: mouse move amount (-1 to 1)
+      scroll: Scroll
+        desc: extracts the current movement of the scroll wheel
+        output: mouse scroll amount (-1 to 1)
+      left: Left
+      right: Right
+      middle: Middle
+      side: Side <>
+    microphone: Microphone
+      desc: provides audio data from a list of available audio inputs
+      output: audio data & volume
+    camera: Camera
+      desc: provides video data from a list of available video inputs
+      resolution: resolution
+      output: bitmap data
+      notselected: camera not selected
+      notavailable: camera not connected
+      nospecs: failed to fetch formats
+      error: internal error: <>
+    kinect: Kinect
+      desc: provides video and tracking data from connected Kinect v1 and v2 devices
+      output: point group list & bitmap data
+      unsupported: Kinect support is unavailable on your platform
+      notselected: device not selected
+      notavailable: device not connected
+    wiimote: Wiimote
+      desc: provides data from a list of connected Wiimotes
+      output: Wiimote data
+      attinput: Wiimote data
+      button: Button
+        desc: extracts whether a button is pressed or not
+        output: button activity
+      stick: Stick
+        desc: extracts whether a d-pad or an analog stick is pressed and which direction it is pointing at
+        output: stick position & activity
+      cursor: Cursor
+        desc: extracts the cursor position based on the sensor bar
+        output: cursor position
+      a: A
+      b: B
+      minus: Minus
+      plus: Plus
+      home: Home
+      one: One
+      two: Two
+      dpad: D-Pad
+        up: [.] ↑
+        down: [.] ↓
+        left: [.] ←
+        right: [.] →
+  ws: Websocket
+    desc: nodes that can be exposed through the websocket and controlled by external software
+    name: name
+    id: id
+    boolean: Boolean
+      desc: websocket node that receives boolean (true or false) values, such as buttons and toggles
+      output: boolean value
+    number: Number
+      desc: websocket node that receives number values
+      output: number value
+    stateevents: State Events
+      desc: websocket node that receives state change events to be used with state nodes
+      output: state events
+  tpi: Integration
+    desc: nodes that integrate with other programs, files, or services
+    media: Media
+      desc: loads external video/audio files and outputs it for other nodes
+      output: bitmap and/or audio data
+      errorfile: missing media file
+      errorload: failed to load media file
+      play: play
+      pause: pause
+      loopon: turn on loop
+      loopoff: turn off loop
+      mute: mute
+      unmute: unmute
+    discord: Discord
+      desc: connects to the current Discord voice chat and provides data on user activity
+      output: user activity
+      mode: activation mode
+      connected: connected
+      speaking: speaking
+      muted: muted
+      deafened: deafened
+    teamspeak: TeamSpeak
+      desc: connects to the current TeamSpeak voice chat and provides data on user activity
+      output: user activity
+      mode: activation mode
+      connected: connected
+      talking: talking
+      muted: muted
+      deafened: deafened
+      away: away
+    openseeface: OpenSeeFace External
+      desc: connects to a remote OpenSeeFace server and provides tracking data
+      output: subject data
+      ip: ip address
+    ifacialmocap: iFacialMocap
+      desc: connects to a remote iFacialMocap server and provides tracking data
+      output: subject data
+      ip: ip address
+      headforward: send "head forward" signal
+  math: Math
+    desc: nodes for both simple and complex math for number values and point values
+    add: Add
+      desc: adds two or more number/point values together
+      input.input: summand
+      output: sum of inputs
+    subtract: Subtract
+      desc: subtracts a number/point value from another
+      input.input0: minuend
+      input.input1: subtrahend
+      output: difference of inputs
+    multiply: Multiply
+      desc: multiplies two or more number/point values together
+      input.input: factor
+      output: product of inputs
+    divide: Divide
+      desc: divides a number/point value from another
+      input.input0: dividend
+      input.input1: divisor
+      output: quotient of inputs
+    remainder: Remainder
+      desc: divides a number/point value from another and returns the remainder
+      input.input0: dividend
+      input.input1: divisor
+      output: remainder of inputs
+    modulo: Modulo
+      desc: wraps a number/point value between zero and the other value
+      input.input0: dividend
+      input.input1: divisor
+      output: modulo of inputs
+    negate: Negate
+      desc: negates a number/point value (same as zero minus the input)
+      input.input: number/point value
+      output: negated input
+    oneminus: One Minus
+      desc: negates a number/point value and adds one (same as one minus the input)
+      input.input: number/point value
+      output: one minus input
+    clamp: Clamp
+      desc: limits a number/point value between a minimum and a maximum
+      input.input: number/point value
+      input.min: minimum value
+      input.max: maximum value
+      output: clamped value
+    clamp01: Clamp 0 to 1
+      desc: limits a number/point value between 0 and 1
+      input.input: number/point value
+      output: clamped value
+    clamp11: Clamp -1 to 1
+      desc: limits a number/point value between -1 and 1
+      input.input: number/point value
+      output: clamped value
+    round: Round
+      desc: rounds a number/point value to the nearest integer
+      input.input: number/point value
+      output: rounded/point value
+    floor: Floor
+      desc: rounds a number/point value toward zero
+      input.input: number/point value
+      output: number/point value
+    ceil: Ceiling
+      desc: rounds a number/point value away from zero
+      input.input: number/point value
+      output: number/point value
+    min: Min
+      desc: takes the minimum number/point value between the inputs and outputs it
+      input.input: number/point value
+      output: minimum of inputs
+    max: Max
+      desc: takes the maximum number/point value between the inputs and outputs it
+      input.input: number/point value
+      output: maximum of inputs
+    average: Average
+      desc: takes the average number/point value between the inputs and outputs it
+      input.input: number/point value
+      output: average of inputs
+    mixweights: Mix Weights
+      desc: takes the number/point values and sums them according to their accompanying weights
+      input.input: number/point value <>
+      input.weight: weight of number/point value <>
+      output: mixed values
+    abs: Absolute
+      desc: ensures a number/point value is always positive, by negating it if necessary
+      input.input: number/point value
+      output: absolute of input
+    length: Length
+      desc: takes the geometric length of a number/point value
+      input.input: number/point value
+      output: length of input
+    sqrt: Square Root
+      desc: returns the square root of a number value
+      input.input: number/point value
+      output: square root of input
+    exp: Exponential
+      desc: returns the exponential of a number value, base 𝑒
+      input.input: number value
+      output: exponential of input
+    log: Logarithm
+      desc: returns the logarithm of a number value, base 𝑒
+      input.input: number value
+      output: logarithm of input
+    sin: Sine
+      desc: returns the sine of a number value in radians
+      input.input: number value
+      output: sine of input
+    cos: Cosine
+      desc: returns the cosine of a number value in radians
+      input.input: number value
+      output: cosine of input
+    tan: Tangent
+      desc: returns the tangent of a number value in radians
+      input.input: number value
+      output: tangent of input
+    sincos: Sine & Cosine
+      desc: returns both sine and cosine of a number value as a point value
+      input.input: number value
+      output: sine and cosine of input
+    asin: Arcsine
+      desc: returns the arcsine of a number value, in radians
+      input.input: number value
+      output: arcsine of input
+    acos: Arccosine
+      desc: returns the arccosine of a number value, in radians
+      input.input: number value
+      output: arccosine of input
+    atan: Arctangent
+      desc: returns the arctangent of a number value, in radians
+      input.input: number value
+      output: arctangent of input
+    normalize: Normalize
+      desc: normalizes a point value so that its length is 1
+      input.input: point value
+      output: normalized point
+    circletosquare: Circle to Square
+      desc: takes a normalized point value and maps it to a square between -1 and 1
+      input.input: point value
+      output: square-fit result
+    squaretocircle: Square to Circle
+      desc: takes a square point value between -1 and 1 and maps it to a normalized point
+      input.input: point value
+      output: circle-fit result
+    ease: Ease
+      desc: interpolates a number value between 0 and 1 to apply an easing in and/or out effect
+      input.input: number value (0 to 1)
+      output: number value with ease (0 to 1)
+      in: In
+      out: Out
+      inout: In-Out
+      outin: Out-In
+    lerp: Lerp
+      desc: interpolates a given value, where 0 maps to the first input and 1 maps to the second one
+      input.a: number/point value at 0
+      input.b: number/point value at 1
+      input.t: interpolation value
+      output: interpolated value
+    unlerp: Unlerp
+      desc: interpolates a given value inversely, where it returns 0 if it's equal to the first value, and 1 to the second
+      input.a: number/point value at 0
+      input.b: number/point value at 1
+      input.t: interpolation value
+      output: interpolated value
+    remap: Remap
+      desc: remaps a value between a range into another
+      input.a0: starting A
+      input.b0: starting B
+      input.a1: resulting A
+      input.b1: resulting B
+      input.t: value
+      output: remapped value
+      noclamp: don't clamp
+      clamp: clamp
+    expression: Expression
+      desc: lets the user write their own mathematical expression, which is then parsed using the numerical inputs
+      input.input: variable <>
+      output: expression result
+  generator: Generators
+    desc: utilities for quickly generating common behaviors
+    common:
+      output: output
+        x: number
+        xy: point
+    shaker: Shaker
+      desc: simulates natural movement for shaking or just vibing
+      input.time: time (optional)
+      output: perlin noise value
+      amount: amount
+      velocity: velocity
+    waver: Waver
+      desc: simulates a waving animation
+      input.time: time (optional)
+      output: sine/cosine value
+      amount: amount
+      velocity: velocity
+      offset: offset
+    blinker: Blinker
+      desc: simulates alternating random behavior such as for eye blinking
+      input.false: force false output
+      input.true: force true output
+      input.falseDuration: false duration (optional)
+      input.trueDuration: true duration (optional)
+      output: activity value
+      falserange: false time range
+      truerange: true time range
+    jumper: Jumper
+      desc: simulates a jumping animation according to an input
+      input.jump: jump on true
+      input.bounce: force bounce
+      input.height: jump height
+      input.velocity: velocity
+      output: jump value
+      velocity: velocity
+      height: jump height
+      maxHeight: max height
+    bouncer: Bouncer
+      desc: simulates a bouncing from side-to-side animation
+      input.time: time (optional)
+      output: bounce value
+      amount: amount
+      velocity: velocity
+  state: State
+    desc: nodes for manipulating strings for states and state events
+    storage: State Storage
+      desc: stores a stack of strings representing a current state
+      input.input: state events
+      output: current state in storage
+      ifempty: if empty...
+        keep: keep empty
+        add: add default state
+      ifunspecified: if unspecified...
+        keep: keep state
+        remove: remove state
+      stacklimit: stack limit
+      actions: quick actions
+    signalevents: Signal State Events
+      desc: emits state events based on a list of states and their respective input signals
+      output: state events
+      mode: mode
+        press: on press
+        release: on release
+        hold: while pressed
+        toggle: toggle
+    booleanevents: Boolean State Events
+      desc: emits state events based on a boolean input
+      input.state: state value
+      input.input: boolean value
+      output: signal events
+      on: on true
+      off: on false
+    aggregator: State Aggregator
+      desc: combines multiple string inputs and outputs the rightmost active one
+      input.input: state values
+      output: rightmost active state
+  stateevents: State Events
+    clear: clear
+    set: set
+    push: push
+    pop: pop
+    toggle: toggle
+  random: Random
+    desc: nodes for generating random values
+    number: Random Number
+      desc: generates a random number on command, within user-defined limits
+      input.gen: generate on true
+      input.keep: keep generating
+      output: random number value
+      mode: mode
+        integer: integer
+        decimal: decimal
+      min: min
+      max: max
+      avoid: avoid repetition
+    selector: Random Selector
+      desc: selects a random input on command
+      input.gen: generate on true
+      input.keep: keep generating
+      input.input: values
+      output: selected value
+      avoid: avoid repetition
+    perlin: Perlin Noise
+      desc: returns the Perlin noise value for a given input
+      input.input: point value
+      output: noise value

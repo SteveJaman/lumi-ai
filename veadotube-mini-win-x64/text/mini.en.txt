@@ -1,0 +1,144 @@
+mini:
+  misc:
+    on: on
+    off: off
+    auto: auto
+    copy: copy
+    paste: paste
+  alert:
+    windowsize: window size is <> x <>
+    errorid: error id: <>
+    loadingavatar: loading avatar...
+    avatarfailed: avatar failed to load!
+    loadingimage: loading image...
+    imagefailed: image failed to load!
+    hideui1: the UI is now hidden!
+    hideui2: double-click anywhere to show it again.
+  credits:
+    line1: veadotube mini <> by <>
+    line2: visit <> for more info
+  intro:
+    avatar: edit your avatar!
+      sub: add images, animations, & extra states
+    settings: configure the app!
+      sub: set your microphone, change the background, & a lot more
+    save: save your avatar!
+      sub: or load premade ones
+    website: visit our website!
+      sub: for updates and guides
+  settings:
+    avatar: avatar settings
+      load: load mini avatar...
+      save: save mini avatar...
+      loaddefault: load default avatar...
+      selectdefault: select avatar
+      author: by <>
+      cancel: cancel...
+    window: program settings
+      language: language
+      windowname: window title
+      windowsize: window size
+      framerate: frame rate
+        vsync: v-sync
+        uncapped: uncapped
+        capped: capped
+        at: capped at
+      stream: <> stream
+      websocket: websocket server
+        address: server address
+        status: serving at
+      loadallstates: keep all states loaded
+      autohideui: hide UI on unfocus
+      hidegrid: hide background grid
+      hideui: hide UI...
+    display: display settings
+      avatarscale: avatar scale
+      viewscale: scale multiplier
+      viewoffsetx: avatar offset X
+      viewoffsety: avatar offset Y
+      movescale: movement scale
+      background: background
+        color: color
+        transparent: transparent
+        image: image
+        hue: hue
+        saturation: saturation
+        value: value
+        load: select background image...
+    microphone: microphone settings
+      microphone: microphone
+      volumecutoff: microphone volume cutoff
+      delaycutoff: microphone delay duration
+      source: input source
+        device: microphone device
+        discord: Discord
+        teamspeak: TeamSpeak
+      auth: send authorization request...
+      noisereduction: noise reduction
+        none: none
+      devices: available devices
+        none: (none)
+      users: available users
+        none: (none)
+      pushtotalk: push-to-talk
+        websocket: use websocket
+  states:
+    state: state
+    avatarstate: avatar state
+    copycurrent: copy current state
+    copyname: copy of <>
+    addblank: add blank state
+    image:
+      closed: closed mouth image
+      open: open mouth image
+      closedblink: closed mouth blinking image
+      openblink: open mouth blinking image
+      replace: replace image...
+      export: export image...
+      remove: remove image
+      selectclosed: select closed mouth image file...
+      selectopen: select open mouth image file...
+      selectclosedblink: select closed mouth blinking image file...
+      selectopenblink: select open mouth blinking image file...
+    properties: state properties
+      name: state name
+      imagemode: image mode
+        smooth: smooth
+        pixel: pixel
+      resetimagetime: play from start
+      blinksync: sync blink animation
+      blinkinterval: blink interval
+      blinkduration: blink duration
+    effects: state effects
+      state: effects
+        select: add new effect
+        activea: active during closed mouth
+        activeb: active during open mouth
+        none: none
+      transition: transitions
+        select: add new transition
+        activea: active when opening mouth
+        activeb: active when closing mouth
+        none: none
+      preset: preset
+      default: default
+      custom: custom
+      cancel: cancel...
+      delete: delete
+    shortcuts: state shortcuts
+      none: (none)
+      assign: assign shortcut...
+      assignnew: assign new shortcut...
+      remove: remove shortcut
+      mode: activation mode
+        press: on press
+        release: on release
+        hold: while pressed
+        toggle: press to toggle
+      screen:
+        waiting: waiting for input...
+        supported: supported:
+        esc: ...or press [nodes.input.keyboard] Esc to cancel
+    delete: delete state
+      confirm: delete state?
+      confirmyes: yes!

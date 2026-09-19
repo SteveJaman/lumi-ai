@@ -1,0 +1,145 @@
+objects:
+  image: Imagem
+    desc: imagem simples, estática ou animada
+    scalemode: modo de escala
+      fit: encaixar
+      fill: preencher
+      stretch: esticar
+    displaymode: modo de exibição
+      smooth: suave
+      pixel: pixelizada
+    time: tempo da imagem
+      clamp: limitar tempo da imagem
+    duration: duração da imagem
+    offset: deslocamento do corte
+    size: tamanho do corte
+    count: número de cortes
+  miniavatar: Avatar Mini
+    desc: quatro imagens pra movimento de boca e piscar, com múltiplos estados
+    input:
+      state: estado atual
+      activity: atividade vocal
+    anchor:
+      avatar: centro do avatar
+    state:
+      mouth: boca
+        closed: fechado
+        open: aberto
+      blink: olho
+        off: aberto
+        on: fechado
+      state: estado
+    avatarscale: escala do avatar
+    movementscale: escala do movimento
+    preloadstates: precarregamento
+      onlycurrent: carregar apenas estado atual
+      loadall: carregar todos os estados
+  dynamicavatar: Avatar Dinâmico
+    desc: imagens ilimitadas, grupos de estado ilimitados, anexe qualquer coisa com qualquer coisa
+    dynamics:
+      attach: anexar
+        desc: prende o movimento dessa camada a outra
+      doubleattach: anexar dois
+        desc: prende dois pontos dessa camada a outras camadas
+      lookat: olhar para
+        desc: rotaciona essa camada em direção a outra
+      squashstretch: esmagar & esticar
+        desc: aplica um simples efeito de distorção de acordo com o movimento da camada
+      move: mover
+        desc: modifica a posição da camada usando nós
+      rotate: rotacionar
+        desc: modifica a rotação da camada usando nós
+      skew: inclinar
+        desc: modifica a inclinação da camada usando nós
+      scale: escalar
+        desc: modifica a escala da camada usando nós
+      fade: ofuscar
+        desc: modifica a opacidade da camada usando nós
+      tint: tingir
+        desc: modifica a cor de tonalidade da camada usando nós
+      shade: sombrear
+        desc: modifica a cor de sombreamento da camada usando nós
+      number: número
+        desc: fornece um valor numérico ao sistema de nós
+      point: ponto
+        desc: fornece um valor de ponto ao sistema de nós
+    fields:
+      name: nome
+      pivot: eixo
+      pivota: eixo A
+      pivotb: eixo B
+      tip: ponta
+      target: destino
+      layer: camada
+      layera: camada A
+      layerb: camada B
+      multiplier: multiplicador
+        rotation: multiplicador de rotação
+        scale: multiplicador de escala
+      angleunit: unidade de ângulo
+        degrees: graus
+        radians: radianos
+      smooth: suavização
+      elasticity: elasticidade
+      rotatelimit: limite de rotação
+      scalelimit: limite de escala
+      scaleforward: escala frontal
+      scaleside: escala lateral
+      position: posição
+      rotation: rotação
+      skew: inclinação
+      scale: escala
+      smoothposition: suavizar posição
+      smoothrotation: suavizar rotação
+      smoothskew: suavizar inclinação
+      smoothscale: suavizar escala
+      offset: correção
+      value: valor
+    nodes:
+      objinput: entrada do objeto
+      objoutput: saída do objeto
+      position: posição
+      rotation: rotação
+      skew: inclinação
+      scale: escala
+      opacity: opacidade
+      color: cor
+      value: valor
+  honkavatar: Avatar HÖNK
+    desc: avatar criado com o aplicativo HÖNK
+    input:
+      viseme: visema do Oculus Lipsync
+      look: ponto do olhar
+      emote: emote atual
+    anchor:
+      avatar: centro do avatar
+    state:
+      viseme: visema
+      emote: emote
+      eyes: olho
+        open: aberto
+        closed: fechado
+    avatarscale: escala do avatar
+  pngtuberplusavatar: Avatar PNGTuber Plus
+    desc: avatar criado com o aplicativo PNGTuber Plus
+    input:
+      costume: traje atual
+      activity: atividade vocal
+    anchor:
+      avatar: centro do avatar
+    state:
+      mouth: boca
+        closed: fechado
+        open: aberto
+      blink: olho
+        off: aberto
+        on: fechado
+      costume: traje
+    avatarscale: escala do avatar
+    timescale: ticks por segundo
+    bounceforce: força do pulo
+    bouncegravity: gravidade do pulo
+    blinkchance: possibilidade de piscar
+    blinkspeed: velocidade de piscar
+    costumebounce: pular em mudança de traje
+    texturefilter: filtro de textura

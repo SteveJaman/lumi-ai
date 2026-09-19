@@ -1,0 +1,40 @@
+nodes:
+  input.keyboard: Teclado
+  input.mouse: Ratón
+    left: Izquierdo
+    right: Derecho
+    middle: Central
+    side: Lateral <>
+  input.cursor: Puntero
+  input.midi: MIDI
+    channel: (Canal <>)
+    pitchwheel: Pitch Wheel
+      positive: [.] +
+      negative: [.] -
+  input.gamepad: Gamepad
+    north: Norte
+    south: Sur
+    east: Este
+    west: Oeste
+    start: Inicio
+    back: Atrás
+    guide: Guía
+    leftshoulder: Bumper L
+    rightshoulder: Bumper R
+    lefttrigger: Gatillo L
+    righttrigger: Gatillo R
+    dpad: Direccional
+      up: [.] ↑
+      down: [.] ↓
+      left: [.] ←
+      right: [.] →
+    leftstick: Stick L
+      up: [.] ↑
+      down: [.] ↓
+      left: [.] ←
+      right: [.] →
+    rightstick: Stick R
+      up: [.] ↑
+      down: [.] ↓
+      left: [.] ←
+      right: [.] →

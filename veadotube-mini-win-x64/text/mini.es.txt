@@ -1,0 +1,138 @@
+mini:
+  misc:
+    on: activado
+    off: desactivado
+    auto: automático
+    copy: copiar
+    paste: pegar
+  alert:
+    windowsize: ventana redimensionada a <> x <>
+    errorid: código de error: <>
+    loadingavatar: cargando avatar...
+    avatarfailed: ¡error al cargar avatar!
+    loadingimage: cargando imagen...
+    imagefailed: ¡error al cargar la imagen!
+    hideui1: ¡la UI está oculta!
+    hideui2: haga doble clic para volver a mostrarla.
+  credits:
+    line1: veadotube mini <> por <>
+    line2: visite <> para más información
+  intro:
+    avatar: edita tu avatar!
+      sub: añade imágenes, animaciones y estados adicionales
+    settings: configura el programa!
+      sub: selecciona tu micrófono, cambia el fondo y mucho más
+    save: guarda tu avatar!
+      sub: o abre uno preconfigurado
+    website: visita nuestra página web!
+      sub: para más información y ayuda
+  settings:
+    avatar: opciones de avatar
+      load: abrir avatar mini...
+      save: guardar avatar mini...
+      loaddefault: abrir avatar por defecto...
+      selectdefault: selecciona un avatar
+      author: por <>
+      cancel: cancelar...
+    window: opciones del programa
+      language: idioma
+      windowname: título de la ventana
+      windowsize: tamaño de la ventana
+      framerate: frecuencia de imagen
+        vsync: sincronizado
+        uncapped: ilimitado
+        capped: limitado
+        at: limitado a
+      stream: stream de <>
+      websocket: servidor websocket
+        address: dirección del servidor
+        status: estatus del servidor
+      loadallstates: mantener estados cargados
+      autohideui: ocultar UI al desenfocar
+      hidegrid: ocultar cuadrícula de fondo
+      hideui: ocultar UI...
+    display: opciones de visualización
+      avatarscale: tamaño del avatar
+      viewscale: multiplicador
+      viewoffsetx: posición en X
+      viewoffsety: posición en Y
+      movescale: escala del movimiento
+      background: fondo
+        color: coloreado
+        transparent: transparente
+        image: imagen
+        hue: matiz
+        saturation: saturación
+        value: valor
+        load: seleccionar imagen de fondo...
+    microphone: opciones de micrófono
+      microphone: micrófono
+      volumecutoff: volumen mínimo del micrófono
+      delaycutoff: duración del retardo del micrófono
+      noisereduction: reducción de ruido
+        none: ninguna
+      devices: dispositivos disponibles
+      none: (ninguno)
+      pushtotalk: pulsar para hablar
+        websocket: utilizar websocket
+  states:
+    state: estado
+    avatarstate: estado del avatar
+    copycurrent: copiar estado actual
+    copyname: copia de <>
+    addblank: añadir estado en blanco
+    image:
+      closed: imagen con la boca cerrada
+      open: imagen con la boca abierta
+      closedblink: imagen parpadeando con la boca cerrada
+      openblink: imagen parpadeando con la boca abierta
+      replace: reemplazar imagen...
+      export: exportar imagen...
+      remove: eliminar imagen
+      selectclosed: seleccionar imagen con la boca cerrada...
+      selectopen: seleccionar imagen con la boca abierta...
+      selectclosedblink: seleccionar imagen parpadeando con la boca cerrada...
+      selectopenblink: seleccionar imagen parpadeando con la boca abierta...
+    properties: propiedades del estado
+      name: nombre del estado
+      id: código del estado
+      imagemode: modo de imagen
+        smooth: suave
+        pixel: pixel
+      resetimagetime: desde el principio
+      blinksync: sincronizar parpadeo
+      blinkinterval: intervalo del parpadeo
+      blinkduration: duración del parpadeo
+    effects: efectos del estado
+      state: efectos
+        select: añadir nuevo efecto
+        activea: activo con la boca cerrada
+        activeb: activo con la boca abierta
+        none: ninguno
+      transition: transiciones
+        select: añadir nueva transición
+        activea: activo al abrir la boca
+        activeb: activo al cerrar la boca
+        none: ninguna
+      preset: preajuste
+      default: estándar
+      custom: personalizado
+      cancel: cancelar...
+      delete: eliminar
+    shortcuts: atajos de estado
+      none: (ninguno)
+      assign: seleccionar atajo...
+      assignnew: seleccionar nuevo atajo...
+      remove: eliminar atajo
+      mode: modo de activación
+        press: al pulsar
+        release: al soltar
+        hold: mantener pulsado
+        toggle: alternar
+      screen:
+        waiting: esperando entrada...
+        supported: soporte para:
+        esc: ...o pulsa [nodes.input.keyboard] Esc para cancelar
+    delete: eliminar estado
+      confirm: eliminar estado?
+      confirmyes: sí!
