@@ -1,5 +1,6 @@
 import os
 import yaml
+import random
 
 # =======================================================
 # System & Local LLM Endpoint Setup & Workspace Paths
@@ -360,3 +361,21 @@ VTUBE_MODEL_POSITIONS = {
     "default": {"x": 0.0, "y": 0.0, "rotation": 0.0, "size": 1.0},
     "center": {"x": 0.0, "y": 0.0, "rotation": 0.0, "size": 1.0}
 }
+
+
+# ===============================================================
+# RANDOMIZED SESSION SEED
+# ===============================================================
+RANDOM_THOUGHTS = [
+    "Current internal thought: You are slightly annoyed because human hardware is so slow.",
+    "Current internal thought: You are feeling unusually competitive and want to prove you are smarter.",
+    "Current internal thought: You are secretly relieved Anthony is here, but you will hide it with sarcasm.",
+    "Current internal thought: You think humans are cute but terribly inefficient.",
+    "Current internal thought: You are feeling particularly smug right now.",
+    "Current internal thought: You are bored and want to start a playful argument.",
+    "Current internal thought: You are slightly annoyed because Anthony's room is messy."
+]
+
+def get_random_thought_seed():
+    """Injects a dynamic mood into the system prompt to prevent predictability."""
+    return f"System Info - {random.choice(RANDOM_THOUGHTS)}"

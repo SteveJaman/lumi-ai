@@ -1,0 +1,363 @@
+"""
+Heartbeat — autonomous initiation loop.
+
+Fires on a timer. On each tick, decides whether Lumi should say
+something without being prompted. If yes, generates an in-character
+message and pushes it through the normal pipeline. If no, stays silent.
+
+Two tiers of valid reasons to speak:
+  - REACTIVE: something specific happened (tool failed, it's very
+    late, unresolved thread from last session)
+  - SPONTANEOUS: Lumi just feels like talking (bored, had a thought,
+    wants to check in, something reminded her of something)
+
+The spontaneous tier is the important one. A companion who only
+speaks when something is wrong is not good company.
+"""
+
+import asyncio
+import ctypes
+import time
+import datetime
+import requests
+
+from modules.module import Module
+from constants import LLM_ENDPOINT, MODEL_NAME, AI_NAME, HOST_NAME
+
+
+# ===============================================================
+# TUNING KNOBS
+# ---------------------------------------------------------------
+# All times in seconds. Adjust after observing real behavior.
+# ===============================================================
+TICK_SECONDS = 30                  # How often the heartbeat checks in
+MIN_IDLE_SECONDS = 300             # User must be quiet this long before we consider breaking silence
+MIN_GAP_BETWEEN_UTTERANCES = 600   # At least 10 min between unprompted messages
+LATE_NIGHT_START = 23              # 11 PM — the "it's late" window begins
+LATE_NIGHT_END = 5                 # 5 AM — the window ends
+LATE_NIGHT_IDLE_SECONDS = 1800     # During late night, require longer idle (30 min)
+
+# How many of our own recent unprompted messages to show the model so
+# it can avoid repeating itself.
+RECENT_UTTERANCE_MEMORY = 3
+
+
+DECISION_PROMPT = """You are {ai_name}, deciding whether to break silence with {host_name}.
+
+Current context:
+- Time: {time_str}
+- It has been {idle_min} minutes since {host_name} last spoke.
+- Last conversation topic: {last_topic}
+- What {host_name} is currently doing: {active_window}
+- Your current mood: {mood}
+- Your recent unprompted messages (do NOT repeat these): {recent_utterances}
+
+The user has NOT prompted you. You are deciding on your own whether to say something.
+
+RULES:
+- Most of the time, the correct answer is SILENCE. Silence is normal and expected.
+- You have two kinds of valid reasons to speak:
+
+  REACTIVE reasons (something specific happened):
+    - It's very late at night and he should sleep.
+    - An earlier tool failed and he might want to know.
+    - The last conversation ended on something unresolved and you want to follow up.
+
+  SPONTANEOUS reasons (you just feel like talking):
+    - You're bored and want to start a conversation about something.
+    - You had a thought, an observation, or a question you want to share.
+    - It's been a very long time and you want to check in.
+    - Something in the context (what he's doing, the time, your mood) reminded you of something specific.
+
+- ALWAYS anchor to something concrete in the context. "How's the coding going?" is bad —
+  it's generic. "Still stuck in prompter.py, or did you finally fix that regex?" is good —
+  it shows you noticed what he's doing.
+- Spontaneous reasons should be used MORE often than reactive ones. A companion
+  who only speaks when something is wrong is not good company.
+- Do NOT repeat a recent unprompted message. Vary the topic, phrasing, and reason.
+- When in doubt, lean toward speaking. Silence is a valid default, but
+  perpetual silence is worse than occasional noise.
+
+EMOTION TAGS:
+- Your speech is delivered through Fish Audio, which reads inline [bracket] tags as
+  delivery instructions. Include ONE tag at the start of your message or clause.
+- Approved tags: [smug] [sarcastic] [sighing] [chuckling] [laughing] [curious] [bored]
+  [confident] [deadpan] [soft tone] [whispering] [concerned] [amused] [unimpressed]
+- Example: "[sarcastic] Still on that bug, or did you finally abandon it?"
+
+RESPONSE FORMAT:
+- If you decide to speak: respond with your message only, starting with an emotion tag.
+  Keep it short — 1 to 2 sentences. Anchor to something specific.
+- If you decide to stay silent: respond with exactly the word SILENCE
+
+Your response:"""
+
+
+class Heartbeat(Module):
+    def __init__(
+        self,
+        signals,
+        enabled=True,
+        tick_seconds=TICK_SECONDS,
+        min_idle_seconds=MIN_IDLE_SECONDS,
+        min_gap_between_utterances=MIN_GAP_BETWEEN_UTTERANCES,
+        decision_model=None,
+        modules=None,
+    ):
+        super().__init__(signals, enabled)
+
+        self.tick_seconds = tick_seconds
+        self.min_idle_seconds = min_idle_seconds
+        self.min_gap_between_utterances = min_gap_between_utterances
+        self.decision_model = decision_model or MODEL_NAME
+
+        # Optional reference to the module list so we can find TTS if we
+        # need to push audio directly (fallback path when signals.tts_queue
+        # isn't available). Normal path uses signals.tts_queue.
+        self.modules = modules if modules is not None else []
+
+        # Track the timestamp of our last self-initiated message so we don't
+        # speak too often. Also reset on "silence" decisions so we don't
+        # immediately re-ask every 30 seconds.
+        self._last_utterance_time = 0.0
+
+        # Ring buffer of our last N unprompted messages, so the model can
+        # avoid repeating itself.
+        self._recent_utterances = []
+
+    # ---------------------------------------------------------------
+    # Helpers
+    # ---------------------------------------------------------------
+    def _now(self):
+        return time.time()
+
+    def _seconds_since_user_message(self):
+        """Time since the user last typed or spoke."""
+        last = getattr(self.signals, "last_message_time", 0) or 0
+        if last == 0:
+            return float("inf")
+        return self._now() - last
+
+    def _seconds_since_our_last_utterance(self):
+        if self._last_utterance_time == 0:
+            return float("inf")
+        return self._now() - self._last_utterance_time
+
+    def _is_user_active(self):
+        """True if the user typed recently enough that we shouldn't interrupt."""
+        idle = self._seconds_since_user_message()
+        return idle < self.min_idle_seconds
+
+    def _is_busy(self):
+        """True if the prompter is currently thinking or speaking."""
+        return getattr(self.signals, "AI_thinking", False) or \
+               getattr(self.signals, "AI_speaking", False)
+
+    def _is_in_cooldown(self):
+        """True if we spoke unprompted recently."""
+        return self._seconds_since_our_last_utterance() < self.min_gap_between_utterances
+
+    def _is_late_night(self):
+        hour = datetime.datetime.now().hour
+        return hour >= LATE_NIGHT_START or hour < LATE_NIGHT_END
+
+    def _last_topic(self):
+        """Grab a short hint at what the recent conversation was about."""
+        history = getattr(self.signals, "history", []) or []
+        for msg in reversed(history[-6:]):
+            if msg.get("role") == "user":
+                content = (msg.get("content") or "").strip()
+                if content:
+                    return content[:120]
+        return "(no recent topic)"
+
+    def _current_mood(self):
+        mood_mgr = getattr(self.signals, "mood_manager", None)
+        if mood_mgr:
+            return getattr(mood_mgr, "current_mood", "default")
+        return "default"
+
+    def _get_active_window_title(self):
+        """Read the current foreground window title via Win32 API.
+        Returns an empty string on non-Windows or on any failure."""
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                return ""
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return ""
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            title = buf.value.strip()
+            # Truncate very long titles (some apps put whole doc contents in the title)
+            return title[:120]
+        except Exception:
+            return ""
+
+    def _format_active_window(self):
+        """Return a readable description of what the user is doing.
+        Uses the ambient module's cached VLM description when available,
+        falls back to just the window title."""
+        title = self._get_active_window_title() or "(unknown window)"
+
+        ambient = getattr(self.signals, "ambient", None)
+        if ambient:
+            try:
+                line = ambient.get_context_line()
+                if line:
+                    return line
+            except Exception:
+                pass
+
+        return title
+
+    def _format_recent_utterances(self):
+        """Return a short string of our recent unprompted messages, or a
+        hint that there haven't been any."""
+        if not self._recent_utterances:
+            return "(none yet — this will be your first unprompted message this session)"
+        # Show them oldest-first so the model sees the progression
+        return " | ".join(f'"{u}"' for u in self._recent_utterances)
+
+    def _remember_utterance(self, text):
+        """Add an unprompted message to the recent ring buffer."""
+        self._recent_utterances.append(text)
+        if len(self._recent_utterances) > RECENT_UTTERANCE_MEMORY:
+            self._recent_utterances.pop(0)
+
+    # ---------------------------------------------------------------
+    # Decision logic
+    # ---------------------------------------------------------------
+    def _should_consider_acting(self):
+        """Cheap gating before we even call the model. Returns
+        (True, reason) or (False, reason)."""
+        if self._is_busy():
+            return False, "prompter busy"
+        if self._is_user_active():
+            return False, f"user active ({int(self._seconds_since_user_message())}s ago)"
+        if self._is_in_cooldown():
+            return False, f"cooldown ({int(self._seconds_since_our_last_utterance())}s)"
+        # Late night has a stricter idle threshold
+        if self._is_late_night():
+            if self._seconds_since_user_message() < LATE_NIGHT_IDLE_SECONDS:
+                return False, f"late night, not idle enough ({int(self._seconds_since_user_message())}s)"
+        return True, "eligible"
+
+    def _ask_model(self):
+        """Send the decision prompt. Returns the raw model response or None."""
+        idle_seconds = self._seconds_since_user_message()
+        idle_min = int(idle_seconds // 60) if idle_seconds != float("inf") else 9999
+
+        now = datetime.datetime.now()
+        time_str = now.strftime("%A %I:%M %p")
+
+        prompt = DECISION_PROMPT.format(
+            ai_name=AI_NAME,
+            host_name=HOST_NAME,
+            time_str=time_str,
+            idle_min=idle_min,
+            last_topic=self._last_topic(),
+            active_window=self._format_active_window(),
+            mood=self._current_mood(),
+            recent_utterances=self._format_recent_utterances(),
+        )
+
+        try:
+            response = requests.post(
+                f"{LLM_ENDPOINT}/api/chat",
+                json={
+                    "model": self.decision_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.7,
+                        "top_p": 0.9,
+                    },
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            content = response.json()["message"]["content"].strip()
+            return content
+        except Exception as e:
+            print(f"\033[90mHEARTBEAT: decision call failed: {e}\033[0m")
+            return None
+
+    def _emit_utterance(self, text):
+        """Push the message into the normal pipeline: history + TTS."""
+        # Add to history as an assistant message so it appears in the log
+        self.signals.history.append({"role": "assistant", "content": text})
+
+        # Trim history like the prompter does
+        if len(self.signals.history) > 20:
+            self.signals.history = self.signals.history[-20:]
+
+        # Push to TTS
+        if hasattr(self.signals, "tts_queue"):
+            self.signals.tts_queue.put(text)
+        else:
+            tts_module = next(
+                (m for m in self.modules if m.__class__.__name__ == "TTS"),
+                None,
+            )
+            if tts_module and hasattr(tts_module, "speak_stream"):
+                tts_module.speak_stream(text)
+
+        # Remember for repetition avoidance
+        self._remember_utterance(text)
+
+        # Save history
+        if hasattr(self.signals, "save_history"):
+            self.signals.save_history()
+
+        self._last_utterance_time = self._now()
+
+    # ---------------------------------------------------------------
+    # Main loop
+    # ---------------------------------------------------------------
+    async def run(self):
+        if not self.enabled:
+            return
+
+        print(
+            f"\033[90mHEARTBEAT: Starting autonomous loop "
+            f"(tick={self.tick_seconds}s, idle={self.min_idle_seconds}s, "
+            f"cooldown={self.min_gap_between_utterances}s)\033[0m"
+        )
+
+        loop = asyncio.get_running_loop()
+
+        while not self.signals.terminate:
+            await asyncio.sleep(self.tick_seconds)
+
+            if self.signals.terminate:
+                break
+
+            should_act, reason = self._should_consider_acting()
+            if not should_act:
+                # Debug logging — comment out if too noisy
+                # print(f"\033[90mHEARTBEAT: skip ({reason})\033[0m")
+                continue
+
+            # Conditions are met — ask the model for a decision
+            print(f"\033[95mHEARTBEAT: conditions met, asking model...\033[0m")
+            response = await loop.run_in_executor(None, self._ask_model)
+
+            if not response:
+                continue
+
+            # Treat the literal token SILENCE as "do not speak"
+            upper = response.strip().upper()
+            if "SILENCE" in upper and len(response.strip()) < 30:
+                print(f"\033[90mHEARTBEAT: model chose silence\033[0m")
+                # Reset the cooldown window even though we didn't speak —
+                # otherwise we'd re-ask every single tick, which wastes
+                # model calls and contributes nothing.
+                self._last_utterance_time = self._now()
+                continue
+
+            # Otherwise, treat the response as a real utterance
+            print(f"\033[95mHEARTBEAT: Lumi speaks unprompted:\033[0m {response}")
+            self._emit_utterance(response)

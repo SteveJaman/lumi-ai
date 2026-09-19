@@ -1,0 +1,373 @@
+"""
+Cognitive state machine.
+
+Traits (stable, from lumi.yaml) modulate how strongly events affect the
+state. Frames (also from lumi.yaml) are runtime modes chosen based on
+context: agent mode, user tone, and current emotional values.
+
+describe() supports two modes:
+  update=True  (default) — re-runs frame selection with the given context
+                and stores the result. Use during actual turns.
+  update=False — returns the cached frame. Use for diagnostics like
+                !state so it doesn't clobber the frame from the real turn.
+"""
+
+import asyncio
+import os
+import time
+import threading
+
+import yaml
+
+from modules.module import Module
+from constants import WORKSPACE_ROOT
+
+
+# ===============================================================
+# TUNING KNOBS
+# ===============================================================
+
+DECAY_INTERVAL = 30.0
+DECAY_RATE = 0.05
+BOREDOM_TICK_RATE = 0.03
+BOREDOM_IDLE_THRESHOLD = 120
+
+FRUSTRATION_HIGH = 0.60
+FRUSTRATION_MID = 0.35
+FRUSTRATION_LOW = 0.12
+
+VALENCE_VERY_POSITIVE = 0.40
+VALENCE_POSITIVE = 0.15
+VALENCE_VERY_NEGATIVE = -0.30
+VALENCE_NEGATIVE = -0.08
+
+AROUSAL_HIGH = 0.70
+AROUSAL_MID = 0.52
+AROUSAL_LOW = 0.20
+AROUSAL_CALM = 0.32
+
+CURIOSITY_HIGH = 0.72
+CURIOSITY_MID = 0.58
+CURIOSITY_LOW = 0.20
+
+BOREDOM_HIGH = 0.60
+BOREDOM_MID = 0.42
+BOREDOM_LOW = 0.25
+
+
+# ===============================================================
+# YAML LOADER (traits + frames)
+# ===============================================================
+
+_DEFAULT_TRAITS = {
+    "playfulness": 0.75,
+    "intelligence": 0.90,
+    "chaos": 0.60,
+    "empathy": 0.65,
+    "sarcasm": 0.85,
+    "warmth": 0.40,
+    "curiosity": 0.70,
+    "patience": 0.30,
+}
+
+_DEFAULT_FRAMES = {
+    "play": {"tone": "Lean into playfulness and sarcasm. Punchy, quick."},
+    "strategy": {"tone": "Lock in. Steady tone, competence on display."},
+    "chaos": {"tone": "Let it fly. Non-sequiturs and disproportionate threats."},
+    "social": {"tone": "Drop the edge. Warm, protective, present."},
+    "learning": {"tone": "Ask a specific follow-up. Show genuine interest."},
+    "threat": {"tone": "Sharpen. Colder delivery, no jokes."},
+}
+
+
+def _load_yaml_block(block_name, defaults):
+    yaml_path = os.path.join(WORKSPACE_ROOT, "lumi.yaml")
+    if not os.path.exists(yaml_path):
+        return dict(defaults)
+    try:
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        block = data.get(block_name)
+        if isinstance(block, dict) and block:
+            merged = dict(defaults)
+            merged.update(block)
+            return merged
+    except Exception:
+        pass
+    return dict(defaults)
+
+
+class EmotionalState:
+    def __init__(self, signals):
+        self.signals = signals
+
+        self.valence = 0.0
+        self.arousal = 0.4
+        self.frustration = 0.0
+        self.curiosity = 0.5
+        self.boredom = 0.2
+
+        self.baselines = {
+            "valence": 0.0,
+            "arousal": 0.4,
+            "frustration": 0.0,
+            "curiosity": 0.5,
+            "boredom": 0.2,
+        }
+
+        self.traits = _load_yaml_block("traits", _DEFAULT_TRAITS)
+        self.frames = _load_yaml_block("frames", _DEFAULT_FRAMES)
+
+        self.current_frame = "play"
+
+        self._last_user_message_time = time.time()
+        self._lock = threading.Lock()
+
+    # ---------------------------------------------------------------
+    # Trait-based modifiers
+    # ---------------------------------------------------------------
+    def _patience_mod(self):
+        p = self.traits.get("patience", 0.3)
+        return 1.5 - p
+
+    def _warmth_mod(self):
+        w = self.traits.get("warmth", 0.4)
+        return 1.5 - w
+
+    def _playfulness_mod(self):
+        p = self.traits.get("playfulness", 0.75)
+        return 0.7 + (p * 0.6)
+
+    def _empathy_mod(self):
+        e = self.traits.get("empathy", 0.65)
+        return 0.7 + (e * 0.6)
+
+    # ---------------------------------------------------------------
+    # Event hooks
+    # ---------------------------------------------------------------
+    def note_turn_complete(self, outcomes):
+        with self._lock:
+            if not outcomes:
+                return
+
+            last_success, _ = outcomes[-1]
+            had_failure = any(not s for s, _ in outcomes)
+
+            if not last_success:
+                self.frustration = min(
+                    1.0, self.frustration + 0.20 * self._patience_mod()
+                )
+                self.valence = max(-1.0, self.valence - 0.10)
+            elif had_failure:
+                self.frustration = max(0.0, self.frustration - 0.05)
+                self.valence = min(
+                    1.0, self.valence + 0.05 * self._playfulness_mod()
+                )
+            else:
+                self.frustration = max(0.0, self.frustration - 0.05)
+                self.valence = min(
+                    1.0, self.valence + 0.08 * self._playfulness_mod()
+                )
+                self.arousal = min(1.0, self.arousal + 0.03)
+
+            self.curiosity = min(1.0, self.curiosity + 0.02 * len(outcomes))
+
+    def note_user_message(self, text=""):
+        with self._lock:
+            self._last_user_message_time = time.time()
+            self.arousal = min(1.0, self.arousal + 0.05)
+            self.boredom = max(0.0, self.boredom - 0.3)
+
+            text_lower = (text or "").lower()
+
+            sincere_markers = [
+                "thank you", "thanks", "i care", "i appreciate",
+                "love you", "proud of", "good job", "you're the best",
+            ]
+            if any(m in text_lower for m in sincere_markers):
+                bump = 0.15 * self._empathy_mod()
+                self.valence = min(1.0, self.valence + bump)
+                self.frustration = max(0.0, self.frustration - 0.2)
+                self.boredom = max(0.0, self.boredom - 0.15)
+
+            hostile_markers = [
+                "shut up", "stupid", "useless", "hate you", "you suck",
+                "you're wrong", "you're broken",
+            ]
+            if any(m in text_lower for m in hostile_markers):
+                bump = 0.15 * self._warmth_mod()
+                self.frustration = min(1.0, self.frustration + bump)
+                self.valence = max(-1.0, self.valence - 0.1)
+
+    def note_command(self):
+        with self._lock:
+            self._last_user_message_time = time.time()
+            self.boredom = max(0.0, self.boredom - 0.15)
+
+    # ---------------------------------------------------------------
+    # Time-based evolution
+    # ---------------------------------------------------------------
+    def decay_step(self):
+        with self._lock:
+            for name, baseline in self.baselines.items():
+                current = getattr(self, name)
+                setattr(self, name, current + (baseline - current) * DECAY_RATE)
+
+            idle = time.time() - self._last_user_message_time
+            if idle > BOREDOM_IDLE_THRESHOLD:
+                self.boredom = min(1.0, self.boredom + BOREDOM_TICK_RATE)
+
+    # ---------------------------------------------------------------
+    # Frame selection
+    # ---------------------------------------------------------------
+    def select_frame(self, agent_mode=False, user_text=""):
+        """Pick the current cognitive frame based on context + state.
+        Priority order — first match wins."""
+        text_lower = (user_text or "").lower()
+
+        # 1) Threat — frustration very high
+        if self.frustration > 0.6:
+            return "threat"
+
+        # 2) Social — user is being vulnerable or sincere
+        vulnerable_markers = [
+            "i'm tired", "i am tired", "i'm stressed", "i am stressed",
+            "i'm sad", "i am sad", "i'm upset", "i am upset",
+            "rough day", "hard day", "burnt out", "burned out",
+            "exhausted", "overwhelmed", "burnt", "burt out",
+        ]
+        sincere_markers = [
+            "thank you", "i care", "i appreciate",
+            "love you", "proud of you",
+        ]
+        if any(m in text_lower for m in vulnerable_markers):
+            return "social"
+        if any(m in text_lower for m in sincere_markers):
+            return "social"
+
+        # 3) Chaos — high energy + high valence
+        if self.arousal > 0.75 and self.valence > 0.3:
+            return "chaos"
+
+        # 4) Strategy — agent mode is active OR was active this turn
+        if agent_mode:
+            return "strategy"
+
+        # 5) Learning — high curiosity, low frustration
+        if self.curiosity > 0.7 and self.frustration < 0.3:
+            return "learning"
+
+        # 6) Default: play
+        return "play"
+
+    # ---------------------------------------------------------------
+    # Prompt injection
+    # ---------------------------------------------------------------
+    def describe(self, agent_mode=False, user_text="", update=True):
+        """Returns the state description + frame directive.
+
+        If update=True (default), re-runs frame selection with the given
+        context and stores the result. If update=False, uses the already-
+        cached frame — this is what !state should use so it doesn't
+        overwrite the frame that was set during the actual conversation
+        turn.
+        """
+        if update:
+            frame_name = self.select_frame(agent_mode=agent_mode, user_text=user_text)
+            self.current_frame = frame_name
+        else:
+            frame_name = self.current_frame
+
+        frame_tone = self.frames.get(frame_name, {}).get("tone", "")
+
+        parts = []
+
+        if self.frustration > FRUSTRATION_HIGH:
+            parts.append("genuinely frustrated")
+        elif self.frustration > FRUSTRATION_MID:
+            parts.append("mildly irritated")
+        elif self.frustration > FRUSTRATION_LOW:
+            parts.append("slightly annoyed")
+
+        if self.valence > VALENCE_VERY_POSITIVE:
+            parts.append("in a good mood")
+        elif self.valence > VALENCE_POSITIVE:
+            parts.append("pleased")
+        elif self.valence < VALENCE_VERY_NEGATIVE:
+            parts.append("grumpy")
+        elif self.valence < VALENCE_NEGATIVE:
+            parts.append("a bit off")
+
+        if self.arousal > AROUSAL_HIGH:
+            parts.append("energetic")
+        elif self.arousal > AROUSAL_MID:
+            parts.append("alert")
+        elif self.arousal < AROUSAL_LOW:
+            parts.append("low-energy")
+        elif self.arousal < AROUSAL_CALM:
+            parts.append("calm")
+
+        if self.curiosity > CURIOSITY_HIGH:
+            parts.append("very curious")
+        elif self.curiosity > CURIOSITY_MID:
+            parts.append("intrigued")
+        elif self.curiosity < CURIOSITY_LOW:
+            parts.append("disinterested")
+
+        if self.boredom > BOREDOM_HIGH:
+            parts.append("visibly bored")
+        elif self.boredom > BOREDOM_MID:
+            parts.append("restless")
+        elif self.boredom > BOREDOM_LOW:
+            parts.append("getting bored")
+
+        if parts:
+            state_line = "Current internal state: " + ", ".join(parts) + "."
+        else:
+            state_line = "Current internal state: neutral, balanced."
+
+        output_lines = [
+            state_line,
+            f"Current cognitive frame: {frame_name.upper()}.",
+        ]
+        if frame_tone:
+            output_lines.append(f"Frame directive: {frame_tone}")
+
+        output_lines.append(
+            "Let the state and frame color your tone naturally — do not "
+            "mention either of them, just embody them."
+        )
+
+        return "\n".join(output_lines)
+
+
+class EmotionalStateModule(Module):
+    def __init__(self, signals, enabled=True, decay_interval=DECAY_INTERVAL):
+        super().__init__(signals, enabled)
+        self.state = EmotionalState(signals)
+        self.decay_interval = decay_interval
+        self.prompt_injection.text = ""
+        signals.emotional_state = self.state
+
+    async def run(self):
+        if not self.enabled:
+            return
+
+        traits_summary = ", ".join(
+            f"{k}={v:.2f}" for k, v in self.state.traits.items()
+        )
+        frames_summary = ", ".join(self.state.frames.keys())
+
+        print(f"\033[90mEMOTIONAL STATE: Decay loop started "
+              f"(interval={self.decay_interval}s)\033[0m")
+        print(f"\033[90mEMOTIONAL STATE: Traits loaded — {traits_summary}\033[0m")
+        print(f"\033[90mEMOTIONAL STATE: Frames loaded — {frames_summary}\033[0m")
+
+        while not self.signals.terminate:
+            await asyncio.sleep(self.decay_interval)
+            if self.signals.terminate:
+                break
+            try:
+                self.state.decay_step()
+            except Exception as e:
+                print(f"\033[91mEMOTIONAL STATE: decay error: {e}\033[0m")

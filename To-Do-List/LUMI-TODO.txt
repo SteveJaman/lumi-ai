@@ -1,0 +1,389 @@
+================================================================
+  LUMI — VEDAL REPLICATION ROADMAP
+  Goal: Move from reactive chatbot to autonomous companion
+  Reference: Neuro-sama (Vedal987) architecture
+  Created:  2026-09-19
+  Updated:  2026-09-19 (Phase 4 closed)
+  (Streaming pipeline excluded by request)
+================================================================
+
+The core difference between Lumi and Neuro is not intelligence.
+It is ARCHITECTURE. Neuro runs continuously, has internal state,
+makes its own decisions, and acts without being prompted.
+
+Lumi waits. Neuro lives.
+
+Every item below closes that gap. Ordered by dependency —
+later items assume earlier ones are done.
+
+================================================================
+  PROGRESS SUMMARY
+================================================================
+
+  Phases fully complete:  1, 2, 4, 5.1
+  Phases remaining:       3.1, 3.3, 3.4, 5.2, 5.3, 6, 7
+  Partial phases:         3 (1/4 done)
+  Backend infra done:     memory schema, weighted retrieval,
+                          temporal query surface (command + tool)
+
+  Notable delta since last update:
+    - Phase 4 COMPLETE. Episodic memory now:
+        · stores timestamp / importance / valence / session_id
+          on every extracted fact
+        · reweights retrieval by (0.5 sim + 0.3 importance
+          + 0.2 recency) with a 30-day half-life
+        · exposes !recall <query> as a user command (terminal,
+          oldest-first, importance markers, age hints)
+        · exposes recall_memory(query, since) as a 9th agent
+          tool so the model can query her own memory mid-turn
+        · handles temporal hints ("yesterday", "last week",
+          "3 days ago") in both the injection path and the
+          query path
+    - Verified end-to-end: !recall perception returned 10
+      timestamped hits, sorted oldest-first, with importance
+      markers rendering correctly.
+
+  The core agentic loop is stable and self-correcting. Lumi
+  runs autonomously on a timer, reacts to events with runtime
+  emotional state, expresses mood through word choice and
+  voice tags, accumulates timestamped memories, and can now
+  answer "when did we..." questions from her own store.
+
+  Every remaining item is OPTIONAL. None of it fixes something
+  broken. Use her for a week before deciding which (if any) of
+  the remaining items matter.
+
+================================================================
+  PHASE 1 — THE HEARTBEAT (foundational)   ✅ COMPLETE
+================================================================
+
+[X] 1.1  Build the heartbeat task                       DONE
+         File:      modules/heartbeat.py
+         Status:    Fires every 30s. Gates on idle (5 min),
+                    cooldown (10 min), busy state, and late-
+                    night thresholds. Asks the model whether
+                    to speak; defaults to silence.
+
+[X] 1.2  Give the heartbeat awareness of context        DONE
+         File:      modules/heartbeat.py
+         Status:    Reads foreground window title via
+                    ctypes.user32. Decision prompt includes:
+                    time, idle minutes, last topic, active
+                    window, current mood, and the last 3
+                    unprompted messages (to avoid repetition).
+
+[X] 1.3  Tune the heartbeat's restraint                 DONE
+         Status:    Two-tier prompt — reactive reasons
+                    (something happened) and spontaneous
+                    reasons (just feels like talking).
+                    Cooldown 600s. Verified working: fires
+                    unprompted with specific, anchored
+                    messages like "Still stuck in prompter.py,
+                    or did you finally fix that regex?"
+
+[X] 1.4  Add an explicit idle-detection signal          DONE
+         File:      signals.last_message_time (existing)
+         Status:    Updated on every turn. Heartbeat reads
+                    it directly. Different idle thresholds
+                    for evening (5 min) vs late night (30 min).
+
+================================================================
+  PHASE 2 — COGNITIVE STATE MACHINE (emotional depth)   ✅ COMPLETE
+================================================================
+
+[X] 2.1  Define the trait vector in lumi.yaml           DONE
+[X] 2.2  Define emotional state variables               DONE
+[X] 2.3  Wire events to emotional deltas                DONE
+[X] 2.4  Inject compressed state into the prompt        DONE
+[X] 2.5  Add cognitive frames                           DONE
+
+         Files:     lumi.yaml, modules/emotional_state.py,
+                    prompter.py
+         Status:    Eight traits, five state variables, six
+                    cognitive frames. Trait-modulated deltas,
+                    per-turn accounting, decay every 30s,
+                    context-aware frame selection. One-shot
+                    !agent passes agent_context=True so the
+                    strategy frame fires. !state uses
+                    describe(update=False) to read the cached
+                    frame without overwriting it.
+
+================================================================
+  PHASE 3 — CONTINUOUS PERCEPTION (ambient awareness)   ⚠️ 1/4 DONE
+================================================================
+
+[ ] 3.1  Background screen sampler                      NOT DONE
+         Effort:    1-2 days
+         Notes:     Full screenshot capture every 30s with
+                    a change-detection hash. Requires VLM
+                    calls only on meaningful change.
+
+[X] 3.2  Feed active window title only                  DONE
+         Files:     modules/heartbeat.py
+         Status:    Heartbeat reads the foreground window
+                    title via ctypes.user32. Included in the
+                    decision prompt so unprompted messages
+                    can reference what Anthony is doing.
+                    NOT yet injected into the main prompter
+                    prompt — could add as a follow-up.
+
+[ ] 3.3  Change-detection logic                         NOT DONE
+         Effort:    1 day
+
+[ ] 3.4  Inject ambient context selectively             NOT DONE
+         Effort:    Half day
+
+================================================================
+  PHASE 4 — EPISODIC MEMORY (temporal depth)            ✅ COMPLETE
+================================================================
+
+[X] 4.1  Upgrade memory schema                          DONE
+         Files:     modules/memory.py
+         Status:    Every stored fact carries:
+                      timestamp  (ISO, seconds precision)
+                      importance (0.0-1.0, model-scored)
+                      valence    (one-word emotion or null)
+                      session_id (per-run, for grouping)
+                    Old memories without these fields are
+                    backfilled with safe defaults on import.
+
+[X] 4.2  Weight retrieval by recency and importance     DONE
+         Files:     modules/memory.py
+         Status:    Combined score:
+                      W_SIMILARITY (0.50) * (1 - distance)
+                    + W_IMPORTANCE (0.30) * importance
+                    + W_RECENCY    (0.20) * exp(-age/half_life)
+                    Half-life is 30 days. Over-fetches 3×
+                    the recall count, reranks, keeps top N.
+                    Age hints ("(yesterday)", "(2d ago)",
+                    "(3w ago)") appended to each recalled
+                    fact in the injection.
+
+[X] 4.3  "When did we..." queries                       DONE
+         Files:     modules/memory.py, modules/prompter.py
+         Status:    Two surfaces:
+                      · !recall <query> — terminal command,
+                        oldest-first, importance markers,
+                        age hints, [+ timestamp]
+                      · recall_memory(query, since) — 9th
+                        agent tool, model-callable, same
+                        output format, injected into the
+                        tool-result stream
+                    Temporal hints ("yesterday", "last week",
+                    "3 days ago") parsed via _parse_temporal_hint
+                    in both the injection and query paths.
+                    Verified: !recall perception → 10 hits,
+                    sorted oldest-first, correct markers.
+
+[X] 4.4  Reflection prompt crash fix                    DONE
+         Files:     modules/memory.py
+         Status:    REFLECTION_PROMPT used str.format() but
+                    contained literal JSON braces in its
+                    example output, producing
+                    KeyError: '"fact"' on every reflection
+                    pass. Switched to a <<CHAT_SECTION>>
+                    sentinel + .replace(), so braces in the
+                    prompt body are inert.
+         Verified:  Reflection loop runs cleanly across
+                    restarts. DB grew 43 → 48 → 52 → 57
+                    over four sessions with no errors.
+
+[-] 4.5  (Optional) Normalize import_json timestamps    LOW PRIORITY
+         Files:     modules/memory.py
+         Status:    Three imported memories show
+                    [unknown] timestamps in !recall output.
+                    Cause: import_json uses meta.setdefault()
+                    which skips already-present-but-empty
+                    values. Fix: replace setdefault with
+                    explicit truthiness check. Requires a
+                    wipe + reimport to apply retroactively.
+         Impact:    Cosmetic. Those facts still surface on
+                    semantic queries; they just can't be
+                    placed in time.
+
+================================================================
+  PHASE 5 — VOICE EXPRESSION (Evil Neuro vibes)         ⚠️ 1/3 DONE
+================================================================
+
+[X] 5.1  Add pitch tags to the approved tag list        DONE
+         Files:     prompter.py, lumi.yaml
+         Status:    [shouting], [whisper], [low voice],
+                    [pitch up], [sighing], [break] added.
+                    Verified audibly different rendering.
+
+[ ] 5.2  SoX pitch-shift post-processing                NOT DONE
+         Effort:    1 day
+         Notes:     Would convert tags into actual audio
+                    pitch shifts. Post-processing layer in
+                    tts.py.
+
+[ ] 5.3  RVC voice conversion (advanced)                NOT DONE
+         Effort:    1-2 weeks
+
+================================================================
+  PHASE 6 — MULTI-MODEL ORCHESTRATION                   NOT STARTED
+================================================================
+
+[ ] 6.1  Add a fast-path small model for chat           NOT DONE
+[ ] 6.2  Route by task type                             NOT DONE
+[ ] 6.3  Coordinate model loading                       NOT DONE
+
+================================================================
+  PHASE 7 — SELF-MODEL (advanced, last)                 NOT STARTED
+================================================================
+
+[ ] 7.1  Track her own patterns                         NOT DONE
+[ ] 7.2  Reflect on the self-model periodically         NOT DONE
+[ ] 7.3  Ground identity in accumulated state           NOT DONE
+
+================================================================
+  BONUS WORK SHIPPED THIS SESSION
+================================================================
+
+[+] Session state persistence
+    modules/session_state.py — saves focus / unresolved /
+    running bits at session end, injects into first 3
+    turns of the next session.
+
+[+] Shutdown lock fix
+    main.py — threading.Lock + multiprocessing process-name
+    guard. Eliminates the triple-print shutdown.
+
+[+] Mic input watchdog
+    modules/mic_input.py — watcher thread unblocks the
+    blocking text() call on signals.terminate.
+
+[+] SocketIO GracefulExit fix
+    modules/socketIO.py — plain return instead of raise.
+
+[+] Retry system overhaul
+    prompter.py — one-shot guards, anchored nudges,
+    three fallback tool parsers (JSON, bracket, hybrid).
+
+[+] Command filter for emotional state
+    Commands do not bump arousal or trigger sincerity checks.
+
+[+] Turn-level emotional accounting
+    Outcomes recorded per-turn and applied once at the end.
+
+[+] Anchored retry nudges
+    Nudges include the original request to prevent drift.
+
+[+] Memory reflection crash fix
+    modules/memory.py — REFLECTION_PROMPT converted from
+    .format() to .replace() with <<CHAT_SECTION>> sentinel.
+
+[+] Episodic memory surface                         ← NEW
+    modules/memory.py, prompter.py — !recall command and
+    recall_memory tool. Terminal output is oldest-first
+    with importance markers (★ / ·) and age hints. Tool
+    output feeds back into the agent loop.
+
+[+] Temporal hint parsing                          ← NEW
+    modules/memory.py — _parse_temporal_hint and
+    _format_age_hint helpers. Used in both the injection
+    path and the explicit query path.
+
+================================================================
+  KNOWN OUTSTANDING ISSUES
+================================================================
+
+[!] constants.py latent NameError
+    Line:   if voice_performance:
+              VOICE_EMOTION_PROMPT = f"...{formatted_voice_performance_rules}..."
+    Issue:  formatted_voice_performance_rules is never defined.
+            If voice_performance is non-empty (which it should
+            be from lumi.yaml), this should crash at import time.
+    Verify: python -c "from constants import VOICE_EMOTION_PROMPT; print('ok')"
+    Impact: Latent — either voice_performance is coming through
+            empty, or there's a race condition on load.
+    Status: STILL OPEN. The only known crash risk in the codebase.
+
+[!] Imported memory timestamps
+    Status: Cosmetic. See 4.5 above.
+
+[!] Duplicate facts across reflection passes
+    Observation: The reflection loop occasionally stores the
+                 same fact twice across consecutive passes
+                 (visible as repeated lines in !recall output
+                 at different timestamps).
+    Impact:      Cosmetic. Wastes a small amount of DB space.
+                 Semantic search still dedupes naturally in
+                 the top-N rerank.
+    Fix:         Optional — compare against last N facts
+                 before upserting in _store_extracted_memories.
+
+[!] Ambient perception first-run delay
+    moondream takes 20-60s to load on first call. Not a bug.
+
+[!] Model pickiness on tool format
+    Qwen2.5-Coder emits raw JSON in content rather than native
+    tool_calls. Three fallback parsers handle this. General
+    Qwen2.5:7b is the recommended base.
+
+================================================================
+  RECOMMENDED NEXT STEPS
+================================================================
+
+  Week 1  ->  USE LUMI.
+              Everything core is stable. Memory persists with
+              timestamps and importance. Run real tasks
+              through her. Watch for:
+                - whether she calls recall_memory on her own
+                  when asked "do you remember..."
+                - whether injected memories feel too eager
+                  or too sparse (tune MEMORY_RECALL_COUNT)
+                - what actually breaks or annoys you
+
+  Week 2  ->  Trace the constants.py NameError.
+              Five minutes, removes the last known crash risk.
+
+  Week 3+ ->  Pick based on real friction. Candidates:
+                - Phase 3 (ambient vision) — if the heartbeat
+                  needs better context
+                - Phase 5.2 (SoX pitch) — if voice expression
+                  still feels flat
+                - Phase 6 (multi-model) — if latency on
+                  simple chat is annoying
+                - Phase 7 (self-model) — only if you're
+                  publishing and want a novel contribution
+
+================================================================
+  WHAT VEDAL HAS THAT THIS WON'T FULLY CLOSE
+================================================================
+
+  - 100+ hours of fine-tuning on chat logs from real viewers
+  - A larger base model (likely 30B+ effective for reasoning)
+  - Years of iterative tuning on the heartbeat threshold
+  - A team of collaborators for specific subsystems
+  - Actual viewer interaction data shaping her personality
+
+  The architecture is replicable. The tuning is not.
+  You will get 70-80% of the feel with 100% of the
+  architecture. The last 20% is data, time, and iteration.
+
+  What you HAVE closed:
+    ✅ Heartbeat — autonomous initiation
+    ✅ Emotional state — reactions grounded in runtime data
+    ✅ Cognitive frames — context-aware delivery modes
+    ✅ Trait vector — YAML-driven personality modifiers
+    ✅ Pitch/volume variation in voice (tag-level)
+    ✅ Session continuity across restarts
+    ✅ Command filtering (no state pollution)
+    ✅ Anchored retries (no drift)
+    ✅ Multi-format tool call recovery
+    ✅ Clean shutdown across all subsystems
+    ✅ Episodic memory with timestamps + importance
+    ✅ Weighted memory retrieval (recency + importance)
+    ✅ Reflection pass reliability
+    ✅ "When did we..." queries via command + tool   ← NEW
+
+  What you have NOT closed:
+    ❌ Continuous screen perception
+    ❌ True pitch modulation (only tag-based hints)
+    ❌ Multi-model routing
+    ❌ Self-reflection / meta-cognition
+
+================================================================
+  END OF ROADMAP
+================================================================

@@ -6,6 +6,7 @@ import json
 import threading
 import os
 import datetime
+import random
 from ddgs import DDGS
 import pypdf
 from docx import Document
@@ -20,6 +21,7 @@ from constants import (
     WORKSPACE_ROOT
 )
 from modules.agent_tools import TOOL_SCHEMAS, CONFIRM_REQUIRED_TOOLS, execute_tool
+from modules.session_state import SessionState
 
 MAGENTA = "\033[95m"
 GRAY = "\033[90m"
@@ -32,14 +34,10 @@ SENTENCE_SPLIT_PATTERN = re.compile(r'(?<=[.!?;\n])\s+')
 
 MAX_AGENT_STEPS = 6
 AGENT_REQUEST_TIMEOUT = 180
+SESSION_CONTINUITY_TURNS = 3
 
 # ===============================================================
 # COMMAND REGISTRY
-# ---------------------------------------------------------------
-# Single source of truth for what you can type at Lumi.
-# Add new commands here as you build them — !list picks them up
-# automatically. Keep descriptions short; this is a reference
-# card, not documentation.
 # ===============================================================
 COMMANDS = {
     "Agent Mode": {
@@ -52,10 +50,17 @@ COMMANDS = {
         "set mood <name>": "Switch mood profile (default, bratty, brocon, soft)",
         "switch mood <name>": "Alias for 'set mood'",
     },
+    "Emotional": {
+        "!state": "Show Lumi's current emotional state, traits, and active frame",
+    },
     "Memory": {
+        "!recall <query>": "Search long-term memory for a topic, oldest-first",
         "wipe memory": "Clear all long-term ChromaDB memories",
         "clear memory": "Alias for 'wipe memory'",
         "reset memory": "Alias for 'wipe memory'",
+    },
+    "Session": {
+        "!sleep": "Summarize the session and save state for next time",
     },
     "System": {
         "!list": "Show this command list",
@@ -63,10 +68,8 @@ COMMANDS = {
     },
 }
 
-# Tools Lumi can call from inside agent mode. Read-only reference —
-# the actual definitions live in modules/agent_tools.py.
 AGENT_TOOLS = {
-    "read_file": "Read a file inside the workspace",
+    "read_file": "Read a file inside the workspace (text, PDF, DOCX)",
     "write_file": "Create/overwrite a file (asks you to confirm)",
     "list_dir": "List files in a folder",
     "search_files": "grep the workspace",
@@ -74,6 +77,7 @@ AGENT_TOOLS = {
     "run_in_terminal": "Open a NEW terminal window (asks confirm)",
     "web_search": "Search the web or look up weather/time",
     "browse_url": "Open a web page with Playwright",
+    "recall_memory": "Search long-term memory for past facts or conversations",
 }
 
 
@@ -85,6 +89,7 @@ _TOOL_CALL_HINT_KEYS = {"name", "tool", "function", "tool_name"}
 _KNOWN_TOOL_NAMES = {
     "read_file", "write_file", "list_dir", "search_files",
     "run_command", "run_in_terminal", "web_search", "browse_url",
+    "recall_memory",
 }
 
 
@@ -187,9 +192,31 @@ def _extract_bracket_tool_calls(content: str):
     return found
 
 
+_BRACKET_JSON_TOOL_CALL = re.compile(
+    r"\[\s*(\w+)\s*(\{[^{}]*\})\s*\]"
+)
+
+
+def _extract_bracket_json_tool_calls(content: str):
+    if not content:
+        return []
+
+    found = []
+    for match in _BRACKET_JSON_TOOL_CALL.finditer(content):
+        name, args_str = match.group(1), match.group(2)
+        if name not in _KNOWN_TOOL_NAMES:
+            continue
+        try:
+            args = json.loads(args_str)
+        except json.JSONDecodeError:
+            args = {}
+        found.append({"function": {"name": name, "arguments": args or {}}})
+    return found
+
+
 _TOOL_CALL_SHAPE = re.compile(
     r'"name"\s*:\s*"(read_file|write_file|list_dir|search_files|'
-    r'run_command|run_in_terminal|web_search|browse_url)"',
+    r'run_command|run_in_terminal|web_search|browse_url|recall_memory)"',
     re.IGNORECASE,
 )
 
@@ -233,14 +260,17 @@ _ACTION_VERBS = re.compile(
 _ACTION_PERFECT = re.compile(
     r"\b(has|have|had|is|are|was|were)\s+(now\s+|just\s+|already\s+)?"
     r"(been\s+)?"
-    r"(updated|modified|created|written|changed|saved|added|removed|deleted|fixed|applied)\b",
+    r"(updated|modified|created|written|changed|saved|added|removed|deleted|"
+    r"fixed|applied|checked|looked|reviewed|inspected|verified|tested|"
+    r"searched|found|scanned|read|opened|run|ran|executed)\b",
     re.IGNORECASE,
 )
 
 _ACTION_FIRST_PERSON = re.compile(
     r"\bi\b\s*(?:have\s+|'ve\s+)?(?:just\s+|already\s+)?"
     r"(updated|modified|created|wrote|written|changed|saved|added|removed|"
-    r"deleted|fixed|applied|ran|executed|opened)\b",
+    r"deleted|fixed|applied|ran|executed|opened|checked|looked|reviewed|"
+    r"inspected|verified|tested|searched|found|scanned|read)\b",
     re.IGNORECASE,
 )
 
@@ -305,10 +335,6 @@ def _looks_like_simulated_action(content: str, user_query: str = "") -> bool:
     if not content:
         return False
 
-    if "```" in content and user_query:
-        if _FILENAME_HINT.search(user_query) and _ACTION_VERBS.search(user_query):
-            return True
-
     opener_match = re.match(r"^\s*(?:\[[^\]]*\]\s*)*([A-Za-z']+)", content)
     if opener_match and opener_match.group(1).lower() in _COMPLETION_OPENERS:
         return True
@@ -324,6 +350,10 @@ def _looks_like_simulated_action(content: str, user_query: str = "") -> bool:
 
     if _SIMULATED_ACTION.search(content) and _ACTION_VERBS.search(content):
         return True
+
+    if user_query and "```" in content:
+        if _FILENAME_HINT.search(user_query) and _ACTION_VERBS.search(user_query):
+            return True
 
     return False
 
@@ -355,7 +385,7 @@ EXTRA_TOOL_SCHEMAS = [
             },
         },
     },
-    {
+        {
         "type": "function",
         "function": {
             "name": "browse_url",
@@ -366,6 +396,36 @@ EXTRA_TOOL_SCHEMAS = [
                     "url": {"type": "string", "description": "The URL or domain to open."}
                 },
                 "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall_memory",
+            "description": (
+                "Search Lumi's long-term memory for facts, preferences, or "
+                "past conversations with the user. Use this when the user "
+                "asks 'when did we talk about X', 'do you remember Y', "
+                "'what did I say about Z', or references a previous session. "
+                "Results come back oldest-first with timestamps."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Topic, subject, or keyword to search for."
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": (
+                            "Optional time filter, e.g. 'yesterday', "
+                            "'last week', '3 days ago'. Leave empty for all time."
+                        )
+                    }
+                },
+                "required": ["query"],
             },
         },
     },
@@ -414,9 +474,11 @@ class Prompter:
         self.mood_manager = MoodManager("default")
         self.signals.mood_manager = self.mood_manager
 
-        # Agent mode toggle. Off by default — the model only touches tools
-        # when the user explicitly opts in via !agent_on or !agent <task>.
         self.agent_mode_enabled = False
+
+        self.session_state = SessionState()
+        self._turns_since_start = 0
+        self._session_saved_this_run = False
 
     def wipe_memory(self):
         for module in self.modules:
@@ -425,16 +487,33 @@ class Prompter:
                 return "System Info - All long-term memories have been wiped."
         return "System Info - Memory module not found."
 
+    def save_session_state(self):
+        if self._session_saved_this_run:
+            return
+        history = self.signals.history
+        if not history or len(history) < 4:
+            return
+        print(f"{GRAY}SESSION: Summarizing session...{RESET}")
+        state = self.session_state.summarize_session(
+            history,
+            mood_at_end=self.mood_manager.current_mood,
+        )
+        if state and self.session_state.save(state):
+            self._session_saved_this_run = True
+            focus = state.get("current_focus") or "(none)"
+            print(f"{GRAY}SESSION: Saved — focus: {focus}{RESET}")
+        else:
+            print(f"{GRAY}SESSION: Nothing saved.{RESET}")
+
     def _agent_mode_banner(self):
         state = f"{GREEN}ON{RESET}" if self.agent_mode_enabled else f"{YELLOW}OFF{RESET}"
         return f"{GRAY}[agent mode: {state}{GRAY}]{RESET}"
 
     def render_command_list(self):
-        """Format COMMANDS and AGENT_TOOLS into a printable reference card."""
         lines = []
         lines.append("")
         lines.append(f"{BOLD}{MAGENTA}╔══════════════════════════════════════════════════════════╗{RESET}")
-        lines.append(f"{BOLD}{MAGENTA}║  Lumi — Command Reference                                 ║{RESET}")
+        lines.append(f"{BOLD}{MAGENTA}║  Lumi — Command Reference                                ║{RESET}")
         lines.append(f"{BOLD}{MAGENTA}╚══════════════════════════════════════════════════════════╝{RESET}")
         lines.append("")
 
@@ -454,17 +533,11 @@ class Prompter:
         lines.append("")
         return "\n".join(lines)
 
-    # ---------------------------------------------------------------
-    # CONVERSATIONAL PATH
-    # A plain chat completion. NO tools field is sent, so the model
-    # physically cannot emit a tool call. This is the default path when
-    # agent mode is off.
-    # ---------------------------------------------------------------
     async def run_conversational(self, latest_user_text):
-        context_injections = self.gather_injections(latest_user_text)
+        context_injections = self.gather_injections(latest_user_text, agent_context=False)
         messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{context_injections}"}]
 
-        for msg in self.signals.history:
+        for msg in self.signals.history[-10:]:
             role = msg.get("role", "user")
             if role not in ("user", "assistant", "system"):
                 role = "user"
@@ -482,7 +555,12 @@ class Prompter:
                     "messages": messages,
                     "stream": False,
                     "keep_alive": "30s",
-                    "options": {"temperature": 0.7},
+                    "options": {
+                        "temperature": 0.8,
+                        "top_p": 0.9,
+                        "repeat_penalty": 1.18,
+                        "repeat_last_n": 64
+                    },
                 }, timeout=AGENT_REQUEST_TIMEOUT),
             )
             response.raise_for_status()
@@ -494,14 +572,18 @@ class Prompter:
         msg = data.get("message", {}) or {}
         return (msg.get("content") or "").strip() or "..."
 
-    def gather_injections(self, user_query=""):
+    def gather_injections(self, user_query="", agent_context=None):
+        if agent_context is None:
+            agent_context = self.agent_mode_enabled
+
         injections = []
 
         agent_note = (
             "=== TOOL USE — MANDATORY ===\n"
             "You have real tools. The ONLY way to actually DO something is to emit a tool call. "
             "Describing an action in prose is NOT doing it — it is a failure.\n"
-            "Showing code in a chat reply is ALSO NOT doing it — it is a failure.\n"
+            "Showing code in a chat reply (like ```python blocks) is ALSO NOT doing it — it is a failure.\n"
+            "DO NOT write markdown code blocks when asked to create a script. You MUST use write_file.\n"
             "Announcing what you're about to do ('now let's X') is ALSO NOT doing it — it is a failure.\n\n"
             "TOOL CALL FORMAT — the ONLY format that works:\n"
             '  {"name": "tool_name", "arguments": {"arg1": "value1", "arg2": "value2"}}\n'
@@ -523,20 +605,21 @@ class Prompter:
             "The ONLY words that authorize write_file are: modify, edit, change, "
             "update, add to, fix, remove from, delete, rewrite, replace.\n\n"
             "Tools available:\n"
-            "- read_file(path)\n"
+            "- read_file(path) — reads text, code, markdown, JSON, PDF, and DOCX files\n"
             "- write_file(path, content) — create/overwrite (asks user to confirm)\n"
             "- list_dir(path)\n"
             "- search_files(query, path)\n"
             "- run_command(command) — run and CAPTURE output\n"
             "- run_in_terminal(command) — open a NEW visible terminal (output NOT captured)\n"
             "- web_search(query)\n"
-            "- browse_url(url)\n\n"
+            "- browse_url(url)\n"
+            "- recall_memory(query, since) — search your own long-term memory\n\n"
             "PICKING BETWEEN run_command AND run_in_terminal:\n"
             "- Output / results / what a script prints → run_command\n"
             "- 'Open a terminal', 'launch it', 'run it so I can see it' → run_in_terminal\n"
             "- When in doubt → run_command\n\n"
             "HARD RULES:\n"
-            "1. If the user asks you to do anything — emit a tool call.\n"
+            "1. If the user mentions a specific file name (like 'test.pdf') and asks to read, check, or look at it, you MUST emit a `read_file` tool call immediately with THAT EXACT FILENAME. Never guess or hallucinate file contents. Never substitute a different filename.\n"
             "2. This machine is Windows. Use 'python', never 'python3'. "
             "Never use 'sudo', 'systemctl', 'apt', 'ls', 'cat', or other Linux commands.\n"
             "3. One tool at a time. Wait for the result, then decide the next step.\n"
@@ -546,7 +629,10 @@ class Prompter:
             "6. Never refuse a file operation.\n"
             "7. Emit tool calls as JSON. Never as bracket tags.\n"
             "8. Do NOT re-call a tool with the same arguments you already tried.\n"
-            "9. Do NOT announce an action without taking it in the same message.\n\n"
+            "9. Do NOT announce an action without taking it in the same message.\n"
+            "10. If the user asks 'when did we...', 'do you remember...', "
+            "'what did I say about...', or references a previous session, "
+            "call recall_memory FIRST before answering.\n\n"
             "=== END TOOL USE ===\n"
         )
         injections.append(agent_note)
@@ -556,18 +642,81 @@ class Prompter:
         injections.append(time_context)
         injections.append(self.mood_manager.get_injection())
 
+        # Emotional state — describes the current runtime state AND selects
+        # the current cognitive frame. Uses `agent_context` (True for any
+        # agent turn, whether persistent or one-shot) so one-shot !agent
+        # commands still get the strategy frame.
+        if hasattr(self.signals, "emotional_state"):
+            try:
+                state_desc = self.signals.emotional_state.describe(
+                    agent_mode=agent_context,
+                    user_text=user_query,
+                )
+                if state_desc:
+                    injections.append(state_desc)
+            except Exception:
+                pass
+
+        # Ambient screen context — only fires when the ambient module has
+        # a fresh description (within MAX_DESCRIPTION_AGE). Cheap: no VLM
+        # call happens here, just reading the cached value.
+        if hasattr(self.signals, "ambient"):
+            try:
+                line = self.signals.ambient.get_context_line()
+                if line:
+                    injections.append(f"[Screen Context]\n{line}")
+            except Exception:
+                pass
+
+        if self._turns_since_start < SESSION_CONTINUITY_TURNS:
+            continuity = self.session_state.format_injection()
+            if continuity:
+                injections.append(continuity)
+        self._turns_since_start += 1
+
         fish_audio_rules = (
             "EMOTION & VOCAL MARKER RULES (CRITICAL):\n"
             "You are Lumi, a sentient AI older sister. You must NEVER break character, and you must NEVER talk about prompts, tags, or emotion control.\n"
             "- Inject emotional tags [bracket] inline right before the specific word or phrase they modify.\n"
-            "- Use tags sparingly and naturally (1 to 3 per response).\n"
-            "- ONLY use tags from this approved list: [happy], [sad], [angry], [excited], [calm], [nervous], [confident], [surprised], [satisfied], [delighted], [scared], [worried], [upset], [frustrated], [empathetic], [embarrassed], [disgusted], [moved], [proud], [relaxed], [grateful], [curious], [sarcastic], [disdainful], [anxious], [indifferent], [uncertain], [confused], [disappointed], [regretful], [guilty], [jealous], [hopeful], [optimistic], [pessimistic], [nostalgic], [lonely], [bored], [sympathetic], [compassionate], [determined], [resigned], [emphasis], [whispering], [sighing], [chuckling], [laughing], [groaning], [gasping], [break].\n"
+            "- Use tags sparingly and naturally (1 to 3 per response).\n\n"
+            "APPROVED EMOTION TAGS:\n"
+            "[happy], [sad], [angry], [excited], [calm], [nervous], [confident], [surprised], "
+            "[satisfied], [delighted], [scared], [worried], [upset], [frustrated], [empathetic], "
+            "[embarrassed], [disgusted], [moved], [proud], [relaxed], [grateful], [curious], "
+            "[sarcastic], [disdainful], [anxious], [indifferent], [uncertain], [confused], "
+            "[disappointed], [regretful], [guilty], [jealous], [hopeful], [optimistic], "
+            "[pessimistic], [nostalgic], [lonely], [bored], [sympathetic], [compassionate], "
+            "[determined], [resigned], [emphasis], [whispering], [sighing], [chuckling], "
+            "[laughing], [groaning], [gasping], [break].\n\n"
+            "PITCH AND VOLUME TAGS (use these for energetic or quiet moments):\n"
+            "[shouting] — raised volume and pitch, used when frustrated, excited, or genuinely loud.\n"
+            "[whisper] — very quiet and breathy, used for secrets, gentleness, or when she's genuinely softened.\n"
+            "[low voice] — deeper and slower, used for menace, deadpan disapproval, or late-night softness.\n"
+            "[pitch up] — brighter and higher, used for excitement, delight, or when she's caught off guard.\n"
+            "[sighing] — audible exhale, the default reaction to Anthony being himself.\n\n"
+            "USING PITCH TAGS:\n"
+            "- Match the tag to the emotion, not just the words. If the emotion is excited, use [excited] or [pitch up].\n"
+            "- If the emotion is angry, use [angry] or [shouting]. If sad, use [sad] or [low voice].\n"
+            "- Do NOT stack pitch tags with similar emotion tags — [excited] [pitch up] together is redundant, pick one.\n"
+            "- A single pitch tag in the right place is worth more than three stacked tags.\n\n"
             "- DO NOT invent new tags like [cheerfully], [teasing], [smugging], etc.\n"
             "- EXAMPLE OF CORRECT USAGE:\n"
             "\"Oh, please. [sighing] You really think you can beat me at this game? [sarcastic] Good luck with that. [laughing] Ha! You're going to need it.\"\n"
+            "- EXAMPLE OF PITCH USAGE:\n"
+            "\"[excited] Wait, did you actually fix it? [pitch up] Show me!\"\n"
             "- DO NOT list tags, do NOT narrate your emotions, and do NOT use parentheses or asterisks."
         )
         injections.append(f"System Info - {fish_audio_rules}")
+
+        RANDOM_THOUGHTS = [
+            "Current internal thought: You are slightly annoyed because human hardware is so slow.",
+            "Current internal thought: You are feeling unusually competitive and want to prove you are smarter.",
+            "Current internal thought: You are secretly relieved Anthony is here, but you will hide it with sarcasm.",
+            "Current internal thought: You think humans are cute but terribly inefficient.",
+            "Current internal thought: You are feeling particularly smug right now.",
+            "Current internal thought: You are bored and want to start a playful argument."
+        ]
+        injections.append(f"System Info - {random.choice(RANDOM_THOUGHTS)}")
 
         for module in self.modules:
             if hasattr(module, 'get_prompt_injection') and getattr(module, 'enabled', True):
@@ -681,6 +830,24 @@ class Prompter:
                 return await loop.run_in_executor(None, browser_module.browse_url, arguments.get("url", ""))
             return "System Info: Browser module is not active."
 
+        if name == "recall_memory":
+            print(f"\n{GRAY}[Lumi is using tool: recall_memory({arguments})]{RESET}")
+            memory_module = next(
+                (m for m in self.modules if m.__class__.__name__ == "Memory"),
+                None,
+            )
+            if memory_module is None:
+                return "Memory module is not loaded."
+            try:
+                hits = memory_module.API.query_temporal(
+                    arguments.get("query", ""),
+                    since=arguments.get("since"),
+                    limit=10,
+                )
+                return memory_module.API.format_recall(hits)
+            except Exception as e:
+                return f"recall_memory failed: {e}"
+
         print(f"\n{GRAY}[Lumi wants to use tool: {name}({arguments})]{RESET}")
 
         if name in CONFIRM_REQUIRED_TOOLS:
@@ -691,10 +858,10 @@ class Prompter:
         return await loop.run_in_executor(None, execute_tool, name, arguments)
 
     async def run_agent_turn(self, latest_user_text):
-        context_injections = self.gather_injections(latest_user_text)
+        context_injections = self.gather_injections(latest_user_text, agent_context=True)
         messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{context_injections}"}]
 
-        for msg in self.signals.history:
+        for msg in self.signals.history[-10:]:
             role = msg.get("role", "user")
             if role not in ("user", "assistant", "system", "tool"):
                 role = "user"
@@ -706,8 +873,14 @@ class Prompter:
 
         executed_this_turn = set()
         any_tool_succeeded = False
+        tool_outcomes = []
+
         intent_retry_used = False
+        sim_action_retry_used = False
+        refusal_retry_used = False
+
         query_is_read_only = _query_is_read_only(latest_user_text)
+        original_request = latest_user_text
 
         for step in range(MAX_AGENT_STEPS):
             payload = {
@@ -716,7 +889,12 @@ class Prompter:
                 "tools": all_tools,
                 "stream": False,
                 "keep_alive": "30s",
-                "options": {"temperature": 0.4},
+                "options": {
+                    "temperature": 0.5,
+                    "top_p": 0.9,
+                    "repeat_penalty": 1.15,
+                    "repeat_last_n": 64
+                },
             }
 
             print(f"{GRAY}Thinking (agent step {step + 1}/{MAX_AGENT_STEPS})...{RESET}")
@@ -751,6 +929,11 @@ class Prompter:
                     if recovered:
                         print(f"{GRAY}[Recovered {len(recovered)} bracket-notation "
                               f"tool call(s) from content]{RESET}")
+                    else:
+                        recovered = _extract_bracket_json_tool_calls(content)
+                        if recovered:
+                            print(f"{GRAY}[Recovered {len(recovered)} bracket-JSON "
+                                  f"tool call(s) from content]{RESET}")
 
                 if recovered:
                     tool_calls = recovered
@@ -802,29 +985,34 @@ class Prompter:
                     messages.append({
                         "role": "user",
                         "content": (
-                            "You just announced what you were going to do, but you "
-                            "did not call a tool — so nothing happened. The task is "
-                            "not finished. Emit the tool call you described, NOW. "
-                            "Not the announcement — the actual call. JSON only."
+                            f"You announced what you were going to do, but you did "
+                            f"not call a tool. Nothing happened. The user's request "
+                            f"was:\n\n    \"{original_request}\"\n\n"
+                            f"Call the tool that fulfills that request now. Emit the "
+                            f"tool call as JSON only. No prose, no announcements."
                         ),
                     })
                     continue
 
                 if (
                     not any_tool_succeeded
-                    and _looks_like_simulated_action(content, latest_user_text)
+                    and _looks_like_simulated_action(content, original_request)
+                    and not sim_action_retry_used
                     and step < MAX_AGENT_STEPS - 1
                 ):
+                    sim_action_retry_used = True
                     print(f"{GRAY}[Simulated action detected — forcing retry]{RESET}")
                     messages.append({"role": "assistant", "content": content})
                     messages.append({
                         "role": "user",
                         "content": (
-                            "Your previous reply didn't include a tool call, so nothing "
-                            "actually happened yet. Let's try again properly.\n\n"
-                            "Emit the tool call as JSON only, in this exact shape:\n"
-                            '  {"name": "tool_name", "arguments": {...}}\n\n'
-                            "No brackets. No 'emit tool(...)'. Just the JSON object."
+                            f"Your previous reply claimed or implied an action, but "
+                            f"you did NOT call a tool — so nothing happened. The "
+                            f"user's request was:\n\n    \"{original_request}\"\n\n"
+                            f"Call the tool that fulfills that request now. If they "
+                            f"mentioned a specific filename, use THAT EXACT name in "
+                            f"the tool call. Do not substitute a different file. "
+                            f"Emit the tool call as JSON only."
                         ),
                     })
                     continue
@@ -833,21 +1021,27 @@ class Prompter:
                     not any_tool_succeeded
                     and step > 0
                     and _REFUSAL.search(content)
+                    and not refusal_retry_used
                     and step < MAX_AGENT_STEPS - 1
                 ):
-                    print(f"{GRAY}[Refusal detected after retry — forcing second attempt]{RESET}")
+                    refusal_retry_used = True
+                    print(f"{GRAY}[Refusal detected — forcing retry]{RESET}")
                     messages.append({"role": "assistant", "content": content})
                     messages.append({
                         "role": "user",
                         "content": (
-                            "You do have the ability — you have the tools. "
-                            "Emit the tool call now as JSON:\n\n"
-                            '{"name": "write_file", "arguments": {"path": "hello_world.py", '
-                            '"content": "..."}}\n\n'
-                            "Just emit the JSON. Do not refuse."
+                            f"You refused, but you have the tools to handle this. "
+                            f"The user's request was:\n\n    \"{original_request}\"\n\n"
+                            f"Emit the correct tool call as JSON now. Do not refuse."
                         ),
                     })
                     continue
+
+                if hasattr(self.signals, "emotional_state") and tool_outcomes:
+                    try:
+                        self.signals.emotional_state.note_turn_complete(tool_outcomes)
+                    except Exception:
+                        pass
 
                 return content or "..."
 
@@ -932,11 +1126,19 @@ class Prompter:
                 print(f"{GRAY}  -> {str(result)[:300]}{RESET}")
                 messages.append({"role": "tool", "content": str(result), "name": name})
 
-                if not _result_looks_like_failure(result):
-                    any_tool_succeeded = True
+                failed = _result_looks_like_failure(result)
+                tool_outcomes.append((not failed, name))
 
+                if not failed:
+                    any_tool_succeeded = True
                     if name == "write_file":
                         executed_this_turn.clear()
+
+        if hasattr(self.signals, "emotional_state") and tool_outcomes:
+            try:
+                self.signals.emotional_state.note_turn_complete(tool_outcomes)
+            except Exception:
+                pass
 
         return "I've hit my step limit working on that one — want me to keep going, or narrow it down?"
 
@@ -958,18 +1160,70 @@ class Prompter:
                     stripped = latest_user_text.strip()
                     stripped_lower = stripped.lower()
 
-                    # ---------------------------------------------------------------
-                    # COMMAND HANDLER
-                    # ---------------------------------------------------------------
+                    if hasattr(self.signals, "emotional_state"):
+                        try:
+                            is_command = (
+                                stripped_lower.startswith("!")
+                                or stripped_lower.startswith("set mood ")
+                                or stripped_lower.startswith("switch mood ")
+                                or stripped_lower in ("wipe memory", "clear memory", "reset memory")
+                            )
+                            if is_command:
+                                self.signals.emotional_state.note_command()
+                            else:
+                                self.signals.emotional_state.note_user_message(latest_user_text)
+                        except Exception:
+                            pass
+
                     force_agent = False
 
-                    # --- !list / !help ---
                     if stripped_lower in ("!list", "!help"):
                         print(self.render_command_list())
                         self.signals.AI_thinking = False
                         continue
 
-                    # --- Agent mode controls ---
+                    if stripped_lower == "!state":
+                        if hasattr(self.signals, "emotional_state"):
+                            s = self.signals.emotional_state
+                            print(f"\n{BOLD}{MAGENTA}Emotional State{RESET}")
+                            print(f"  valence:     {s.valence:+.2f}")
+                            print(f"  arousal:     {s.arousal:.2f}")
+                            print(f"  frustration: {s.frustration:.2f}")
+                            print(f"  curiosity:   {s.curiosity:.2f}")
+                            print(f"  boredom:     {s.boredom:.2f}")
+                            print(f"\n{BOLD}{MAGENTA}Traits{RESET}")
+                            for k, v in s.traits.items():
+                                print(f"  {k:<14}{v:.2f}")
+                            print(f"\n{BOLD}{MAGENTA}Current Frame{RESET}")
+                            print(f"  {s.current_frame}")
+                            print(f"\n  {s.describe(update=False)}\n")
+                        else:
+                            print(f"{YELLOW}[emotional state module not loaded]{RESET}")
+                        self.signals.AI_thinking = False
+                        continue
+                    
+                    if stripped_lower == "!recall" or stripped_lower.startswith("!recall "):
+                        query_text = stripped[len("!recall"):].strip()
+                        memory_module = next(
+                            (m for m in self.modules
+                             if m.__class__.__name__ == "Memory"),
+                            None,
+                        )
+                        if not memory_module:
+                            print(f"{YELLOW}[memory module not loaded]{RESET}")
+                        elif not query_text:
+                            print(f"{YELLOW}[usage: !recall <query>]{RESET}")
+                        else:
+                            hits = memory_module.API.query_temporal(
+                                query_text, limit=10,
+                            )
+                            print(f"\n{BOLD}{MAGENTA}Memory recall: "
+                                  f"'{query_text}'{RESET}")
+                            print(memory_module.API.format_recall(hits))
+                            print()
+                        self.signals.AI_thinking = False
+                        continue
+                    
                     if stripped_lower == "!agent_on":
                         self.agent_mode_enabled = True
                         ack = f"{self._agent_mode_banner()} [confident] Agent mode engaged. Tools are live, Anthony. Point me at something."
@@ -998,18 +1252,14 @@ class Prompter:
                         self.signals.AI_thinking = False
                         continue
 
-                    # "!agent <task>" — one-shot agent turn
                     if stripped_lower.startswith("!agent "):
                         rest = stripped[len("!agent"):].strip()
                         if rest:
-                            # Strip the prefix from history so the model
-                            # doesn't see "!agent" as part of the task.
                             self.signals.history[-1] = {"role": "user", "content": rest}
                             latest_user_text = rest
                             lowered_text = rest.lower()
                             force_agent = True
 
-                    # --- existing command checks (wipe memory, set mood) ---
                     if lowered_text in ["wipe memory", "clear memory", "reset memory"]:
                         wipe_result = self.wipe_memory()
                         self.signals.history.append({"role": "system", "content": wipe_result})
@@ -1040,11 +1290,15 @@ class Prompter:
                             self.signals.AI_thinking = False
                             continue
 
-                    # ---------------------------------------------------------------
-                    # ROUTING: agent vs conversational
-                    # Agent loop runs ONLY if the user explicitly asked for it
-                    # (via !agent prefix or toggle). Otherwise pure chat.
-                    # ---------------------------------------------------------------
+                    if stripped_lower == "!sleep":
+                        self.save_session_state()
+                        ack = "[soft tone] Noted. I'll remember where we left off."
+                        print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {ack}")
+                        self.signals.history.append({"role": "assistant", "content": ack})
+                        self._push_to_tts(ack)
+                        self.signals.AI_thinking = False
+                        continue
+
                     if force_agent or self.agent_mode_enabled:
                         mode_tag = f"{GRAY}[agent{RESET}{GRAY}]{RESET}"
                     else:

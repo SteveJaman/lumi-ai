@@ -2,8 +2,8 @@
 
 A local-first, agentic AI companion running on consumer hardware. Lumi is a
 persona-driven VTuber-style assistant with real tool use — she can read and
-write files, run commands, search the web, control a browser, and verify her
-own work — all coordinated through a local Ollama model.
+write files, run commands, search the web, control a browser, query her own
+memory, and verify her own work — all coordinated through a local Ollama model.
 
 Unlike scripted chatbots or bracket-tag "tool" syntax, Lumi uses **structured
 tool calling** through Ollama's native `/api/chat` tool interface. When she
@@ -19,7 +19,10 @@ the log and see that she did.
   - [Multi-Step Task Execution](#multi-step-task-execution)
   - [Safety Layers](#safety-layers)
   - [Persona & Voice](#persona--voice)
-  - [Persistent Memory](#persistent-memory)
+  - [Episodic Memory](#episodic-memory)
+  - [Emotional State & Cognitive Frames](#emotional-state--cognitive-frames)
+  - [Autonomous Heartbeat](#autonomous-heartbeat)
+  - [Ambient Screen Awareness](#ambient-screen-awareness)
   - [Multimodal (Optional)](#multimodal-optional)
   - [Integrations](#integrations)
 - [Terminal Commands](#terminal-commands)
@@ -35,6 +38,7 @@ the log and see that she did.
 - [Voice Customization](#voice-customization)
 - [Resource Optimization](#resource-optimization)
 - [Known Limitations](#known-limitations)
+- [Roadmap](#roadmap)
 - [Credits](#credits)
 - [Disclaimer](#disclaimer)
 
@@ -44,7 +48,7 @@ the log and see that she did.
 
 ### Real Agentic Tool Use
 
-Lumi has eight tools available at request time. She picks them herself based on
+Lumi has nine tools available at request time. She picks them herself based on
 the task, executes them one at a time, reads the result, and decides what to do
 next — up to `MAX_AGENT_STEPS = 6` per turn.
 
@@ -58,6 +62,7 @@ next — up to `MAX_AGENT_STEPS = 6` per turn.
 | `run_in_terminal(command)` | Open a NEW visible terminal — **requires confirmation** |
 | `web_search(query)` | Web search or live weather/time |
 | `browse_url(url)` | Playwright-based browser navigation |
+| `recall_memory(query, since)` | Query Lumi's own long-term memory for facts, past conversations, or events with timestamps |
 
 Because `write_file`, `run_command`, and `run_in_terminal` are gated behind a
 `y/n` prompt, nothing destructive ever runs without your explicit approval.
@@ -83,6 +88,7 @@ files it wasn't asked to write, or looping on the same failed command:
 - **Simulated-action detection** — catches "I've updated the file!" prose that
   isn't backed by a real tool call
 - **Intent-announcement guard** — catches "now let's X" without an actual call
+- **Refusal guard** — catches "I can't" and re-prompts with the original request
 - **Read-only query gate** — refuses `write_file` when the user only asked to read
 - **No-op write guard** — refuses writes identical to the current file
 - **Duplicate-call guard** — skips repeat tool calls; clears the memory after a
@@ -97,8 +103,8 @@ files it wasn't asked to write, or looping on the same failed command:
 ### Persona & Voice
 
 - **Fish Audio S2** synthesis with inline `[emotion]` tags (`[smug]`,
-  `[sighing]`, `[sarcastic]`, `[excited]`, …) parsed as delivery instructions,
-  not spoken text
+  `[sighing]`, `[sarcastic]`, `[excited]`, `[shouting]`, `[whisper]`,
+  `[pitch up]`, `[low voice]`, …) parsed as delivery instructions, not spoken text
 - **MoodManager** with four profiles: `default`, `bratty`, `brocon`, `soft` —
   switchable at runtime with `set mood <name>`
 - **faster-whisper** local STT with VAD-triggered **barge-in** (start talking,
@@ -107,18 +113,88 @@ files it wasn't asked to write, or looping on the same failed command:
   Japanese, or another supported language, she replies in that language
 - **Dual output routing** — local speakers, Discord voice, or both
 
-### Persistent Memory
+### Episodic Memory
 
-ChromaDB-backed long-term memory. Every ~10 messages, Lumi reflects on the
-recent conversation and stores extracted facts; relevant memories are pulled
-into the prompt based on semantic similarity to recent turns.
+ChromaDB-backed long-term memory with **timestamped, importance-scored facts**.
+
+- Every ~10 messages, a background reflection pass asks the LLM to extract
+  facts from the recent conversation. Each fact is stored with:
+  - `timestamp` (ISO, seconds precision)
+  - `importance` (0.0–1.0, model-scored)
+  - `valence` (one-word emotion like `frustrated` or `satisfied`, or `null`)
+  - `session_id` (per-run, for grouping)
+- Retrieval reweights results by a combined score:
+  `0.50 * similarity + 0.30 * importance + 0.20 * recency`, with a 30-day
+  half-life on the recency term. Old facts naturally fade; important recent
+  ones surface.
+- Two query surfaces:
+  - `!recall <query>` — terminal command, sorted oldest-first, with
+    importance markers (`★` for 0.85+, `·` for 0.6+) and age hints
+    (`[6:16 PM]`, `[yesterday]`, `[2d ago]`)
+  - `recall_memory(query, since)` — an agent tool Lumi can call on her own
+    when you ask "do you remember…" or "when did we talk about…"
+- Temporal hints (`yesterday`, `last week`, `3 days ago`) are parsed in both
+  the injection path and the explicit query path.
+
+### Emotional State & Cognitive Frames
+
+Five runtime variables (`valence`, `arousal`, `frustration`, `curiosity`,
+`boredom`) with baselines and exponential decay every 30 seconds. Eight
+personality traits from `lumi.yaml` modulate how strongly events move the
+state.
+
+Six cognitive frames — `play`, `strategy`, `chaos`, `social`, `learning`,
+`threat` — are selected contextually:
+
+- High frustration → `threat`
+- Vulnerable user language → `social`
+- High arousal + positive valence → `chaos`
+- Agent mode active → `strategy`
+- High curiosity + low frustration → `learning`
+- Default → `play`
+
+Each frame carries a tone directive that gets injected alongside the state
+description. The state and frame color her delivery without her ever naming
+them.
+
+### Autonomous Heartbeat
+
+A background loop fires every 30 seconds and decides whether Lumi should speak
+without being prompted. Gates:
+
+- Not busy (not thinking or speaking)
+- User idle for 5+ minutes (30+ minutes late at night)
+- 10+ minutes since her last unprompted message
+
+When gates pass, she's shown the current time, idle duration, last topic,
+active window title, current mood, and her recent unprompted messages (to
+avoid repeating herself). She responds with either a short anchored message or
+the literal token `SILENCE`. When in doubt, she leans toward speaking — a
+companion who only talks when something is wrong is not good company.
+
+### Ambient Screen Awareness
+
+A background sampler captures the active screen every 30 seconds, computes an
+8×8 average hash, and only calls the vision model (`moondream`) when:
+
+1. The foreground window title changes, or
+2. The screen hash changes by more than 14 bits **and** 90+ seconds have
+   passed since the last VLM call
+
+Descriptions are cached for 5 minutes and injected as `[Screen Context]` into
+the prompter prompt. This gives Lumi passive awareness of what you're working
+on without a continuous screenshot loop burning GPU.
+
+**Cost profile:** idle on the same window → ~1 screenshot + 1 hash per tick,
+no VLM. Active (window switches or big content changes) → one VLM call,
+rate-limited to at most once per 90 seconds.
 
 ### Multimodal (Optional)
 
-`MultiModal` module captures your primary/secondary monitor, asks a local VLM
-(`moondream`) to describe it, and injects the description into the prompt when
-she detects a "look at my screen" style question. Triggered on demand — no
-continuous screenshot loop.
+`MultiModal` module captures your primary/secondary monitor on demand, asks a
+local VLM (`moondream`) to describe it, and injects the description into the
+prompt when she detects a "look at my screen" style question. Triggered by
+text patterns, not a continuous loop.
 
 ### Integrations
 
@@ -143,9 +219,11 @@ Type `!list` at any time to see the full command card. Summary:
 | `!agent_off` | Disable agent mode — pure conversation only |
 | `!agent` | Toggle agent mode |
 | `!agent <task>` | One-shot agent turn, returns to current mode |
+| `!state` | Show emotional state, traits, and active cognitive frame |
+| `!recall <query>` | Search long-term memory for a topic, oldest-first |
+| `!sleep` | Summarize session and save continuity state for next time |
 | `set mood <name>` | Switch mood profile (`default`, `bratty`, `brocon`, `soft`) |
 | `wipe memory` | Clear all long-term ChromaDB memories |
-| `!mic_on` / `!mic_off` | Start/stop microphone listening |
 
 **Agent mode is OFF by default.** At startup, every message goes through a
 plain chat completion with no tools — Lumi can't invent tasks on idle banter.
@@ -161,17 +239,18 @@ Only `!agent_on` or `!agent <task>` opens the tool interface.
 User input (terminal, mic, or Discord)
         │
         ▼
-Command router (checks !agent_on/off, !list, mood, memory wipes)
+Command router (checks !agent_on/off, !list, !state, !recall, mood, memory wipes)
         │
         ├─── conversational mode → single chat completion, no tools
         │
         └─── agent mode → run_agent_turn():
-              ├─ Build system prompt (persona + tool directive + memory + mood)
+              ├─ Build system prompt (persona + tool directive + memory + mood
+              │  + emotional state + cognitive frame + ambient screen context)
               ├─ Append history
               ├─ POST to Ollama /api/chat with tool schemas
               ├─ If tool_calls returned:
               │    ├─ Confirm gates for write_file / run_command / run_in_terminal
-              │    ├─ Execute tool via execute_tool() in agent_tools.py
+              │    ├─ Execute tool via execute_tool() or _dispatch_tool_call
               │    ├─ Append result as `role: tool`
               │    └─ Loop back to Ollama (up to MAX_AGENT_STEPS)
               └─ If plain text returned: push to TTS, save to history
@@ -182,12 +261,17 @@ Command router (checks !agent_on/off, !list, mood, memory wipes)
 | File | Role |
 |---|---|
 | `main.py` | Entry point — audio routing menu, module spawning |
-| `modules/prompter.py` | The agent loop, command router, detection guards |
+| `modules/prompter.py` | Agent loop, command router, detection guards |
 | `modules/agent_tools.py` | Tool schemas + filesystem/command execution |
+| `modules/memory.py` | ChromaDB long-term memory, reflection loop, temporal queries |
+| `modules/emotional_state.py` | Traits, state variables, cognitive frame selection |
+| `modules/heartbeat.py` | Autonomous initiation loop |
+| `modules/ambient_perception.py` | Background screen sampler + VLM descriptions |
+| `modules/session_state.py` | Cross-session continuity (focus, unresolved, running bits) |
 | `modules/socketIO.py` | Web control panel backend (Socket.io server on port 5000) |
 | `modules/tts.py` | Fish Audio HTTP client with per-language reference support |
 | `signals.py` | Shared state object (history, flags, queues) |
-| `constants.py` | Config, workspace path, YAML persona loader, auto-aging |
+| `constants.py` | Config, workspace path, YAML persona loader |
 | `lumi.yaml` | Full persona definition — personality, lore, favorites, fears |
 
 ### Background Modules
@@ -324,6 +408,21 @@ Thinking (agent step 2/6)...
 [confident] There you go. The output is real — I actually ran it.
 ```
 
+### Memory Query Example
+
+```
+Anthony: !recall perception
+
+Memory recall: 'perception'
+[6:16 PM] ★ Anthony is working on a perception feature for Lumi
+[6:16 PM] · [tired] Anthony frequently zones out or gets distracted
+[6:16 PM] Anthony prefers Python over other programming languages
+[6:27 PM] ★ Anthony is working on a perception feature for Lumi
+[yesterday] Anthony's main monitor is cluttered with development tools
+```
+
+The `★` marker means importance ≥ 0.85, `·` means ≥ 0.6.
+
 ---
 
 ## Voice Customization
@@ -338,6 +437,7 @@ situations:
 - `[excited]`, `[pitch up]` — happy, enthusiastic moments
 - `[whisper]`, `[low voice]` — soft, unguarded, or handler mode
 - `[sighing]`, `[chuckling]` — non-verbal beats
+- `[shouting]` — frustrated, genuinely loud
 - `[confident]`, `[disdainful]` — smug, superiority mode
 
 **To change the voice:** record a 10–30 second clip of the voice you want,
@@ -366,6 +466,7 @@ trimmed significantly:
 
 2. **Disable modules you're not using.** In `main.py`:
    - `MultiModal` — screen capture on demand; light when idle
+   - `AmbientPerception` — samples every 30s; VLM calls rate-limited
    - `DiscordClient` — loads a second Whisper model
    - `BrowserController` — holds a Playwright Firefox context
    - `MicInput` — set to `False` if you mostly type at the terminal
@@ -382,8 +483,8 @@ trimmed significantly:
 ## Known Limitations
 
 - **Context window** — 32K tokens. The system prompt + tool schemas + history
-  + tool results add up fast; very long sessions may need `main.py` restarted
-  to clear history.
+  + tool results + memory injection + ambient context add up fast; very long
+  sessions may need `main.py` restarted to clear history.
 - **Local model variance** — 7B-class models occasionally invent things, drop
   tool-call formatting, or hallucinate action completion. The guards catch
   most of this, but it's a moving target across model updates.
@@ -395,6 +496,42 @@ trimmed significantly:
 - **Self-modification** — Lumi can edit `prompter.py` and other writable files
   in the workspace. Always read the `write_file` confirmation blob before
   confirming; a `.bak` is saved automatically.
+- **`constants.py` latent NameError** — if `voice_performance` is non-empty in
+  `lumi.yaml`, the `VOICE_EMOTION_PROMPT` construction references an undefined
+  variable. Currently benign because the fallback path is what's executing.
+  Worth tracing.
+
+---
+
+## Roadmap
+
+Architectural phases inspired by Neuro-sama (Vedal987). The goal is not
+intelligence parity — it's architectural parity. Neuro runs continuously, has
+internal state, makes her own decisions, and acts without being prompted. This
+project closes that gap in measurable steps.
+
+| Phase | Description | Status |
+|---|---|---|
+| 1 | Autonomous heartbeat | ✅ Complete |
+| 2 | Emotional state + traits + cognitive frames | ✅ Complete |
+| 3 | Continuous ambient perception | ✅ Complete |
+| 4 | Episodic memory (timestamps + importance) | ✅ Complete |
+| 5.1 | Pitch/volume emotion tags | ✅ Complete |
+| 5.2 | SoX pitch-shift post-processing | ❌ Not started |
+| 5.3 | RVC voice conversion | ❌ Not started |
+| 6 | Multi-model orchestration | ❌ Not started |
+| 7 | Self-model / meta-cognition | ❌ Not started |
+
+Every remaining item is optional polish. The core system is stable and in
+daily use. The next roadmap item should be driven by real friction, not
+speculation.
+
+---
+
+## Credits
+
+Built as a personal project. Architecture inspired by Neuro-sama
+(Vedal987). Uses Ollama, ChromaDB, Faster-Whisper, Fish Audio, and Playwright.
 
 ---
 

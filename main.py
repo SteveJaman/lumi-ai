@@ -21,6 +21,9 @@ from modules.mic_input import MicInput
 from modules.browser_controller import BrowserController
 from modules.prompter import Prompter
 from modules.socketIO import SocketIOServer
+from modules.heartbeat import Heartbeat
+from modules.emotional_state import EmotionalStateModule
+from modules.ambient_perception import AmbientPerception
 
 # TTS may live at root OR in modules/ depending on how you've organized files.
 try:
@@ -29,16 +32,52 @@ except ImportError:
     from tts import TTS
 
 
-# Global reference so the OS signal handler can reach it
+# Global references so the OS signal handler can reach them
 _global_signals = None
+_global_prompter = None
+
+# Shutdown guard. Windows delivers SIGINT to the whole process group at once,
+# and RealtimeSTT's spawned children re-import main.py on Windows — so without
+# a guard, every process would print its own shutdown message. The lock
+# serializes within a process; the process-name check in handle_exit limits
+# the actual work to the parent process only.
+_shutdown_lock = threading.Lock()
+_shutdown_started = False
 
 
 def handle_exit(sig, frame):
-    """Triggers clean shutdown across all modules when Ctrl+C is pressed."""
+    """Triggers clean shutdown across all modules when Ctrl+C is pressed.
+    Saves session state before terminating so Lumi remembers where we left off.
+
+    Only the main process handles this. RealtimeSTT spawns children that
+    re-import main.py on Windows, so without the process check each child
+    would register its own SIGINT handler and print its own shutdown line."""
+    global _shutdown_started
+
+    # Ignore the signal in multiprocessing children.
+    if multiprocessing.current_process().name != "MainProcess":
+        return
+
+    with _shutdown_lock:
+        if _shutdown_started:
+            return
+        _shutdown_started = True
+
     print("\n\033[93m[System] Interrupt received, shutting down cleanly...\033[0m")
+
+    if _global_prompter:
+        try:
+            if not getattr(_global_prompter, "_session_saved_this_run", False):
+                _global_prompter.save_session_state()
+        except Exception as e:
+            print(f"\033[91mSESSION: Shutdown save failed: {e}\033[0m")
+
     if _global_signals:
         _global_signals.terminate = True
-    time.sleep(1.5)  # Gives Discord a second to drop voice connection
+
+    # Give spawned children a moment to notice terminate and exit cleanly
+    # before we hard-kill the process tree.
+    time.sleep(3.0)
     os._exit(0)
 
 
@@ -66,17 +105,12 @@ def choose_audio_mode():
 
 
 def main():
-    global _global_signals
+    global _global_signals, _global_prompter
     selected_audio_mode = choose_audio_mode()
 
     signals = Signals()
-    _global_signals = signals  # Bind to global scope for signal handler
+    _global_signals = signals
 
-    # ------------------------------------------------------------------
-    # Module roster. Flip `enabled=` to False to disable any module
-    # without removing it. MicInput is the biggest CPU saver if you
-    # mostly type; DiscordClient only needed for Discord voice.
-    # ------------------------------------------------------------------
     modules = [
         Memory(signals, enabled=True),
         MultiModal(signals, enabled=True),
@@ -86,13 +120,14 @@ def main():
         DiscordClient(signals, enabled=True, audio_mode=selected_audio_mode),
         VtubeStudio(signals, enabled=False),
         BrowserController(signals, enabled=True),
+        Heartbeat(signals, enabled=True),
+        EmotionalStateModule(signals, enabled=True),
+        AmbientPerception(signals, enabled=True),
     ]
 
-    # Instantiate TTS, pass the modules reference AND the selected audio mode
     tts_module = TTS(signals, enabled=True, modules=modules, audio_mode=selected_audio_mode)
     modules.append(tts_module)
 
-    # Spawn a daemon thread for each service module's event loop
     threads = []
     for module in modules:
         t = threading.Thread(target=module.init_event_loop, daemon=True)
@@ -100,8 +135,9 @@ def main():
         threads.append(t)
 
     prompter = Prompter(signals, modules)
-    sio_server = SocketIOServer(signals)
+    _global_prompter = prompter
 
+    sio_server = SocketIOServer(signals)
     threading.Thread(target=sio_server.run, daemon=True).start()
 
     time.sleep(1.5)
@@ -116,8 +152,13 @@ def main():
         asyncio.run(prompter.run())
     except KeyboardInterrupt:
         print("\nShutting down companion engine...")
+        try:
+            if not getattr(prompter, "_session_saved_this_run", False):
+                prompter.save_session_state()
+        except Exception as e:
+            print(f"\033[91mSESSION: Shutdown save failed: {e}\033[0m")
         signals.terminate = True
-        time.sleep(1.5)
+        time.sleep(3.0)
         os._exit(0)
 
 

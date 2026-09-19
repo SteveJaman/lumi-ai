@@ -3,12 +3,12 @@ Agent tools: real, structured actions the model can call — as opposed to the
 old approach of regex-scanning free text for [READ: ...] style tags. Every
 tool call comes back from Ollama as a proper tool_calls object, so there's no
 ambiguity between "the model used a tool" and "the model quoted some text
-that looked like a tool call" (that ambiguity was the bug we fixed earlier).
+that looked like a tool call."
 
 Every filesystem tool is restricted to WORKSPACE_ROOT — nothing can read,
 write, or list outside the project folder. write_file, run_command, and
-run_in_terminal are still gated behind a confirmation prompt in prompter.py
-before they're ever actually called.
+run_in_terminal are gated behind a confirmation prompt in prompter.py before
+they're ever actually called.
 """
 
 import os
@@ -32,9 +32,17 @@ MAX_COMMAND_OUTPUT_CHARS = 4000
 COMMAND_TIMEOUT_SECONDS = 30
 MAX_SEARCH_MATCHES = 40
 
+# File extensions that we handle with dedicated parsers rather than
+# reading as plain text.
+_DOC_EXTENSIONS = {".pdf", ".docx", ".doc"}
+_TEXT_EXTENSIONS = {
+    ".txt", ".md", ".py", ".js", ".ts", ".json", ".yaml", ".yml",
+    ".html", ".css", ".xml", ".csv", ".log", ".ini", ".cfg", ".toml",
+    ".sh", ".bat", ".ps1", ".c", ".cpp", ".h", ".hpp", ".java", ".rs",
+    ".go", ".rb", ".php", ".sql", ".env", ".example", ".gitignore",
+}
+
 # Commands that are clearly Linux-only and will always fail on Windows.
-# Rejected before the user sees a confirm prompt — the model has a strong
-# Linux bias in its training data and reaches for these automatically.
 _LINUX_ONLY_COMMAND = re.compile(
     r"^\s*(?:sudo\s+)?(?:"
     r"apt|apt-get|yum|dnf|pacman|systemctl|service|"
@@ -45,11 +53,10 @@ _LINUX_ONLY_COMMAND = re.compile(
     re.IGNORECASE,
 )
 
-# ---------------------------------------------------------------
-# Tool schemas — this is what actually replaces the old bracket-tag
-# system. The model sees these definitions and returns a structured
-# tool_calls object; it no longer has to be told a text syntax to type out.
-# ---------------------------------------------------------------
+
+# ===============================================================
+# TOOL SCHEMAS
+# ===============================================================
 TOOL_SCHEMAS = [
     {
         "type": "function",
@@ -57,15 +64,17 @@ TOOL_SCHEMAS = [
             "name": "read_file",
             "description": (
                 "Read the contents of a file inside the project workspace. "
-                "Always use this before editing a file you haven't already "
-                "seen in this conversation."
+                "Supports plain text, code, markdown, JSON, YAML, PDF, and DOCX. "
+                "If you only have a filename (not a path), this tool will search "
+                "the workspace for it automatically. Always use this before editing "
+                "a file you haven't already seen."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file, relative to the workspace root, e.g. 'prompter.py' or 'modules/memory.py'.",
+                        "description": "Path to the file, relative to the workspace root, e.g. 'prompter.py' or 'modules/memory.py'. A bare filename like 'test.pdf' will be searched for across the workspace.",
                     }
                 },
                 "required": ["path"],
@@ -172,7 +181,6 @@ TOOL_SCHEMAS = [
     },
 ]
 
-# Tool names that must never run without the user explicitly saying yes.
 CONFIRM_REQUIRED_TOOLS = {"write_file", "run_command", "run_in_terminal"}
 
 
@@ -193,16 +201,122 @@ def _safe_path(relative_path):
     return target
 
 
+def _find_file_in_workspace(filename):
+    """Search the workspace for a file matching the given basename.
+    Returns the absolute path if found, or None."""
+    filename = filename.strip().strip("'\"").replace("\\", "/")
+    target_name = os.path.basename(filename).lower()
+
+    # Pass 1: try common locations first (fast)
+    for candidate_dir in ("library", "documents", "docs", "files", "data", ""):
+        candidate = os.path.join(WORKSPACE_ROOT, candidate_dir, target_name)
+        if os.path.isfile(candidate):
+            return candidate
+
+    # Pass 2: full recursive search
+    for root, dirs, files in os.walk(WORKSPACE_ROOT):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for fname in files:
+            if fname.lower() == target_name:
+                return os.path.join(root, fname)
+
+    # Pass 3: partial match — the model sometimes drops the extension
+    for root, dirs, files in os.walk(WORKSPACE_ROOT):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for fname in files:
+            if target_name in fname.lower():
+                return os.path.join(root, fname)
+
+    return None
+
+
+def _read_pdf(target):
+    try:
+        import pypdf
+    except ImportError:
+        raise ToolError("pypdf is not installed. Run: pip install pypdf")
+
+    try:
+        reader = pypdf.PdfReader(target)
+        parts = []
+        for i, page in enumerate(reader.pages):
+            try:
+                txt = page.extract_text() or ""
+            except Exception:
+                txt = ""
+            if txt.strip():
+                parts.append(f"\n[Page {i + 1}]\n{txt}")
+        content = "\n".join(parts).strip()
+        if not content:
+            content = "[No extractable text in this PDF — it may be scanned images or empty.]"
+        return content
+    except Exception as e:
+        raise ToolError(f"Failed to read PDF: {e}")
+
+
+def _read_docx(target):
+    try:
+        from docx import Document
+    except ImportError:
+        raise ToolError("python-docx is not installed. Run: pip install python-docx")
+
+    try:
+        doc = Document(target)
+        parts = [p.text for p in doc.paragraphs if p.text.strip()]
+        # Also pull table cells, if any
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        content = "\n".join(parts).strip()
+        if not content:
+            content = "[Document contains no readable text.]"
+        return content
+    except Exception as e:
+        raise ToolError(f"Failed to read DOCX: {e}")
+
+
 def read_file(path):
+    """
+    Read a file inside the workspace. Handles plain text, code, and
+    document formats (PDF, DOCX) transparently.
+    If the exact path isn't found, searches the workspace by filename.
+    """
+    original_path = path
     target = _safe_path(path)
+
+    # If the exact path doesn't exist, try to find it by name
     if not os.path.isfile(target):
-        raise ToolError(f"No such file: {path}")
-    with open(target, "r", encoding="utf-8", errors="replace") as f:
-        content = f.read()
+        found = _find_file_in_workspace(path)
+        if found:
+            target = found
+        else:
+            raise ToolError(
+                f"No such file: '{original_path}'. "
+                f"(Also searched the workspace by filename.)"
+            )
+
+    rel = os.path.relpath(target, WORKSPACE_ROOT)
+    ext = os.path.splitext(target)[1].lower()
+
+    # --- Route by extension ---
+    if ext == ".pdf":
+        content = _read_pdf(target)
+    elif ext in (".docx", ".doc"):
+        content = _read_docx(target)
+    else:
+        # Plain text / code / markdown / JSON / etc.
+        try:
+            with open(target, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception as e:
+            raise ToolError(f"Failed to read {rel}: {e}")
+
     truncated = len(content) > MAX_FILE_READ_CHARS
     if truncated:
         content = content[:MAX_FILE_READ_CHARS] + "\n... [truncated]"
-    rel = os.path.relpath(target, WORKSPACE_ROOT)
+
     note = "\n(truncated — ask to see more if needed)" if truncated else ""
     return f"Contents of {rel}:\n```\n{content}\n```{note}"
 
@@ -216,7 +330,6 @@ def write_file(path, content):
 
     existed = os.path.isfile(target)
 
-    # Only make a backup when there's an existing file to back up.
     if existed:
         shutil.copy2(target, target + ".bak")
 
@@ -258,6 +371,10 @@ def search_files(query, path="."):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for fname in files:
             fpath = os.path.join(root, fname)
+            # Only search text-like files
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in _DOC_EXTENSIONS:
+                continue
             try:
                 with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
                     for i, line in enumerate(f, start=1):
@@ -282,7 +399,6 @@ def run_command(command):
     if not command or not command.strip():
         return "No command given."
 
-    # Reject Linux-only commands on Windows before anything else.
     if _LINUX_ONLY_COMMAND.match(command.strip()):
         return (
             "Error: this command is Linux-only and will fail on Windows. "
@@ -313,13 +429,10 @@ def run_command(command):
 
 
 def run_in_terminal(command):
-    """Spawns a new visible Windows terminal window running `command`,
-    inside WORKSPACE_ROOT. Returns immediately — this does NOT capture
-    output; the window stays open so the user can interact with it."""
+    """Spawns a new visible Windows terminal window running `command`."""
     if not command or not command.strip():
         return "No command given."
 
-    # Same Linux-only guard as run_command.
     if _LINUX_ONLY_COMMAND.match(command.strip()):
         return (
             "Error: this command is Linux-only and will fail on Windows. "
@@ -329,10 +442,6 @@ def run_in_terminal(command):
     command = command.strip()
 
     try:
-        # `start` is a cmd.exe builtin. The leading "" is the window-title
-        # placeholder — without it, `start` treats the first quoted token
-        # as a title and eats it. PowerShell -NoExit keeps the window
-        # open after the command finishes so errors remain visible.
         subprocess.Popen(
             ["cmd", "/c", "start", "", "powershell", "-NoExit", "-Command", command],
             cwd=WORKSPACE_ROOT,
@@ -356,8 +465,7 @@ _DISPATCH = {
 
 
 def execute_tool(name, arguments):
-    """Executes one of the tools above by name. Callers are responsible for
-    confirmation gating on CONFIRM_REQUIRED_TOOLS before calling this."""
+    """Executes one of the tools above by name."""
     fn = _DISPATCH.get(name)
     if not fn:
         return f"Unknown tool: {name}"

@@ -1,7 +1,6 @@
 import time
 from aiohttp import web
 import socketio
-from aiohttp.web_runner import GracefulExit
 from constants import PATIENCE
 
 class SocketIOServer:
@@ -221,19 +220,19 @@ class SocketIOServer:
             print(f'Socket.IO Client disconnected: {sid}')
 
         async def send_messages():
+            # Plain return on terminate instead of raising GracefulExit.
+            # aiohttp's GracefulExit inherits from SystemExit, not Exception,
+            # so the old "except Exception" guard couldn't catch it — it
+            # propagated up and asyncio logged it as an unretrieved task
+            # exception on every shutdown. Returning is equivalent and clean.
             try:
-                while True:
-                    if self.signals.terminate:
-                        raise GracefulExit
-
+                while not self.signals.terminate:
                     while not self.signals.sio_queue.empty():
                         event, data = self.signals.sio_queue.get()
                         await sio.emit(event, data)
                     await sio.sleep(0.1)
             except Exception as e:
-                if type(e).__name__ == "GracefulExit":
-                    return
-                raise
+                print(f"\033[91msocketIO send_messages error: {e}\033[0m")
 
         async def init_app():
             sio.start_background_task(send_messages)
