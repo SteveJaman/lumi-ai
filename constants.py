@@ -30,13 +30,13 @@ TIMEZONE = "America/New_York"
 FAST_MODEL_NAME = "qwen2.5:7b"          # fall back to "qwen2.5:1.5b" if VRAM is tight
 FAST_MODEL_ENABLED = True               # set False to disable routing entirely
 FAST_MODEL_NUM_CTX = 8192               # chat doesn't need 32K
-FAST_MODEL_KEEP_ALIVE = "5m"            # stays warm between turns
+FAST_MODEL_KEEP_ALIVE = "10m"            # stays warm between turns
 
 # Audio Output Routing: "discord", "local", or "both"
 AUDIO_OUTPUT_MODE = "both"
 
 # Multi-Device Output: 19 = Virtual Cable (VTuber model), 5 = Focusrite Headphones
-OUTPUT_DEVICE_INDEX = [9, 5]
+OUTPUT_DEVICE_INDEX = [24, 20]
 
 # =======================================================
 # YAML Profile & Persona Loader

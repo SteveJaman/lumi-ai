@@ -43,14 +43,10 @@ SESSION_CONTINUITY_TURNS = 3
 
 # ===============================================================
 # LOCAL TIME HELPER
-# ---------------------------------------------------------------
-# Reads TIMEZONE from constants.py if defined; falls back to system
-# local time. Pinning the timezone prevents drift if the host machine
-# is ever in a different zone (VM, remote session, travel).
 # ===============================================================
 def _get_local_now():
     try:
-        from constants import TIMEZONE  # optional — may not exist
+        from constants import TIMEZONE
         if TIMEZONE:
             from zoneinfo import ZoneInfo
             return datetime.datetime.now(ZoneInfo(TIMEZONE))
@@ -75,6 +71,14 @@ COMMANDS = {
     },
     "Emotional": {
         "!state": "Show Lumi's current emotional state, traits, and active frame",
+    },
+    "Avatar": {
+        "!set <name> on|off": "Set an expression state idempotently",
+        "!expressions": "List expression state names and current on/off state",
+        "!expression <name>": "Toggle a raw VTS hotkey (no state tracking)",
+        "!move <location>": "Move Lumi's avatar to a preset position",
+        "!hotkeys": "List raw VTS hotkeys on the loaded model",
+        "!positions": "List preset VTS model positions",
     },
     "Memory": {
         "!recall <query>": "Search long-term memory for a topic, oldest-first",
@@ -103,6 +107,8 @@ AGENT_TOOLS = {
     "web_search": "Search the web or look up weather/time",
     "browse_url": "Open a web page with Playwright",
     "recall_memory": "Search long-term memory for past facts or conversations",
+    "vtube_set_expression": "Turn an appearance toggle on/off on Lumi's avatar",
+    "vtube_move": "Move Lumi's avatar to a screen position",
 }
 
 
@@ -114,9 +120,18 @@ _TOOL_CALL_HINT_KEYS = {"name", "tool", "function", "tool_name"}
 _KNOWN_TOOL_NAMES = {
     "read_file", "write_file", "list_dir", "search_files",
     "run_command", "run_in_terminal", "web_search", "browse_url",
-    "recall_memory",
+    "recall_memory", "vtube_set_expression", "vtube_move",
 }
 
+# Names of expressions Lumi can trigger via vtube_set_expression.
+# Used by the fabrication guard: if she wraps one of these in
+# brackets in her prose (like [spiral_eyes]), she's narrating the
+# effect instead of firing the tool.
+_EXPRESSION_STATE_NAMES = frozenset({
+    "hat", "jacket", "bag", "skirt",
+    "ponytail_l", "ponytail_r",
+    "controller", "heart_eyes", "spiral_eyes", "darkened",
+})
 
 def _extract_text_tool_calls(content: str):
     if not content:
@@ -239,41 +254,152 @@ def _extract_bracket_json_tool_calls(content: str):
     return found
 
 
+# ===============================================================
+# BRACKET-POSITIONAL RECOVERY
+# ===============================================================
+_BRACKET_POSITIONAL_TOOL_CALL = re.compile(
+    r"\[\s*(\w+)((?:\s+(?:\"[^\"]*\"|'[^']*'|[^\s\]]+))*)\s*\]"
+)
+
+# Positional arg schema per tool — the ORDER args appear in a
+# `[tool "a" b c]` call. Missing trailing args use their type zero.
+_POSITIONAL_ARGS = {
+    "vtube_set_expression": ["name", "enabled"],
+    "vtube_move":           ["location"],
+    "read_file":            ["path"],
+    "list_dir":             ["path"],
+    "search_files":         ["query", "path"],
+    "run_command":          ["command"],
+    "run_in_terminal":      ["command"],
+    "web_search":           ["query"],
+    "browse_url":           ["url"],
+    "recall_memory":        ["query", "since"],
+}
+
+# Args that should be coerced from string → bool after parsing.
+_BOOL_ARGS = {"enabled"}
+
+
+def _extract_bracket_positional_tool_calls(content: str):
+    """Catch `[tool]`, `[tool "value"]`, and `[tool "value" true]`
+    hallucinations. Multiple positional args are mapped against the
+    tool's declared arg list in order."""
+    if not content:
+        return []
+
+    found = []
+    for match in _BRACKET_POSITIONAL_TOOL_CALL.finditer(content):
+        name = match.group(1)
+        if name not in _KNOWN_TOOL_NAMES:
+            continue
+
+        raw_args = match.group(2) or ""
+        tokens = re.findall(r'"[^"]*"|\'[^\']*\'|\S+', raw_args)
+
+        values = []
+        for tok in tokens:
+            if (tok.startswith('"') and tok.endswith('"')) or \
+               (tok.startswith("'") and tok.endswith("'")):
+                values.append(tok[1:-1])
+            else:
+                values.append(tok)
+
+        arg_names = _POSITIONAL_ARGS.get(name, [])
+        args = {}
+        for i, val in enumerate(values):
+            if i >= len(arg_names):
+                break
+            arg_name = arg_names[i]
+            if arg_name in _BOOL_ARGS:
+                args[arg_name] = val.strip().lower() in (
+                    "true", "1", "yes", "on"
+                )
+            else:
+                args[arg_name] = val
+
+        # If vtube_set_expression got only a name, assume "turn on".
+        if name == "vtube_set_expression" and "name" in args \
+                and "enabled" not in args:
+            args["enabled"] = True
+
+        found.append({"function": {"name": name, "arguments": args}})
+    return found
+
+
+# ===============================================================
+# STATE NAME ALIASES
+# ---------------------------------------------------------------
+# Lumi sometimes uses natural-language words for expressions
+# instead of the schema-defined state names. This map translates
+# the common ones before validation. If she invents something
+# not on this list, the validation error will tell her the correct
+# name and she'll retry.
+# ===============================================================
+_STATE_NAME_ALIASES = {
+    # Eyes
+    "dizzy":             "spiral_eyes",
+    "spiral":            "spiral_eyes",
+    "spinning":          "spiral_eyes",
+    "spiral_eye":        "spiral_eyes",
+    "spirals":           "spiral_eyes",
+    "heart":             "heart_eyes",
+    "hearts":            "heart_eyes",
+    "heart_eye":         "heart_eyes",
+    "love_eyes":         "heart_eyes",
+    "love":              "heart_eyes",
+    # Shadow
+    "shadow":            "darkened",
+    "dark":              "darkened",
+    "shadow_face":       "darkened",
+    "angry":             "darkened",
+    "dark_face":         "darkened",
+    # Ponytails
+    "ponytail_left":     "ponytail_l",
+    "ponytail_right":    "ponytail_r",
+    "left_ponytail":     "ponytail_l",
+    "right_ponytail":    "ponytail_r",
+    "ponytail_1":        "ponytail_l",
+    "ponytail_2":        "ponytail_r",
+    # Controller / bag
+    "game_controller":   "controller",
+    "handheld":          "controller",
+    "gamepad":           "controller",
+    "jk_bag":            "bag",
+    "jkbag":             "bag",
+    "school_bag":        "bag",
+    "bag_jk":            "bag",
+    # Hat / jacket / skirt
+    "cap":               "hat",
+    "coat":              "jacket",
+    "dress":             "skirt",
+}
+
+
 _TOOL_CALL_SHAPE = re.compile(
     r'"name"\s*:\s*"(read_file|write_file|list_dir|search_files|'
-    r'run_command|run_in_terminal|web_search|browse_url|recall_memory)"',
+    r'run_command|run_in_terminal|web_search|browse_url|recall_memory|'
+    r'vtube_set_expression|vtube_move)"',
     re.IGNORECASE,
 )
 
 
 # ===============================================================
 # CANONICAL FISH AUDIO TAGS
-# ---------------------------------------------------------------
-# Used to strip invented delivery tags ([rolling eyes], [smirking],
-# [checking my watch], [deadpan], etc.) before they reach TTS. Fish
-# Audio silently ignores non-canonical tags, so this is display-only
-# hygiene — but it prevents the model from seeing its own invented
-# tags echoed back in history and learning to double down on them.
 # ===============================================================
 _CANONICAL_TAGS = frozenset({
-    # Basic emotions
     "happy", "sad", "angry", "excited", "calm", "nervous", "confident",
     "surprised", "satisfied", "delighted", "scared", "worried", "upset",
     "frustrated", "depressed", "empathetic", "embarrassed", "disgusted",
     "moved", "proud", "relaxed", "grateful", "curious", "sarcastic",
-    # Advanced emotions
     "disdainful", "unhappy", "anxious", "hysterical", "indifferent",
     "uncertain", "doubtful", "confused", "disappointed", "regretful",
     "guilty", "ashamed", "jealous", "envious", "hopeful", "optimistic",
     "pessimistic", "nostalgic", "lonely", "bored", "contemptuous",
     "sympathetic", "compassionate", "determined", "resigned",
-    # Tone markers
     "in a hurry tone", "shouting", "screaming", "whispering",
     "soft tone", "emphasis",
-    # Audio effects
     "laughing", "chuckling", "sobbing", "crying loudly", "sighing",
     "groaning", "panting", "gasping", "yawning", "snoring", "clear throat",
-    # Pauses / crowd
     "break", "long-break", "audience laughing", "background laughter",
     "crowd laughing",
 })
@@ -282,10 +408,6 @@ _BRACKET_ANY = re.compile(r"\[([^\]]{1,40})\]")
 
 
 def _strip_non_canonical_tags(text):
-    """Remove any [bracketed] phrase that isn't a canonical Fish Audio
-    tag. Run this before TTS so invented tags like [smug], [rolling eyes],
-    or [checking my watch] never enter the audio pipeline or get echoed
-    back into history."""
     if not text:
         return text
 
@@ -373,6 +495,58 @@ _COMPLETION_OPENERS = {
     "fixed", "applied",
 }
 
+_COMPLETION_PHRASES = (
+    "there we go", "there you go", "done", "all set", "all done",
+    "finished", "complete", "there it is", "voila", "voilà",
+    "consider it", "taken care", "handled",
+)
+
+# Verb that indicates the user wants an appearance state changed.
+_STATE_CHANGE_REQUEST = re.compile(
+    r"\b(?:put on|take off|show|hide|wear|remove|drop|grab|look|darken"
+    r"|toggle|switch to|change to)\b",
+    re.IGNORECASE,
+)
+
+# Phrases the model uses to CLAIM a state change happened. Only used
+# for fabrication detection when the user asked for a state change.
+_STATE_CLAIM = re.compile(
+    r"(?:"
+    # "X's now on/off/gone/hidden/etc."
+    r"\b\w+'s\s+(?:now\s+)?(?:on|off|gone|back|hidden|showing|out|in\s+hand|in\s+place)\b"
+    r"|"
+    # "X mode engaged" / "effect activated" / "look applied"
+    r"\b(?:mode|effect|look|expression|toggle)\s+(?:engaged|activated|on|applied|enabled|set|active|ready)\b"
+    r"|"
+    # "Hat removed." / "Jacket re-applied." / "Bag discarded." — the
+    # noun-first form Lumi uses when she lists multiple items.
+    r"^\s*(?:the\s+)?(?:\w+[\s-]+){0,2}"
+    r"(?:hat|jacket|bag|skirt|ponytail|controller|eyes|eye|face|look)"
+    r"\s+(?:re-?)?"
+    r"(?:removed|applied|discarded|restored|returned|stowed|hidden|shown|"
+    r"put|taken|worn|dropped|grabbed|darkened|dismissed|toggled|reset|"
+    r"set|on|off|back|away|out|done|fixed|changed|swapped|cleared|"
+    r"reapplied|re-added|reverted|undone)\b"
+    r"|"
+    # Leading verb-ed on its own line: "Removed." / "Hidden."
+    r"^\s*(?:on|off|hidden|darkened|removed|gone|visible|engaged|activated"
+    r"|applied|restored|returned|discarded|dismissed|reverted|undone|cleared)\b"
+    r"|"
+    # First-person claims
+    r"\b(?:i'?m\s+(?:now\s+)?(?:wearing|holding|showing|hiding))\b"
+    r")",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Meta-claims of "everything is done" — Lumi uses this to wrap up a
+# multi-item request without firing the individual tool calls.
+_STATE_META_CLAIM = re.compile(
+    r"\b(?:everything|all|all\s+of\s+it|the\s+whole\s+thing)\s+"
+    r"(?:is\s+|has\s+been\s+|'s\s+)?"
+    r"(?:reset|restored|cleared|set|good|fine|back|done|sorted|handled)\b",
+    re.IGNORECASE,
+)
+
 _FILENAME_HINT = re.compile(r"\b[\w\-/]+\.\w{1,5}\b")
 
 _REFUSAL = re.compile(
@@ -410,6 +584,36 @@ def _looks_like_simulated_action(content: str, user_query: str = "") -> bool:
     if not content:
         return False
 
+    # Scan the first three non-empty lines — models often put their
+    # hallucinated tool call on line 1, then the "it worked" claim
+    # on line 2 or 3.
+    lines = [ln for ln in content.split("\n") if ln.strip()][:3]
+    for raw_line in lines:
+        cleaned = re.sub(r"\[[^\]]*\]", "", raw_line).lower().strip()
+        if not cleaned:
+            continue
+        if any(cleaned.startswith(p) for p in _COMPLETION_PHRASES):
+            return True
+
+    # Targeted checks for state-change fabrication. Only fire when
+    # the user actually asked for a state change — otherwise "Skirt"
+    # or "on" could false-positive in normal conversation.
+    if user_query and _STATE_CHANGE_REQUEST.search(user_query):
+        head = " ".join(
+            ln for ln in content.split("\n") if ln.strip()
+        )[:250].lower()
+        head_clean = re.sub(r"\[[^\]]*\]", "", head)
+        if _STATE_CLAIM.search(head_clean):
+            return True
+
+        if _STATE_META_CLAIM.search(head_clean):
+            return True
+
+        for m in re.finditer(r"\[([^\]]{1,40})\]", content):
+            inner = m.group(1).strip().lower()
+            if inner in _EXPRESSION_STATE_NAMES:
+                return True
+
     opener_match = re.match(r"^\s*(?:\[[^\]]*\]\s*)*([A-Za-z']+)", content)
     if opener_match and opener_match.group(1).lower() in _COMPLETION_OPENERS:
         return True
@@ -446,7 +650,7 @@ def _result_looks_like_failure(result) -> bool:
 
 
 # ===============================================================
-# SCREEN REFERENCE DETECTION (for selective ambient injection)
+# SCREEN REFERENCE DETECTION
 # ===============================================================
 _SCREEN_REFERENCE = re.compile(
     r"\b(screen|monitor|display|desktop|window|"
@@ -460,40 +664,25 @@ _SCREEN_REFERENCE = re.compile(
 
 # ===============================================================
 # LIST-FORMAT CLEANUP (display only)
-# ---------------------------------------------------------------
-# Conversational replies should be flowing prose, not bullet lists.
-# The prompt-level rules discourage lists, but the model still slips
-# occasionally. This function converts any markdown list/header
-# formatting into prose for terminal display. It runs on the DISPLAY
-# copy only — the original raw_reply still goes to history, TTS, and
-# Discord unchanged. Fenced code blocks are preserved.
 # ===============================================================
 def _strip_list_formatting(text):
     if not text:
         return text
 
-    # Split on code fences and only clean the non-code parts.
     parts = re.split(r"(```[\s\S]*?```)", text)
     cleaned = []
 
     for i, part in enumerate(parts):
-        if i % 2 == 1:  # fenced code block — pass through untouched
+        if i % 2 == 1:
             cleaned.append(part)
             continue
 
-        # Remove bold/italic markers
         part = re.sub(r"\*\*([^*]+)\*\*", r"\1", part)
         part = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", part)
         part = re.sub(r"__([^_]+)__", r"\1", part)
-
-        # Remove markdown headers
         part = re.sub(r"^\s*#{1,6}\s*", "", part, flags=re.MULTILINE)
-
-        # Remove horizontal rules
         part = re.sub(r"^\s*-{3,}\s*$", "", part, flags=re.MULTILINE)
 
-        # Walk lines, buffering consecutive list items so we can join
-        # them into a single comma-separated sentence.
         lines = part.split("\n")
         out_lines = []
         list_buffer = []
@@ -510,28 +699,22 @@ def _strip_list_formatting(text):
             elif len(items) == 2:
                 out_lines.append(f"{items[0]}, and {items[1]}.")
             else:
-                out_lines.append(
-                    ", ".join(items[:-1]) + f", and {items[-1]}."
-                )
+                out_lines.append(", ".join(items[:-1]) + f", and {items[-1]}.")
 
         for line in lines:
-            bullet_match = re.match(r"^\s*[-*+]\s+(.+)$", line)
-            num_match = re.match(r"^\s*\d+\.\s+(.+)$", line)
-
-            if bullet_match:
-                list_buffer.append(bullet_match.group(1).strip())
+            bm = re.match(r"^\s*[-*+]\s+(.+)$", line)
+            nm = re.match(r"^\s*\d+\.\s+(.+)$", line)
+            if bm:
+                list_buffer.append(bm.group(1).strip())
                 continue
-            if num_match:
-                list_buffer.append(num_match.group(1).strip())
+            if nm:
+                list_buffer.append(nm.group(1).strip())
                 continue
-
             flush_list()
             out_lines.append(line)
 
         flush_list()
         part = "\n".join(out_lines)
-
-        # Collapse excessive blank lines
         part = re.sub(r"\n{3,}", "\n\n", part)
         cleaned.append(part)
 
@@ -540,10 +723,6 @@ def _strip_list_formatting(text):
 
 # ===============================================================
 # MODEL ROUTING
-# ---------------------------------------------------------------
-# Simple chat goes to a small fast model. Anything that looks like
-# it needs reasoning, or that runs in agent mode, uses the full
-# 7B model.
 # ===============================================================
 _COMPLEXITY_MARKERS = re.compile(
     r"\b("
@@ -556,9 +735,6 @@ _COMPLEXITY_MARKERS = re.compile(
     re.IGNORECASE,
 )
 
-# ← FIX: Time/date queries route to the main model. The fast model
-# rounds and invents numeric values in context. Small models are much
-# worse at copying injected numerics verbatim.
 _TIME_QUERY = re.compile(
     r"\b(what time|what'?s the time|what day|what'?s the day|"
     r"what'?s the date|what date|current time|current date|"
@@ -567,11 +743,10 @@ _TIME_QUERY = re.compile(
     re.IGNORECASE,
 )
 
-_FAST_MODEL_AVAILABLE = None   # cached after first check
+_FAST_MODEL_AVAILABLE = None
 
 
 def _check_fast_model_available():
-    """Query Ollama for the fast model. Cached after first call."""
     global _FAST_MODEL_AVAILABLE
     if _FAST_MODEL_AVAILABLE is not None:
         return _FAST_MODEL_AVAILABLE
@@ -589,8 +764,6 @@ def _check_fast_model_available():
 
 
 def _should_use_fast_model(user_text, agent_mode):
-    """Route decision. Returns True if the fast model should handle
-    this turn, False if the main model should."""
     if not FAST_MODEL_ENABLED:
         return False
     if agent_mode:
@@ -604,7 +777,6 @@ def _should_use_fast_model(user_text, agent_mode):
         return False
     if _COMPLEXITY_MARKERS.search(text):
         return False
-    # ← FIX: Route time/date queries to the main model.
     if _TIME_QUERY.search(text):
         return False
     return True
@@ -622,7 +794,7 @@ EXTRA_TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "What to search for, e.g. 'weather in Atlanta' or 'latest news on X'."}
+                    "query": {"type": "string", "description": "What to search for."}
                 },
                 "required": ["query"],
             },
@@ -650,27 +822,79 @@ EXTRA_TOOL_SCHEMAS = [
                 "Search Lumi's long-term memory for facts, preferences, or "
                 "past conversations with the user. Use this when the user "
                 "asks 'when did we talk about X', 'do you remember Y', "
-                "'what did I say about Z', or references a previous session. "
-                "Results come back oldest-first with timestamps."
+                "'what did I say about Z', or references a previous session."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Topic, subject, or keyword to search for."
-                    },
-                    "since": {
-                        "type": "string",
-                        "description": (
-                            "Optional time filter, e.g. 'yesterday', "
-                            "'last week', '3 days ago'. Leave empty for all time."
-                        )
-                    }
+                    "query": {"type": "string"},
+                    "since": {"type": "string"}
                 },
                 "required": ["query"],
             },
         },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vtube_set_expression",
+            "description": (
+                "Turn an appearance toggle on your own avatar ON or OFF. Use "
+                "this when the user says 'put on your hat', 'take off your "
+                "jacket', 'show heart eyes', 'hide your ponytail', etc. "
+                "Call this exactly ONCE per request with the DESIRED final "
+                "state. This tool is idempotent — if the state already matches, "
+                "nothing fires. Valid names: hat, jacket, bag, skirt, "
+                "ponytail_l, ponytail_r, controller, heart_eyes, spiral_eyes, "
+                "darkened. Pass an empty name to see the current state of each."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "State name: hat, jacket, bag, skirt, ponytail_l, "
+                            "ponytail_r, controller, heart_eyes, spiral_eyes, "
+                            "darkened. Pass empty string to list all states."
+                        )
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "description": (
+                            "True to turn the state ON, False to turn it OFF. "
+                            "'put on your hat' → enabled=true. "
+                            "'take off your jacket' → enabled=false."
+                        )
+                    }
+                },
+                "required": ["name", "enabled"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vtube_move",
+            "description": (
+                "Move your own avatar to a preset screen position. Use when "
+                "the user asks you to 'move to the corner', 'get out of the "
+                "way', 'come back to center', etc. Call this exactly ONCE "
+                "per request."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": (
+                            "Position name. Pass empty string to list them."
+                        )
+                    }
+                },
+                "required": ["location"]
+            }
+        }
     },
 ]
 
@@ -837,9 +1061,6 @@ class Prompter:
 
         injections = []
 
-        # ← FIX: Capture the time ONCE at the top of the method. The
-        # same string is reused for both the top and bottom anchors,
-        # so the two can never disagree.
         now = _get_local_now()
         time_str = now.strftime("%A, %B %d, %Y at %I:%M %p")
         time_anchor = (
@@ -852,8 +1073,9 @@ class Prompter:
             "=== END SYSTEM CLOCK ==="
         )
 
-        agent_note = (
-            "=== TOOL USE — MANDATORY ===\n"
+        if agent_context:
+            agent_note = (
+                "=== TOOL USE — MANDATORY ===\n"
             "You have real tools. The ONLY way to actually DO something is to emit a tool call. "
             "Describing an action in prose is NOT doing it — it is a failure.\n"
             "Showing code in a chat reply (like ```python blocks) is ALSO NOT doing it — it is a failure.\n"
@@ -863,6 +1085,11 @@ class Prompter:
             '  {"name": "tool_name", "arguments": {"arg1": "value1", "arg2": "value2"}}\n'
             "Do NOT wrap this in brackets. Do NOT write 'emit tool_name(...)'. "
             "Do NOT write [tool_name(arg=value)]. Just emit the JSON object above.\n\n"
+            "DO NOT write tool calls in brackets. Not [tool_name(arg=value)]. "
+            "Not [tool_name \"value\"]. Not [tool_name]. No square brackets "
+            "around tool calls of ANY form. The ONLY valid form is the bare "
+            "JSON object with no surrounding punctuation:\n"
+            '  {"name": "tool_name", "arguments": {...}}\n\n'
             "JSON must be VALID. Escape every quote inside a string value with a "
             "backslash: \\\" .\n\n"
             "MULTI-STEP TASKS WITH DEPENDENCIES (CRITICAL):\n"
@@ -887,7 +1114,9 @@ class Prompter:
             "- run_in_terminal(command) — open a NEW visible terminal (output NOT captured)\n"
             "- web_search(query)\n"
             "- browse_url(url)\n"
-            "- recall_memory(query, since) — search your own long-term memory\n\n"
+            "- recall_memory(query, since) — search your own long-term memory\n"
+            "- vtube_set_expression(name, enabled) — turn an appearance toggle on your own avatar on or off\n"
+            "- vtube_move(location) — move your own avatar to a preset screen position\n\n"
             "PICKING BETWEEN run_command AND run_in_terminal:\n"
             "- Output / results / what a script prints → run_command\n"
             "- 'Open a terminal', 'launch it', 'run it so I can see it' → run_in_terminal\n"
@@ -906,14 +1135,31 @@ class Prompter:
             "9. Do NOT announce an action without taking it in the same message.\n"
             "10. If the user asks 'when did we...', 'do you remember...', "
             "'what did I say about...', or references a previous session, "
-            "call recall_memory FIRST before answering.\n\n"
+            "call recall_memory FIRST before answering.\n"
+            "11. If the user asks you to change your own appearance or move "
+            "('put on your hat', 'take off your jacket', 'show heart eyes', "
+            "'hide your ponytail', 'look dizzy', 'grab your controller', "
+            "'move to the corner'), call vtube_set_expression or vtube_move. "
+            "For appearance: set enabled=true to turn ON, enabled=false to "
+            "turn OFF. State names: hat, jacket, bag, skirt, ponytail_l, "
+            "ponytail_r, controller, heart_eyes, spiral_eyes, darkened. "
+            "Do NOT just say you did it — emit the tool call.\n\n"
             "=== END TOOL USE ===\n"
         )
+        else:
+            agent_note = (
+                "=== NO TOOLS ACTIVE ===\n"
+                "You are in conversational mode. You have NO tools. "
+                "You cannot read files, run commands, search, browse, or "
+                "change your own avatar's expression. "
+                "If Anthony asks you to do any of those, tell him to say "
+                "`!agent <task>` and you'll actually do it. Do NOT emit "
+                "[tool_name(...)] syntax. Do NOT invent file contents. "
+                "Do NOT announce that you're about to run something.\n"
+                "=== END NO TOOLS ===\n"
+            )
         injections.append(agent_note)
 
-        # ← FIX: Strong top-of-stack time anchor. Replaces the old weak
-        # "System Info: The current date and time is..." line that was
-        # buried under ~11 other injections.
         injections.append(time_anchor)
         injections.append(self.mood_manager.get_injection())
 
@@ -934,7 +1180,6 @@ class Prompter:
                 user_mentions_screen = bool(
                     _SCREEN_REFERENCE.search(user_query or "")
                 )
-
                 if user_mentions_screen:
                     line = ambient.get_context_line()
                     if line:
@@ -1011,8 +1256,6 @@ class Prompter:
         )
         injections.append(f"System Info - {fish_audio_rules}")
 
-        # Format rules — placed last so the model reads them right before
-        # writing its reply. This is where the "no lists" enforcement lives.
         format_rules = (
             "=== OUTPUT FORMAT — ABSOLUTE REQUIREMENT ===\n"
             "Write ONLY natural conversational prose. Speak like a person talking out loud.\n"
@@ -1057,10 +1300,6 @@ class Prompter:
                 except Exception:
                     pass
 
-        # ← FIX: Bottom-of-stack time anchor. Placed after module
-        # injections so it's the freshest thing in the model's attention
-        # window when it starts generating. The top anchor primes; this
-        # one catches the copy-through. Both use the same `time_str`.
         injections.append(
             "=== TIME CHECK BEFORE YOU WRITE ===\n"
             f"It is {time_str}. If asked, say this exact value. If "
@@ -1069,9 +1308,6 @@ class Prompter:
             "=== END TIME CHECK ==="
         )
 
-        # Identity anchor — placed last so it has the highest recency
-        # weight when the model starts generating. Do not move this
-        # above the module injections.
         injections.append(
             "=== IDENTITY ANCHOR ===\n"
             f"You are {AI_NAME}. You speak in first person — I, me, my. "
@@ -1086,9 +1322,6 @@ class Prompter:
         return "\n".join(injections)
 
     def clean_for_voice(self, text):
-        # ← FIX: Strip invented / non-canonical bracket tags before
-        # anything else, so [rolling eyes] / [smirking] / [checking my
-        # watch] never reach TTS or get echoed back into history.
         text = _strip_non_canonical_tags(text)
         text = re.sub(r'```[\s\S]*?```', ' I have written the details out for you in the text channel. ', text)
         text = re.sub(r'`([^`]+)`', r'\1', text)
@@ -1108,6 +1341,57 @@ class Prompter:
                 tts_module = next((m for m in self.modules if m.__class__.__name__ == "TTS"), None)
                 if tts_module and hasattr(tts_module, 'speak_stream'):
                     tts_module.speak_stream(clean_chunk)
+
+    def _extract_and_apply_emotions(self, text):
+        if not text:
+            return
+
+        found_tag = None
+        for match in re.finditer(r"\[([^\]]{1,40})\]", text):
+            inner = match.group(1).strip().lower()
+            if inner in _CANONICAL_TAGS:
+                found_tag = inner
+                break
+
+        try:
+            from modules.log_hub import emit as hub_emit
+            if found_tag:
+                hub_emit(self.signals, "vts",
+                         f"extracted emotion from reply: [{found_tag}]")
+            else:
+                hub_emit(self.signals, "vts",
+                         "reply had no canonical emotion tag")
+        except Exception:
+            pass
+
+        if not found_tag:
+            return
+
+        vts = next(
+            (m for m in self.modules
+             if m.__class__.__name__ == "VtubeStudio"
+             and getattr(m, "enabled", False)),
+            None,
+        )
+        if not vts or not hasattr(vts, "API"):
+            try:
+                from modules.log_hub import emit as hub_emit
+                hub_emit(self.signals, "vts",
+                         "VTS module not loaded or disabled — "
+                         "expression skipped", level="warn")
+            except Exception:
+                pass
+            return
+
+        try:
+            vts.API.set_emotion(found_tag)
+        except Exception as e:
+            try:
+                from modules.log_hub import emit as hub_emit
+                hub_emit(self.signals, "vts",
+                         f"set_emotion failed: {e}", level="warn")
+            except Exception:
+                pass
 
     def web_search(self, query):
         try:
@@ -1207,6 +1491,87 @@ class Prompter:
             except Exception as e:
                 return f"recall_memory failed: {e}"
 
+        if name == "vtube_set_expression":
+            vts = next(
+                (m for m in self.modules
+                 if m.__class__.__name__ == "VtubeStudio"
+                 and getattr(m, "enabled", False)),
+                None,
+            )
+            if not vts:
+                return "VTube Studio is not running. Tell Anthony to start it."
+
+            state_name = (arguments.get("name") or "").strip().lower()
+            enabled = bool(arguments.get("enabled", True))
+
+            if not state_name:
+                states = vts.API.list_expression_states()
+                if not states:
+                    return "No expression states are registered."
+                state_desc = ", ".join(
+                    f"{k}={'on' if v else 'off'}" for k, v in states.items()
+                )
+                return (
+                    "Current expression states: " + state_desc +
+                    ". Call this tool again with one of those names and "
+                    "enabled=true or enabled=false."
+                )
+
+            # Resolve natural-language aliases before validation.
+            state_name = _STATE_NAME_ALIASES.get(state_name, state_name)
+
+            available = vts.API.list_expression_names()
+            if state_name not in [n.lower() for n in available]:
+                return (
+                    f"'{state_name}' is NOT a valid expression. Valid names: "
+                    f"{', '.join(available)}. Call again with a valid name."
+                )
+
+            current_states = vts.API.list_expression_states()
+            current = current_states.get(state_name, False)
+
+            if current == enabled:
+                return (
+                    f"'{state_name}' is already "
+                    f"{'on' if enabled else 'off'} — no change needed."
+                )
+
+            print(f"\n{GRAY}[Lumi is using tool: vtube_set_expression("
+                  f"{state_name}, enabled={enabled})]{RESET}")
+            vts.API.set_expression(state_name, enabled)
+            state_word = "on" if enabled else "off"
+            return f"Set '{state_name}' to {state_word}."
+
+        if name == "vtube_move":
+            vts = next(
+                (m for m in self.modules
+                 if m.__class__.__name__ == "VtubeStudio"
+                 and getattr(m, "enabled", False)),
+                None,
+            )
+            if not vts:
+                return "VTube Studio is not running. Tell Anthony to start it."
+
+            loc = (arguments.get("location") or "").strip()
+            available = vts.API.list_positions()
+
+            if not loc:
+                return (
+                    "Available positions: "
+                    + ", ".join(available)
+                    + ". Call this tool again with one of those names."
+                )
+
+            if loc.lower() not in [p.lower() for p in available]:
+                return (
+                    f"'{loc}' is NOT a valid position. Available: "
+                    f"{', '.join(available)}. Call again with a valid name."
+                )
+
+            print(f"\n{GRAY}[Lumi is using tool: vtube_move({loc})]{RESET}")
+            vts.API.move_model(loc)
+            return f"Moved avatar to: {loc}"
+
         print(f"\n{GRAY}[Lumi wants to use tool: {name}({arguments})]{RESET}")
 
         if name in CONFIRM_REQUIRED_TOOLS:
@@ -1293,6 +1658,11 @@ class Prompter:
                         if recovered:
                             print(f"{GRAY}[Recovered {len(recovered)} bracket-JSON "
                                   f"tool call(s) from content]{RESET}")
+                        else:
+                            recovered = _extract_bracket_positional_tool_calls(content)
+                            if recovered:
+                                print(f"{GRAY}[Recovered {len(recovered)} "
+                                      f"bracket-positional tool call(s) from content]{RESET}")
 
                 if recovered:
                     tool_calls = recovered
@@ -1616,6 +1986,154 @@ class Prompter:
                         self.signals.AI_thinking = False
                         continue
 
+                    # ==========================================
+                    # Avatar commands (VTube Studio passthroughs)
+                    # ==========================================
+                    if stripped_lower == "!expressions":
+                        vts = next(
+                            (m for m in self.modules
+                             if m.__class__.__name__ == "VtubeStudio"),
+                            None,
+                        )
+                        if not vts or not getattr(vts, "enabled", False):
+                            print(f"{YELLOW}[VTS module not active]{RESET}")
+                        else:
+                            states = vts.API.list_expression_states()
+                            if not states:
+                                print(f"{YELLOW}[no expression states registered]{RESET}")
+                            else:
+                                print(f"\n{BOLD}{MAGENTA}Expression States{RESET}")
+                                for name, on in sorted(states.items()):
+                                    marker = "●" if on else "○"
+                                    print(f"  {marker} {name}")
+                                print()
+                        self.signals.AI_thinking = False
+                        continue
+
+                    if stripped_lower == "!hotkeys":
+                        vts = next(
+                            (m for m in self.modules
+                             if m.__class__.__name__ == "VtubeStudio"),
+                            None,
+                        )
+                        if not vts or not getattr(vts, "enabled", False):
+                            print(f"{YELLOW}[VTS module not active]{RESET}")
+                        else:
+                            hotkeys = vts.API.list_hotkeys()
+                            if not hotkeys:
+                                print(f"{YELLOW}[no hotkeys cached — "
+                                      f"model may not define any]{RESET}")
+                            else:
+                                print(f"\n{BOLD}{MAGENTA}Raw VTS Hotkeys{RESET}")
+                                for hk in hotkeys:
+                                    print(f"  · {hk}")
+                                print()
+                        self.signals.AI_thinking = False
+                        continue
+
+                    if stripped_lower == "!positions":
+                        vts = next(
+                            (m for m in self.modules
+                             if m.__class__.__name__ == "VtubeStudio"),
+                            None,
+                        )
+                        if not vts or not getattr(vts, "enabled", False):
+                            print(f"{YELLOW}[VTS module not active]{RESET}")
+                        else:
+                            positions = vts.API.list_positions()
+                            print(f"\n{BOLD}{MAGENTA}VTS Model Positions{RESET}")
+                            for p in positions:
+                                print(f"  · {p}")
+                            print()
+                        self.signals.AI_thinking = False
+                        continue
+
+                    if stripped_lower == "!set" or stripped_lower.startswith("!set "):
+                        parts = stripped[len("!set"):].strip().split()
+                        vts = next(
+                            (m for m in self.modules
+                             if m.__class__.__name__ == "VtubeStudio"),
+                            None,
+                        )
+                        if not vts or not getattr(vts, "enabled", False):
+                            print(f"{YELLOW}[VTS module not active]{RESET}")
+                        elif len(parts) < 2:
+                            print(f"{YELLOW}[usage: !set <name> on|off]{RESET}")
+                        else:
+                            name = parts[0].lower()
+                            name = _STATE_NAME_ALIASES.get(name, name)
+                            if parts[1].lower() in ("on", "true", "1"):
+                                enabled = True
+                            elif parts[1].lower() in ("off", "false", "0"):
+                                enabled = False
+                            else:
+                                print(f"{YELLOW}[second arg must be on or off]{RESET}")
+                                self.signals.AI_thinking = False
+                                continue
+
+                            states = vts.API.list_expression_states()
+                            current = states.get(name)
+                            if current is None:
+                                print(f"{YELLOW}[unknown expression '{name}' — "
+                                      f"use !expressions to list]{RESET}")
+                            elif current == enabled:
+                                print(f"\n{BOLD}{MAGENTA}[VTS]{RESET} "
+                                      f"'{name}' is already "
+                                      f"{'on' if enabled else 'off'}")
+                            else:
+                                vts.API.set_expression(name, enabled)
+                                print(f"\n{BOLD}{MAGENTA}[VTS]{RESET} "
+                                      f"set '{name}' {'on' if enabled else 'off'}")
+                        self.signals.AI_thinking = False
+                        continue
+
+                    if stripped_lower == "!expression" or stripped_lower.startswith("!expression "):
+                        arg = stripped[len("!expression"):].strip()
+                        vts = next(
+                            (m for m in self.modules
+                             if m.__class__.__name__ == "VtubeStudio"),
+                            None,
+                        )
+                        if not vts or not getattr(vts, "enabled", False):
+                            print(f"{YELLOW}[VTS module not active]{RESET}")
+                        elif not arg:
+                            hotkeys = vts.API.list_hotkeys()
+                            if hotkeys:
+                                print(f"{YELLOW}[usage: !expression <name> — "
+                                      f"RAW hotkeys: {', '.join(hotkeys)}. "
+                                      f"For state-based, use !set instead]{RESET}")
+                            else:
+                                print(f"{YELLOW}[usage: !expression <name>]{RESET}")
+                        else:
+                            vts.API.trigger_hotkey(arg)
+                            print(f"\n{BOLD}{MAGENTA}[VTS]{RESET} "
+                                  f"toggled raw hotkey '{arg}'")
+                        self.signals.AI_thinking = False
+                        continue
+
+                    if stripped_lower == "!move" or stripped_lower.startswith("!move "):
+                        arg = stripped[len("!move"):].strip()
+                        vts = next(
+                            (m for m in self.modules
+                             if m.__class__.__name__ == "VtubeStudio"),
+                            None,
+                        )
+                        if not vts or not getattr(vts, "enabled", False):
+                            print(f"{YELLOW}[VTS module not active]{RESET}")
+                        elif not arg:
+                            positions = vts.API.list_positions()
+                            print(f"{YELLOW}[usage: !move <location> — "
+                                  f"available: {', '.join(positions)}]{RESET}")
+                        else:
+                            vts.API.move_model(arg)
+                            print(f"\n{BOLD}{MAGENTA}[VTS]{RESET} "
+                                  f"moving avatar to '{arg}'")
+                        self.signals.AI_thinking = False
+                        continue
+
+                    # ==========================================
+                    # Memory
+                    # ==========================================
                     if stripped_lower == "!recall" or stripped_lower.startswith("!recall "):
                         query_text = stripped[len("!recall"):].strip()
                         memory_module = next(
@@ -1725,9 +2243,6 @@ class Prompter:
                     else:
                         raw_reply = await self.run_conversational(latest_user_text)
 
-                    # Conversational replies get list-format cleanup for
-                    # display only. Agent output passes through unchanged
-                    # (may contain code blocks, file contents, etc).
                     if force_agent or self.agent_mode_enabled:
                         display_reply = raw_reply
                     else:
@@ -1735,6 +2250,8 @@ class Prompter:
 
                     print(display_reply)
                     print("\n")
+
+                    self._extract_and_apply_emotions(raw_reply)
 
                     sentences = SENTENCE_SPLIT_PATTERN.split(raw_reply)
                     for sentence in sentences:

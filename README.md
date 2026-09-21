@@ -3,8 +3,9 @@
 A local-first, agentic AI companion running on consumer hardware. Lumi is a
 persona-driven VTuber-style assistant with real tool use — she can read and
 write files, run commands, search the web, control a browser, query her own
-memory, verify her own work, track her own behavioral patterns, and route
-casual chat through a faster model — all coordinated through local Ollama.
+memory, verify her own work, track her own behavioral patterns, drive her own
+Live2D avatar, and route casual chat through a faster model — all coordinated
+through local Ollama.
 
 Unlike scripted chatbots or bracket-tag "tool" syntax, Lumi uses **structured
 tool calling** through Ollama's native `/api/chat` tool interface. When she
@@ -26,6 +27,7 @@ the log and see that she did.
   - [Self-Model](#self-model)
   - [Autonomous Heartbeat](#autonomous-heartbeat)
   - [Ambient Screen Awareness](#ambient-screen-awareness)
+  - [Avatar Control (VTube Studio)](#avatar-control-vtube-studio)
   - [Multimodal (Optional)](#multimodal-optional)
   - [Diagnostics Dashboard](#diagnostics-dashboard)
   - [Integrations](#integrations)
@@ -39,6 +41,7 @@ the log and see that she did.
 - [Installation](#installation)
 - [Running](#running)
   - [Agent Mode Example](#agent-mode-example)
+  - [Avatar Control Example](#avatar-control-example)
   - [Memory Query Example](#memory-query-example)
   - [Self-Model Query Example](#self-model-query-example)
   - [Model Routing Query Example](#model-routing-query-example)
@@ -55,9 +58,9 @@ the log and see that she did.
 
 ### Real Agentic Tool Use
 
-Lumi has nine tools available at request time. She picks them herself based on
-the task, executes them one at a time, reads the result, and decides what to do
-next — up to `MAX_AGENT_STEPS = 6` per turn.
+Lumi has eleven tools available at request time. She picks them herself based
+on the task, executes them one at a time, reads the result, and decides what
+to do next — up to `MAX_AGENT_STEPS = 6` per turn.
 
 | Tool | Purpose |
 |---|---|
@@ -70,6 +73,8 @@ next — up to `MAX_AGENT_STEPS = 6` per turn.
 | `web_search(query)` | Web search or live weather/time |
 | `browse_url(url)` | Playwright-based browser navigation |
 | `recall_memory(query, since)` | Query Lumi's own long-term memory for facts, past conversations, or events with timestamps |
+| `vtube_set_expression(name, enabled)` | Turn an appearance toggle on her own VTube Studio avatar on/off — idempotent |
+| `vtube_move(location)` | Move her avatar to a preset screen position |
 
 Because `write_file`, `run_command`, and `run_in_terminal` are gated behind a
 `y/n` prompt, nothing destructive ever runs without your explicit approval.
@@ -93,19 +98,28 @@ Multiple guards prevent the model from lying about having done work, writing
 files it wasn't asked to write, or looping on the same failed command:
 
 - **Simulated-action detection** — catches "I've updated the file!" prose that
-  isn't backed by a real tool call
+  isn't backed by a real tool call. Also catches state-change narrations like
+  "Hat removed." or "Ponytail_r engaged." when the user asked for an avatar
+  change
 - **Intent-announcement guard** — catches "now let's X" without an actual call
 - **Refusal guard** — catches "I can't" and re-prompts with the original request
 - **Read-only query gate** — refuses `write_file` when the user only asked to read
 - **No-op write guard** — refuses writes identical to the current file
 - **Duplicate-call guard** — skips repeat tool calls; clears the memory after a
   successful `write_file` so verification runs aren't blocked
+- **Tool-call format recovery** — Lumi's model emits tool calls in several
+  formats (`[tool(arg=val)]`, `[tool{"k":"v"}]`, `[tool "val"]`, `[tool "val" true]`).
+  All are recovered by a chain of parsers before dispatch, so a hallucinated
+  format still fires the real tool
 - **Protected files** — `main.py`, `constants.py`, `.env`, `Modelfile` are
   never overwritable
 - **Path sandbox** — every filesystem tool is confined to `WORKSPACE_ROOT`
 - **Auto-backup** — every overwrite of an existing file saves a `.bak` first
 - **Linux-command blocklist** — rejects `sudo`, `systemctl`, `ls`, `cat`, etc.
   on Windows before the confirm prompt even appears
+- **Avatar state validation** — `vtube_set_expression` rejects unknown state
+  names before dispatch and returns the valid list, so the model can retry
+  with a correct name instead of looping on a hallucinated one
 
 ### Multi-Model Orchestration
 
@@ -140,11 +154,14 @@ state.
   parsed as delivery instructions, not spoken text. Only canonical tags from
   Fish Audio's S2 documentation are used — invented tags like `[smug]` or
   `[deadpan]` are silently ignored by the engine, so the persona prompt
-  explicitly bans them.
+  explicitly bans them. A `_strip_non_canonical_tags()` pass in the TTS
+  pipeline removes any invented tags before they reach audio synthesis or
+  get echoed back into history.
 - **MoodManager** with four profiles: `default`, `bratty`, `brocon`, `soft` —
   switchable at runtime with `set mood <name>`
 - **faster-whisper** local STT with VAD-triggered **barge-in** (start talking,
-  she stops mid-sentence)
+  she stops mid-sentence). Runs on GPU with `float16` for ~0.8–1.2s
+  end-to-end latency per utterance.
 - **Language mirroring** — if you write or speak in Vietnamese, Spanish,
   Japanese, or another supported language, she replies in that language
 - **Dual output routing** — local speakers, Discord voice, or both
@@ -256,6 +273,60 @@ casual conversation clean:
 no VLM. Active (window switches or big content changes) → one VLM call,
 rate-limited to at most once per 90 seconds.
 
+### Avatar Control (VTube Studio)
+
+Lumi drives her own Live2D avatar through pyvts. Two paths exist and both are
+wired:
+
+**Passive path** — whenever her reply contains a canonical Fish Audio emotion
+tag, the first one is forwarded to the VTS module as an expression trigger.
+`[moved]` fires heart eyes, `[angry]` fires the shadow face, `[confused]`
+fires spiral eyes. She doesn't have to think about it; her face just matches
+what she's already saying.
+
+**Deliberate path** — she has two agent tools and six terminal commands for
+manually triggering expressions and moving her avatar.
+
+**Expression state tracking.** Every hotkey on her model is a
+`ToggleExpression` — firing the same key twice turns the effect back off.
+Some hotkeys are named for the *action* (`remove_jacket`, `hide_ponytail_l`)
+rather than the resulting *state* (jacket on, ponytail visible), which reads
+backwards. An `EXPRESSION_STATE_MAP` in the VTS module normalizes this:
+`vtube_set_expression("jacket", enabled=True)` is a state request, not a
+toggle. The module checks its tracked state, fires the hotkey only if the
+state needs to change, and no-ops when it's already correct. So "put on your
+hat" is idempotent — asking twice doesn't toggle it off the second time.
+
+**Keyboard fallback path.** VTS's `HotkeyTriggerRequest` API is silently
+accepted but does not fire on some models' `ToggleExpression` hotkeys (a
+gesture-gate quirk in the plugin). The module falls back to simulating the
+model's bound key combo (Ctrl+3 for hat, Ctrl+8 for left ponytail, etc.),
+focusing the VTS window first. Windows' foreground lock blocks
+`SetForegroundWindow` from background processes, so an `AttachThreadInput`
+workaround is used. The keypress itself is sequenced (modifier-down, small
+sleep, key-tap, small sleep, modifier-up) so VTS's polling input loop catches
+every event.
+
+**Natural-language alias resolution.** Lumi sometimes reaches for the
+natural word instead of the schema name — `dizzy` instead of `spiral_eyes`,
+`shadow` instead of `darkened`, `ponytail_left` instead of `ponytail_l`. A
+`_STATE_NAME_ALIASES` map in the prompter resolves these before validation,
+so the natural phrasing works.
+
+**Fabrication guard.** On longer requests ("reset everything, take off your
+hat, put your jacket on, hide both ponytails, drop the controller..."), Lumi
+sometimes narrates success in prose instead of firing each tool call.
+Multiple pattern checks catch this and force a retry: completion phrases
+("there we go", "all set"), state claims ("Hat removed.", "Ponytail_r
+engaged.", "X mode engaged"), meta-claims ("everything reset"), and expression
+names wrapped in brackets (`[spiral_eyes]`). When the guard fires she gets one
+retry with an explicit "call the tool, don't narrate it" nudge.
+
+**Known gap.** Multi-item requests of more than ~3 items still occasionally
+fall through the guard. For batch operations use the terminal commands
+(`!set hat off`, `!set jacket on`, etc.) — they're idempotent, always land,
+and skip the LLM entirely.
+
 ### Multimodal (Optional)
 
 `MultiModal` module captures your primary/secondary monitor on demand, asks a
@@ -266,27 +337,30 @@ text patterns, not a continuous loop.
 ### Diagnostics Dashboard
 
 High-frequency loop output (ambient ticks, heartbeat decisions, memory
-operations, history saves, model routing choices) is routed to a structured
-log hub instead of the terminal. Live view at:
+operations, history saves, model routing choices, VTS hotkey fires) is routed
+to a structured log hub instead of the terminal. Live view at:
 
 ```
 http://127.0.0.1:5001/
 ```
 
 Filterable by category (`ambient`, `heartbeat`, `memory`, `emotional`, `mic`,
-`system`, `self`, `tts`), color-coded, auto-refreshing every 2 seconds. The
-terminal is reserved for actual conversation, ambient VLM fires, and
+`system`, `self`, `vts`, `tts`), color-coded, auto-refreshing every 2 seconds.
+The terminal is reserved for actual conversation, ambient VLM fires, and
 unprompted speech.
 
 Events also persist to `logs/events.log` for post-mortem review.
 
 ### Integrations
 
+- **VTube Studio** — full avatar control. Expression toggles with state
+  tracking, model positioning, mouth-open sync from TTS envelope, organic
+  head sway and blink, hotkey firing via either the API or keyboard
+  simulation (configurable), expression triggers on emotion tags. The model
+  is probed at boot to discover its real parameter names.
 - **Discord** — reads chat, joins voice, plays TTS into voice. Voice *receive*
   (transcription of users in the channel) is currently unstable due to
   Discord's DAVE end-to-end encryption; see Known Limitations.
-- **VTube Studio** — pyvts integration for avatar control, hotkeys, model
-  positioning, microphone prop
 - **Browser** — Playwright (Firefox) with a persistent profile
 - **Document library** — PDF, DOCX, TXT, MD, JSON reading from `library/`
 
@@ -308,12 +382,20 @@ Type `!list` at any time to see the full command card. Summary:
 | `!self` | Show current self-model observations and session stats |
 | `!model` | Show current model routing state (main, fast, availability) |
 | `!sleep` | Summarize session and save continuity state for next time |
+| `!set <name> on\|off` | Set an avatar expression state idempotently |
+| `!expressions` | List avatar expression states with ● / ○ markers |
+| `!expression <name>` | Toggle a raw VTS hotkey directly (no state tracking) |
+| `!move <location>` | Move avatar to a preset screen position |
+| `!hotkeys` | List raw VTS hotkeys on the loaded model |
+| `!positions` | List preset VTS model positions |
 | `set mood <name>` | Switch mood profile (`default`, `bratty`, `brocon`, `soft`) |
 | `wipe memory` | Clear all long-term ChromaDB memories |
 
 **Agent mode is OFF by default.** At startup, every message goes through a
 plain chat completion with no tools — Lumi can't invent tasks on idle banter.
-Only `!agent_on` or `!agent <task>` opens the tool interface.
+Only `!agent_on` or `!agent <task>` opens the tool interface. The `!set`,
+`!expression`, `!move`, `!hotkeys`, `!positions`, and `!expressions` commands
+do NOT require agent mode — they pass through to VTS directly.
 
 ---
 
@@ -326,7 +408,8 @@ User input (terminal, mic, or Discord)
         │
         ▼
 Command router (checks !agent_on/off, !list, !state, !recall, !self, !model,
-                mood, memory wipes)
+                mood, memory wipes, !set, !expressions, !expression, !move,
+                !hotkeys, !positions)
         │
         ├─── conversational mode
         │     ├─ Routing decision: fast or full model
@@ -335,19 +418,25 @@ Command router (checks !agent_on/off, !list, !state, !recall, !self, !model,
         │     │  + self-model observations + continuity)
         │     └─ POST to Ollama /api/chat (no tools)
         │
-        └─── agent mode → run_agent_turn() on main model:
-              ├─ Build system prompt (same injection stack)
-              ├─ Append history
-              ├─ POST to Ollama /api/chat with tool schemas
-              ├─ If tool_calls returned:
-              │    ├─ Confirm gates for write_file / run_command / run_in_terminal
-              │    ├─ Execute tool via execute_tool() or _dispatch_tool_call
-              │    ├─ Append result as `role: tool`
-              │    └─ Loop back to Ollama (up to MAX_AGENT_STEPS)
-              └─ If plain text returned: push to TTS, save to history
-              │
-              ▼
-        Self-model note_turn() — records tags, frame, length for the next reflection
+        ├─── agent mode → run_agent_turn() on main model:
+        │     ├─ Build system prompt (same injection stack)
+        │     ├─ Append history
+        │     ├─ POST to Ollama /api/chat with tool schemas
+        │     ├─ If tool_calls returned:
+        │     │    ├─ Confirm gates for write_file / run_command / run_in_terminal
+        │     │    ├─ Validate args for vtube_set_expression / vtube_move
+        │     │    ├─ Execute tool via execute_tool() or _dispatch_tool_call
+        │     │    ├─ Append result as `role: tool`
+        │     │    └─ Loop back to Ollama (up to MAX_AGENT_STEPS)
+        │     └─ If plain text returned: push to TTS, save to history
+        │
+        └─── avatar commands → VTube Studio module
+              ├─ !set / vtube_set_expression → idempotent state change
+              ├─ !expression / vtube_hotkey → raw toggle (no tracking)
+              └─ !move / vtube_move → reposition model
+        │
+        ▼
+Self-model note_turn() — records tags, frame, length for the next reflection
 ```
 
 ### Key Files
@@ -355,8 +444,9 @@ Command router (checks !agent_on/off, !list, !state, !recall, !self, !model,
 | File | Role |
 |---|---|
 | `main.py` | Entry point — audio routing menu, module spawning |
-| `modules/prompter.py` | Agent loop, command router, detection guards, model routing, format enforcement |
+| `modules/prompter.py` | Agent loop, command router, detection guards, model routing, format enforcement, avatar tool dispatch |
 | `modules/agent_tools.py` | Tool schemas + filesystem/command execution |
+| `modules/vtubeStudio.py` | VTube Studio controller — expression state tracking, parameter probing, keyboard fallback, organic motion |
 | `modules/memory.py` | ChromaDB long-term memory, reflection loop, temporal queries |
 | `modules/emotional_state.py` | Traits, state variables, cognitive frame selection |
 | `modules/self_model.py` | Pattern tracking, periodic reflection, sparse injection |
@@ -385,6 +475,9 @@ Each module runs in its own thread with its own event loop, spawned by
 - **Ollama** running locally with at least two tool-capable models (see below)
 - **FFmpeg** on PATH (for Discord voice playback)
 - **Playwright Firefox** (`playwright install firefox`)
+- **PyYAML** (`pip install pyyaml`)
+- **pyvts** (`pip install pyvts`) — for VTube Studio avatar control
+- **keyboard** (`pip install keyboard`) — for VTS hotkey simulation
 - **Conda** recommended for environment isolation
 
 ### Recommended Models
@@ -466,9 +559,9 @@ on casual chat; you gain one less model to load.
    DISCORD_CHANNEL_ID=000000000000000000
    ```
 
-5. **Configure `constants.py`** — set `WORKSPACE_ROOT`, `LLM_ENDPOINT`, and
-   `OUTPUT_DEVICE_INDEX` for your machine. Run `python modules/check_mics.py`
-   to list available audio device indices.
+5. **Configure `constants.py`** — set `WORKSPACE_ROOT`, `LLM_ENDPOINT`,
+   `TIMEZONE`, and `OUTPUT_DEVICE_INDEX` for your machine. Run
+   `python modules/check_mics.py` to list available audio device indices.
 
 6. **Edit `lumi.yaml`** — this is where Lumi's persona lives. Change the name,
    host, personality, lore, appearance, and dialogue to make her your own.
@@ -479,6 +572,13 @@ on casual chat; you gain one less model to load.
    ollama pull qwen2.5:7b
    ollama create lumi-coder -f Modelfile
    ```
+
+8. **VTube Studio (optional but recommended).** Install VTS, load a Live2D
+   model, enable the API in VTS settings, then run `python main.py` once to
+   trigger the plugin authentication prompt. If your model uses keyboard-bound
+   hotkeys (like ariu), edit `HOTKEY_KEYBINDINGS` in `modules/vtubeStudio.py`
+   to match the model's key combos. See the model's `.vtube.json` under the
+   `Hotkeys` array for the actual bindings.
 
 ---
 
@@ -535,6 +635,63 @@ Thinking (agent step 2/6)...
      34
 
 [confident] There you go. The output is real — I actually ran it.
+```
+
+### Avatar Control Example
+
+```
+Anthony: !agent_on
+Lumi: [agent mode: ON] Agent mode engaged. Tools are live, Anthony.
+
+Anthony: Lumi, put on your hat.
+
+Lumi: Thinking (agent step 1/6)...
+[Lumi is using tool: vtube_set_expression(hat, enabled=True)]
+  -> Set 'hat' to on.
+Thinking (agent step 2/6)...
+[sarcastic] There. Happy?
+
+Anthony: !set hat on
+
+[VTS] 'hat' is already on
+
+Anthony: !expressions
+
+Expression States
+  ○ bag
+  ○ controller
+  ○ darkened
+  ● hat
+  ○ heart_eyes
+  ● jacket
+  ● ponytail_l
+  ● ponytail_r
+  ○ skirt
+  ○ spiral_eyes
+
+Anthony: Lumi, take off your hat.
+
+Lumi: Thinking (agent step 1/6)...
+[Lumi is using tool: vtube_set_expression(hat, enabled=False)]
+  -> Set 'hat' to off.
+Thinking (agent step 2/6)...
+[soft tone] There. Better?
+```
+
+For batch operations, use the terminal commands directly — they bypass the
+LLM and always land:
+
+```
+!set jacket off
+!set hat off
+!set bag off
+!set skirt off
+!set controller off
+!set heart_eyes off
+!set spiral_eyes off
+!set darkened off
+!set ponytail_l on
+!set ponytail_r on
 ```
 
 ### Memory Query Example
@@ -604,7 +761,15 @@ situations:
 Only canonical tags from Fish Audio's S2 documentation are supported. Invented
 tags like `[smug]`, `[deadpan]`, `[pitch up]`, or `[low voice]` are silently
 ignored by the engine. The persona file lists all 64+ approved tags organized
-by category and forbids non-canonical ones.
+by category and forbids non-canonical ones. A `_strip_non_canonical_tags()`
+pass in the TTS pipeline removes any invented tags before they reach audio
+synthesis — so even if the model slips and emits `[rolling eyes]`, it never
+gets spoken.
+
+**These tags also drive Lumi's avatar.** The first canonical tag in each reply
+is forwarded to the VTube Studio module as an expression trigger — `[moved]`
+fires heart eyes, `[angry]` fires the shadow face, `[confused]` fires spiral
+eyes. So her choice of delivery tag colors both voice and face at once.
 
 **To change the voice:** record a 10–30 second clip of the voice you want,
 upload it to Fish Audio, get a `reference_id`, and update `.env`. Voice quality
@@ -637,6 +802,7 @@ trimmed significantly:
    - `SelfModel` — very light when idle; reflection fires every 10 min
    - `DiscordClient` — loads a second Whisper model
    - `BrowserController` — holds a Playwright Firefox context
+   - `VtubeStudio` — light when idle, but requires VTS to be running
    - `MicInput` — set to `False` if you mostly type at the terminal
 
 3. **Disable fast-model routing** with `FAST_MODEL_ENABLED = False` if VRAM
@@ -664,6 +830,35 @@ trimmed significantly:
   slot specifically was tested with `qwen2.5:3b` and found to produce format
   slips, non-canonical tag leaks, and occasional fact mangling — it was
   upgraded to `qwen2.5:7b` to resolve these.
+- **Tool-call format variance** — Lumi's 7B model does not always emit tool
+  calls in the standard JSON shape. It falls back to bracket forms like
+  `[tool(arg=val)]`, `[tool{"k":"v"}]`, `[tool "val"]`, and
+  `[tool "val" true]`. All are recovered by a chain of parsers, but the
+  bracket-positional form occasionally needs an extra retry step when the
+  user asks for many things at once.
+- **VTS avatar multi-item fabrications** — On requests with more than ~3
+  items ("reset everything, take off your hat, put your jacket on, hide both
+  ponytails, drop the controller..."), Lumi sometimes narrates success in
+  prose instead of firing each individual `vtube_set_expression` tool call.
+  The fabrication guard catches most shapes but not all. Use `!set` terminal
+  commands for batch operations — they bypass the LLM entirely and always
+  land.
+- **VTS state drift** — If you manually press a bound hotkey in VTS
+  (Ctrl+3 for hat, etc.), the module's internal `_toggle_state` dict drifts
+  from the actual model state. A subsequent `vtube_set_expression` call may
+  no-op when it should fire. Fix: `!set <name> on` / `!set <name> off`
+  re-syncs the tracked state idempotently. VTS does not expose a read API for
+  current expression state, so a true auto-resync isn't possible.
+- **VTS focus stealing** — The keyboard fallback path briefly focuses the
+  VTS window to send the keypress (~250ms per hotkey). If a batch of hotkeys
+  fires, focus returns to whatever you were doing after the last one. Any
+  keystrokes you type during that window may land in VTS instead of your
+  active application.
+- **VTS parameter injection on physics-managed params** — Some model configs
+  (`UseBreathing: true`, head-sway physics writing back to `ParamAngleX`)
+  refuse direct API injection into managed parameters. The VTS module probes
+  the model at boot to discover which params accept injection and which
+  silently reject it; managed params are skipped.
 - **Discord voice receive** — Discord's DAVE end-to-end encryption requires
   `discord-ext-voice-recv >= 0.5.2a`. Older versions connect but receive no
   audio. Voice receive is currently paused in this build; text works.
@@ -698,18 +893,30 @@ project closes that gap in measurable steps.
 | 4 | Episodic memory (timestamps + importance) | ✅ Complete |
 | 5 | Multi-model orchestration | ✅ Complete |
 | 6 | Self-model / meta-cognition | ✅ Complete |
+| 6.5 | Avatar control (VTube Studio) | ✅ Complete |
+| 7 | Discord voice bridge (C# sidecar) | ⏳ In progress |
+| 8 | External SDK (websocket plugin host) | ⏳ Planned |
+| 9 | Security hardening | ⏳ Planned |
+| 10 | Dynamic user identity | 🟡 Designed |
 
-Every phase is shipped. What remains is tuning, not construction — the persona
-cadence, the fast-model routing thresholds, and the ambient description
-quality are all adjustable through single-file edits, no architectural work
-required. Use her for a week and adjust based on what actually bothers you.
+Every phase through 6.5 is shipped and stable. Phases 7–10 are documented in
+the project roadmap and represent optional polish — nothing is broken, and the
+existing architecture supports all of them cleanly.
+
+Use her for a week before deciding which (if any) of the remaining items
+matter. Real use drives the next round of tuning, not a checklist.
 
 ---
 
 ## Credits
 
 Built as a personal project. Architecture inspired by Neuro-sama
-(Vedal987). Uses Ollama, ChromaDB, Faster-Whisper, Fish Audio, and Playwright.
+(Vedal987). 
+
+* **VTube Model:** [Arii / Ariu (Booth)](https://booth.pm/en/items/5879420)
+
+Built using Ollama, ChromaDB, Faster-Whisper, Fish Audio, Playwright,
+pyvts, and pyautogui.
 
 ---
 

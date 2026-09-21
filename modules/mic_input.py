@@ -93,55 +93,14 @@ class MicInput(Module):
 
         try:
             self.recorder = AudioToTextRecorder(
-                model="tiny.en",                    # keep — tiny.en is fast
+                model="tiny.en",
                 language="en",
                 spinner=False,
-
-                # --- Use the GPU ---
-                # You have a 2080 Ti. Running Whisper on CPU is throwing
-                # away ~10x of your available throughput. float16 on CUDA
-                # transcribes tiny.en in ~80-150ms for a typical utterance.
-                device="cuda",
-                compute_type="float16",
-
-                # --- Trim the silence floor ---
-                # 2.2s was massively conservative. 0.6s feels responsive
-                # without cutting people off mid-thought. If you get
-                # truncation on slower speech, bump to 0.8.
-                post_speech_silence_duration=0.6,
-
-                # --- Remove the minimum recording floor ---
-                # Short answers ("yeah", "no", "okay") are valid turns.
-                # Don't force 1s of padding.
-                min_length_of_recording=0,
-
-                # --- Small gap so back-to-back utterances work ---
-                min_gap_between_recordings=0.2,
-
-                # --- VAD tuning ---
-                # silero_use_onnx speeds up VAD noticeably on Windows.
-                # 0.5 is a good middle ground for sensitivity.
-                silero_sensitivity=0.5,
-                silero_use_onnx=True,
-
-                # --- Enable realtime partial transcription ---
-                # Gives you live partial text and warms the model so the
-                # final pass is already loaded.
-                enable_realtime_transcription=True,
-                realtime_model_type="tiny.en",
-                realtime_processing_pause=0.2,
-
-                # --- Greedy decoding: fastest, negligible accuracy loss ---
-                # beam_size=5 (default) is 10-20% slower. For conversational
-                # speech on tiny.en the difference doesn't justify the cost.
-                beam_size=1,
-
-                # --- Warm up at boot so first utterance isn't slow ---
-                # Without this the very first thing you say can take 3-5s
-                # while the model cold-loads.
-                warmup=True,
-
-                input_device_index=1,
+                device="cpu",
+                compute_type="int8",
+                input_device_index=1,  # Updated to Focusrite USB Audio index
+                post_speech_silence_duration=2.2,
+                min_length_of_recording=1.0,
                 on_vad_detect_start=self._on_vad_start,
             )
             # The terminal already announces mic status in the startup

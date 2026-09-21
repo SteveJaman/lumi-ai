@@ -17,11 +17,45 @@ How it works:
 
 import asyncio
 import queue
+import re
 import sys
 import time
 import threading
 
 from modules.module import Module
+
+
+# ===============================================================
+# STRAY OUTPUT DETECTION
+# ---------------------------------------------------------------
+# Background modules occasionally print diagnostic values to stdout
+# by accident — most commonly a bare `print(None)` from a helper
+# whose return value leaked into a print call. Those lines have no
+# business in the terminal, where they land between the user's
+# prompt and their input.
+#
+# This pattern catches the common offenders. Anything that matches
+# is routed to the log hub under the "print" category instead of
+# being rendered in the terminal.
+#
+# Deliberately narrow: only bare Python primitives and repr-like
+# fragments. Real conversational output, debug lines, and colored
+# status messages pass through untouched.
+# ===============================================================
+_STRAY_OUTPUT_PATTERN = re.compile(
+    r"^\s*(None|True|False|\[\]|\{\}|\(\))\s*$"
+)
+
+_ANSI_STRIP = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _is_stray_output(line):
+    """True if the line is a bare Python primitive that leaked to
+    stdout. Strips ANSI codes first so a colored `None` still matches."""
+    if not line:
+        return False
+    plain = _ANSI_STRIP.sub("", line).strip()
+    return bool(_STRAY_OUTPUT_PATTERN.match(plain))
 
 CYAN = "\033[96m"
 MAGENTA = "\033[95m"
@@ -39,11 +73,17 @@ except ImportError:
 class _StdoutInterceptor:
     """Replaces sys.stdout so every print() lands in a queue instead of
     directly at the cursor. Buffers until a newline so multi-arg prints
-    arrive as one message."""
+    arrive as one message.
 
-    def __init__(self, q, original):
+    Lines that match _STRAY_OUTPUT_PATTERN are routed to the log hub
+    instead of the terminal queue, so accidental print(None) leaks
+    from background modules don't pollute the user's prompt line.
+    """
+
+    def __init__(self, q, original, hub_sink=None):
         self._queue = q
         self._original = original
+        self._hub_sink = hub_sink  # callable(category, message, level)
         self._buf = ""
         self._lock = threading.Lock()
 
@@ -56,7 +96,21 @@ class _StdoutInterceptor:
                 idx = self._buf.index("\n") + 1
                 line = self._buf[:idx]
                 self._buf = self._buf[idx:]
-                self._queue.put(line)
+
+                if _is_stray_output(line):
+                    if self._hub_sink is not None:
+                        try:
+                            plain = _ANSI_STRIP.sub("", line).strip()
+                            self._hub_sink(
+                                "print",
+                                f"stray stdout: {plain!r}"
+                            )
+                        except Exception:
+                            pass
+                    # Do not put it on the terminal queue — we've
+                    # already logged it to the hub.
+                else:
+                    self._queue.put(line)
         return len(text)
 
     def flush(self):
@@ -196,9 +250,22 @@ class ConsoleInput(Module):
         print(f"  {BOLD}{MAGENTA}Lumi AI{RESET} {GRAY}— Terminal Companion Interface{RESET}")
         print(f"{GRAY}" + "=" * 55 + f"{RESET}\n")
 
-        # Install interceptor.
+        # Install interceptor. Stray prints go to the log hub so they
+        # don't land in the middle of the user's prompt line.
+        def _hub_sink(category, message, level="info"):
+            try:
+                hub = getattr(self.signals, "log_hub", None)
+                if hub is not None:
+                    hub.emit(category, message, level)
+            except Exception:
+                pass
+
         self._original_stdout = sys.stdout
-        sys.stdout = _StdoutInterceptor(self._output_queue, self._original_stdout)
+        sys.stdout = _StdoutInterceptor(
+            self._output_queue,
+            self._original_stdout,
+            hub_sink=_hub_sink,
+        )
 
         loop = asyncio.get_running_loop()
 

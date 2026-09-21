@@ -130,6 +130,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     --text:#c9d1d9; --dim:#8b949e; --accent:#58a6ff;
     --ambient:#a371f7; --heartbeat:#f778ba; --memory:#7ee787;
     --emotional:#ffa657; --mic:#79c0ff; --system:#8b949e;
+    --vts:#56d4dd;
+    --print:#6e7681;
     --warn:#f0883e; --error:#f85149;
   }
   * { box-sizing: border-box; }
@@ -171,6 +173,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .cat.memory    { color:var(--memory); }
   .cat.emotional { color:var(--emotional); }
   .cat.mic       { color:var(--mic); }
+  .cat.vts       { color:var(--vts); }
+  .cat.print     { color:var(--print); font-style:italic; }
   .cat.system    { color:var(--system); }
   .cat.log       { color:var(--dim); }
   .msg { color:var(--text); word-break:break-word; line-height:1.45; }
@@ -192,7 +196,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <div id="events"><div class="empty">Waiting for events…</div></div>
 <script>
   const CATEGORIES = ['all','ambient','heartbeat','memory',
-                      'emotional','mic','system'];
+                      'emotional','mic','vts','system','print'];
   let activeFilter = 'all';
   let events = [];
 

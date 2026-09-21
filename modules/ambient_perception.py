@@ -48,8 +48,8 @@ from constants import LLM_ENDPOINT
 # TUNING KNOBS
 # ===============================================================
 
-SAMPLE_INTERVAL       = 30       # seconds between screenshots
-MIN_VLM_INTERVAL      = 90       # min seconds between VLM calls (same window)
+SAMPLE_INTERVAL       = 120      # was 30 — screenshot every 2 min
+MIN_VLM_INTERVAL      = 600      # was 90 — VLM at most once per 10 min (same window)
 HASH_CHANGE_THRESHOLD = 14       # hamming distance out of 64 = meaningful change
 MAX_DESCRIPTION_AGE   = 300      # seconds a cached description stays "fresh"
 DESCRIPTION_HISTORY   = 5        # how many recent descriptions to keep

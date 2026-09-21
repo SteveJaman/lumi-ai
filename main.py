@@ -128,11 +128,11 @@ def main():
         ConsoleInput(signals, enabled=True),
         MicInput(signals, enabled=True),
         DiscordClient(signals, enabled=True, audio_mode=selected_audio_mode),
-        VtubeStudio(signals, enabled=False),
+        VtubeStudio(signals, enabled=True),
         BrowserController(signals, enabled=True),
         Heartbeat(signals, enabled=True),
         EmotionalStateModule(signals, enabled=True),
-        AmbientPerception(signals, enabled=True),
+        AmbientPerception(signals, enabled=False),
         SelfModel(signals, enabled=True),
     ]
 

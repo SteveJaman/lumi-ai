@@ -6,6 +6,7 @@ import io
 import wave
 import requests
 import threading
+import array  # fallback RMS computation when numpy is absent
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -29,6 +30,13 @@ try:
 except ImportError:
     HAS_PYAUDIO = False
     import simpleaudio as sa
+
+# Numpy speeds up envelope computation by ~10x. Not required.
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
 
 
 # ===============================================================
@@ -160,6 +168,97 @@ class TTS:
             print(f"\033[91mTTS API Download Error: {e}\033[0m")
             return None
 
+    # ---------------------------------------------------------------
+    # VTS integration helpers
+    # ---------------------------------------------------------------
+    def _find_vts(self):
+        """Locate the VtubeStudio module if it's loaded and enabled.
+        Called once per playback turn — the result is cached for the
+        duration of the utterance so we don't scan the module list on
+        every audio chunk."""
+        for m in self.modules:
+            if m.__class__.__name__ == "VtubeStudio":
+                if getattr(m, "enabled", False) and hasattr(m, "API"):
+                    return m
+        return None
+
+    def _audio_to_mouth_envelope(self, audio_bytes, samples_per_chunk=1024):
+        """Decode WAV bytes and return a list of normalized volume
+        values, one per playback chunk. Used to drive VTube Studio's
+        MouthOpen parameter in sync with playback.
+
+        The returned list is aligned 1:1 with the device_worker chunk
+        loop — envelope[i] corresponds to the i-th chunk written.
+
+        Returns a list of floats in [0.0, 1.0]. If decoding fails or
+        the format isn't 16-bit PCM, returns an empty list and the
+        caller skips lip-sync for this utterance (audio still plays).
+        """
+        try:
+            wf = wave.open(io.BytesIO(audio_bytes), 'rb')
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            n_frames = wf.getnframes()
+            raw = wf.readframes(n_frames)
+            wf.close()
+
+            if sampwidth != 2:
+                # Only handle 16-bit PCM. Fish Audio returns 16-bit,
+                # so this is a defensive branch that shouldn't fire.
+                return []
+
+            # Convert to mono float samples
+            if HAS_NUMPY:
+                samples = np.frombuffer(raw, dtype=np.int16)
+                if n_channels == 2:
+                    samples = samples.reshape(-1, 2).mean(axis=1)
+                samples = samples.astype(np.float32)
+            else:
+                samples = array.array('h')
+                samples.frombytes(raw)
+                if n_channels == 2:
+                    # Manual stereo → mono downmix
+                    samples = array.array(
+                        'f',
+                        [(samples[i] + samples[i + 1]) * 0.5
+                         for i in range(0, len(samples) - 1, 2)]
+                    )
+                else:
+                    samples = array.array('f', [float(s) for s in samples])
+
+            # Compute per-chunk RMS
+            rms_values = []
+            step = samples_per_chunk
+            for i in range(0, len(samples), step):
+                chunk = samples[i:i + step]
+                if len(chunk) == 0:
+                    continue
+                if HAS_NUMPY:
+                    rms = float(np.sqrt(np.mean(chunk ** 2)))
+                else:
+                    rms = (sum(float(s) * float(s) for s in chunk) / len(chunk)) ** 0.5
+                rms_values.append(rms)
+
+            if not rms_values:
+                return []
+
+            # Normalize to [0, 1]. Apply a mild gamma so quiet syllables
+            # still move the mouth — without it, soft consonants get
+            # flattened and the avatar looks stiff.
+            peak = max(rms_values) or 1.0
+            envelope = []
+            for rms in rms_values:
+                norm = rms / peak
+                envelope.append(min(1.0, norm ** 0.6))
+
+            return envelope
+        except Exception as e:
+            print(f"\033[90mTTS: envelope decode failed — {e}\033[0m")
+            return []
+
+    # ---------------------------------------------------------------
+    # Playback
+    # ---------------------------------------------------------------
     def play_audio(self, message, audio_bytes):
         """Physically plays the bytes and routes to Discord."""
         self.signals.sio_queue.put(("current_message", message))
@@ -194,12 +293,27 @@ class TTS:
                     rate_val = wf.getframerate()
 
                     all_data = wf.readframes(wf.getnframes())
+                    wf.close()
+
                     bytes_per_chunk = 1024 * channels_val * wf.getsampwidth()
+
+                    # Pre-compute the mouth envelope once. The VTS module
+                    # lookup is also cached — no per-chunk scanning.
+                    vts = self._find_vts()
+                    envelope = self._audio_to_mouth_envelope(audio_bytes) if vts else []
+
+                    # Only one device thread drives the mouth. Picking
+                    # the first in the list avoids two threads racing to
+                    # update the same target value.
+                    mouth_driver_idx = device_indices[0] if device_indices else None
 
                     threads = []
 
                     def device_worker(dev_idx):
-                        """Independent thread for writing to a specific hardware device."""
+                        """Independent thread for writing to a specific
+                        hardware device. If this thread is the designated
+                        mouth driver, it also pushes one MouthOpen value
+                        per chunk to VTS."""
                         try:
                             kwargs = {}
                             if dev_idx is not None:
@@ -213,10 +327,24 @@ class TTS:
                                 **kwargs
                             )
 
+                            is_mouth_driver = (
+                                vts is not None
+                                and envelope
+                                and dev_idx == mouth_driver_idx
+                            )
+                            mouth_tick = 0
+
                             for i in range(0, len(all_data), bytes_per_chunk):
                                 if not self.is_playing:
                                     break
-                                st.write(all_data[i:i+bytes_per_chunk])
+                                st.write(all_data[i:i + bytes_per_chunk])
+
+                                if is_mouth_driver and mouth_tick < len(envelope):
+                                    try:
+                                        vts.API.set_mouth_open(envelope[mouth_tick])
+                                    except Exception:
+                                        pass
+                                    mouth_tick += 1
 
                             st.stop_stream()
                             st.close()
@@ -235,6 +363,9 @@ class TTS:
                     p.terminate()
 
                 else:
+                    # simpleaudio fallback — no lip-sync here because
+                    # we can't hook into playback at chunk granularity.
+                    # The mouth will move via the VTS idle loop instead.
                     wave_obj = sa.WaveObject.from_wave_file(io.BytesIO(audio_bytes))
                     self._current_sa_obj = wave_obj.play()
                     while self._current_sa_obj.is_playing() and self.is_playing:
@@ -270,12 +401,30 @@ class TTS:
 
         self.signals.AI_speaking = False
 
+        # Close the mouth so a barge-in doesn't leave the avatar
+        # frozen mid-syllable.
+        vts = self._find_vts()
+        if vts:
+            try:
+                vts.API.set_mouth_open(0.0)
+            except Exception:
+                pass
+
     def audio_started(self):
         self.signals.AI_speaking = True
 
     def audio_ended(self):
         self.signals.last_message_time = time.time()
         self.signals.AI_speaking = False
+
+        # Smoothly close the mouth. The VTS loop will decay the target
+        # to zero over the next few frames.
+        vts = self._find_vts()
+        if vts:
+            try:
+                vts.API.set_mouth_open(0.0)
+            except Exception:
+                pass
 
     def audio_playback_loop(self):
         """BACKGROUND WORKER 2: Continuously plays ready-to-go audio files."""
