@@ -3,7 +3,6 @@
 # ============================================================
 
 # --- Secrets & environment ---
-API/
 .env
 .env.local
 .env.*.local
@@ -30,13 +29,6 @@ pip-wheel-metadata/
 .ruff_cache/
 .coverage
 htmlcov/
-
-# --- Secrets & environment ---
-.env
-.env.local
-.env.*.local
-*.key
-*.pem
 
 # --- Models & weights ---
 models/
@@ -91,6 +83,7 @@ recordings/
 *.mp3
 *.pcm
 temp_discord_audio_*.wav
+test_tone.wav
 
 # --- Backups made by write_file ---
 *.bak

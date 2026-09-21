@@ -11,6 +11,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 import keyboard
 from RealtimeSTT import AudioToTextRecorder
+from modules.log_hub import emit as hub_emit
 
 
 class MicInput(Module):
@@ -45,10 +46,8 @@ class MicInput(Module):
             self._last_toggle_time = now
 
         self.is_listening = not self.is_listening
-        if self.is_listening:
-            print("\n\033[92m[Mic Input: UNMUTED - Listening active]\033[0m")
-        else:
-            print("\n\033[91m[Mic Input: MUTED - Press '\\' to unmute]\033[0m")
+        state = "unmuted" if self.is_listening else "muted"
+        hub_emit(self.signals, "mic", f"Microphone {state}")
 
     def _on_vad_start(self):
         """Fires the instant RealtimeSTT's VAD detects the start of speech —
@@ -104,7 +103,11 @@ class MicInput(Module):
                 min_length_of_recording=1.0,
                 on_vad_detect_start=self._on_vad_start,
             )
-            print("\033[92mMic Input: Microphone is active. Press '\\' to toggle mute/unmute.\033[0m")
+            # The terminal already announces mic status in the startup
+            # banner (main.py). Route the detailed line to the hub so it
+            # doesn't land between the "Anthony:" prompt and your input.
+            hub_emit(self.signals, "mic",
+                     "Microphone active — press \\ to toggle mute/unmute")
         except Exception as e:
             print(f"\033[91mMic Input Error: Failed to initialize microphone: {e}\033[0m")
             return

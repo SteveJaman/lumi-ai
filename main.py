@@ -24,6 +24,9 @@ from modules.socketIO import SocketIOServer
 from modules.heartbeat import Heartbeat
 from modules.emotional_state import EmotionalStateModule
 from modules.ambient_perception import AmbientPerception
+from modules.ambient_perception import AmbientPerception
+from modules.log_hub import LogHub
+from modules.self_model import SelfModel
 
 # TTS may live at root OR in modules/ depending on how you've organized files.
 try:
@@ -109,6 +112,13 @@ def main():
     selected_audio_mode = choose_audio_mode()
 
     signals = Signals()
+
+    # Diagnostics hub — receives structured events from all modules and
+    # serves them at http://127.0.0.1:5001/. Keeps high-frequency loop
+    # output (ambient skips, heartbeat ticks) out of the terminal.
+    signals.log_hub = LogHub()
+    signals.log_hub.start()
+
     _global_signals = signals
 
     modules = [
@@ -123,6 +133,7 @@ def main():
         Heartbeat(signals, enabled=True),
         EmotionalStateModule(signals, enabled=True),
         AmbientPerception(signals, enabled=True),
+        SelfModel(signals, enabled=True),
     ]
 
     tts_module = TTS(signals, enabled=True, modules=modules, audio_mode=selected_audio_mode)
@@ -144,10 +155,15 @@ def main():
 
     print("\n=======================================================")
     print(f"  Lumi AI Ready — Audio routed to: {selected_audio_mode.upper()}")
+    print(f"  Mic: active (press \\ to toggle mute)")
+    print(f"  Diagnostics: http://127.0.0.1:{signals.log_hub.port}/")
     print("=======================================================\n")
 
     signals.system_ready = True
 
+    signals.log_hub.start()
+    signals.log_hub.emit("system", f"Lumi booting — audio mode = {selected_audio_mode}")
+    
     try:
         asyncio.run(prompter.run())
     except KeyboardInterrupt:

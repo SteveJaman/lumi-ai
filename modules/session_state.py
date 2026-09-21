@@ -13,7 +13,7 @@ import datetime
 import re
 import requests
 
-from constants import LLM_ENDPOINT, MODEL_NAME
+from constants import LLM_ENDPOINT, MODEL_NAME, FAST_MODEL_NAME
 
 SESSION_STATE_PATH = os.path.join("memories", "session_state.json")
 
@@ -81,14 +81,20 @@ class SessionState:
         transcript = "\n".join(transcript_lines)
         prompt = SUMMARY_PROMPT.format(transcript=transcript)
 
+        # Summarization is a structured extraction task. The fast model
+        # handles it fine and frees the main model for user-facing turns.
         try:
             response = requests.post(
                 f"{LLM_ENDPOINT}/api/chat",
                 json={
-                    "model": MODEL_NAME,
+                    "model": FAST_MODEL_NAME,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
-                    "options": {"temperature": 0.3},
+                    "keep_alive": "30s",
+                    "options": {
+                        "temperature": 0.3,
+                        "num_ctx": 8192,
+                    },
                 },
                 timeout=30,
             )

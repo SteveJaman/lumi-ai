@@ -17,7 +17,13 @@ class SocketIOServer:
         self.start_server()
 
     def start_server(self):
-        print("Starting Socket.io server...")
+        # Startup chatter — route to hub, not terminal.
+        try:
+            from modules.log_hub import emit as hub_emit
+            hub_emit(self.signals, "system",
+                     f"socket.io server starting on port 5000")
+        except Exception:
+            pass
         sio = socketio.AsyncServer(async_mode='aiohttp', cors_allowed_origins='*')
         app = web.Application()
         sio.attach(app)

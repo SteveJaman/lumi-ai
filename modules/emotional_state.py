@@ -21,6 +21,7 @@ import yaml
 
 from modules.module import Module
 from constants import WORKSPACE_ROOT
+from modules.log_hub import emit as hub_emit
 
 
 # ===============================================================
@@ -358,10 +359,10 @@ class EmotionalStateModule(Module):
         )
         frames_summary = ", ".join(self.state.frames.keys())
 
-        print(f"\033[90mEMOTIONAL STATE: Decay loop started "
-              f"(interval={self.decay_interval}s)\033[0m")
-        print(f"\033[90mEMOTIONAL STATE: Traits loaded — {traits_summary}\033[0m")
-        print(f"\033[90mEMOTIONAL STATE: Frames loaded — {frames_summary}\033[0m")
+        hub_emit(self.signals, "emotional",
+                 f"decay loop started (interval={self.decay_interval}s)")
+        hub_emit(self.signals, "emotional", f"traits loaded — {traits_summary}")
+        hub_emit(self.signals, "emotional", f"frames loaded — {frames_summary}")
 
         while not self.signals.terminate:
             await asyncio.sleep(self.decay_interval)

@@ -3,7 +3,8 @@
 A local-first, agentic AI companion running on consumer hardware. Lumi is a
 persona-driven VTuber-style assistant with real tool use — she can read and
 write files, run commands, search the web, control a browser, query her own
-memory, and verify her own work — all coordinated through a local Ollama model.
+memory, verify her own work, track her own behavioral patterns, and route
+casual chat through a faster model — all coordinated through local Ollama.
 
 Unlike scripted chatbots or bracket-tag "tool" syntax, Lumi uses **structured
 tool calling** through Ollama's native `/api/chat` tool interface. When she
@@ -18,12 +19,15 @@ the log and see that she did.
   - [Real Agentic Tool Use](#real-agentic-tool-use)
   - [Multi-Step Task Execution](#multi-step-task-execution)
   - [Safety Layers](#safety-layers)
+  - [Multi-Model Orchestration](#multi-model-orchestration)
   - [Persona & Voice](#persona--voice)
   - [Episodic Memory](#episodic-memory)
   - [Emotional State & Cognitive Frames](#emotional-state--cognitive-frames)
+  - [Self-Model](#self-model)
   - [Autonomous Heartbeat](#autonomous-heartbeat)
   - [Ambient Screen Awareness](#ambient-screen-awareness)
   - [Multimodal (Optional)](#multimodal-optional)
+  - [Diagnostics Dashboard](#diagnostics-dashboard)
   - [Integrations](#integrations)
 - [Terminal Commands](#terminal-commands)
 - [Architecture](#architecture)
@@ -31,10 +35,13 @@ the log and see that she did.
   - [Key Files](#key-files)
   - [Background Modules](#background-modules)
 - [Requirements](#requirements)
-  - [Recommended Model](#recommended-model)
+  - [Recommended Models](#recommended-models)
 - [Installation](#installation)
 - [Running](#running)
   - [Agent Mode Example](#agent-mode-example)
+  - [Memory Query Example](#memory-query-example)
+  - [Self-Model Query Example](#self-model-query-example)
+  - [Model Routing Query Example](#model-routing-query-example)
 - [Voice Customization](#voice-customization)
 - [Resource Optimization](#resource-optimization)
 - [Known Limitations](#known-limitations)
@@ -100,11 +107,40 @@ files it wasn't asked to write, or looping on the same failed command:
 - **Linux-command blocklist** — rejects `sudo`, `systemctl`, `ls`, `cat`, etc.
   on Windows before the confirm prompt even appears
 
+### Multi-Model Orchestration
+
+Lumi runs a two-model architecture to keep casual conversation fast without
+sacrificing agent quality:
+
+- **Main model** (`lumi-coder`, 7B, 32K context): agent turns, complex
+  queries, heartbeat decisions. Full quality, higher latency.
+- **Fast model** (`qwen2.5:7b`, 8K context): short casual chat, memory
+  reflection, session summarization. Same family as the main model, smaller
+  context window, meaningfully faster.
+
+**Routing heuristic** (first match wins):
+
+| Condition | Route |
+|---|---|
+| Agent mode active | Main |
+| Message > 280 chars | Main |
+| Complexity markers (`analyze`, `debug`, `step by step`, `why does`, etc.) | Main |
+| Time/date questions | Main |
+| Everything else | Fast |
+
+The routing label appears in the terminal on every turn — `Thinking
+(conversational, fast)` or `Thinking (conversational, full)` — so you can see
+which model handled each message. Use `!model` to check the current routing
+state.
+
 ### Persona & Voice
 
-- **Fish Audio S2** synthesis with inline `[emotion]` tags (`[smug]`,
-  `[sighing]`, `[sarcastic]`, `[excited]`, `[shouting]`, `[whisper]`,
-  `[pitch up]`, `[low voice]`, …) parsed as delivery instructions, not spoken text
+- **Fish Audio S2** synthesis with inline `[emotion]` tags (`[sarcastic]`,
+  `[sighing]`, `[excited]`, `[whispering]`, `[shouting]`, `[laughing]`, …)
+  parsed as delivery instructions, not spoken text. Only canonical tags from
+  Fish Audio's S2 documentation are used — invented tags like `[smug]` or
+  `[deadpan]` are silently ignored by the engine, so the persona prompt
+  explicitly bans them.
 - **MoodManager** with four profiles: `default`, `bratty`, `brocon`, `soft` —
   switchable at runtime with `set mood <name>`
 - **faster-whisper** local STT with VAD-triggered **barge-in** (start talking,
@@ -135,6 +171,9 @@ ChromaDB-backed long-term memory with **timestamped, importance-scored facts**.
     when you ask "do you remember…" or "when did we talk about…"
 - Temporal hints (`yesterday`, `last week`, `3 days ago`) are parsed in both
   the injection path and the explicit query path.
+- A migration pass runs on startup and repairs any legacy records with
+  missing or malformed metadata. Idempotent — silent when there's nothing
+  to fix.
 
 ### Emotional State & Cognitive Frames
 
@@ -156,6 +195,29 @@ Six cognitive frames — `play`, `strategy`, `chaos`, `social`, `learning`,
 Each frame carries a tone directive that gets injected alongside the state
 description. The state and frame color her delivery without her ever naming
 them.
+
+### Self-Model
+
+Lumi keeps a running model of her own patterns — separate from her memory of
+you. Two files, one behavior:
+
+- **Collection** (`modules/self_model.py`): snapshots emotional state every
+  60 seconds, tracks per-turn stats (canonical tags used, cognitive frame,
+  response length), and increments an unprompted-message count when the
+  heartbeat fires.
+- **Reflection** (every 10 minutes, minimum 5 turns): sends a structured
+  summary of the collected data to `lumi-coder` and gets back 2–4 short
+  observations about recent patterns. Empty list is a valid result.
+  Observations are persisted across sessions to `memories/self_model.json`.
+- **Injection**: a sparse self-awareness block injected into the prompt only
+  when observations are fresh (< 1 hour old). Framed as internal awareness
+  the model should not announce.
+
+The reflection model is the full 7B — the 3B variant was tried first and
+hallucinated numbers ("an hour" for a 5-minute session, "two unprompted
+messages" when the count was 0). The 7B reports accurately.
+
+Check current state any time with `!self`.
 
 ### Autonomous Heartbeat
 
@@ -181,9 +243,14 @@ A background sampler captures the active screen every 30 seconds, computes an
 2. The screen hash changes by more than 14 bits **and** 90+ seconds have
    passed since the last VLM call
 
-Descriptions are cached for 5 minutes and injected as `[Screen Context]` into
-the prompter prompt. This gives Lumi passive awareness of what you're working
-on without a continuous screenshot loop burning GPU.
+Descriptions are cached for 5 minutes. A two-tier injection strategy keeps
+casual conversation clean:
+
+- **`[Active window] <title>`** — injected on every turn. Cheap, always
+  accurate, no VLM involvement.
+- **`[Screen Context] <full description>`** — injected only when the user's
+  message matches a screen-reference regex (`screen`, `monitor`, `looking at`,
+  `what am I`, `can you see`, etc.).
 
 **Cost profile:** idle on the same window → ~1 screenshot + 1 hash per tick,
 no VLM. Active (window switches or big content changes) → one VLM call,
@@ -195,6 +262,23 @@ rate-limited to at most once per 90 seconds.
 local VLM (`moondream`) to describe it, and injects the description into the
 prompt when she detects a "look at my screen" style question. Triggered by
 text patterns, not a continuous loop.
+
+### Diagnostics Dashboard
+
+High-frequency loop output (ambient ticks, heartbeat decisions, memory
+operations, history saves, model routing choices) is routed to a structured
+log hub instead of the terminal. Live view at:
+
+```
+http://127.0.0.1:5001/
+```
+
+Filterable by category (`ambient`, `heartbeat`, `memory`, `emotional`, `mic`,
+`system`, `self`, `tts`), color-coded, auto-refreshing every 2 seconds. The
+terminal is reserved for actual conversation, ambient VLM fires, and
+unprompted speech.
+
+Events also persist to `logs/events.log` for post-mortem review.
 
 ### Integrations
 
@@ -221,6 +305,8 @@ Type `!list` at any time to see the full command card. Summary:
 | `!agent <task>` | One-shot agent turn, returns to current mode |
 | `!state` | Show emotional state, traits, and active cognitive frame |
 | `!recall <query>` | Search long-term memory for a topic, oldest-first |
+| `!self` | Show current self-model observations and session stats |
+| `!model` | Show current model routing state (main, fast, availability) |
 | `!sleep` | Summarize session and save continuity state for next time |
 | `set mood <name>` | Switch mood profile (`default`, `bratty`, `brocon`, `soft`) |
 | `wipe memory` | Clear all long-term ChromaDB memories |
@@ -239,13 +325,18 @@ Only `!agent_on` or `!agent <task>` opens the tool interface.
 User input (terminal, mic, or Discord)
         │
         ▼
-Command router (checks !agent_on/off, !list, !state, !recall, mood, memory wipes)
+Command router (checks !agent_on/off, !list, !state, !recall, !self, !model,
+                mood, memory wipes)
         │
-        ├─── conversational mode → single chat completion, no tools
+        ├─── conversational mode
+        │     ├─ Routing decision: fast or full model
+        │     ├─ Build system prompt (persona + tool directive + memory + mood
+        │     │  + emotional state + cognitive frame + ambient context
+        │     │  + self-model observations + continuity)
+        │     └─ POST to Ollama /api/chat (no tools)
         │
-        └─── agent mode → run_agent_turn():
-              ├─ Build system prompt (persona + tool directive + memory + mood
-              │  + emotional state + cognitive frame + ambient screen context)
+        └─── agent mode → run_agent_turn() on main model:
+              ├─ Build system prompt (same injection stack)
               ├─ Append history
               ├─ POST to Ollama /api/chat with tool schemas
               ├─ If tool_calls returned:
@@ -254,6 +345,9 @@ Command router (checks !agent_on/off, !list, !state, !recall, mood, memory wipes
               │    ├─ Append result as `role: tool`
               │    └─ Loop back to Ollama (up to MAX_AGENT_STEPS)
               └─ If plain text returned: push to TTS, save to history
+        │
+        ▼
+Self-model note_turn() — records tags, frame, length for the next reflection
 ```
 
 ### Key Files
@@ -261,17 +355,20 @@ Command router (checks !agent_on/off, !list, !state, !recall, mood, memory wipes
 | File | Role |
 |---|---|
 | `main.py` | Entry point — audio routing menu, module spawning |
-| `modules/prompter.py` | Agent loop, command router, detection guards |
+| `modules/prompter.py` | Agent loop, command router, detection guards, model routing, format enforcement |
 | `modules/agent_tools.py` | Tool schemas + filesystem/command execution |
 | `modules/memory.py` | ChromaDB long-term memory, reflection loop, temporal queries |
 | `modules/emotional_state.py` | Traits, state variables, cognitive frame selection |
+| `modules/self_model.py` | Pattern tracking, periodic reflection, sparse injection |
 | `modules/heartbeat.py` | Autonomous initiation loop |
 | `modules/ambient_perception.py` | Background screen sampler + VLM descriptions |
 | `modules/session_state.py` | Cross-session continuity (focus, unresolved, running bits) |
-| `modules/socketIO.py` | Web control panel backend (Socket.io server on port 5000) |
+| `modules/log_hub.py` | Structured diagnostics stream + localhost dashboard |
+| `modules/console_input.py` | Prompt-pinned terminal UI |
+| `modules/socketIO.py` | Web control panel backend (Socket.io on port 5000) |
 | `modules/tts.py` | Fish Audio HTTP client with per-language reference support |
 | `signals.py` | Shared state object (history, flags, queues) |
-| `constants.py` | Config, workspace path, YAML persona loader |
+| `constants.py` | Config, workspace path, YAML persona loader, model names |
 | `lumi.yaml` | Full persona definition — personality, lore, favorites, fears |
 
 ### Background Modules
@@ -285,29 +382,54 @@ Each module runs in its own thread with its own event loop, spawned by
 ## Requirements
 
 - **Python** 3.11+
-- **Ollama** running locally with a tool-capable model (see below)
+- **Ollama** running locally with at least two tool-capable models (see below)
 - **FFmpeg** on PATH (for Discord voice playback)
 - **Playwright Firefox** (`playwright install firefox`)
 - **Conda** recommended for environment isolation
 
-### Recommended Model
+### Recommended Models
 
-The agent loop works best on a model that emits structured `tool_calls`
-natively. Tested and recommended:
+Two models: a main model for agent work and a fast model for casual chat.
+
+**Main** — custom Modelfile built on Qwen2.5:7b:
 
 ```
 FROM qwen2.5:7b
-SYSTEM You are Lumi, Anthony's deadpan, smug AI VTuber companion.
+SYSTEM You are Lumi, a real person who streams under a fictional
+       cosmic-AI persona. Short, dry, present.
 PARAMETER num_ctx 32768
 ```
 
-Build with `ollama create lumi-coder -f Modelfile`. The general Qwen2.5:7b
-variant is preferred over Qwen2.5-Coder, which has a training bias toward
-emitting code-as-text and produces more simulated-action hallucinations.
+Build with `ollama create lumi-coder -f Modelfile`.
+
+**Fast** — pull directly:
+
+```bash
+ollama pull qwen2.5:7b
+```
+
+Both are configured in `constants.py`:
+
+```python
+MODEL_NAME = "lumi-coder"
+FAST_MODEL_NAME = "qwen2.5:7b"
+FAST_MODEL_ENABLED = True
+FAST_MODEL_NUM_CTX = 8192
+FAST_MODEL_KEEP_ALIVE = "5m"
+```
+
+The general Qwen2.5:7b variant is preferred over Qwen2.5-Coder, which has a
+training bias toward emitting code-as-text and produces more simulated-action
+hallucinations.
 
 **For lower-end hardware:** drop `num_ctx` to `16384` and consider
-`qwen2.5:3b`. The agent loop still works, but persona depth and tool-call
-reliability both degrade.
+`qwen2.5:3b` as the fast model. The 3B variant works but has known issues with
+format compliance and occasional fact mangling on injected context — see
+Known Limitations.
+
+**Disabling routing entirely:** set `FAST_MODEL_ENABLED = False` in
+`constants.py`. All turns go through the main model. You lose the latency win
+on casual chat; you gain one less model to load.
 
 ---
 
@@ -345,11 +467,18 @@ reliability both degrade.
    ```
 
 5. **Configure `constants.py`** — set `WORKSPACE_ROOT`, `LLM_ENDPOINT`, and
-   `OUTPUT_DEVICE_INDEX` for your machine. Run `python modules/check_mics.py` to list
-   available audio device indices.
+   `OUTPUT_DEVICE_INDEX` for your machine. Run `python modules/check_mics.py`
+   to list available audio device indices.
 
 6. **Edit `lumi.yaml`** — this is where Lumi's persona lives. Change the name,
    host, personality, lore, appearance, and dialogue to make her your own.
+
+7. **Pull both models.**
+
+   ```bash
+   ollama pull qwen2.5:7b
+   ollama create lumi-coder -f Modelfile
+   ```
 
 ---
 
@@ -423,6 +552,38 @@ Memory recall: 'perception'
 
 The `★` marker means importance ≥ 0.85, `·` means ≥ 0.6.
 
+### Self-Model Query Example
+
+```
+Anthony: !self
+
+Self-Model
+  · Sarcasm used more frequently — 3 out of 5 turns.
+  · Shorter unprompted message count — only 0 today
+
+  (last reflection: 3m ago)
+
+Session Stats
+  turns:        8
+  unprompted:   0
+  snapshots:    7
+  top tags:     [sarcastic]×3, [laughing]×3, [sympathetic]×3
+  frames:       play 100%
+```
+
+### Model Routing Query Example
+
+```
+Anthony: !model
+
+Model Routing
+  main:        lumi-coder
+  fast:        qwen2.5:7b (available)
+  routing:     ON
+  agent turns: main
+  chat:        fast (short/simple) / main (long/complex)
+```
+
 ---
 
 ## Voice Customization
@@ -434,11 +595,16 @@ Lumi's voice comes from Fish Audio. The reference voice is set via
 persona prompt (`lumi.yaml`) tells the model which tags to use in which
 situations:
 
-- `[excited]`, `[pitch up]` — happy, enthusiastic moments
-- `[whisper]`, `[low voice]` — soft, unguarded, or handler mode
-- `[sighing]`, `[chuckling]` — non-verbal beats
-- `[shouting]` — frustrated, genuinely loud
-- `[confident]`, `[disdainful]` — smug, superiority mode
+- `[excited]`, `[delighted]` — happy, enthusiastic moments
+- `[whispering]`, `[soft tone]` — quiet, unguarded, or handler mode
+- `[sighing]`, `[chuckling]`, `[laughing]` — non-verbal beats
+- `[shouting]`, `[screaming]` — loud, frustrated, or genuinely high-energy
+- `[sarcastic]`, `[disdainful]`, `[confident]` — dry, superior, or unimpressed
+
+Only canonical tags from Fish Audio's S2 documentation are supported. Invented
+tags like `[smug]`, `[deadpan]`, `[pitch up]`, or `[low voice]` are silently
+ignored by the engine. The persona file lists all 64+ approved tags organized
+by category and forbids non-canonical ones.
 
 **To change the voice:** record a 10–30 second clip of the voice you want,
 upload it to Fish Audio, get a `reference_id`, and update `.env`. Voice quality
@@ -448,9 +614,10 @@ and varied intonation all matter.
 **Pitch limitations:** Fish Audio's tag system lets you influence *delivery*
 (tone, pace, emphasis) but not raw pitch. Per-word F0 modulation — the kind
 you hear in Evil Neuro — requires a custom TTS pipeline with an explicit pitch
-extractor and a neural vocoder. Not included. A lighter alternative is
-post-processing TTS output with a pitch-shift library like SoX, but the effect
-is coarser than what a trained vocoder produces.
+extractor and a neural vocoder. Not included. Attempting pitch-shift
+post-processing with ffmpeg was tried and rejected — the reference voice is
+already at the high end of natural range, and any meaningful shift reads as
+artificial.
 
 ---
 
@@ -459,47 +626,60 @@ is coarser than what a trained vocoder produces.
 Lumi is designed to run on a single consumer GPU, but idle resource use can be
 trimmed significantly:
 
-1. **Unload the model between turns.** Add `"keep_alive": "30s"` to every
-   Ollama `requests.post` payload. Model unloads 30 seconds after your last
-   message; idle GPU drops from ~95W to ~30W. Cost: ~3–5 second reload on the
-   next message.
+1. **Unload models between turns.** Both the main and fast model use
+   `keep_alive` strings. Main model unloads after 30s of inactivity (idle GPU
+   drops to ~30W). Fast model stays warm for 5 minutes during active chat,
+   then unloads. Cost: ~3–5 second reload on the next message.
 
 2. **Disable modules you're not using.** In `main.py`:
    - `MultiModal` — screen capture on demand; light when idle
    - `AmbientPerception` — samples every 30s; VLM calls rate-limited
+   - `SelfModel` — very light when idle; reflection fires every 10 min
    - `DiscordClient` — loads a second Whisper model
    - `BrowserController` — holds a Playwright Firefox context
    - `MicInput` — set to `False` if you mostly type at the terminal
 
-3. **Auto-detect remote sessions.** `MicInput` is disabled automatically when
+3. **Disable fast-model routing** with `FAST_MODEL_ENABLED = False` if VRAM
+   is tight. Everything routes to the main model. You lose latency wins on
+   casual chat; you save ~4.7GB of VRAM headroom for other processes.
+
+4. **Auto-detect remote sessions.** `MicInput` is disabled automatically when
    `SESSIONNAME` starts with `RDP-` in `constants.py`, so remote sessions boot
    without mic load.
 
-4. **Reduce `num_ctx`.** From `32768` to `16384` saves ~1 GB VRAM and slightly
-   reduces per-token inference cost.
+5. **Reduce `num_ctx`.** From `32768` to `16384` saves ~1 GB VRAM and slightly
+   reduces per-token inference cost on the main model.
 
 ---
 
 ## Known Limitations
 
-- **Context window** — 32K tokens. The system prompt + tool schemas + history
-  + tool results + memory injection + ambient context add up fast; very long
-  sessions may need `main.py` restarted to clear history.
+- **Context window** — 32K tokens for main, 8K for fast. The system prompt +
+  tool schemas + history + tool results + memory injection + ambient context
+  + self-model + continuity block add up fast; very long sessions may need
+  `main.py` restarted to clear history.
 - **Local model variance** — 7B-class models occasionally invent things, drop
   tool-call formatting, or hallucinate action completion. The guards catch
-  most of this, but it's a moving target across model updates.
+  most of this, but it's a moving target across model updates. The fast model
+  slot specifically was tested with `qwen2.5:3b` and found to produce format
+  slips, non-canonical tag leaks, and occasional fact mangling — it was
+  upgraded to `qwen2.5:7b` to resolve these.
 - **Discord voice receive** — Discord's DAVE end-to-end encryption requires
   `discord-ext-voice-recv >= 0.5.2a`. Older versions connect but receive no
   audio. Voice receive is currently paused in this build; text works.
 - **Voice pitch control** — Fish Audio's tag system influences delivery but
   not raw pitch. See [Voice Customization](#voice-customization).
-- **Self-modification** — Lumi can edit `prompter.py` and other writable files
-  in the workspace. Always read the `write_file` confirmation blob before
-  confirming; a `.bak` is saved automatically.
-- **`constants.py` latent NameError** — if `voice_performance` is non-empty in
-  `lumi.yaml`, the `VOICE_EMOTION_PROMPT` construction references an undefined
-  variable. Currently benign because the fallback path is what's executing.
-  Worth tracing.
+- **Ambient VLM accuracy** — moondream is a small model. It reliably
+  identifies general context (code editor open, browser page, terminal) but
+  can misname specific applications ("code editor" for a browser window, for
+  example). Descriptions are structurally correct even when not perfectly
+  app-accurate.
+- **Self-modification** — Lumi can edit `prompter.py` and other writable
+  files in the workspace. Always read the `write_file` confirmation blob
+  before confirming; a `.bak` is saved automatically.
+- **Port conflicts** — the log hub listens on `127.0.0.1:5001` and the
+  Socket.io control panel on `5000`. Both must be free at boot. Change
+  `DEFAULT_PORT` in `modules/log_hub.py` if 5001 is occupied.
 
 ---
 
@@ -516,15 +696,13 @@ project closes that gap in measurable steps.
 | 2 | Emotional state + traits + cognitive frames | ✅ Complete |
 | 3 | Continuous ambient perception | ✅ Complete |
 | 4 | Episodic memory (timestamps + importance) | ✅ Complete |
-| 5.1 | Pitch/volume emotion tags | ✅ Complete |
-| 5.2 | SoX pitch-shift post-processing | ❌ Not started |
-| 5.3 | RVC voice conversion | ❌ Not started |
-| 6 | Multi-model orchestration | ❌ Not started |
-| 7 | Self-model / meta-cognition | ❌ Not started |
+| 5 | Multi-model orchestration | ✅ Complete |
+| 6 | Self-model / meta-cognition | ✅ Complete |
 
-Every remaining item is optional polish. The core system is stable and in
-daily use. The next roadmap item should be driven by real friction, not
-speculation.
+Every phase is shipped. What remains is tuning, not construction — the persona
+cadence, the fast-model routing thresholds, and the ambient description
+quality are all adjustable through single-file edits, no architectural work
+required. Use her for a week and adjust based on what actually bothers you.
 
 ---
 
@@ -541,3 +719,4 @@ Local, experimental AI companion project. The language model generates all
 responses dynamically; behavior depends on the specific model and its prompt
 adherence. This is a personal-use agent, not a production system. Use with
 assumption of risk.
+```

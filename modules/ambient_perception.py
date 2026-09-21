@@ -27,6 +27,8 @@ import time
 import threading
 
 from modules.module import Module
+from constants import LLM_ENDPOINT
+from modules.log_hub import emit as hub_emit
 
 # ---------- Optional deps ----------
 try:
@@ -54,15 +56,16 @@ DESCRIPTION_HISTORY   = 5        # how many recent descriptions to keep
 
 VLM_MODEL = "moondream"
 VLM_TIMEOUT = 45
-VLM_MAX_TOKENS = 100
+VLM_MAX_TOKENS = 128
 
 VLM_PROMPT = (
-    "In one sentence, describe what the user is currently working on. "
-    "Focus on: which application, which file or document, and the general "
-    "task. Do not describe wallpaper, taskbar, or minor UI details. "
-    "Example: 'VS Code with prompter.py open, editing the agent loop.'"
+    "Briefly state what windows, apps, or text are open on this desktop. "
+    "Answer in one short sentence. Do not ask questions."
 )
 
+VLM_PROMPT_FALLBACK = (
+    "What windows or text are open on this screen?"
+)
 
 # ===============================================================
 # HELPERS
@@ -152,34 +155,78 @@ class AmbientPerception(Module):
     # VLM
     # ---------------------------------------------------------------
     def _ask_vlm(self, img):
-        """Sends a small screenshot to the VLM, returns description or ''."""
+        """Sends a small screenshot to the VLM, returns description or ''.
+
+        Tries the primary prompt first. If the response is empty, retries
+        once with a short fallback prompt. Post-processes the output to
+        strip moondream's habit of inventing a second question and
+        answering it."""
         try:
             thumb = img.copy()
             thumb.thumbnail((800, 800))
             buffer = io.BytesIO()
-            thumb.save(buffer, format="JPEG", quality=75)
+            thumb.save(buffer, format="JPEG", quality=80)
             b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-
-            payload = {
-                "model": VLM_MODEL,
-                "prompt": VLM_PROMPT,
-                "images": [b64],
-                "stream": False,
-                "options": {"num_predict": VLM_MAX_TOKENS},
-            }
-            res = requests.post(
-                f"{LLM_ENDPOINT}/api/generate",
-                json=payload,
-                timeout=VLM_TIMEOUT,
-            )
-            res.raise_for_status()
-            text = res.json().get("response", "").strip()
-            # Collapse whitespace, trim to one line
-            text = " ".join(text.split())
-            return text[:300]
         except Exception as e:
-            print(f"\033[90mAMBIENT: VLM error — {e}\033[0m")
+            print(f"\033[90mAMBIENT: image prep failed — {e}\033[0m")
             return ""
+
+        def _call(prompt_text):
+            try:
+                payload = {
+                    "model": VLM_MODEL,
+                    "prompt": prompt_text,
+                    "images": [b64],
+                    "stream": False,
+                    "options": {
+                        "num_predict": VLM_MAX_TOKENS,
+                        "temperature": 0.2,
+                    },
+                }
+                res = requests.post(
+                    f"{LLM_ENDPOINT}/api/generate",
+                    json=payload,
+                    timeout=VLM_TIMEOUT,
+                )
+                res.raise_for_status()
+                text = res.json().get("response", "").strip()
+
+                # Collapse whitespace
+                text = " ".join(text.split())
+
+                # Post-process cleanup: strip moondream's habit of inventing
+                # a follow-up question. This runs after the VLM finishes,
+                # not via stop tokens (those truncate mid-token and were
+                # the cause of namespace URI garbage on dense screens).
+                for marker in [" 2.", " Question", " Q:", "? "]:
+                    idx = text.find(marker)
+                    if idx > 20:
+                        text = text[:idx].strip()
+
+                # Reject outputs that look like transcriptions rather than
+                # descriptions — URLs, namespaces, or file paths.
+                lower = text.lower()
+                if (
+                    "urn:" in lower
+                    or "://" in lower
+                    or lower.count(":") > 3
+                    or lower.count("/") > 4
+                ):
+                    return ""
+
+                # Hard cap so a runaway never leaks into the prompt.
+                if len(text) > 180:
+                    text = text[:180].rstrip(" ,;:") + "…"
+
+                return text
+            except Exception as e:
+                print(f"\033[90mAMBIENT: VLM error — {e}\033[0m")
+                return ""
+
+        text = _call(VLM_PROMPT)
+        if not text:
+            text = _call(VLM_PROMPT_FALLBACK)
+        return text
 
     # ---------------------------------------------------------------
     # Tick
@@ -213,14 +260,34 @@ class AmbientPerception(Module):
             should_analyze = True
 
         if should_analyze:
+            t0 = time.time()
             desc = self._ask_vlm(img)
+            elapsed = time.time() - t0
             if desc:
                 with self._lock:
                     self.last_description = desc
                     self.last_analysis_time = now
                     self.description_history.append((now, window, desc))
                     self.description_history = self.description_history[-DESCRIPTION_HISTORY:]
-                print(f"\033[90mAMBIENT: {window[:60]} → {desc[:120]}\033[0m")
+                # Hub only — terminal stays clean.
+                hub_emit(
+                    self.signals, "ambient",
+                    f"{window[:60]} → {desc[:120]} ({elapsed:.1f}s)"
+                )
+            else:
+                hub_emit(
+                    self.signals, "ambient",
+                    f"VLM returned empty after {elapsed:.1f}s "
+                    f"(window={window[:60]!r})",
+                    level="warn"
+                )
+        else:
+            # Skips are the noisy case — hub only, no terminal spam.
+            hub_emit(
+                self.signals, "ambient",
+                f"skip win_chg={window_changed} hash_chg={hash_changed} "
+                f"time_ok={time_ok} win={window[:60]!r}"
+            )
 
         self.last_window = window
         self.last_hash = bits
@@ -258,8 +325,11 @@ class AmbientPerception(Module):
             print("\033[90mAMBIENT: skipping — mss/pillow unavailable.\033[0m")
             return
 
-        print(f"\033[90mAMBIENT: Background sampler started "
-              f"(interval={self.sample_interval}s, min_vlm_gap={self.min_vlm_interval}s)\033[0m")
+        hub_emit(
+            self.signals, "ambient",
+            f"sampler started (interval={self.sample_interval}s, "
+            f"min_vlm_gap={self.min_vlm_interval}s)"
+        )
 
         loop = asyncio.get_running_loop()
         # First tick immediately so we have context from the start.

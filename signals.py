@@ -3,6 +3,7 @@ import json
 import queue
 import requests
 from constants import LLM_ENDPOINT, MODEL_NAME
+from modules.log_hub import emit as hub_emit
 
 class Signals:
     def __init__(self):
@@ -36,7 +37,9 @@ class Signals:
             try:
                 with open(self.log_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    print(f"\033[90mHISTORY: Loaded {len(data)} previous messages from {self.log_file}\033[0m")
+                    # Hub isn't attached during __init__ — safe no-op.
+                    hub_emit(self, "system",
+                             f"history loaded ({len(data)} messages)")
                     return data[-limit:]
             except Exception as e:
                 print(f"\033[90mHISTORY: Failed to load log file: {e}\033[0m")
@@ -91,6 +94,8 @@ class Signals:
             os.makedirs(self.log_dir, exist_ok=True)
             with open(self.log_file, "w", encoding="utf-8") as f:
                 json.dump(self.history, f, indent=2, ensure_ascii=False)
-            print(f"\033[90mHISTORY: Saved {len(self.history)} messages to {self.log_file}\033[0m")
+            # Fires every turn — route to hub only, no terminal spam.
+            hub_emit(self, "system",
+                     f"history saved ({len(self.history)} messages)")
         except Exception as e:
             print(f"\033[90mHISTORY: Failed to save log file: {e}\033[0m")

@@ -40,14 +40,14 @@ except ImportError:
 # because kanji shares codepoints with CJK unified ideographs.
 # ===============================================================
 _LANG_PATTERNS = [
-    ("ja", re.compile(r"[\u3040-\u309F\u30A0-\u30FF]")),           # hiragana / katakana
-    ("ko", re.compile(r"[\uAC00-\uD7AF]")),                         # hangul
+    ("ja", re.compile(r"[\u3040-\u309F\u30A0-\u30FF]")),
+    ("ko", re.compile(r"[\uAC00-\uD7AF]")),
     ("vi", re.compile(r"[ăâđêôơưĂÂĐÊÔƠƯ"
                       r"\u00C0-\u00FF\u0102\u0103\u0110\u0111\u0128\u0129"
                       r"\u0168\u0169\u01A0\u01A1\u01AF\u01B0\u1EA0-\u1EF9]")),
-    ("es", re.compile(r"[ñÑ¿¡]")),                                  # only when strongly Spanish
+    ("es", re.compile(r"[ñÑ¿¡]")),
     ("ru", re.compile(r"[\u0400-\u04FF]")),
-    ("zh", re.compile(r"[\u4E00-\u9FFF]")),                         # last — overlaps with ja
+    ("zh", re.compile(r"[\u4E00-\u9FFF]")),
 ]
 
 
@@ -102,10 +102,9 @@ class TTS:
     def init_engine(self):
         """Validates API environment variables and marks TTS as ready."""
         try:
-            print("\033[90mTTS Engine: Initializing Fish Audio API engine...\033[0m")
-
             if not FISH_API_KEY or not FISH_REFERENCE_ID:
-                print("\033[91mTTS Error: Missing FISH_API_KEY or FISH_REFERENCE_ID in .env file!\033[0m")
+                print("\033[91mTTS Error: Missing FISH_API_KEY or "
+                      "FISH_REFERENCE_ID in .env file!\033[0m")
             else:
                 self.signals.tts_ready = True
                 configured = [
@@ -113,9 +112,11 @@ class TTS:
                     if ref
                 ]
                 if configured:
-                    print(f"\033[90mTTS Engine: Fish Audio API ready (multi-language: {', '.join(configured)}).\033[0m")
+                    print(f"\033[90mTTS: Fish Audio ready "
+                          f"(multi-language: {', '.join(configured)}).\033[0m")
                 else:
-                    print("\033[90mTTS Engine: Fish Audio API ready (single reference; other languages will use English voice).\033[0m")
+                    print(f"\033[90mTTS: Fish Audio ready "
+                          f"(single reference).\033[0m")
         except Exception as e:
             print(f"\033[91mTTS Load Error: {e}\033[0m")
 
@@ -220,7 +221,8 @@ class TTS:
                             st.stop_stream()
                             st.close()
                         except Exception as e:
-                            print(f"\033[91mTTS PyAudio Device {dev_idx} Error: {e}\033[0m")
+                            print(f"\033[91mTTS PyAudio Device "
+                                  f"{dev_idx} Error: {e}\033[0m")
 
                     for dev_idx in device_indices:
                         t = threading.Thread(target=device_worker, args=(dev_idx,))
@@ -289,7 +291,8 @@ class TTS:
                 print(f"\033[91mTTS Playback Loop Error: {e}\033[0m")
 
     def init_event_loop(self):
-        """BACKGROUND WORKER 1: Consumes text and downloads audio sequentially to preserve order."""
+        """BACKGROUND WORKER 1: Consumes text and downloads audio
+        sequentially to preserve order."""
         if not self.enabled:
             return
 

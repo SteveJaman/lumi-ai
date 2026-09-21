@@ -23,6 +23,7 @@ import requests
 
 from modules.module import Module
 from constants import LLM_ENDPOINT, MODEL_NAME, AI_NAME, HOST_NAME
+from modules.log_hub import emit as hub_emit
 
 
 # ===============================================================
@@ -282,11 +283,19 @@ class Heartbeat(Module):
             content = response.json()["message"]["content"].strip()
             return content
         except Exception as e:
-            print(f"\033[90mHEARTBEAT: decision call failed: {e}\033[0m")
+            hub_emit(self.signals, "heartbeat",
+                     f"decision call failed: {e}", level="warn")
             return None
 
     def _emit_utterance(self, text):
         """Push the message into the normal pipeline: history + TTS."""
+        # Notify the self-model that she spoke unprompted.
+        if hasattr(self.signals, "self_model"):
+            try:
+                self.signals.self_model.note_unprompted(text)
+            except Exception:
+                pass
+
         # Add to history as an assistant message so it appears in the log
         self.signals.history.append({"role": "assistant", "content": text})
 
@@ -321,10 +330,11 @@ class Heartbeat(Module):
         if not self.enabled:
             return
 
-        print(
-            f"\033[90mHEARTBEAT: Starting autonomous loop "
-            f"(tick={self.tick_seconds}s, idle={self.min_idle_seconds}s, "
-            f"cooldown={self.min_gap_between_utterances}s)\033[0m"
+        hub_emit(
+            self.signals, "heartbeat",
+            f"loop started (tick={self.tick_seconds}s, "
+            f"idle={self.min_idle_seconds}s, "
+            f"cooldown={self.min_gap_between_utterances}s)"
         )
 
         loop = asyncio.get_running_loop()
@@ -342,7 +352,7 @@ class Heartbeat(Module):
                 continue
 
             # Conditions are met — ask the model for a decision
-            print(f"\033[95mHEARTBEAT: conditions met, asking model...\033[0m")
+            hub_emit(self.signals, "heartbeat", "conditions met, asking model")
             response = await loop.run_in_executor(None, self._ask_model)
 
             if not response:
@@ -351,7 +361,7 @@ class Heartbeat(Module):
             # Treat the literal token SILENCE as "do not speak"
             upper = response.strip().upper()
             if "SILENCE" in upper and len(response.strip()) < 30:
-                print(f"\033[90mHEARTBEAT: model chose silence\033[0m")
+                hub_emit(self.signals, "heartbeat", "model chose silence")
                 # Reset the cooldown window even though we didn't speak —
                 # otherwise we'd re-ask every single tick, which wastes
                 # model calls and contributes nothing.
@@ -359,5 +369,9 @@ class Heartbeat(Module):
                 continue
 
             # Otherwise, treat the response as a real utterance
+            # Unprompted speech is the interesting event — keep in
+            # terminal + hub so you can see it happen live.
             print(f"\033[95mHEARTBEAT: Lumi speaks unprompted:\033[0m {response}")
+            hub_emit(self.signals, "heartbeat",
+                     f"unprompted: {response[:200]}")
             self._emit_utterance(response)

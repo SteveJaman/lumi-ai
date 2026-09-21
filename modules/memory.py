@@ -13,6 +13,7 @@ from modules.module import Module
 from constants import (
     AI_NAME, HOST_NAME, MEMORY_PROMPT, LLM_ENDPOINT, MODEL_NAME,
     MEMORY_QUERY_MESSAGE_COUNT, MEMORY_RECALL_COUNT,
+    FAST_MODEL_NAME,
 )
 from chromadb.config import Settings
 import chromadb
@@ -72,6 +73,9 @@ RETRIEVAL_BUFFER = 3              # fetch 3× more than we need, then rerank
 # Default importance for memories that predate this schema change
 DEFAULT_IMPORTANCE = 0.5
 
+# Placeholder strings the model sometimes emits instead of JSON null.
+_BAD_VALENCE_STRINGS = {"", "null", "none", "nil", "undefined", "n/a"}
+
 
 # ===============================================================
 # TEMPORAL QUERY DETECTION
@@ -123,6 +127,25 @@ def _format_age_hint(ts, now):
     return f"({age.days // 30}mo ago)"
 
 
+def _clean_valence(raw):
+    """Normalize a raw valence value into a clean one-word string or None.
+
+    Rejects: non-strings, empty strings, placeholder strings the model
+    sometimes emits instead of JSON null ("null", "none", "n/a", etc.),
+    and multi-word phrases. Only returns a single lowercase word.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return None
+    v = raw.strip().lower()
+    if v in _BAD_VALENCE_STRINGS:
+        return None
+    if not re.fullmatch(r"[a-z\-]{2,20}", v):
+        return None
+    return v
+
+
 # ===============================================================
 # MODULE
 # ===============================================================
@@ -148,10 +171,15 @@ class Memory(Module):
         self.collection = self.chroma_client.get_or_create_collection(
             name="neuro_collection"
         )
-        print(f"MEMORY: Loaded {self.collection.count()} memories from database.")
-        if self.collection.count() == 0:
-            print("MEMORY: No memories found in database. Importing from memoryinit.json")
+        count = self.collection.count()
+        print(f"MEMORY: Loaded {count} memories from database.")
+        if count == 0:
+            print("MEMORY: Empty database. Importing from memoryinit.json")
             self.API.import_json(path="./memories/memoryinit.json")
+
+        # One-time repair pass — fixes any memories whose metadata was
+        # stored before the schema upgrade (empty/null timestamp etc).
+        self._normalize_all_metadata()
 
         # Expose ourselves on signals so other modules (prompter, agent tools)
         # can reach the temporal query API without importing this file.
@@ -160,6 +188,78 @@ class Memory(Module):
     def clear_database(self):
         """Bridge method called by prompter to wipe ChromaDB collection."""
         self.API.wipe()
+
+    # ---------------------------------------------------------------
+    # Metadata migration
+    # ---------------------------------------------------------------
+    def _normalize_all_metadata(self):
+        """One-time migration pass: ensure every stored memory has a
+        valid timestamp, importance, valence, and session_id.
+
+        Fixes memories that were imported before the schema upgrade —
+        empty or null values that slipped through the old setdefault()
+        backfill. Idempotent: safe to call on every startup; prints
+        nothing when there's nothing to fix."""
+        try:
+            total = self.collection.count()
+            if total == 0:
+                return
+            results = self.collection.get()
+        except Exception as e:
+            print(f"\033[91mMEMORY: normalize read failed: {e}\033[0m")
+            return
+
+        ids = results.get("ids") or []
+        metas = results.get("metadatas") or []
+        if not ids:
+            return
+
+        now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+        fixed = 0
+
+        for id_, meta in zip(ids, metas):
+            meta = dict(meta or {})
+            changed = False
+
+            ts = meta.get("timestamp")
+            if not ts or not isinstance(ts, str) or not ts.strip():
+                meta["timestamp"] = now_iso
+                changed = True
+
+            imp = meta.get("importance")
+            try:
+                f = float(imp)
+                if f != f or f < 0.0 or f > 1.0:   # NaN or out-of-range
+                    raise ValueError
+            except (TypeError, ValueError):
+                meta["importance"] = DEFAULT_IMPORTANCE
+                changed = True
+
+            cleaned_val = _clean_valence(meta.get("valence"))
+            if cleaned_val != meta.get("valence"):
+                meta["valence"] = cleaned_val
+                changed = True
+
+            sid = meta.get("session_id")
+            if not sid or not isinstance(sid, str):
+                meta["session_id"] = "import"
+                changed = True
+
+            if changed:
+                try:
+                    self.collection.update(ids=[id_], metadatas=[meta])
+                    fixed += 1
+                except Exception as e:
+                    print(
+                        f"\033[91mMEMORY: normalize update failed "
+                        f"for {id_}: {e}\033[0m"
+                    )
+
+        if fixed:
+            print(
+                f"\033[90mMEMORY: Normalized metadata on {fixed} "
+                f"memories.\033[0m"
+            )
 
     # ---------------------------------------------------------------
     # Retrieval
@@ -309,11 +409,19 @@ class Memory(Module):
                 # literal JSON braces that would confuse str.format().
                 prompt = REFLECTION_PROMPT.replace("<<CHAT_SECTION>>", chat_section)
 
+                # Reflection is a structured extraction task — the fast
+                # model handles it fine, and it keeps the main model
+                # free for user-facing turns.
                 data = {
-                    "model": MODEL_NAME,
+                    "model": FAST_MODEL_NAME,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
-                    "options": {"temperature": 0.3, "num_predict": 400},
+                    "keep_alive": "30s",
+                    "options": {
+                        "temperature": 0.3,
+                        "num_predict": 400,
+                        "num_ctx": 8192,
+                    },
                 }
 
                 try:
@@ -373,11 +481,7 @@ class Memory(Module):
                 importance = DEFAULT_IMPORTANCE
             importance = max(0.0, min(1.0, importance))
 
-            valence = obj.get("valence")
-            if isinstance(valence, str):
-                valence = valence.strip().lower() or None
-            else:
-                valence = None
+            valence = _clean_valence(obj.get("valence"))
 
             metadata = {
                 "type": "short-term",
@@ -398,8 +502,14 @@ class Memory(Module):
                 print(f"MEMORY: upsert failed: {e}")
 
         if stored:
-            print(f"\033[90mMEMORY: Stored {stored} new memories "
-                  f"(session {self.session_id}).\033[0m")
+            try:
+                from modules.log_hub import emit as hub_emit
+                hub_emit(
+                    self.signals, "memory",
+                    f"stored {stored} new memories (session {self.session_id})"
+                )
+            except Exception:
+                pass
 
     # ---------------------------------------------------------------
     # Public API
@@ -584,15 +694,34 @@ class Memory(Module):
                     return
 
             for memory in data.get("memories", []):
-                meta = memory.get("metadata", {}) or {}
-                # Backfill required fields so scoring works on old data
-                meta.setdefault("timestamp", datetime.datetime.now().isoformat(timespec="seconds"))
-                meta.setdefault("importance", DEFAULT_IMPORTANCE)
-                meta.setdefault("valence", None)
-                meta.setdefault("session_id", "import")
+                meta = dict(memory.get("metadata", {}) or {})
+
+                # Explicit truthiness checks instead of setdefault —
+                # setdefault only fills MISSING keys, so a source JSON
+                # with `"timestamp": null` or `"timestamp": ""` would
+                # slip through and get stored as a bad value.
+                ts = meta.get("timestamp")
+                if not ts or not isinstance(ts, str) or not ts.strip():
+                    meta["timestamp"] = datetime.datetime.now().isoformat(
+                        timespec="seconds"
+                    )
+
+                imp = meta.get("importance")
+                try:
+                    f = float(imp)
+                    if f != f or f < 0.0 or f > 1.0:   # NaN or out-of-range
+                        raise ValueError
+                except (TypeError, ValueError):
+                    meta["importance"] = DEFAULT_IMPORTANCE
+
+                meta["valence"] = _clean_valence(meta.get("valence"))
+
+                sid = meta.get("session_id")
+                if not sid or not isinstance(sid, str):
+                    meta["session_id"] = "import"
 
                 self.outer.collection.upsert(
-                    memory["id"],
-                    documents=memory["document"],
-                    metadatas=meta,
+                    ids=[str(memory["id"])],
+                    documents=[memory["document"]],
+                    metadatas=[meta],
                 )

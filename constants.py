@@ -7,8 +7,21 @@ import random
 # =======================================================
 WORKSPACE_ROOT = r"C:\Users\anguy\OneDrive - Kennesaw State University\Documents\Lumi-master"
 LLM_ENDPOINT = "http://localhost:11434"
-MODEL_NAME = "lumi-coder"               # custom Modelfile with a larger num_ctx
+MODEL_NAME = "lumi-coder"               # main model: custom Modelfile with 32K num_ctx
 VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached this turn
+
+# =======================================================
+# FAST-PATH MODEL (Phase 5 — multi-model orchestration)
+# -------------------------------------------------------
+# Short casual chat routes to a small fast model. Agent turns and
+# complex queries stay on MODEL_NAME. Keep-alive is longer for the
+# fast model so it stays warm during active chat; the main model
+# unloads quickly between turns to free VRAM.
+# =======================================================
+FAST_MODEL_NAME = "qwen2.5:7b"          # fall back to "qwen2.5:1.5b" if VRAM is tight
+FAST_MODEL_ENABLED = True               # set False to disable routing entirely
+FAST_MODEL_NUM_CTX = 8192               # chat doesn't need 32K
+FAST_MODEL_KEEP_ALIVE = "5m"            # stays warm between turns
 
 # Audio Output Routing: "discord", "local", or "both"
 AUDIO_OUTPUT_MODE = "both"
@@ -225,20 +238,22 @@ formatted_rules = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules_lis
 # ---------------------------------------------------------------
 # If the YAML defines its own voice_performance section, we use it —
 # that's the source of truth for Fish Audio tag syntax. Otherwise fall
-# back to a generic Fish Audio S2 block.
+# back to a generic Fish Audio S2 block using ONLY canonical tags.
 # =======================================================
 if vp_description or vp_rules:
     VOICE_EMOTION_PROMPT = f"{vp_description}\n\nRules:\n{formatted_voice_performance_rules}".strip()
 else:
     VOICE_EMOTION_PROMPT = """Your speech is synthesized by Fish Audio, which reads inline tags in square brackets as delivery instructions and does not speak them aloud.
 
-Examples: [smug], [deadpan], [sigh], [sarcastic], [amused], [unimpressed], [whisper], [laughing].
+Examples: [happy], [sad], [excited], [sarcastic], [laughing], [sighing], [whispering], [soft tone].
 
 Rules:
 - STRICT FORMATTING: Always use square brackets [...] for delivery tags. NEVER use parentheses for expressions or actions.
 - Place a tag at the start of the clause it should affect.
 - Use at most one or two tags per response.
-- Only use a tag that actually matches what you're saying."""
+- Only use a tag that actually matches what you're saying.
+- Do NOT invent new tags. If a feeling isn't covered by a canonical tag, express it through word choice instead.
+- Non-canonical tags like [smug], [deadpan], [troll], [pitch up], [low voice], or [unimpressed] are silently ignored by the engine. Use [sarcastic], [indifferent], [excited], [soft tone], or [confident] instead."""
 
 # =======================================================
 # SYSTEM PROMPT

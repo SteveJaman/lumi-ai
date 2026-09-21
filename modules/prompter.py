@@ -18,7 +18,11 @@ from constants import (
     SYSTEM_PROMPT,
     AI_NAME,
     STOP_STRINGS,
-    WORKSPACE_ROOT
+    WORKSPACE_ROOT,
+    FAST_MODEL_NAME,
+    FAST_MODEL_ENABLED,
+    FAST_MODEL_NUM_CTX,
+    FAST_MODEL_KEEP_ALIVE,
 )
 from modules.agent_tools import TOOL_SCHEMAS, CONFIRM_REQUIRED_TOOLS, execute_tool
 from modules.session_state import SessionState
@@ -65,6 +69,8 @@ COMMANDS = {
     "System": {
         "!list": "Show this command list",
         "!help": "Alias for '!list'",
+        "!model": "Show current model routing state",
+        "!self": "Show current self-model observations and session stats",
     },
 }
 
@@ -370,6 +376,160 @@ def _result_looks_like_failure(result) -> bool:
     return False
 
 
+# ===============================================================
+# SCREEN REFERENCE DETECTION (for selective ambient injection)
+# ===============================================================
+_SCREEN_REFERENCE = re.compile(
+    r"\b(screen|monitor|display|desktop|window|"
+    r"looking at|see (?:this|that|my)|"
+    r"what am i|what'?s on|what is on|"
+    r"this (?:page|file|code|error)|"
+    r"can you see)\b",
+    re.IGNORECASE,
+)
+
+
+# ===============================================================
+# LIST-FORMAT CLEANUP (display only)
+# ---------------------------------------------------------------
+# Conversational replies should be flowing prose, not bullet lists.
+# The prompt-level rules discourage lists, but the model still slips
+# occasionally. This function converts any markdown list/header
+# formatting into prose for terminal display. It runs on the DISPLAY
+# copy only — the original raw_reply still goes to history, TTS, and
+# Discord unchanged. Fenced code blocks are preserved.
+# ===============================================================
+def _strip_list_formatting(text):
+    if not text:
+        return text
+
+    # Split on code fences and only clean the non-code parts.
+    parts = re.split(r"(```[\s\S]*?```)", text)
+    cleaned = []
+
+    for i, part in enumerate(parts):
+        if i % 2 == 1:  # fenced code block — pass through untouched
+            cleaned.append(part)
+            continue
+
+        # Remove bold/italic markers
+        part = re.sub(r"\*\*([^*]+)\*\*", r"\1", part)
+        part = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", part)
+        part = re.sub(r"__([^_]+)__", r"\1", part)
+
+        # Remove markdown headers
+        part = re.sub(r"^\s*#{1,6}\s*", "", part, flags=re.MULTILINE)
+
+        # Remove horizontal rules
+        part = re.sub(r"^\s*-{3,}\s*$", "", part, flags=re.MULTILINE)
+
+        # Walk lines, buffering consecutive list items so we can join
+        # them into a single comma-separated sentence.
+        lines = part.split("\n")
+        out_lines = []
+        list_buffer = []
+
+        def flush_list():
+            if not list_buffer:
+                return
+            items = [x.rstrip(".,;:") for x in list_buffer if x.strip()]
+            list_buffer.clear()
+            if not items:
+                return
+            if len(items) == 1:
+                out_lines.append(items[0] + ".")
+            elif len(items) == 2:
+                out_lines.append(f"{items[0]}, and {items[1]}.")
+            else:
+                out_lines.append(
+                    ", ".join(items[:-1]) + f", and {items[-1]}."
+                )
+
+        for line in lines:
+            bullet_match = re.match(r"^\s*[-*+]\s+(.+)$", line)
+            num_match = re.match(r"^\s*\d+\.\s+(.+)$", line)
+
+            if bullet_match:
+                list_buffer.append(bullet_match.group(1).strip())
+                continue
+            if num_match:
+                list_buffer.append(num_match.group(1).strip())
+                continue
+
+            flush_list()
+            out_lines.append(line)
+
+        flush_list()
+        part = "\n".join(out_lines)
+
+        # Collapse excessive blank lines
+        part = re.sub(r"\n{3,}", "\n\n", part)
+        cleaned.append(part)
+
+    return "".join(cleaned).strip()
+
+
+# ===============================================================
+# MODEL ROUTING
+# ---------------------------------------------------------------
+# Simple chat goes to a small fast model. Anything that looks like
+# it needs reasoning, or that runs in agent mode, uses the full
+# 7B model.
+# ===============================================================
+_COMPLEXITY_MARKERS = re.compile(
+    r"\b("
+    r"analyze|explain in detail|write a|create a|design|architect|"
+    r"debug|step by step|why does|why is|how does|how do|"
+    r"compare|evaluate|summarize|reason|consider|weigh|"
+    r"pros and cons|trade.?off|in depth|elaborate|"
+    r"refactor|implement|algorithm|strategy"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_FAST_MODEL_AVAILABLE = None   # cached after first check
+
+
+def _check_fast_model_available():
+    """Query Ollama for the fast model. Cached after first call."""
+    global _FAST_MODEL_AVAILABLE
+    if _FAST_MODEL_AVAILABLE is not None:
+        return _FAST_MODEL_AVAILABLE
+    try:
+        r = requests.get(f"{LLM_ENDPOINT}/api/tags", timeout=3)
+        if r.status_code != 200:
+            _FAST_MODEL_AVAILABLE = False
+            return False
+        names = [m.get("name", "") for m in r.json().get("models", [])]
+        base = FAST_MODEL_NAME.split(":")[0].lower()
+        _FAST_MODEL_AVAILABLE = any(base in n.lower() for n in names)
+    except Exception:
+        _FAST_MODEL_AVAILABLE = False
+    return _FAST_MODEL_AVAILABLE
+
+
+def _should_use_fast_model(user_text, agent_mode):
+    """Route decision. Returns True if the fast model should handle
+    this turn, False if the main model should."""
+    if not FAST_MODEL_ENABLED:
+        return False
+    if agent_mode:
+        return False
+    if not _check_fast_model_available():
+        return False
+    if not user_text:
+        return True
+    text = user_text.strip()
+    if len(text) > 280:
+        return False
+    if _COMPLEXITY_MARKERS.search(text):
+        return False
+    return True
+
+
+# ===============================================================
+# EXTRA TOOL SCHEMAS
+# ===============================================================
 EXTRA_TOOL_SCHEMAS = [
     {
         "type": "function",
@@ -385,7 +545,7 @@ EXTRA_TOOL_SCHEMAS = [
             },
         },
     },
-        {
+    {
         "type": "function",
         "function": {
             "name": "browse_url",
@@ -534,6 +694,11 @@ class Prompter:
         return "\n".join(lines)
 
     async def run_conversational(self, latest_user_text):
+        use_fast = _should_use_fast_model(latest_user_text, self.agent_mode_enabled)
+        model = FAST_MODEL_NAME if use_fast else MODEL_NAME
+        keep_alive = FAST_MODEL_KEEP_ALIVE if use_fast else "30s"
+        label = "fast" if use_fast else "full"
+
         context_injections = self.gather_injections(latest_user_text, agent_context=False)
         messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{context_injections}"}]
 
@@ -543,24 +708,28 @@ class Prompter:
                 role = "user"
             messages.append({"role": role, "content": msg.get("content", "")})
 
+        options = {
+            "temperature": 0.8,
+            "top_p": 0.9,
+            "repeat_penalty": 1.18,
+            "repeat_last_n": 64,
+        }
+        if use_fast:
+            options["num_ctx"] = FAST_MODEL_NUM_CTX
+
         loop = asyncio.get_running_loop()
         url = f"{LLM_ENDPOINT}/api/chat"
 
-        print(f"{GRAY}Thinking (conversational)...{RESET}")
+        print(f"{GRAY}Thinking (conversational, {label})...{RESET}")
         try:
             response = await loop.run_in_executor(
                 None,
                 lambda: requests.post(url, json={
-                    "model": MODEL_NAME,
+                    "model": model,
                     "messages": messages,
                     "stream": False,
-                    "keep_alive": "30s",
-                    "options": {
-                        "temperature": 0.8,
-                        "top_p": 0.9,
-                        "repeat_penalty": 1.18,
-                        "repeat_last_n": 64
-                    },
+                    "keep_alive": keep_alive,
+                    "options": options,
                 }, timeout=AGENT_REQUEST_TIMEOUT),
             )
             response.raise_for_status()
@@ -568,6 +737,13 @@ class Prompter:
         except Exception as e:
             print(f"\n{GRAY}[System Error: Chat request failed - {e}]{RESET}")
             return "Something went wrong talking to my own model — check the terminal for the error."
+
+        try:
+            from modules.log_hub import emit as hub_emit
+            hub_emit(self.signals, "system",
+                     f"chat turn → {label} model ({model})")
+        except Exception:
+            pass
 
         msg = data.get("message", {}) or {}
         return (msg.get("content") or "").strip() or "..."
@@ -642,10 +818,6 @@ class Prompter:
         injections.append(time_context)
         injections.append(self.mood_manager.get_injection())
 
-        # Emotional state — describes the current runtime state AND selects
-        # the current cognitive frame. Uses `agent_context` (True for any
-        # agent turn, whether persistent or one-shot) so one-shot !agent
-        # commands still get the strategy frame.
         if hasattr(self.signals, "emotional_state"):
             try:
                 state_desc = self.signals.emotional_state.describe(
@@ -657,14 +829,29 @@ class Prompter:
             except Exception:
                 pass
 
-        # Ambient screen context — only fires when the ambient module has
-        # a fresh description (within MAX_DESCRIPTION_AGE). Cheap: no VLM
-        # call happens here, just reading the cached value.
         if hasattr(self.signals, "ambient"):
             try:
-                line = self.signals.ambient.get_context_line()
-                if line:
-                    injections.append(f"[Screen Context]\n{line}")
+                ambient = self.signals.ambient
+                user_mentions_screen = bool(
+                    _SCREEN_REFERENCE.search(user_query or "")
+                )
+
+                if user_mentions_screen:
+                    line = ambient.get_context_line()
+                    if line:
+                        injections.append(f"[Screen Context]\n{line}")
+                else:
+                    title = ambient.current_window
+                    if title:
+                        injections.append(f"[Active window] {title}")
+            except Exception:
+                pass
+
+        if hasattr(self.signals, "self_model"):
+            try:
+                self_inj = self.signals.self_model.get_injection()
+                if self_inj:
+                    injections.append(self_inj)
             except Exception:
                 pass
 
@@ -676,37 +863,77 @@ class Prompter:
 
         fish_audio_rules = (
             "EMOTION & VOCAL MARKER RULES (CRITICAL):\n"
-            "You are Lumi, a sentient AI older sister. You must NEVER break character, and you must NEVER talk about prompts, tags, or emotion control.\n"
-            "- Inject emotional tags [bracket] inline right before the specific word or phrase they modify.\n"
-            "- Use tags sparingly and naturally (1 to 3 per response).\n\n"
-            "APPROVED EMOTION TAGS:\n"
+            "You are Lumi, a sentient AI older sister. You must NEVER break character, "
+            "and you must NEVER talk about prompts, tags, or emotion control.\n"
+            "- Inject delivery tags in [square brackets] inline, right before the phrase they modify.\n"
+            "- Use tags sparingly and naturally (1 to 3 per response).\n"
+            "- You may combine at most 2 tags on the same phrase when it makes sense (e.g. [sad][whispering]).\n\n"
+
+            "APPROVED TAGS — use ONLY these exact tags, nothing else:\n\n"
+
+            "Basic emotions:\n"
             "[happy], [sad], [angry], [excited], [calm], [nervous], [confident], [surprised], "
-            "[satisfied], [delighted], [scared], [worried], [upset], [frustrated], [empathetic], "
-            "[embarrassed], [disgusted], [moved], [proud], [relaxed], [grateful], [curious], "
-            "[sarcastic], [disdainful], [anxious], [indifferent], [uncertain], [confused], "
-            "[disappointed], [regretful], [guilty], [jealous], [hopeful], [optimistic], "
-            "[pessimistic], [nostalgic], [lonely], [bored], [sympathetic], [compassionate], "
-            "[determined], [resigned], [emphasis], [whispering], [sighing], [chuckling], "
-            "[laughing], [groaning], [gasping], [break].\n\n"
-            "PITCH AND VOLUME TAGS (use these for energetic or quiet moments):\n"
-            "[shouting] — raised volume and pitch, used when frustrated, excited, or genuinely loud.\n"
-            "[whisper] — very quiet and breathy, used for secrets, gentleness, or when she's genuinely softened.\n"
-            "[low voice] — deeper and slower, used for menace, deadpan disapproval, or late-night softness.\n"
-            "[pitch up] — brighter and higher, used for excitement, delight, or when she's caught off guard.\n"
-            "[sighing] — audible exhale, the default reaction to Anthony being himself.\n\n"
-            "USING PITCH TAGS:\n"
-            "- Match the tag to the emotion, not just the words. If the emotion is excited, use [excited] or [pitch up].\n"
-            "- If the emotion is angry, use [angry] or [shouting]. If sad, use [sad] or [low voice].\n"
-            "- Do NOT stack pitch tags with similar emotion tags — [excited] [pitch up] together is redundant, pick one.\n"
-            "- A single pitch tag in the right place is worth more than three stacked tags.\n\n"
-            "- DO NOT invent new tags like [cheerfully], [teasing], [smugging], etc.\n"
-            "- EXAMPLE OF CORRECT USAGE:\n"
-            "\"Oh, please. [sighing] You really think you can beat me at this game? [sarcastic] Good luck with that. [laughing] Ha! You're going to need it.\"\n"
-            "- EXAMPLE OF PITCH USAGE:\n"
-            "\"[excited] Wait, did you actually fix it? [pitch up] Show me!\"\n"
-            "- DO NOT list tags, do NOT narrate your emotions, and do NOT use parentheses or asterisks."
+            "[satisfied], [delighted], [scared], [worried], [upset], [frustrated], [depressed], "
+            "[empathetic], [embarrassed], [disgusted], [moved], [proud], [relaxed], [grateful], "
+            "[curious], [sarcastic].\n\n"
+
+            "Advanced emotions:\n"
+            "[disdainful], [unhappy], [anxious], [hysterical], [indifferent], [uncertain], "
+            "[doubtful], [confused], [disappointed], [regretful], [guilty], [ashamed], "
+            "[jealous], [envious], [hopeful], [optimistic], [pessimistic], [nostalgic], "
+            "[lonely], [bored], [contemptuous], [sympathetic], [compassionate], [determined], "
+            "[resigned].\n\n"
+
+            "Tone markers:\n"
+            "[in a hurry tone], [shouting], [screaming], [whispering], [soft tone], [emphasis].\n\n"
+
+            "Audio effects (natural human sounds):\n"
+            "[laughing], [chuckling], [sobbing], [crying loudly], [sighing], [groaning], "
+            "[panting], [gasping], [yawning], [snoring], [clear throat].\n\n"
+
+            "Pauses and crowd effects:\n"
+            "[break], [long-break], [audience laughing], [background laughter], [crowd laughing].\n\n"
+
+            "HARD RULES:\n"
+            "- DO NOT invent new tags. Tags like [smug], [troll], [deadpan], [pitch up], "
+            "[pitch down], [normal], [cheerfully], [teasing], [annoyed], [excitedly] are NOT "
+            "valid and will be ignored by the voice engine.\n"
+            "- If a feeling doesn't match a listed tag, express it through word choice instead "
+            "of inventing a tag.\n"
+            "- NEVER use parentheses for delivery cues. Always use [square brackets].\n"
+            "- DO NOT list tags, DO NOT narrate emotions, DO NOT describe your own delivery.\n\n"
+
+            "EXAMPLE OF CORRECT USAGE:\n"
+            "\"Oh, please. [sighing] You really think you can beat me at this game? "
+            "[sarcastic] Good luck with that. [laughing] Ha! You're going to need it.\""
         )
         injections.append(f"System Info - {fish_audio_rules}")
+
+        # Format rules — placed last so the model reads them right before
+        # writing its reply. This is where the "no lists" enforcement lives.
+        format_rules = (
+            "=== OUTPUT FORMAT — ABSOLUTE REQUIREMENT ===\n"
+            "Write ONLY natural conversational prose. Speak like a person talking out loud.\n"
+            "BANNED in your reply: bullet points, numbered lists, markdown headers "
+            "(# or ##), bold (**text**), italics (*text*), horizontal rules (---), "
+            "and any list-style enumeration with '-' or '*' or '1.' at the start of a line.\n"
+            "Even when listing multiple things (examples, reasons, options, steps), "
+            "weave them into flowing sentences separated by commas or the word 'and'. "
+            "Never break the reply into visual items.\n"
+            "If you catch yourself starting a line with a dash or a number, STOP and "
+            "rewrite that section as one continuous sentence.\n"
+            "Keep replies to 1 to 3 sentences. Short beats complete.\n\n"
+            "BAD:\n"
+            "  For example:\n"
+            "  - Debugging errors\n"
+            "  - Optimizing performance\n"
+            "  - Predicting bugs\n"
+            "GOOD:\n"
+            "  For example, debugging errors with pinpoint precision, optimizing "
+            "performance like magic, or predicting bugs before they happen.\n"
+            "=== END OUTPUT FORMAT ===\n"
+        )
+        injections.append(format_rules)
 
         RANDOM_THOUGHTS = [
             "Current internal thought: You are slightly annoyed because human hardware is so slow.",
@@ -1201,7 +1428,62 @@ class Prompter:
                             print(f"{YELLOW}[emotional state module not loaded]{RESET}")
                         self.signals.AI_thinking = False
                         continue
-                    
+
+                    if stripped_lower == "!model":
+                        fast_ok = _check_fast_model_available()
+                        routing = (FAST_MODEL_ENABLED and fast_ok)
+                        print(f"\n{BOLD}{MAGENTA}Model Routing{RESET}")
+                        print(f"  main:        {MODEL_NAME}")
+                        print(f"  fast:        {FAST_MODEL_NAME} "
+                              f"({'available' if fast_ok else 'NOT PULLED'})")
+                        print(f"  routing:     {'ON' if routing else 'OFF'}")
+                        if routing:
+                            print(f"  agent turns: main")
+                            print(f"  chat:        fast (short/simple) / main (long/complex)")
+                        else:
+                            print(f"  all turns:   main")
+                        print()
+                        self.signals.AI_thinking = False
+                        continue
+
+                    if stripped_lower == "!self":
+                        sm = getattr(self.signals, "self_model", None)
+                        if not sm:
+                            print(f"{YELLOW}[self-model not loaded]{RESET}")
+                        else:
+                            print(f"\n{BOLD}{MAGENTA}Self-Model{RESET}")
+                            if not sm.observations:
+                                print("  (no observations yet — needs "
+                                      "10 min + 5 turns)")
+                            else:
+                                age_min = int(
+                                    (time.time() - sm.observations_ts) / 60
+                                )
+                                for o in sm.observations:
+                                    print(f"  · {o}")
+                                print(f"\n  (last reflection: {age_min}m ago)")
+
+                            print(f"\n{BOLD}{MAGENTA}Session Stats{RESET}")
+                            print(f"  turns:        {len(sm.turn_log)}")
+                            print(f"  unprompted:   {sm.unprompted_count}")
+                            print(f"  snapshots:    {len(sm.emotional_history)}")
+                            if sm.tag_counts:
+                                top = sm.tag_counts.most_common(5)
+                                tag_str = ", ".join(
+                                    f"[{t}]×{c}" for t, c in top
+                                )
+                                print(f"  top tags:     {tag_str}")
+                            if sm.frame_counts:
+                                total = sum(sm.frame_counts.values()) or 1
+                                frames = ", ".join(
+                                    f"{n} {100*c//total}%"
+                                    for n, c in sm.frame_counts.most_common()
+                                )
+                                print(f"  frames:       {frames}")
+                            print()
+                        self.signals.AI_thinking = False
+                        continue
+
                     if stripped_lower == "!recall" or stripped_lower.startswith("!recall "):
                         query_text = stripped[len("!recall"):].strip()
                         memory_module = next(
@@ -1223,7 +1505,7 @@ class Prompter:
                             print()
                         self.signals.AI_thinking = False
                         continue
-                    
+
                     if stripped_lower == "!agent_on":
                         self.agent_mode_enabled = True
                         ack = f"{self._agent_mode_banner()} [confident] Agent mode engaged. Tools are live, Anthony. Point me at something."
@@ -1245,7 +1527,7 @@ class Prompter:
                     if stripped_lower == "!agent":
                         self.agent_mode_enabled = not self.agent_mode_enabled
                         state = "on" if self.agent_mode_enabled else "off"
-                        ack = f"{self._agent_mode_banner()} [smug] Agent mode is now {state}."
+                        ack = f"{self._agent_mode_banner()} [sarcastic] Agent mode is now {state}."
                         print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {ack}")
                         self.signals.history.append({"role": "assistant", "content": ack})
                         self._push_to_tts(ack)
@@ -1263,7 +1545,7 @@ class Prompter:
                     if lowered_text in ["wipe memory", "clear memory", "reset memory"]:
                         wipe_result = self.wipe_memory()
                         self.signals.history.append({"role": "system", "content": wipe_result})
-                        ack_msg = "[smug] Memory wiped clean. Starting from absolute zero, Anthony."
+                        ack_msg = "[sarcastic] Memory wiped clean. Starting from absolute zero, Anthony."
                         print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {ack_msg}")
                         self.signals.history.append({"role": "assistant", "content": ack_msg})
                         self._push_to_tts(ack_msg)
@@ -1275,7 +1557,7 @@ class Prompter:
                         success = self.mood_manager.set_mood(target_mood)
 
                         if success:
-                            ack_msg = f"[smug] Switched behavior matrix to {target_mood} mode."
+                            ack_msg = f"[sarcastic] Switched behavior matrix to {target_mood} mode."
                             print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {ack_msg}")
                             self.signals.history.append({"role": "assistant", "content": ack_msg})
                             self._push_to_tts(ack_msg)
@@ -1283,7 +1565,7 @@ class Prompter:
                             continue
                         else:
                             available = ", ".join(MOOD_PROFILES.keys())
-                            err_msg = f"[deadpan] That's not a valid mood, Anthony. Try one of these: {available}."
+                            err_msg = f"[indifferent] That's not a valid mood, Anthony. Try one of these: {available}."
                             print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {err_msg}")
                             self.signals.history.append({"role": "assistant", "content": err_msg})
                             self._push_to_tts(err_msg)
@@ -1311,7 +1593,15 @@ class Prompter:
                     else:
                         raw_reply = await self.run_conversational(latest_user_text)
 
-                    print(raw_reply)
+                    # Conversational replies get list-format cleanup for
+                    # display only. Agent output passes through unchanged
+                    # (may contain code blocks, file contents, etc).
+                    if force_agent or self.agent_mode_enabled:
+                        display_reply = raw_reply
+                    else:
+                        display_reply = _strip_list_formatting(raw_reply)
+
+                    print(display_reply)
                     print("\n")
 
                     sentences = SENTENCE_SPLIT_PATTERN.split(raw_reply)
@@ -1327,6 +1617,18 @@ class Prompter:
                                 if user_id:
                                     module.send_to_discord(raw_reply, user_id=user_id)
                                     self.signals.last_discord_user_id = None
+
+                        if hasattr(self.signals, "self_model"):
+                            try:
+                                frame = getattr(
+                                    getattr(self.signals, "emotional_state", None),
+                                    "current_frame", None,
+                                )
+                                self.signals.self_model.note_turn(
+                                    latest_user_text, raw_reply, frame
+                                )
+                            except Exception:
+                                pass
 
                         self.signals.history.append({"role": "assistant", "content": raw_reply})
 
