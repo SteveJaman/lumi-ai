@@ -345,9 +345,9 @@ Command router (checks !agent_on/off, !list, !state, !recall, !self, !model,
               │    ├─ Append result as `role: tool`
               │    └─ Loop back to Ollama (up to MAX_AGENT_STEPS)
               └─ If plain text returned: push to TTS, save to history
-        │
-        ▼
-Self-model note_turn() — records tags, frame, length for the next reflection
+              │
+              ▼
+        Self-model note_turn() — records tags, frame, length for the next reflection
 ```
 
 ### Key Files
@@ -719,4 +719,3 @@ Local, experimental AI companion project. The language model generates all
 responses dynamically; behavior depends on the specific model and its prompt
 adherence. This is a personal-use agent, not a production system. Use with
 assumption of risk.
-```

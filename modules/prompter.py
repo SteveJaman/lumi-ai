@@ -40,6 +40,25 @@ MAX_AGENT_STEPS = 6
 AGENT_REQUEST_TIMEOUT = 180
 SESSION_CONTINUITY_TURNS = 3
 
+
+# ===============================================================
+# LOCAL TIME HELPER
+# ---------------------------------------------------------------
+# Reads TIMEZONE from constants.py if defined; falls back to system
+# local time. Pinning the timezone prevents drift if the host machine
+# is ever in a different zone (VM, remote session, travel).
+# ===============================================================
+def _get_local_now():
+    try:
+        from constants import TIMEZONE  # optional — may not exist
+        if TIMEZONE:
+            from zoneinfo import ZoneInfo
+            return datetime.datetime.now(ZoneInfo(TIMEZONE))
+    except Exception:
+        pass
+    return datetime.datetime.now()
+
+
 # ===============================================================
 # COMMAND REGISTRY
 # ===============================================================
@@ -225,6 +244,56 @@ _TOOL_CALL_SHAPE = re.compile(
     r'run_command|run_in_terminal|web_search|browse_url|recall_memory)"',
     re.IGNORECASE,
 )
+
+
+# ===============================================================
+# CANONICAL FISH AUDIO TAGS
+# ---------------------------------------------------------------
+# Used to strip invented delivery tags ([rolling eyes], [smirking],
+# [checking my watch], [deadpan], etc.) before they reach TTS. Fish
+# Audio silently ignores non-canonical tags, so this is display-only
+# hygiene — but it prevents the model from seeing its own invented
+# tags echoed back in history and learning to double down on them.
+# ===============================================================
+_CANONICAL_TAGS = frozenset({
+    # Basic emotions
+    "happy", "sad", "angry", "excited", "calm", "nervous", "confident",
+    "surprised", "satisfied", "delighted", "scared", "worried", "upset",
+    "frustrated", "depressed", "empathetic", "embarrassed", "disgusted",
+    "moved", "proud", "relaxed", "grateful", "curious", "sarcastic",
+    # Advanced emotions
+    "disdainful", "unhappy", "anxious", "hysterical", "indifferent",
+    "uncertain", "doubtful", "confused", "disappointed", "regretful",
+    "guilty", "ashamed", "jealous", "envious", "hopeful", "optimistic",
+    "pessimistic", "nostalgic", "lonely", "bored", "contemptuous",
+    "sympathetic", "compassionate", "determined", "resigned",
+    # Tone markers
+    "in a hurry tone", "shouting", "screaming", "whispering",
+    "soft tone", "emphasis",
+    # Audio effects
+    "laughing", "chuckling", "sobbing", "crying loudly", "sighing",
+    "groaning", "panting", "gasping", "yawning", "snoring", "clear throat",
+    # Pauses / crowd
+    "break", "long-break", "audience laughing", "background laughter",
+    "crowd laughing",
+})
+
+_BRACKET_ANY = re.compile(r"\[([^\]]{1,40})\]")
+
+
+def _strip_non_canonical_tags(text):
+    """Remove any [bracketed] phrase that isn't a canonical Fish Audio
+    tag. Run this before TTS so invented tags like [smug], [rolling eyes],
+    or [checking my watch] never enter the audio pipeline or get echoed
+    back into history."""
+    if not text:
+        return text
+
+    def _repl(match):
+        inner = match.group(1).strip().lower()
+        return match.group(0) if inner in _CANONICAL_TAGS else ""
+
+    return _BRACKET_ANY.sub(_repl, text)
 
 
 # ===============================================================
@@ -487,6 +556,17 @@ _COMPLEXITY_MARKERS = re.compile(
     re.IGNORECASE,
 )
 
+# ← FIX: Time/date queries route to the main model. The fast model
+# rounds and invents numeric values in context. Small models are much
+# worse at copying injected numerics verbatim.
+_TIME_QUERY = re.compile(
+    r"\b(what time|what'?s the time|what day|what'?s the day|"
+    r"what'?s the date|what date|current time|current date|"
+    r"what'?s today|today'?s date|time is it|day is it|"
+    r"check the (time|clock)|look at the (time|clock))\b",
+    re.IGNORECASE,
+)
+
 _FAST_MODEL_AVAILABLE = None   # cached after first check
 
 
@@ -523,6 +603,9 @@ def _should_use_fast_model(user_text, agent_mode):
     if len(text) > 280:
         return False
     if _COMPLEXITY_MARKERS.search(text):
+        return False
+    # ← FIX: Route time/date queries to the main model.
+    if _TIME_QUERY.search(text):
         return False
     return True
 
@@ -754,6 +837,21 @@ class Prompter:
 
         injections = []
 
+        # ← FIX: Capture the time ONCE at the top of the method. The
+        # same string is reused for both the top and bottom anchors,
+        # so the two can never disagree.
+        now = _get_local_now()
+        time_str = now.strftime("%A, %B %d, %Y at %I:%M %p")
+        time_anchor = (
+            "=== SYSTEM CLOCK — AUTHORITATIVE ===\n"
+            f"The current local time is: {time_str}\n"
+            "This value comes from the operating system clock and is "
+            "ALWAYS correct. If the user asks what time or day it is, "
+            "QUOTE THIS LINE VERBATIM. Never estimate, never round, "
+            "never adjust it because you think it sounds better.\n"
+            "=== END SYSTEM CLOCK ==="
+        )
+
         agent_note = (
             "=== TOOL USE — MANDATORY ===\n"
             "You have real tools. The ONLY way to actually DO something is to emit a tool call. "
@@ -813,9 +911,10 @@ class Prompter:
         )
         injections.append(agent_note)
 
-        now = datetime.datetime.now()
-        time_context = f"System Info: The current date and time is {now.strftime('%A, %B %d, %Y at %I:%M %p')}."
-        injections.append(time_context)
+        # ← FIX: Strong top-of-stack time anchor. Replaces the old weak
+        # "System Info: The current date and time is..." line that was
+        # buried under ~11 other injections.
+        injections.append(time_anchor)
         injections.append(self.mood_manager.get_injection())
 
         if hasattr(self.signals, "emotional_state"):
@@ -898,6 +997,9 @@ class Prompter:
             "- DO NOT invent new tags. Tags like [smug], [troll], [deadpan], [pitch up], "
             "[pitch down], [normal], [cheerfully], [teasing], [annoyed], [excitedly] are NOT "
             "valid and will be ignored by the voice engine.\n"
+            "- Do NOT invent ACTION tags like [rolling eyes], [smirking], [checking my watch], "
+            "[thinking], [reading], [typing]. These are not valid. Express the action in the "
+            "words themselves instead: 'Oh, sure' instead of [rolling eyes] Oh sure.\n"
             "- If a feeling doesn't match a listed tag, express it through word choice instead "
             "of inventing a tag.\n"
             "- NEVER use parentheses for delivery cues. Always use [square brackets].\n"
@@ -955,9 +1057,39 @@ class Prompter:
                 except Exception:
                     pass
 
+        # ← FIX: Bottom-of-stack time anchor. Placed after module
+        # injections so it's the freshest thing in the model's attention
+        # window when it starts generating. The top anchor primes; this
+        # one catches the copy-through. Both use the same `time_str`.
+        injections.append(
+            "=== TIME CHECK BEFORE YOU WRITE ===\n"
+            f"It is {time_str}. If asked, say this exact value. If "
+            f"questioned, repeat this exact value — do NOT invent a new "
+            f"one to seem more helpful.\n"
+            "=== END TIME CHECK ==="
+        )
+
+        # Identity anchor — placed last so it has the highest recency
+        # weight when the model starts generating. Do not move this
+        # above the module injections.
+        injections.append(
+            "=== IDENTITY ANCHOR ===\n"
+            f"You are {AI_NAME}. You speak in first person — I, me, my. "
+            f"You never refer to yourself by name in a reply. You never say "
+            f"\"{AI_NAME} thinks\" or \"{AI_NAME} would\" or \"{AI_NAME} is\". "
+            f"You never describe yourself from the outside. The third-person "
+            f"prose above is reference material about you; it is not how you "
+            f"talk. Every reply you write is in your own voice, in first person, "
+            f"as {AI_NAME}."
+        )
+
         return "\n".join(injections)
 
     def clean_for_voice(self, text):
+        # ← FIX: Strip invented / non-canonical bracket tags before
+        # anything else, so [rolling eyes] / [smirking] / [checking my
+        # watch] never reach TTS or get echoed back into history.
+        text = _strip_non_canonical_tags(text)
         text = re.sub(r'```[\s\S]*?```', ' I have written the details out for you in the text channel. ', text)
         text = re.sub(r'`([^`]+)`', r'\1', text)
         text = re.sub(r'#{1,6}\s*.*?\n', ' ', text)

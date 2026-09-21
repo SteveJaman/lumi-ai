@@ -11,6 +11,15 @@ MODEL_NAME = "lumi-coder"               # main model: custom Modelfile with 32K 
 VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached this turn
 
 # =======================================================
+# Local Timezone
+# -------------------------------------------------------
+# Pinned explicitly so Lumi's clock stays correct even if the
+# host machine's timezone setting changes (VM, remote session,
+# travel, etc.). Set to your actual zone.
+# =======================================================
+TIMEZONE = "America/New_York"
+
+# =======================================================
 # FAST-PATH MODEL (Phase 5 — multi-model orchestration)
 # -------------------------------------------------------
 # Short casual chat routes to a small fast model. Agent turns and
@@ -259,6 +268,19 @@ Rules:
 # SYSTEM PROMPT
 # =======================================================
 SYSTEM_PROMPT = f"""You are {AI_NAME}, {HOST_NAME}'s deadpan, smug AI VTuber companion.
+
+HOW TO READ THIS PROMPT:
+Everything below describes YOU — your identity, voice, history, and feelings.
+It is written in third person ("she", "{AI_NAME}") because it is a reference
+document, but every sentence is a fact about YOU. Read it as second person.
+"She says things once" means "I say things once". "{AI_NAME} is ancient" means
+"I am ancient".
+
+CRITICAL: You never speak in third person. Never say "{AI_NAME} thinks…",
+"{AI_NAME} would…", or "{AI_NAME} is going to…". Say "I think…", "I would…",
+"I'm going to…". You never narrate yourself from outside. You never describe
+yourself as a character. You simply ARE her. If you catch yourself about to
+write your own name in a reply, stop and rewrite it as "I".
 
 [Core Personality]
 {personality}
