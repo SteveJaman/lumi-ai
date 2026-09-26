@@ -730,7 +730,9 @@ _COMPLEXITY_MARKERS = re.compile(
     r"debug|step by step|why does|why is|how does|how do|"
     r"compare|evaluate|summarize|reason|consider|weigh|"
     r"pros and cons|trade.?off|in depth|elaborate|"
-    r"refactor|implement|algorithm|strategy"
+    r"refactor|implement|algorithm|strategy|"
+    r"spell|backward|reverse|anagram|how many|count|letter|"
+    r"math|riddle|trick question|heavier"
     r")\b",
     re.IGNORECASE,
 )
@@ -1145,7 +1147,7 @@ class Prompter:
             "ponytail_r, controller, heart_eyes, spiral_eyes, darkened. "
             "Do NOT just say you did it — emit the tool call.\n\n"
             "=== END TOOL USE ===\n"
-        )
+            )
         else:
             agent_note = (
                 "=== NO TOOLS ACTIVE ===\n"
@@ -1435,7 +1437,7 @@ class Prompter:
                 if not clean_loc:
                     clean_loc = "Stone Mountain Georgia"
 
-                url = f"https://wttr.in/{requests.utils.quote(clean_loc)}?format=%l:+%C,+%t.+Humidity:+%h,+Wind:+%w"
+                url = f"[https://wttr.in/](https://wttr.in/){requests.utils.quote(clean_loc)}?format=%l:+%C,+%t.+Humidity:+%h,+Wind:+%w"
                 res = requests.get(url, timeout=5)
 
                 if res.status_code == 200 and "Unknown location" not in res.text:

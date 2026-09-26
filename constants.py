@@ -27,7 +27,7 @@ TIMEZONE = "America/New_York"
 # fast model so it stays warm during active chat; the main model
 # unloads quickly between turns to free VRAM.
 # =======================================================
-FAST_MODEL_NAME = "qwen2.5:7b"          # fall back to "qwen2.5:1.5b" if VRAM is tight
+FAST_MODEL_NAME = "qwen2.5:7b"          # fall back to "qwen2.5:7b" if VRAM is tight
 FAST_MODEL_ENABLED = True               # set False to disable routing entirely
 FAST_MODEL_NUM_CTX = 8192               # chat doesn't need 32K
 FAST_MODEL_KEEP_ALIVE = "10m"            # stays warm between turns
