@@ -3,9 +3,10 @@
   Goal: Move from reactive chatbot to autonomous companion
   Reference: Neuro-sama (Vedal987) architecture
   Created:  2026-09-19
-  Updated:  2026-09-26 (Phase 10 redesigned as Local Web Client;
-                        Phase 6.5 complete; three pending fixes
-                        tracked at top of Next Steps)
+  Updated:  2026-09-26 (Phase 10 expanded with identity refactor
+                        and design system as prerequisites;
+                        Phase 10 restructured to serve as the
+                        primary product surface)
   (Streaming pipeline excluded by request)
 ================================================================
 
@@ -24,22 +25,33 @@ later items assume earlier ones are done.
 
   Phases fully complete:  1, 2, 3, 4, 5, 6, 6.5
   Phases remaining:       7 (Discord voice), 8 (SDK), 9 (security)
-  Partial phases:         10 (Local Web Client — designed)
+  Partial phases:         10 (Local Web Client — designed,
+                              expanded. Now positioned as the
+                              primary product surface, not just
+                              a terminal alternative.)
 
   Notable delta since last update:
-    - Phase 10 REDESIGNED. Previously a CLI-based
-      dynamic user identity system (!login command,
-      mutable HOST object, per-user YAML). Now a local
-      web client at 127.0.0.1:5000. Registration,
-      login, chat interface, embedded diagnostics
-      dashboard (iframe of log_hub at 5001), settings
-      panel. Fully offline — no CDN, no external
-      assets. Backend auth via SQLite + argon2id.
-      Real auth hygiene even on localhost (CSRF,
-      SameSite=Strict, Origin check, rate limiting).
-      Two items from the old design carry forward:
-      per-user memory isolation (now 10.9) and
-      per-user emotional state isolation (now 10.10).
+    - Phase 10 EXPANDED. The web client is now the primary
+      product surface — a hub for configuration, chat,
+      persona editing, memory browsing, model management,
+      and integration setup. Target audience is
+      non-technical users. Terminal becomes the developer
+      tool. Every setup step that currently requires
+      editing a code file becomes a form.
+    - Phase 10.1 ADDED. Identity refactor. Mutable HOST
+      object replaces the frozen HOST_NAME constant.
+      build_system_prompt(host) replaces the module-level
+      SYSTEM_PROMPT f-string. lumi.yaml templated with
+      <host> placeholder. Every hardcoded "Anthony" across
+      the codebase swept to read from HOST.name at call
+      time. This is a prerequisite for the login flow —
+      without it, logging in as Steve still addresses
+      Anthony.
+    - Design system as prerequisite. The web client needs
+      a token-based CSS system before any page is built.
+      One palette, one spacing scale, one component
+      library. Static mockup of chat + setup wizard
+      before any backend code.
     - Phase 6.5 COMPLETE. VTube Studio avatar control.
       State-aware, idempotent expression toggles with
       keyboard fallback for hotkeys that the VTS API
@@ -57,21 +69,20 @@ later items assume earlier ones are done.
     - Phase 7-9 added: Discord voice bridge, external
       SDK, security hardening.
 
-  Three pending fixes tracked at the top of Next
-  Steps — these block reliable agent turns and should
-  ship before any new phase work.
+  Three pending fixes tracked at the top of Next Steps —
+  these block reliable agent turns and should ship before
+  any new phase work.
 
   The core agentic loop is stable and self-correcting.
-  Lumi runs autonomously on a timer, reacts to events
-  with runtime emotional state, expresses mood through
-  word choice and canonical emotion tags, accumulates
-  timestamped memories, answers "when did we..."
-  questions, perceives what you're working on without
-  being told, routes chat through a fast model when
-  it's safe to, keeps a persistent self-model of her
-  own patterns, drives her own VTuber avatar in real
-  time, and reports her internals to a clean
-  dashboard instead of spamming the terminal.
+  Lumi runs autonomously on a timer, reacts to events with
+  runtime emotional state, expresses mood through word
+  choice and canonical emotion tags, accumulates
+  timestamped memories, answers "when did we..." questions,
+  perceives what you're working on without being told,
+  routes chat through a fast path when it's safe to, keeps
+  a persistent self-model of her own patterns, drives her
+  own VTuber avatar in real time, and reports her internals
+  to a clean dashboard instead of spamming the terminal.
 
 ================================================================
   PHASE 1 — THE HEARTBEAT (foundational)   ✅ COMPLETE
@@ -157,14 +168,12 @@ later items assume earlier ones are done.
 
          Files:     constants.py, prompter.py, memory.py,
                     session_state.py
-         Status:    Fast and main models are now the same
-                    weights (lumi-qwen3) — Ollama dedupes
-                    in VRAM. Fast path differentiated by
-                    context size (8K vs 16K) and payload
-                    shape (no tool schemas). Qwen3 thinking
-                    disabled for fast path, enabled for
-                    full path and agent turns. Time/date
-                    queries route to main model.
+         Status:    Fast and main paths use the same weights
+                    (lumi-qwen3) — Ollama dedupes in VRAM.
+                    Fast path differentiated by context size
+                    (8K vs 16K) and payload shape. Qwen3
+                    thinking disabled for fast path, enabled
+                    for full path and agent turns.
 
 ================================================================
   PHASE 6 — SELF-MODEL                                  ✅ COMPLETE
@@ -179,10 +188,9 @@ later items assume earlier ones are done.
          Status:    Emotional snapshots every 60s. Per-turn
                     stats (tags, frame, length). Heartbeat
                     notes unprompted. Reflection every 10
-                    min via lumi-coder → 2-4 grounded
-                    observations. Persisted cross-session.
-                    Injected sparsely when fresh. !self
-                    command shows current state.
+                    min → 2-4 grounded observations.
+                    Persisted cross-session. Injected
+                    sparsely when fresh. !self command.
 
 ================================================================
   PHASE 6.5 — AVATAR CONTROL (VTube Studio)             ✅ COMPLETE
@@ -191,8 +199,8 @@ later items assume earlier ones are done.
 Goal: Give Lumi a body. She can change her own expression,
 toggle appearance items (hat, jacket, bag, ponytails,
 controller, skirt), and reposition her model on screen —
-both deliberately (on request) and passively (as a visible
-manifestation of her runtime emotional state).
+both deliberately and as a visible manifestation of her
+runtime emotional state.
 
 [X] 6.5.1  VTS controller module                        DONE
 [X] 6.5.2  Expression state tracking                    DONE
@@ -202,24 +210,10 @@ manifestation of her runtime emotional state).
 [X] 6.5.6  Tool-call format recovery                    DONE
 [X] 6.5.7  Fabrication guard                            DONE
 [X] 6.5.8  Passive emotion → expression path            DONE
-[X] 6.5.9  Terminal commands (!set, !expressions,
-           !expression, !move, !hotkeys, !positions)    DONE
+[X] 6.5.9  Terminal commands                            DONE
 [X] 6.5.10 Persona awareness                            DONE
 [X] 6.5.11 Focus + timing reliability                   DONE
 [X] 6.5.12 Known limitation — multi-item fabrications   KNOWN
-
-         Files:     modules/vtubeStudio.py,
-                    modules/prompter.py, lumi.yaml
-         Status:    pyvts client with parameter probing.
-                    EXPRESSION_STATE_MAP normalizes state
-                    names with inversion sense. Idempotent
-                    set_expression_state(). AttachThreadInput
-                    workaround bypasses Windows foreground
-                    lock for keyboard fallback. Sequenced
-                    keypress for polling-loop reliability.
-                    Fabrication guard against narrated state
-                    changes. Emotion tags surface on her
-                    face automatically.
 
 ================================================================
   PHASE 7 — DISCORD VOICE BRIDGE                     IN PROGRESS
@@ -227,27 +221,12 @@ manifestation of her runtime emotional state).
 
 Goal: Enable Lumi to hear and attribute Discord voice channel
 audio in real time. Blocked by Discord's DAVE end-to-end
-encryption (enforced March 1, 2026), which the Python voice-
-receive library does not support. Solution: a small C# sidecar
-that decrypts and forwards PCM to Python over local TCP.
-Mirrors Vedal's architecture.
+encryption, which the Python voice-receive library does not
+support. Solution: a small C# sidecar that decrypts and
+forwards PCM to Python over local TCP. Mirrors Vedal's
+architecture.
 
 [ ] 7.1  C# sidecar — Discord client joins VC and receives   NOT STARTED
-         Files:     discord-voice-bridge/DiscordVoiceBridge.csproj
-                    discord-voice-bridge/Program.cs
-         Status:    DisCatSharp + DisCatSharp.Voice +
-                    DisCatSharp.Voice.Natives. Handles DAVE
-                    decryption, Opus decode, forwards PCM +
-                    speaker ID + display name to Python over
-                    TCP 127.0.0.1:5055.
-         Risk:      DisCatSharp's bundled libdave native
-                    binaries must load on Windows x64. If
-                    they don't, alternative libraries are
-                    NetCord or Discord.Net.
-         Verify:    dotnet --version → 8.0+
-                    dotnet build -c Release → success
-                    dotnet run → [dave] Active
-
 [ ] 7.2  Python receiver module                              NOT STARTED
 [ ] 7.3  Multi-speaker attribution                           NOT STARTED
 [ ] 7.4  Persona — group context                             NOT STARTED
@@ -265,12 +244,7 @@ send context, and receive invocations. Lumi becomes a plugin
 host. Mirrors the Neuro SDK architecture.
 
 [ ] 8.1  Protocol definition                                 NOT STARTED
-         Files:     docs/sdk-protocol.md
 [ ] 8.2  Server module                                      NOT STARTED
-         Files:     modules/external_sdk.py
-                    modules/sdk/server.py
-                    modules/sdk/protocol.py
-                    modules/sdk/registry.py
 [ ] 8.3  Prompter integration                               NOT STARTED
 [ ] 8.4  Reference client (Python)                          NOT STARTED
 [ ] 8.5  Fake-client test harness ("Randy" equivalent)      NOT STARTED
@@ -285,72 +259,86 @@ host. Mirrors the Neuro SDK architecture.
 Goal: Close attack surfaces across Phases 1-10. The threat
 model is not a remote attacker — it's (a) malicious content
 Lumi reads, (b) a malicious external app that connects to the
-SDK, and (c) accidental self-modification.
+SDK, (c) accidental self-modification, and (d) other local
+processes or browser tabs reaching the web client.
 
-  In scope:   prompt injection via file content, web content,
-              memory entries, SDK context, or another app
-              speaking through Discord; SDK hijacking; self-
-              modification; API key exposure; command
-              escalation; network exposure on shared LAN.
+  In scope:   prompt injection via file/web/memory/SDK content;
+              SDK hijacking; self-modification; API key
+              exposure; command escalation; network exposure;
+              CSRF and DNS-rebinding against the web client;
+              session hijacking via malicious browser extension.
   Out of scope: kernel compromise, hardware attacks, physical
-              access, supply-chain attacks on Ollama or model
-              weights.
+              access, supply-chain attacks on Ollama.
 
 [ ] 9.1  Prompt injection defense                    HIGH PRIORITY
-[ ] 9.2  SDK authentication and allowlist              HIGH PRIORITY
-[ ] 9.3  Capability categories for actions             HIGH PRIORITY
-[ ] 9.4  Command execution sandboxing                  MEDIUM PRIORITY
-[ ] 9.5  Filesystem sandbox edge cases (symlinks)      MEDIUM PRIORITY
-[ ] 9.6  API key and token handling                    MEDIUM PRIORITY
-[ ] 9.7  Network exposure audit                        MEDIUM PRIORITY
-[ ] 9.8  Memory poisoning defense                      MEDIUM PRIORITY
-[ ] 9.9  Discord bot token and message safety          MEDIUM PRIORITY
-[ ] 9.10 Self-modification guard                       HIGH PRIORITY
-[ ] 9.11 Tool call anomaly detection                   LOW PRIORITY
-[ ] 9.12 Encryption of session state at rest           LOW PRIORITY
-[ ] 9.13 Dependency and supply chain review            LOW PRIORITY
-[ ] 9.14 Incident response playbook                    REQUIRED
-         Files:     docs/security.md
+[ ] 9.2  SDK authentication and allowlist            HIGH PRIORITY
+[ ] 9.3  Capability categories for actions           HIGH PRIORITY
+[ ] 9.4  Command execution sandboxing                MEDIUM PRIORITY
+[ ] 9.5  Filesystem sandbox edge cases               MEDIUM PRIORITY
+[ ] 9.6  API key and token handling                  MEDIUM PRIORITY
+[ ] 9.7  Network exposure audit                      MEDIUM PRIORITY
+[ ] 9.8  Memory poisoning defense                    MEDIUM PRIORITY
+[ ] 9.9  Discord bot token and message safety        MEDIUM PRIORITY
+[ ] 9.10 Self-modification guard                     HIGH PRIORITY
+[ ] 9.11 Tool call anomaly detection                 LOW PRIORITY
+[ ] 9.12 Encryption of session state at rest         LOW PRIORITY
+[ ] 9.13 Dependency and supply chain review          LOW PRIORITY
+[ ] 9.14 Incident response playbook                  REQUIRED
 
 ================================================================
   PHASE 10 — LOCAL WEB CLIENT                        DESIGNED
 ================================================================
 
-Goal: Replace the terminal as the primary interaction surface.
-Run a fully-offline localhost web application that serves a
-user registration flow, a chat interface, an embedded
-diagnostics dashboard, and a settings panel. All assets
-vendored locally — no CDN, no external fonts, no outbound
-requests. Works with zero internet after install.
+Goal: Replace the terminal as the primary product surface.
+A fully-offline localhost web application at 127.0.0.1:5000
+that serves as THE hub for everything Lumi. Target audience
+is a non-technical user: every setup step that currently
+requires editing a code file becomes a form. Terminal remains
+available as a developer tool, but the default experience is
+the browser.
 
-Security posture — be honest about this: binding to 127.0.0.1
-eliminates remote internet attackers, but does NOT protect
-against other processes on the machine, cross-origin DNS-
-rebinding from a browser tab, malicious browser extensions,
-or physical access. Real auth hygiene is required: argon2id
-password hashing, HttpOnly + SameSite=Strict session cookies,
-CSRF tokens on state changes, Origin checks on WebSocket
-handshake. "Localhost" is threat-reduced, not threat-
-eliminated.
+Scope:
+  - User registration and login (local, no internet required)
+  - Chat interface as the default landing page
+  - First-run setup wizard
+  - Persona editor (replaces hand-editing lumi.yaml)
+  - Memory browser (replaces !recall exploration)
+  - Model manager (replaces ollama CLI)
+  - Integration setup (VTS, Discord, browser)
+  - Settings (audio, timezone, security, advanced)
+  - Dashboard rebuilt as a proper page (not an iframe)
+  - Live status pills for VTS, Mic, Ollama in the sidebar
 
 Architecture:
   Browser → http://127.0.0.1:5000  (aiohttp + socket.io,
               already running as socketIO.py)
-       ├─ HTTP routes: /auth/register, /auth/login,
-       │   /auth/logout, /auth/me, static /web/*
+       ├─ HTTP routes: /auth/*, /api/*, static /web/*
        ├─ WebSocket /chat: authenticated chat protocol
        └─ Static assets served from web/
-  Browser → iframe http://127.0.0.1:5001 (log_hub dashboard,
-              unchanged — reused as-is)
+  Browser → iframe / direct link to log_hub dashboard at
+              127.0.0.1:5001 (backend data, custom frontend)
   Backend → Lumi core (prompter, memory, emotional_state,
-              self_model, vtubeStudio) — untouched
-  Terminal → still functional as an optional debug client
+              self_model, vtubeStudio) — HOST refactored
+  Terminal → optional debug client, same signals
+
+Design system (prerequisite for any UI work):
+  A single token-based CSS system. One palette
+  (GitHub-dark inspired), one spacing scale (8px base),
+  one component library (buttons, inputs, cards, tabs,
+  empty states, loading skeletons, error states).
+  Dark theme default. No framework, no build step.
+  Static mockup of chat + setup wizard before any
+  backend code so the visual language is validated
+  before anything depends on it.
 
 Storage:
   memories/users.db  (SQLite)  — user rows, argon2id hashes,
                                    session tokens, profiles
   memories/chroma.db (ChromaDB) — tagged with user_id for
-                                   per-user isolation (10.9)
+                                   per-user isolation (10.10)
+  users/<username>.yaml — per-user persona overrides
+                                   (optional; MVP uses shared
+                                   lumi.yaml with <host> template)
 
 Stack decisions (locked):
   - Backend: aiohttp + python-socketio (already in use)
@@ -358,28 +346,77 @@ Stack decisions (locked):
   - Hashing: argon2-cffi
   - Frontend: plain HTML/CSS/JS. No Node.js, no build step,
     no framework. All files in web/.
-  - Dashboard: iframe of log_hub (5001) as-is.
+  - Icons: Lucide or Feather as inline SVG. One family only.
+  - Dashboard: custom-built page, not iframe.
   - Concurrency: one active user at a time. Login switches
-    HOST. Terminal and web UI share signals, but only one
-    account is "logged in" to Lumi at any moment.
+    HOST. Terminal and web UI share signals.
 
-[ ] 10.1  User auth module                              NOT STARTED
+[ ] 10.1  Identity refactor                              NOT STARTED
+         Files:     constants.py, lumi.yaml,
+                    modules/prompter.py,
+                    modules/console_input.py,
+                    modules/heartbeat.py,
+                    modules/memory.py,
+                    modules/self_model.py,
+                    modules/session_state.py
+         Status:    Prerequisite for the login flow.
+                    Replace HOST_NAME constant with a
+                    mutable _HostState object (HOST).
+                    Replace the SYSTEM_PROMPT f-string
+                    with build_system_prompt(host) so the
+                    prompt rebuilds on login. Template
+                    lumi.yaml with <host> placeholder so
+                    the persona file reflects the current
+                    user. Sweep every hardcoded "Anthony"
+                    in prompter ack messages and every
+                    HOST_NAME import across modules.
+                    Store memory facts WITHOUT the host
+                    name (reflection prompt change) so
+                    retrieved facts read correctly for
+                    whoever is logged in.
+         Verify:    Change HOST.name at the terminal via a
+                    temporary !login test command. Next
+                    Lumi reply addresses the new name.
+                    Memory reflection stores facts without
+                    a name prefix. No module still reads
+                    the old frozen HOST_NAME string.
+
+[ ] 10.2  Design system + static mockup                 NOT STARTED
+         Files:     web/mockup/index.html
+                    web/mockup/style.css
+         Status:    Prerequisite for all UI work.
+                    Build a single static HTML mockup of
+                    the chat page and the setup wizard
+                    with no backend. Token-based CSS
+                    (colors, spacing, typography, radius,
+                    shadows as CSS custom properties).
+                    Component library: buttons, inputs,
+                    cards, tabs, empty states, loading
+                    skeletons, error states, modals.
+                    Validate the visual language before
+                    building anything that depends on it.
+                    Sit with the mockup. If it doesn't
+                    look screenshot-worthy, iterate.
+         Verify:    Open web/mockup/index.html in a browser.
+                    Chat page and wizard both render.
+                    Nothing looks broken. Palette is
+                    consistent. Spacing is regular.
+
+[ ] 10.3  User auth module                              NOT STARTED
          Files:     modules/user_auth.py
-         Status:    Planned. UserDB class on SQLite.
+         Status:    UserDB class on SQLite.
                     register(), authenticate(), validate_
                     session(), logout(). argon2id hashing.
                     30-day sliding session TTL. Rate limit:
                     5 failed logins per username per minute.
                     Sessions persisted across restart.
-         Verify:    Register "anthony" with a password.
-                    Authenticate returns a token. Wrong
-                    password returns None. Session survives
-                    a server restart.
+         Verify:    Register a user. Authenticate returns
+                    a token. Wrong password returns None.
+                    Session survives a server restart.
 
-[ ] 10.2  Auth HTTP routes                              NOT STARTED
+[ ] 10.4  Auth HTTP routes                              NOT STARTED
          Files:     modules/socketIO.py
-         Status:    Planned. aiohttp routes on the existing
-                    app:
+         Status:    aiohttp routes on the existing app:
                       POST /auth/register
                       POST /auth/login
                       POST /auth/logout
@@ -387,116 +424,199 @@ Stack decisions (locked):
                     Cookie: HttpOnly, SameSite=Strict,
                     Secure=false (localhost http only),
                     Path=/.
+                    On successful login: call
+                    HOST.update(name=..., user_id=...).
 
-[ ] 10.3  Frontend skeleton                             NOT STARTED
-         Files:     web/index.html
-                    web/style.css
+[ ] 10.5  Shell + navigation                            NOT STARTED
+         Files:     web/index.html, web/style.css,
                     web/app.js
-         Status:    Planned. Single page. Four tab panels:
-                    Login/Register, Chat, Dashboard, Settings.
-                    Dark theme matching log_hub. No external
-                    assets — SVG icons inline. Tab switching
-                    shows/hides panels, no routing.
+         Status:    Sidebar layout. Header with current
+                    model and logged-in user. Sidebar top:
+                    nav links (Chat, Dashboard, Persona,
+                    Memory, Models, Integrations,
+                    Settings). Sidebar bottom: status pills
+                    for VTS, Mic, Ollama with green/amber/
+                    red dots. Content area swaps based on
+                    active nav. Tab state persists in
+                    URL fragment (#/chat, #/dashboard).
 
-[ ] 10.4  Login / Register UI                           NOT STARTED
+[ ] 10.6  Login / Register UI                           NOT STARTED
          Files:     web/index.html, web/app.js
-         Status:    Planned. Username + password fields.
-                    Login posts to /auth/login, sets cookie,
-                    shows Chat tab. Register posts to
-                    /auth/register then auto-logs in.
-                    Errors surface inline.
+         Status:    Centered card on empty background.
+                    Username + password fields. Register
+                    link toggles to a register form.
+                    Errors inline, not as browser alerts.
+                    On success: redirect to #/chat.
 
-[ ] 10.5  WebSocket chat protocol                       NOT STARTED
-         Files:     modules/socketIO.py
-         Status:    Planned. Socket.io namespace /chat.
-                    Handshake validates session cookie and
-                    Origin header. Message types:
-                      client → server: {type:"msg", text}
-                      server → client: {type:"assistant",
-                                        text, done}
-                    Server pushes user text into
-                    signals.history, sets new_message.
-                    Prompter replies flow back through
-                    sio_queue.
-
-[ ] 10.6  Chat UI                                       NOT STARTED
-         Files:     web/index.html, web/app.js
-         Status:    Planned. Message list with role styling.
-                    Text input at bottom. Enter to send.
-                    Auto-scroll. Rendered via textContent,
-                    never innerHTML.
-
-[ ] 10.7  Dashboard iframe                              NOT STARTED
-         Files:     web/index.html
-         Status:    Planned. Dashboard tab contains an
-                    iframe pointing at 127.0.0.1:5001.
-                    log_hub's CSP / X-Frame-Options must
-                    permit it, or those headers must be
-                    omitted for localhost.
-
-[ ] 10.8  Settings tab                                  NOT STARTED
+[ ] 10.7  Chat page                                     NOT STARTED
          Files:     web/index.html, web/app.js,
                     modules/socketIO.py
-         Status:    Planned. Read-write controls:
-                      - current mood selector
-                      - model routing display
-                      - VTS expression toggles
-                      - self-model observations
-                      - session memory count
-                    All calls go through authenticated
-                    routes. No config file editing.
+         Status:    Default landing page after login.
+                    Message list with role styling (user
+                    right-aligned accent bubble, Lumi
+                    left-aligned surface bubble with
+                    avatar). Emotion tags rendered as
+                    small chips above messages, not raw
+                    text. Tool calls collapse by default
+                    into "N tools used ▾" strips.
+                    Fixed bottom input. Enter sends,
+                    Shift+Enter newlines. Status strip
+                    above input shows current mode
+                    (conversational/agent) with a toggle.
+                    WebSocket namespace /chat. Handshake
+                    validates session cookie and Origin.
+                    Render via textContent, never
+                    innerHTML.
 
-[ ] 10.9  Per-user memory isolation                     NOT STARTED
+[ ] 10.8  First-run setup wizard                        NOT STARTED
+         Files:     web/setup.html, web/setup.js,
+                    modules/socketIO.py
+         Status:    Shown only on first boot (no users
+                    in DB). Six steps, one thing per
+                    screen: Welcome, Workspace path,
+                    Model selection (with VRAM detection),
+                    Voice (Fish Audio keys + test button),
+                    Audio devices (+ test buttons), Ready.
+                    Progress bar. Back/Next navigation.
+                    Writes to constants.py and .env via
+                    authenticated endpoints.
+
+[ ] 10.9  Dashboard page                                NOT STARTED
+         Files:     web/index.html, web/app.js,
+                    modules/log_hub.py
+         Status:    Rebuild of the log hub frontend,
+                    styled to match the shell. Top row
+                    of four stat cards (memory count,
+                    session turns, heartbeat fires,
+                    current mood). Event stream below,
+                    filterable by category chips,
+                    virtualized for performance. Right
+                    panel with mini-graphs (emotional
+                    state over last hour, model latency,
+                    VLM call frequency). log_hub becomes
+                    the backend data source only — its
+                    own web frontend is deprecated.
+
+[ ] 10.10 Persona editor                                NOT STARTED
+         Files:     web/index.html, web/app.js,
+                    modules/socketIO.py, lumi.yaml
+         Status:    Left sidebar with sections (Identity,
+                    Traits, Personality, Examples, Voice).
+                    Main panel with form fields for the
+                    active section. Trait sliders 0-1 with
+                    descriptions. Rich text areas for
+                    descriptions. Add/remove example
+                    dialogues. Approved tag checkboxes.
+                    Every change has Preview (show
+                    resulting prompt) and Revert. Writes
+                    back to lumi.yaml preserving comments
+                    and structure via ruamel.yaml.
+
+[ ] 10.11 Memory browser                                NOT STARTED
+         Files:     web/index.html, web/app.js,
+                    modules/socketIO.py
+         Status:    Table of stored facts. Columns:
+                    importance marker, fact text, age,
+                    actions. Search is semantic (hits
+                    ChromaDB). Filter by session.
+                    Expandable rows showing timestamp,
+                    importance, valence, session_id.
+                    Inline edit, delete with confirmation.
+                    Export to JSON.
+
+[ ] 10.12 Model manager                                 NOT STARTED
+         Files:     web/index.html, web/app.js,
+                    modules/socketIO.py
+         Status:    Which models are installed (query
+                    Ollama /api/tags). Which is currently
+                    loaded (via /api/ps). VRAM usage per
+                    model. Load/Unload buttons. Pull new
+                    model (text field + progress bar).
+                    Routing configuration for fast/full
+                    paths. Writes to constants.py.
+
+[ ] 10.13 Integrations page                             NOT STARTED
+         Files:     web/index.html, web/app.js,
+                    modules/socketIO.py
+         Status:    Cards per integration (VTS,
+                    Discord, Browser, Fish Audio). Each
+                    card shows status (Connected / Not
+                    connected / Ready). Configure button
+                    opens a modal with integration-
+                    specific settings. Test button runs
+                    a connectivity check.
+
+[ ] 10.14 Settings page                                 NOT STARTED
+         Files:     web/index.html, web/app.js,
+                    modules/socketIO.py
+         Status:    Sub-tabs: General (workspace,
+                    timezone, autostart), Security
+                    (change password, sessions, API key
+                    rotation), Advanced (raw config
+                    editor with warning), About
+                    (version, credits).
+
+[ ] 10.15 Per-user memory isolation                     NOT STARTED
          Files:     modules/memory.py
-         Status:    Planned. Adds user_id metadata on every
+         Status:    Adds user_id metadata on every
                     memory insert. get_prompt_injection()
                     and query_temporal() filter by current
-                    user. Migration pass backfills existing
-                    memories with user_id: "anthony".
-         Verify:    Log in as Guest, ask "what do you know
-                    about me?" — must NOT return Anthony's
-                    memories.
+                    user. Migration pass backfills
+                    existing memories with user_id:
+                    "anthony".
+         Verify:    Log in as Guest, ask "what do you
+                    know about me?" — must NOT return
+                    Anthony's memories.
 
-[ ] 10.10 Per-user emotional state isolation            NOT STARTED
+[ ] 10.16 Per-user emotional state isolation            NOT STARTED
          Files:     modules/emotional_state.py
-         Status:    Planned. Per-user EmotionalState
-                    instances keyed by user_id, persisted
+         Status:    Per-user EmotionalState instances
+                    keyed by user_id, persisted
                     independently. HOST.user_id drives
                     the lookup.
-         Verify:    Log in as Guest, push frustration to
-                    0.8. Log in as Anthony — his state is
-                    unaffected.
+         Verify:    Log in as Guest, push frustration
+                    to 0.8. Log in as Anthony — his
+                    state is unaffected.
 
-[ ] 10.11 Security hardening                            NOT STARTED
+[ ] 10.17 Security hardening                            NOT STARTED
          Files:     modules/socketIO.py,
                     modules/user_auth.py, web/app.js
-         Status:    Planned.
-                    a. CSRF token issued on login, required
-                       on all state-changing POSTs.
-                    b. Origin check on WebSocket handshake —
-                       reject anything not 127.0.0.1:5000.
-                    c. SameSite=Strict + HttpOnly cookies.
-                    d. Rate limit /auth/login to 5/min/user.
+         Status:    a. CSRF token issued on login,
+                       required on all state-changing
+                       POSTs (double-submit cookie
+                       pattern).
+                    b. Origin check on WebSocket handshake
+                       — reject anything not
+                       127.0.0.1:5000.
+                    c. SameSite=Strict + HttpOnly session
+                       cookies.
+                    d. Rate limit /auth/login to
+                       5/min/user.
                     e. Bind aiohttp strictly to 127.0.0.1,
                        no override constant.
                     f. All frontend rendering via
                        textContent, never innerHTML.
-                    g. Static server refuses path traversal
-                       and only serves from web/.
+                    g. Static server refuses path
+                       traversal and only serves from
+                       web/.
 
-[ ] 10.12 Terminal as fallback client                   NOT STARTED
+[ ] 10.18 Terminal as fallback client                   NOT STARTED
          Files:     modules/prompter.py,
                     modules/console_input.py
-         Status:    Planned. Terminal input stays
-                    functional. When a web user is logged
-                    in, terminal commands route through
-                    the same HOST context.
+         Status:    Terminal input stays functional.
+                    When a web user is logged in,
+                    terminal commands route through the
+                    same HOST context. Optional env var
+                    to disable terminal input entirely
+                    for users who only want web access.
 
-[ ] 10.13 Voice in browser (optional, phase 2)          NOT STARTED
+[ ] 10.19 Voice in browser (deferred)                   NOT STARTED
          Files:     web/app.js, modules/socketIO.py
-         Status:    Deferred. HTML5 audio playback for
-                    TTS. Optional mic capture via
-                    MediaRecorder → server STT.
+         Status:    Deferred to post-MVP. HTML5 audio
+                    playback for Lumi's TTS via audio
+                    streaming over the socket. Optional
+                    mic capture via MediaRecorder →
+                    server STT.
 
 ================================================================
   PENDING FIXES (should ship before new phase work)
@@ -528,6 +648,15 @@ Stack decisions (locked):
              verbatim. Rewrite them in your own words
              for the moment."
 
+[!] Large tool results bury the original request      HIGH
+    Status: When Lumi reads a large file, the
+            original question gets lost and she
+            pivots to explaining whatever she saw.
+    Fix:    Reinject the original user request as a
+            system reminder after tool results that
+            exceed 800 chars. Added to run_agent_turn
+            after the tool result is appended.
+
 [!] Multimodal VLM fires on file-read requests        MEDIUM
     Status: "take a look" in CONVERSATIONAL_TRIGGERS
             causes the VLM to fire whenever the user
@@ -535,18 +664,21 @@ Stack decisions (locked):
             screen.
     Fix:    Remove "take a look" and "look at this"
             from multimodal.py CONVERSATIONAL_TRIGGERS.
-            The FLEXIBLE_VISION_PATTERN regex already
-            catches screen-specific phrasing.
+
+[!] Emoji in agent-mode replies                       LOW
+    Status: Qwen3 emits emoji (🧠, 😊) which leak to
+            the terminal in agent mode. Fast/conv
+            paths already strip them via
+            clean_for_voice.
+    Fix:    Apply _strip_non_canonical_tags or a new
+            emoji strip to the agent-mode display
+            branch in run().
 
 ================================================================
   BONUS WORK SHIPPED THIS SESSION
 ================================================================
 
 [+] VTube Studio avatar control — full VTS integration
-    with expression state tracking, keyboard fallback,
-    natural-language alias resolution, fabrication
-    guard, and passive emotion → expression path.
-
 [+] Session state persistence
 [+] Shutdown lock fix
 [+] Mic input watchdog
@@ -584,6 +716,8 @@ Stack decisions (locked):
 [+] SDK architecture design (Phase 8)
 [+] Security threat model defined (Phase 9)
 [+] Web client architecture design (Phase 10)
+[+] Identity refactor design (Phase 10.1)         ← NEW
+[+] Design system spec (Phase 10.2)                ← NEW
 
 ================================================================
   KNOWN OUTSTANDING ISSUES
@@ -619,24 +753,30 @@ Stack decisions (locked):
             !edit command with diff review.
 
 [!] Shared memory across users
-    Fix:    Phase 10.9 user_id metadata + query filter.
+    Fix:    Phase 10.15 user_id metadata + query
+            filter.
 
 [!] Shared emotional state across users
-    Fix:    Phase 10.10 per-user emotional snapshots.
+    Fix:    Phase 10.16 per-user emotional snapshots.
+
+[!] Multi-speaker memory attribution (text)
+    Fix:    Phase 7 voice bridge + updated reflection
+            prompt with speaker prefixes.
+
+[!] Host name baked into memory facts
+    Status: Memory facts currently store as "Anthony
+            prefers X" — the name is part of the
+            stored text. When a different user logs
+            in, retrieved facts still say "Anthony".
+    Fix:    Part of Phase 10.1. Reflection prompt
+            stores facts without subject names.
+            Retrieval prefixes with current HOST.name
+            at read time.
 
 [!] moondream description quality                     COSMETIC
-    Fix:    Optional VLM_MODEL swap to qwen2.5vl.
-
 [!] Duplicate facts across reflection passes          COSMETIC
-    Fix:    Optional dedup in _store_extracted_memories.
-
 [!] Ambient perception first-run delay                COSMETIC
-    moondream takes 20-60s to load on first call.
-
 [!] Model pickiness on tool format                    KNOWN
-    Qwen emits tool calls in several shapes; four
-    recovery parsers handle the observed variants.
-
 [!] Log hub port conflict risk                        KNOWN
     5001 (log hub), 5000 (socketIO/web), 5055 (voice
     bridge), 5056 (SDK). All must remain free.
@@ -655,50 +795,75 @@ Stack decisions (locked):
   RECOMMENDED NEXT STEPS
 ================================================================
 
-  Step 0  ->  APPLY THREE PENDING FIXES (30 min total).
-              (1) Expand _INTENT_ANNOUNCEMENT regex in
-                  prompter.py.
+  Step 0  ->  APPLY FOUR PENDING FIXES (~1 hour total).
+              (1) Expand _INTENT_ANNOUNCEMENT regex.
               (2) Add "SIGNATURE PHRASES ARE VOCABULARY,
                   NOT SCRIPT" rule to lumi.yaml.
-              (3) Tighten multimodal.py CONVERSATIONAL_
+              (3) Reinject original request after large
+                  tool results in run_agent_turn.
+              (4) Remove "take a look" and "look at this"
+                  from multimodal.py CONVERSATIONAL_
                   TRIGGERS.
+              Optional: emoji strip for agent-mode
+              display.
               These unblock reliable agent turns before
-              any new phase work begins.
+              Phase 10 work begins.
 
-  Step 1  ->  BUILD PHASE 10.1 (USER AUTH MODULE).
+  Step 1  ->  BUILD PHASE 10.1 (IDENTITY REFACTOR).
+              Prerequisite for login flow. HOST mutable
+              object, build_system_prompt(host), lumi.yaml
+              templated with <host>, sweep every hardcoded
+              "Anthony". Verify by changing HOST.name at
+              the terminal.
+
+  Step 2  ->  BUILD PHASE 10.2 (DESIGN SYSTEM +
+              STATIC MOCKUP).
+              No backend. Just HTML/CSS. Chat page and
+              setup wizard as static files. Validate
+              the visual language before building
+              anything that depends on it.
+
+  Step 3  ->  BUILD PHASE 10.3 (USER AUTH MODULE).
               SQLite + argon2id. Fully testable from
-              the terminal. Everything else in Phase 10
-              depends on this.
+              the terminal.
 
-  Step 2  ->  BUILD PHASE 10.2 + 10.3 (AUTH ROUTES +
-              FRONTEND SKELETON).
-              http://127.0.0.1:5000 serves a page.
-              Login works. Chat is still a stub.
+  Step 4  ->  BUILD PHASE 10.4 + 10.5 (AUTH ROUTES +
+              SHELL).
+              http://127.0.0.1:5000 serves the shell.
+              Login works. Chat page is still a stub.
 
-  Step 3  ->  BUILD PHASE 10.5 + 10.6 (CHAT PIPE + UI).
+  Step 5  ->  BUILD PHASE 10.6 + 10.7 (LOGIN UI +
+              CHAT PIPE).
               Real conversation through the browser.
+              First shippable milestone.
 
-  Step 4  ->  BUILD PHASE 10.7 + 10.8 (DASHBOARD +
+  Step 6  ->  BUILD PHASE 10.8 (SETUP WIZARD).
+              Non-technical users can configure Lumi
+              without touching code. Second shippable
+              milestone.
+
+  Step 7  ->  BUILD PHASE 10.9-10.14 (DASHBOARD,
+              PERSONA, MEMORY, MODELS, INTEGRATIONS,
               SETTINGS).
-              Feature-complete MVP.
+              Full hub. Feature-complete MVP.
 
-  Step 5  ->  BUILD PHASE 10.9 + 10.10 (PER-USER
+  Step 8  ->  BUILD PHASE 10.15 + 10.16 (PER-USER
               ISOLATION).
-              Now that users can log in, memory and
-              emotional state need to be scoped per user.
+              Memory and emotional state scoped per
+              user.
 
-  Step 6  ->  BUILD PHASE 10.11 (SECURITY HARDENING).
+  Step 9  ->  BUILD PHASE 10.17 (SECURITY HARDENING).
               Before exposing to anything but 127.0.0.1.
 
-  Step 7  ->  PHASE 7 (DISCORD VOICE BRIDGE).
+  Step 10 ->  PHASE 7 (DISCORD VOICE BRIDGE).
               Back to original roadmap priority.
 
-  Step 8  ->  PHASE 9.1/9.2/9.10 THEN PHASE 8 (SDK).
+  Step 11 ->  PHASE 9.1/9.2/9.10 THEN PHASE 8 (SDK).
               Security before the plugin system ships.
 
-  Ongoing ->  USE LUMI through the browser once Phase 10
-              lands. Watch for friction. Real use drives
-              the next round of tuning.
+  Ongoing ->  USE LUMI through the browser. Watch for
+              friction. Real use drives the next round
+              of tuning.
 
 ================================================================
   WHAT VEDAL HAS THAT THIS WON'T FULLY CLOSE
@@ -710,9 +875,10 @@ Stack decisions (locked):
   - A team of collaborators for specific subsystems
   - Actual viewer interaction data shaping her personality
   - His own C# Discord library (VedalAI) with native voice
-    receive, giving him full control over the receive pipeline
-  - A mature, published SDK with community-built clients in
-    10+ languages
+    receive, giving him full control over the receive
+    pipeline
+  - A mature, published SDK with community-built clients
+    in 10+ languages
 
   The architecture is replicable. The tuning is not.
   You will get 70-80% of the feel with 100% of the
@@ -754,7 +920,9 @@ Stack decisions (locked):
     ✅ Fabrication guard for narrated state changes
     ✅ Passive emotion → expression visual manifestation
     ✅ VRAM deduplication (fast and main share weights)
-    ✅ Web client design (Phase 10 redesign)
+    ✅ Web client architecture design (Phase 10)
+    ✅ Identity refactor design (Phase 10.1)
+    ✅ Design system spec (Phase 10.2)
 
   What you have NOT closed:
     ❌ Discord voice receive (Phase 7)
@@ -765,10 +933,14 @@ Stack decisions (locked):
     ❌ Prompt injection defense (Phase 9.1)
     ❌ Self-modification guard (Phase 9.10)
     ❌ Local web client (Phase 10)
-    ❌ User authentication backend (Phase 10.1)
-    ❌ Web chat interface (Phase 10.5-10.6)
-    ❌ Per-user memory isolation (Phase 10.9)
-    ❌ Per-user emotional state (Phase 10.10)
+    ❌ Identity refactor (Phase 10.1)
+    ❌ Design system (Phase 10.2)
+    ❌ User authentication backend (Phase 10.3)
+    ❌ Web chat interface (Phase 10.6-10.7)
+    ❌ Setup wizard (Phase 10.8)
+    ❌ Full hub pages (Phase 10.9-10.14)
+    ❌ Per-user memory isolation (Phase 10.15)
+    ❌ Per-user emotional state (Phase 10.16)
 
 ================================================================
   END OF ROADMAP
