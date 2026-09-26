@@ -23,6 +23,7 @@ from constants import (
     FAST_MODEL_ENABLED,
     FAST_MODEL_NUM_CTX,
     FAST_MODEL_KEEP_ALIVE,
+    MAIN_NUM_CTX,
 )
 from modules.agent_tools import TOOL_SCHEMAS, CONFIRM_REQUIRED_TOOLS, execute_tool
 from modules.session_state import SessionState
@@ -730,9 +731,7 @@ _COMPLEXITY_MARKERS = re.compile(
     r"debug|step by step|why does|why is|how does|how do|"
     r"compare|evaluate|summarize|reason|consider|weigh|"
     r"pros and cons|trade.?off|in depth|elaborate|"
-    r"refactor|implement|algorithm|strategy|"
-    r"spell|backward|reverse|anagram|how many|count|letter|"
-    r"math|riddle|trick question|heavier"
+    r"refactor|implement|algorithm|strategy"
     r")\b",
     re.IGNORECASE,
 )
@@ -1025,6 +1024,8 @@ class Prompter:
         }
         if use_fast:
             options["num_ctx"] = FAST_MODEL_NUM_CTX
+        else:
+            options["num_ctx"] = MAIN_NUM_CTX
 
         loop = asyncio.get_running_loop()
         url = f"{LLM_ENDPOINT}/api/chat"
@@ -1147,7 +1148,7 @@ class Prompter:
             "ponytail_r, controller, heart_eyes, spiral_eyes, darkened. "
             "Do NOT just say you did it — emit the tool call.\n\n"
             "=== END TOOL USE ===\n"
-            )
+        )
         else:
             agent_note = (
                 "=== NO TOOLS ACTIVE ===\n"
@@ -1437,7 +1438,7 @@ class Prompter:
                 if not clean_loc:
                     clean_loc = "Stone Mountain Georgia"
 
-                url = f"[https://wttr.in/](https://wttr.in/){requests.utils.quote(clean_loc)}?format=%l:+%C,+%t.+Humidity:+%h,+Wind:+%w"
+                url = f"https://wttr.in/{requests.utils.quote(clean_loc)}?format=%l:+%C,+%t.+Humidity:+%h,+Wind:+%w"
                 res = requests.get(url, timeout=5)
 
                 if res.status_code == 200 and "Unknown location" not in res.text:
@@ -1619,7 +1620,8 @@ class Prompter:
                     "temperature": 0.5,
                     "top_p": 0.9,
                     "repeat_penalty": 1.15,
-                    "repeat_last_n": 64
+                    "repeat_last_n": 64,
+                    "num_ctx": MAIN_NUM_CTX,
                 },
             }
 

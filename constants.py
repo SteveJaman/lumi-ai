@@ -7,7 +7,7 @@ import random
 # =======================================================
 WORKSPACE_ROOT = r"C:\Users\anguy\OneDrive - Kennesaw State University\Documents\Lumi-master"
 LLM_ENDPOINT = "http://localhost:11434"
-MODEL_NAME = "lumi-coder"               # main model: custom Modelfile with 32K num_ctx
+MODEL_NAME = "lumi-qwen3"               # main model: custom Modelfile built from qwen3:8b
 VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached this turn
 
 # =======================================================
@@ -20,17 +20,29 @@ VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached th
 TIMEZONE = "America/New_York"
 
 # =======================================================
-# FAST-PATH MODEL (Phase 5 — multi-model orchestration)
+# MODEL CONFIGURATION (Phase 5 — multi-model orchestration)
 # -------------------------------------------------------
-# Short casual chat routes to a small fast model. Agent turns and
-# complex queries stay on MODEL_NAME. Keep-alive is longer for the
-# fast model so it stays warm during active chat; the main model
-# unloads quickly between turns to free VRAM.
+# FAST AND MAIN ARE NOW THE SAME MODEL. Both point at "lumi-qwen3",
+# so Ollama keeps exactly ONE copy in VRAM. The "fast path" is now
+# differentiated only by:
+#   - smaller num_ctx (8K vs 16K)
+#   - no tool schemas in the payload
+#   - no agent_note / no tool instructions in the system prompt
+#
+# This halves VRAM pressure compared to running two separate models.
+# On an 11GB card with VTS + VS Code + Windows open, this is the
+# difference between "everything fits" and "everything spills to
+# shared memory and runs at 1/10th speed."
+#
+# NOTE: Qwen3 has a "thinking" mode. The prompter passes
+# think=false for the fast path, think=true for the full path and
+# agent turns. See prompter.py for the routing logic.
 # =======================================================
-FAST_MODEL_NAME = "qwen2.5:7b"          # fall back to "qwen2.5:7b" if VRAM is tight
+FAST_MODEL_NAME = "lumi-qwen3"          # same weights as main — Ollama deduplicates in VRAM
 FAST_MODEL_ENABLED = True               # set False to disable routing entirely
-FAST_MODEL_NUM_CTX = 8192               # chat doesn't need 32K
-FAST_MODEL_KEEP_ALIVE = "10m"            # stays warm between turns
+FAST_MODEL_NUM_CTX = 8192               # fast path: small KV cache, quick replies
+MAIN_NUM_CTX = 16384                    # full path / agent turns: bigger than fast, well under 32K
+FAST_MODEL_KEEP_ALIVE = "5m"            # keep warm between turns; same value for both paths
 
 # Audio Output Routing: "discord", "local", or "both"
 AUDIO_OUTPUT_MODE = "both"
