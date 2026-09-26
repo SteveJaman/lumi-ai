@@ -34,6 +34,7 @@ the log and see that she did.
 - [Terminal Commands](#terminal-commands)
 - [Architecture](#architecture)
   - [Turn Flow](#turn-flow)
+  - [Architecture Topology](#architecture-topology)
   - [Key Files](#key-files)
   - [Background Modules](#background-modules)
 - [Requirements](#requirements)
@@ -449,6 +450,152 @@ Command router (checks !agent_on/off, !list, !state, !recall, !self, !model,
         ▼
 Self-model note_turn() — records tags, frame, length for the next reflection
 ```
+
+### Architecture Topology
+
+Full system topology — every input, path, tool, background loop, and output,
+color-coded by layer.
+
+```mermaid
+flowchart TD
+    %% ===== INPUT LAYER =====
+    subgraph INPUTS["Input Sources"]
+        direction LR
+        TERM[Terminal]
+        MIC[Microphone]
+        DISC[Discord Text / Voice]
+    end
+
+    STT[faster-whisper STT<br/>GPU float16, VAD barge-in]
+    MIC --> STT
+
+    CR{Command Router}
+    TERM --> CR
+    STT --> CR
+    DISC --> CR
+
+    CR -->|"!agent_on/off, !list, !state,<br/>!recall, !self, !model, mood,<br/>!set, !expression, !move"| CMDS[Direct Command Handlers]
+    CR -->|conversational| CONV[Conversational Mode]
+    CR -->|agent mode active| AGENT[Agent Mode<br/>run_agent_turn]
+
+    %% ===== CONTEXT INJECTION STACK =====
+    subgraph CONTEXT["System Prompt Assembly"]
+        direction TB
+        PERSONA[Persona<br/>lumi.yaml]
+        MEM_INJ[Memory Facts]
+        MOOD[Mood Profile]
+        EMO[Emotional State<br/>5 variables]
+        FRAME[Cognitive Frame<br/>6 frames]
+        AMBIENT[Ambient Context<br/>screen + window]
+        SELF_INJ[Self-Model Observations]
+        CONT[Session Continuity]
+    end
+
+    CONV --> ROUTE_DECISION{Fast or Main path?}
+    ROUTE_DECISION -->|short / simple| FAST_PATH[Fast Path<br/>8K ctx, think = false]
+    ROUTE_DECISION -->|long / complex| MAIN_PATH[Main Path<br/>16K ctx, think = true]
+
+    CONTEXT --> FAST_PATH
+    CONTEXT --> MAIN_PATH
+    CONTEXT --> AGENT
+
+    FAST_PATH --> OLLAMA[("Ollama<br/>lumi-qwen3<br/>shared weights")]
+    MAIN_PATH --> OLLAMA
+    AGENT --> OLLAMA
+
+    %% ===== AGENT TOOLS =====
+    OLLAMA -->|tool_calls| DISPATCH{Tool Dispatch}
+    DISPATCH --> FILE_TOOLS[read_file / write_file /<br/>list_dir / search_files]
+    DISPATCH --> CMD_TOOLS[run_command /<br/>run_in_terminal]
+    DISPATCH --> WEB_TOOLS[web_search / browse_url]
+    DISPATCH --> MEM_TOOL[recall_memory]
+    DISPATCH --> AVATAR_TOOLS[vtube_set_expression /<br/>vtube_move]
+
+    FILE_TOOLS -->|destructive| CONFIRM{y/n Confirm}
+    CMD_TOOLS -->|destructive| CONFIRM
+    CONFIRM -->|y| EXEC[Execute]
+    CONFIRM -->|n| SKIP[Skip]
+    WEB_TOOLS --> EXEC
+    MEM_TOOL --> EXEC
+    AVATAR_TOOLS --> VTS[VTube Studio<br/>state-tracked toggle]
+
+    EXEC -->|tool result| OLLAMA
+    VTS -->|tool result| OLLAMA
+
+    OLLAMA -->|plain text reply| GUARDS[Safety Guards<br/>simulated-action / intent /<br/>refusal / no-op / fabrication]
+    GUARDS --> TTS[Fish Audio TTS<br/>emotion tags]
+    TTS --> OUT_SPEAK[Local Speakers]
+    TTS --> OUT_DISC[Discord Voice]
+    TTS -.->|first canonical tag| VTS
+
+    %% ===== BACKGROUND LOOPS =====
+    subgraph BG["Background Modules — always running"]
+        direction TB
+        HEARTBEAT[Heartbeat<br/>fires every 30s]
+        AMBIENT_MOD[Ambient Perception<br/>screen sampler every 30s]
+        SELFMODEL[Self-Model<br/>snapshot 60s / reflect 10min]
+        EMOSTATE[Emotional State<br/>decay every 30s]
+        MEMREFLECT[Memory Reflection<br/>every ~10 messages]
+    end
+
+    HEARTBEAT -->|message or SILENCE| OLLAMA
+    AMBIENT_MOD -->|window change or hash delta| VLM[moondream VLM]
+    VLM --> AMBIENT
+    SELFMODEL --> SELF_INJ
+    EMOSTATE --> EMO
+    MEMREFLECT --> CHROMA[("ChromaDB<br/>timestamp / importance / valence")]
+    CHROMA --> MEM_INJ
+    MEM_TOOL --> CHROMA
+
+    %% ===== DIAGNOSTICS =====
+    subgraph DIAG["Diagnostics"]
+        LOGHUB[Log Hub]
+        DASH["Dashboard<br/>127.0.0.1:5001"]
+    end
+    HEARTBEAT -.-> LOGHUB
+    AMBIENT_MOD -.-> LOGHUB
+    MEMREFLECT -.-> LOGHUB
+    EMOSTATE -.-> LOGHUB
+    SELFMODEL -.-> LOGHUB
+    VTS -.-> LOGHUB
+    TTS -.-> LOGHUB
+    LOGHUB --> DASH
+
+    %% ===== STYLING =====
+    classDef input fill:#2b6cb0,stroke:#1a4971,color:#fff
+    classDef router fill:#805ad5,stroke:#553c9a,color:#fff
+    classDef context fill:#38a169,stroke:#276749,color:#fff
+    classDef model fill:#dd6b20,stroke:#9c4221,color:#fff
+    classDef tools fill:#d53f8c,stroke:#97266d,color:#fff
+    classDef background fill:#319795,stroke:#234e52,color:#fff
+    classDef storage fill:#718096,stroke:#4a5568,color:#fff
+    classDef output fill:#e53e3e,stroke:#9b2c2c,color:#fff
+    classDef diag fill:#a0aec0,stroke:#4a5568,color:#1a202c
+
+    class TERM,MIC,DISC,STT input
+    class CR,CMDS,CONV,AGENT,ROUTE_DECISION,DISPATCH,CONFIRM router
+    class PERSONA,MEM_INJ,MOOD,EMO,FRAME,AMBIENT,SELF_INJ,CONT context
+    class FAST_PATH,MAIN_PATH,OLLAMA model
+    class FILE_TOOLS,CMD_TOOLS,WEB_TOOLS,MEM_TOOL,AVATAR_TOOLS,EXEC,VTS,GUARDS tools
+    class HEARTBEAT,AMBIENT_MOD,SELFMODEL,EMOSTATE,MEMREFLECT,VLM background
+    class CHROMA storage
+    class TTS,OUT_SPEAK,OUT_DISC,SKIP output
+    class LOGHUB,DASH diag
+```
+
+**Legend**
+
+| Color | Layer |
+|---|---|
+| Blue | Input sources (terminal, mic, Discord, STT) |
+| Purple | Routing / dispatch logic |
+| Green | System prompt context-injection stack |
+| Orange | Ollama model paths (fast / main, shared weights) |
+| Pink | Agent tools + safety guards |
+| Teal | Always-on background modules |
+| Gray | Persistent storage (ChromaDB) |
+| Red | Output (TTS, speakers, Discord voice) |
+| Light gray | Diagnostics / dashboard |
 
 ### Key Files
 
