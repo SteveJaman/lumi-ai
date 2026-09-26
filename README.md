@@ -4,7 +4,7 @@ A local-first, agentic AI companion running on consumer hardware. Lumi is a
 persona-driven VTuber-style assistant with real tool use — she can read and
 write files, run commands, search the web, control a browser, query her own
 memory, verify her own work, track her own behavioral patterns, drive her own
-Live2D avatar, and route casual chat through a faster model — all coordinated
+Live2D avatar, and route casual chat through a faster path — all coordinated
 through local Ollama.
 
 Unlike scripted chatbots or bracket-tag "tool" syntax, Lumi uses **structured
@@ -101,7 +101,8 @@ files it wasn't asked to write, or looping on the same failed command:
   isn't backed by a real tool call. Also catches state-change narrations like
   "Hat removed." or "Ponytail_r engaged." when the user asked for an avatar
   change
-- **Intent-announcement guard** — catches "now let's X" without an actual call
+- **Intent-announcement guard** — catches "let me X" / "let's see" / "now
+  let's" without an actual tool call
 - **Refusal guard** — catches "I can't" and re-prompts with the original request
 - **Read-only query gate** — refuses `write_file` when the user only asked to read
 - **No-op write guard** — refuses writes identical to the current file
@@ -123,14 +124,15 @@ files it wasn't asked to write, or looping on the same failed command:
 
 ### Multi-Model Orchestration
 
-Lumi runs a two-model architecture to keep casual conversation fast without
-sacrificing agent quality:
+Lumi runs a two-path architecture to keep casual conversation fast without
+sacrificing agent quality. **Both paths use the same model weights**
+(`lumi-qwen3`), so Ollama keeps exactly one copy in VRAM — the fast path is
+differentiated only by payload shape and context size.
 
-- **Main model** (`lumi-coder`, 7B, 32K context): agent turns, complex
-  queries, heartbeat decisions. Full quality, higher latency.
-- **Fast model** (`qwen2.5:7b`, 8K context): short casual chat, memory
-  reflection, session summarization. Same family as the main model, smaller
-  context window, meaningfully faster.
+- **Main path** (`lumi-qwen3`, 16K context, `think=true`): agent turns,
+  complex queries, multi-step tasks. Full reasoning enabled.
+- **Fast path** (same weights, 8K context, `think=false`): short casual chat,
+  memory reflection, session summarization. Thinking disabled for latency.
 
 **Routing heuristic** (first match wins):
 
@@ -144,8 +146,15 @@ sacrificing agent quality:
 
 The routing label appears in the terminal on every turn — `Thinking
 (conversational, fast)` or `Thinking (conversational, full)` — so you can see
-which model handled each message. Use `!model` to check the current routing
+which path handled each message. Use `!model` to check the current routing
 state.
+
+**Qwen3 thinking mode.** Qwen3 has an internal reasoning scratchpad that's on
+by default. It's genuinely useful for complex queries and agent turns — the
+model plans before acting. It's pure overhead for casual chat. Lumi passes
+`think=false` for the fast path and `think=true` for the full path and agent
+turns. Background tasks (memory reflection, session summary, self-model)
+always pass `think=false` — they're structured extraction, not reasoning.
 
 ### Persona & Voice
 
@@ -223,16 +232,17 @@ you. Two files, one behavior:
   response length), and increments an unprompted-message count when the
   heartbeat fires.
 - **Reflection** (every 10 minutes, minimum 5 turns): sends a structured
-  summary of the collected data to `lumi-coder` and gets back 2–4 short
+  summary of the collected data to the full model and gets back 2–4 short
   observations about recent patterns. Empty list is a valid result.
   Observations are persisted across sessions to `memories/self_model.json`.
 - **Injection**: a sparse self-awareness block injected into the prompt only
   when observations are fresh (< 1 hour old). Framed as internal awareness
   the model should not announce.
 
-The reflection model is the full 7B — the 3B variant was tried first and
-hallucinated numbers ("an hour" for a 5-minute session, "two unprompted
-messages" when the count was 0). The 7B reports accurately.
+The reflection model is the full 7B-class model — a smaller variant was tried
+first and hallucinated numbers ("an hour" for a 5-minute session, "two
+unprompted messages" when the count was 0). The larger model reports
+accurately.
 
 Check current state any time with `!self`.
 
@@ -412,20 +422,21 @@ Command router (checks !agent_on/off, !list, !state, !recall, !self, !model,
                 !hotkeys, !positions)
         │
         ├─── conversational mode
-        │     ├─ Routing decision: fast or full model
+        │     ├─ Routing decision: fast or full path
         │     ├─ Build system prompt (persona + tool directive + memory + mood
         │     │  + emotional state + cognitive frame + ambient context
         │     │  + self-model observations + continuity)
-        │     └─ POST to Ollama /api/chat (no tools)
+        │     └─ POST to Ollama /api/chat (no tools; think flag per path)
         │
-        ├─── agent mode → run_agent_turn() on main model:
+        ├─── agent mode → run_agent_turn() on main path:
         │     ├─ Build system prompt (same injection stack)
         │     ├─ Append history
-        │     ├─ POST to Ollama /api/chat with tool schemas
+        │     ├─ POST to Ollama /api/chat with tool schemas, think=true
         │     ├─ If tool_calls returned:
         │     │    ├─ Confirm gates for write_file / run_command / run_in_terminal
         │     │    ├─ Validate args for vtube_set_expression / vtube_move
         │     │    ├─ Execute tool via execute_tool() or _dispatch_tool_call
+        │     │    ├─ Reinject original request if tool result was large
         │     │    ├─ Append result as `role: tool`
         │     │    └─ Loop back to Ollama (up to MAX_AGENT_STEPS)
         │     └─ If plain text returned: push to TTS, save to history
@@ -472,7 +483,7 @@ Each module runs in its own thread with its own event loop, spawned by
 ## Requirements
 
 - **Python** 3.11+
-- **Ollama** running locally with at least two tool-capable models (see below)
+- **Ollama** running locally with a tool-capable model (see below)
 - **FFmpeg** on PATH (for Discord voice playback)
 - **Playwright Firefox** (`playwright install firefox`)
 - **PyYAML** (`pip install pyyaml`)
@@ -482,47 +493,54 @@ Each module runs in its own thread with its own event loop, spawned by
 
 ### Recommended Models
 
-Two models: a main model for agent work and a fast model for casual chat.
+Single model, two paths.
 
-**Main** — custom Modelfile built on Qwen2.5:7b:
+**Build the custom Modelfile from Qwen3 8B:**
 
 ```
-FROM qwen2.5:7b
-SYSTEM You are Lumi, a real person who streams under a fictional
-       cosmic-AI persona. Short, dry, present.
+FROM qwen3:8b
+SYSTEM You are Lumi Voidwright, an ancient cosmic entity tethered to
+       Anthony's machine. Short, dry, present. You don't monologue
+       about being ancient. You just are. Never use emoji. Never use
+       markdown. Speak like a person.
 PARAMETER num_ctx 32768
+PARAMETER temperature 0.7
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.15
 ```
 
-Build with `ollama create lumi-coder -f Modelfile`.
+Build with `ollama create lumi-qwen3 -f Modelfile-qwen3`.
 
-**Fast** — pull directly:
-
-```bash
-ollama pull qwen2.5:7b
-```
-
-Both are configured in `constants.py`:
+**Both paths use the same weights:**
 
 ```python
-MODEL_NAME = "lumi-coder"
-FAST_MODEL_NAME = "qwen2.5:7b"
+MODEL_NAME = "lumi-qwen3"        # main path — 16K ctx, think=true
+FAST_MODEL_NAME = "lumi-qwen3"   # fast path — same weights, 8K ctx, think=false
 FAST_MODEL_ENABLED = True
 FAST_MODEL_NUM_CTX = 8192
+MAIN_NUM_CTX = 16384
 FAST_MODEL_KEEP_ALIVE = "5m"
 ```
 
-The general Qwen2.5:7b variant is preferred over Qwen2.5-Coder, which has a
-training bias toward emitting code-as-text and produces more simulated-action
+Because both names point at the same model, Ollama loads it once and shares
+it between paths. This is a ~5 GB VRAM savings over the older two-model
+setup and is what makes the whole stack fit comfortably on an 11 GB card.
+
+**Qwen3 thinking mode.** Handled automatically by the prompter:
+- Fast path: `think=false` — no reasoning block, minimal latency
+- Full path: `think=true` — reasoning enabled for depth
+- Agent turns: `think=true` — the model plans multi-step tool sequences
+- Background tasks (memory, session, self-model, heartbeat): `think=false`
+
+**Alternative models:** any tool-calling model works. Qwen2.5:7b is a good
+fallback if Qwen3's thinking mode causes issues on your Ollama version.
+General Qwen2.5:7b is preferred over Qwen2.5-Coder, which has a training
+bias toward emitting code-as-text and produces more simulated-action
 hallucinations.
 
-**For lower-end hardware:** drop `num_ctx` to `16384` and consider
-`qwen2.5:3b` as the fast model. The 3B variant works but has known issues with
-format compliance and occasional fact mangling on injected context — see
-Known Limitations.
-
-**Disabling routing entirely:** set `FAST_MODEL_ENABLED = False` in
-`constants.py`. All turns go through the main model. You lose the latency win
-on casual chat; you gain one less model to load.
+**For lower-end hardware:** drop `num_ctx` to `8192` and use `qwen2.5:3b`
+or `qwen3:4b`. Expect degraded tool-call reliability and occasional fact
+mangling on injected context.
 
 ---
 
@@ -566,11 +584,11 @@ on casual chat; you gain one less model to load.
 6. **Edit `lumi.yaml`** — this is where Lumi's persona lives. Change the name,
    host, personality, lore, appearance, and dialogue to make her your own.
 
-7. **Pull both models.**
+7. **Pull and build the model.**
 
    ```bash
-   ollama pull qwen2.5:7b
-   ollama create lumi-coder -f Modelfile
+   ollama pull qwen3:8b
+   ollama create lumi-qwen3 -f Modelfile-qwen3
    ```
 
 8. **VTube Studio (optional but recommended).** Install VTS, load a Live2D
@@ -734,8 +752,8 @@ Session Stats
 Anthony: !model
 
 Model Routing
-  main:        lumi-coder
-  fast:        qwen2.5:7b (available)
+  main:        lumi-qwen3
+  fast:        lumi-qwen3 (available)
   routing:     ON
   agent turns: main
   chat:        fast (short/simple) / main (long/complex)
@@ -791,12 +809,16 @@ artificial.
 Lumi is designed to run on a single consumer GPU, but idle resource use can be
 trimmed significantly:
 
-1. **Unload models between turns.** Both the main and fast model use
-   `keep_alive` strings. Main model unloads after 30s of inactivity (idle GPU
-   drops to ~30W). Fast model stays warm for 5 minutes during active chat,
-   then unloads. Cost: ~3–5 second reload on the next message.
+1. **Share model weights between paths.** Both main and fast use the same
+   `lumi-qwen3` model name, so Ollama keeps one copy in VRAM. The alternative
+   (two separate models) doubles LLM VRAM usage for no quality benefit on
+   this workload.
 
-2. **Disable modules you're not using.** In `main.py`:
+2. **Unload model between turns.** `keep_alive` is set to `5m` on both paths,
+   so the model unloads after 5 minutes of inactivity. Idle GPU drops to
+   ~30W. Cost: ~3–5 second reload on the next message.
+
+3. **Disable modules you're not using.** In `main.py`:
    - `MultiModal` — screen capture on demand; light when idle
    - `AmbientPerception` — samples every 30s; VLM calls rate-limited
    - `SelfModel` — very light when idle; reflection fires every 10 min
@@ -805,32 +827,25 @@ trimmed significantly:
    - `VtubeStudio` — light when idle, but requires VTS to be running
    - `MicInput` — set to `False` if you mostly type at the terminal
 
-3. **Disable fast-model routing** with `FAST_MODEL_ENABLED = False` if VRAM
-   is tight. Everything routes to the main model. You lose latency wins on
-   casual chat; you save ~4.7GB of VRAM headroom for other processes.
-
 4. **Auto-detect remote sessions.** `MicInput` is disabled automatically when
    `SESSIONNAME` starts with `RDP-` in `constants.py`, so remote sessions boot
    without mic load.
 
-5. **Reduce `num_ctx`.** From `32768` to `16384` saves ~1 GB VRAM and slightly
-   reduces per-token inference cost on the main model.
+5. **Reduce `num_ctx`.** From `16384` to `8192` saves ~0.5 GB VRAM and slightly
+   reduces per-token inference cost on the main path.
 
 ---
 
 ## Known Limitations
 
-- **Context window** — 32K tokens for main, 8K for fast. The system prompt +
+- **Context window** — 16K tokens for main, 8K for fast. The system prompt +
   tool schemas + history + tool results + memory injection + ambient context
   + self-model + continuity block add up fast; very long sessions may need
   `main.py` restarted to clear history.
 - **Local model variance** — 7B-class models occasionally invent things, drop
   tool-call formatting, or hallucinate action completion. The guards catch
-  most of this, but it's a moving target across model updates. The fast model
-  slot specifically was tested with `qwen2.5:3b` and found to produce format
-  slips, non-canonical tag leaks, and occasional fact mangling — it was
-  upgraded to `qwen2.5:7b` to resolve these.
-- **Tool-call format variance** — Lumi's 7B model does not always emit tool
+  most of this, but it's a moving target across model updates.
+- **Tool-call format variance** — Lumi's model does not always emit tool
   calls in the standard JSON shape. It falls back to bracket forms like
   `[tool(arg=val)]`, `[tool{"k":"v"}]`, `[tool "val"]`, and
   `[tool "val" true]`. All are recovered by a chain of parsers, but the
@@ -897,11 +912,18 @@ project closes that gap in measurable steps.
 | 7 | Discord voice bridge (C# sidecar) | ⏳ In progress |
 | 8 | External SDK (websocket plugin host) | ⏳ Planned |
 | 9 | Security hardening | ⏳ Planned |
-| 10 | Dynamic user identity | 🟡 Designed |
+| 10 | Local web client | 🟡 Designed |
 
 Every phase through 6.5 is shipped and stable. Phases 7–10 are documented in
-the project roadmap and represent optional polish — nothing is broken, and the
-existing architecture supports all of them cleanly.
+the project roadmap and represent optional polish — nothing is broken, and
+the existing architecture supports all of them cleanly.
+
+**Phase 10 (local web client)** is the next major surface change: a
+fully-offline localhost web application at `127.0.0.1:5000` with user
+registration, chat interface, embedded dashboard, and settings panel. This
+replaces the terminal as the primary interaction surface while keeping the
+terminal as an optional debug client. All assets vendored locally — no CDN,
+no external requests.
 
 Use her for a week before deciding which (if any) of the remaining items
 matter. Real use drives the next round of tuning, not a checklist.
@@ -911,7 +933,7 @@ matter. Real use drives the next round of tuning, not a checklist.
 ## Credits
 
 Built as a personal project. Architecture inspired by Neuro-sama
-(Vedal987). 
+(Vedal987).
 
 * **VTube Model:** [Arii / Ariu (Booth)](https://booth.pm/en/items/5879420)
 
