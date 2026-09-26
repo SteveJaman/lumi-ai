@@ -27,9 +27,7 @@ CONVERSATIONAL_TRIGGERS = [
     "what do you see",
     "what are you looking at",
     "can you see",
-    "do you see",
-    "look at this",
-    "take a look"
+    "do you see"
 ]
 
 RECALL_TRIGGERS = [

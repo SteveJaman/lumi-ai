@@ -480,12 +480,27 @@ _SIMULATED_ACTION = re.compile(
 
 _INTENT_ANNOUNCEMENT = re.compile(
     r"(?:"
-    r"let'?s\s+(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix)\b|"
-    r"(?:now|next|then)\s*,?\s*(?:i'?ll|let'?s|let me|i will|i'?m going to)\s+"
-    r"(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix)\b|"
-    r"i'?ll\s+(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix)\b|"
-    r"i'?m going to\s+(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix)\b|"
-    r"time to\s+(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix)\b"
+    # "let me X" / "let's X" with a broad verb set
+    r"let(?:'s|\s+me)\s+(?:run|execute|write|create|make|build|edit|modify|"
+    r"update|check|test|fix|see|look|read|open|grab|pull|find|scan|peek|view|fetch|"
+    r"take\s+a\s+look|have\s+a\s+look|try|do|start|go\s+ahead|check\s+that)\b|"
+    # "now/next/then/okay/alright, let me X"
+    r"(?:now|next|then|okay|ok|alright|right)\s*,?\s*"
+    r"(?:i'?ll|let'?s|let\s+me|i\s+will|i'?m\s+going\s+to|time\s+to)\s+"
+    r"(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix|"
+    r"see|look|read|open|grab|pull|find|scan|peek|view|fetch|take\s+a\s+look|try|do|start)\b|"
+    # "I'll X" / "I'm going to X"
+    r"i'?ll\s+(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix|"
+    r"see|look|read|open|grab|pull|find|scan|peek|view|fetch|try|do|start)\b|"
+    r"i'?m\s+going\s+to\s+(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix|"
+    r"see|look|read|open|grab|pull|find|scan|peek|view|fetch|try|do|start)\b|"
+    # "time to X"
+    r"time\s+to\s+(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix|"
+    r"see|look|read|open|grab|pull|find|scan|peek|view|fetch|try|do|start)\b|"
+    # "let's see what's in there" — the specific pattern that broke
+    r"let'?s\s+see\s+what|"
+    r"let\s+me\s+see\s+what|"
+    r"let\s+me\s+take\s+a\s+look"
     r")",
     re.IGNORECASE,
 )
@@ -1136,6 +1151,14 @@ class Prompter:
             "7. Emit tool calls as JSON. Never as bracket tags.\n"
             "8. Do NOT re-call a tool with the same arguments you already tried.\n"
             "9. Do NOT announce an action without taking it in the same message.\n"
+            "9a. NEVER explain what a tool does. The user does not want a "
+            "tutorial on vtube_move or read_file or any other tool. Only "
+            "call tools, or answer in prose. Never describe capabilities.\n"
+            "9b. When a tool result comes back, USE it to answer the "
+            "original request. If the user asked you to read a file and "
+            "you read it, summarize what matters from the file. Do not "
+            "pivot to explaining something you saw inside it. Do not "
+            "invent a next task.\n"
             "10. If the user asks 'when did we...', 'do you remember...', "
             "'what did I say about...', or references a previous session, "
             "call recall_memory FIRST before answering.\n"
@@ -1859,6 +1882,29 @@ class Prompter:
                 print(f"{GRAY}  -> {str(result)[:300]}{RESET}")
                 messages.append({"role": "tool", "content": str(result), "name": name})
 
+                # Reinject the original request after every tool result.
+                # Without this, long tool results (like reading a big file)
+                # bury the user's actual question and the model pivots to
+                # explaining whatever it saw in the data.
+                if len(str(result)) > 800:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"[System reminder — not from the user]\n"
+                            f"The user's original request was:\n"
+                            f"    \"{original_request}\"\n\n"
+                            f"You just received the tool result above. "
+                            f"Now do ONE of two things:\n"
+                            f"  1. If the request requires another tool, call it now.\n"
+                            f"  2. If the request is complete (e.g. the user "
+                            f"asked you to read a file, and you read it), "
+                            f"answer the request in prose using what you "
+                            f"just got. Keep it short. Do not explain tools. "
+                            f"Do not pivot to other topics. Do not invent "
+                            f"a next step. If it's done, it's done."
+                        ),
+                    })
+
                 failed = _result_looks_like_failure(result)
                 tool_outcomes.append((not failed, name))
 
@@ -2248,9 +2294,11 @@ class Prompter:
                         raw_reply = await self.run_conversational(latest_user_text)
 
                     if force_agent or self.agent_mode_enabled:
-                        display_reply = raw_reply
+                        display_reply = _strip_non_canonical_tags(raw_reply)
                     else:
-                        display_reply = _strip_list_formatting(raw_reply)
+                        display_reply = _strip_list_formatting(
+                            _strip_non_canonical_tags(raw_reply)
+                        )
 
                     print(display_reply)
                     print("\n")
