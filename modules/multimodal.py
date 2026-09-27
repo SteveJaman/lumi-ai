@@ -18,26 +18,41 @@ except ImportError:
     HAS_MSS = False
     print("\033[91mMULTIMODAL: 'mss' and/or 'pillow' not installed — screen capture is disabled.\033[0m")
 
+# Screen-reference regex. Requires BOTH a vision verb AND a screen-related
+# noun within a short window. This is what keeps "read STATUS.md" from
+# firing the VLM while "read the screen" still does.
 FLEXIBLE_VISION_PATTERN = re.compile(
     r"\b(look|see|check|view|glance|describe|tell|read|showing|open|what)\b.{0,45}\b(screen|monitor|display|desktop|computer)\b",
     re.IGNORECASE,
 )
 
+# Conversational vision triggers. These must appear at the START of the
+# message to fire — otherwise "do you see the bug in this code" matches
+# the substring "do you see" and incorrectly wakes the VLM. Anchoring
+# to start-of-message keeps the intent precise.
 CONVERSATIONAL_TRIGGERS = [
     "what do you see",
     "what are you looking at",
     "can you see",
-    "do you see"
+    "do you see",
 ]
 
+# Recall triggers. These are only treated as visual-recall intent when the
+# message ALSO references a screen-related noun. "I remember that movie"
+# no longer hijacks the turn.
 RECALL_TRIGGERS = [
     "remember",
     "earlier",
     "past",
     "previously",
     "did i show you",
-    "what was on"
+    "what was on",
 ]
+
+# The screen-related nouns that gate the recall-trigger check above.
+RECALL_SCREEN_WORDS = (
+    "screen", "monitor", "display", "desktop", "computer", "screenshot"
+)
 
 MONITOR_KEYWORDS = {
     1: (
@@ -195,6 +210,26 @@ class MultiModal(Module):
 
         return ""
 
+    def _phrase_triggers_vision(self, lowered):
+        """True if a conversational vision trigger appears at the START
+        of the message. Prevents 'do you see the bug in this code' from
+        firing the VLM by requiring the trigger to be the opening phrase."""
+        # Strip leading punctuation/whitespace so "hey, can you see..." still
+        # matches when the trigger itself is the opening clause.
+        stripped = lowered.lstrip(" \t\n.,!?;:\"'")
+
+        for trigger in CONVERSATIONAL_TRIGGERS:
+            if stripped.startswith(trigger):
+                return True
+        return False
+
+    def _recall_triggers_vision(self, lowered):
+        """True if the message reads as a visual-history question:
+        a recall verb AND a screen-related noun."""
+        if not any(kw in lowered for kw in RECALL_TRIGGERS):
+            return False
+        return any(word in lowered for word in RECALL_SCREEN_WORDS)
+
     def maybe_capture_from_text(self, text):
         if not text or not self.enabled or not self.API.multimodal_now():
             return False
@@ -207,8 +242,10 @@ class MultiModal(Module):
                 self.active_monitor = idx
                 break
 
-        is_recall = any(kw in lowered for kw in RECALL_TRIGGERS)
-        if is_recall:
+        # Visual-history questions: only fire when the message explicitly
+        # references something screen-related. Plain "I remember" no longer
+        # hijacks the turn.
+        if self._recall_triggers_vision(lowered):
             recent_mems = self.get_recent_visual_memories(limit=3)
             if recent_mems:
                 history_text = "\n".join([f"- [{m['timestamp']}] {m['caption']}" for m in recent_mems])
@@ -220,7 +257,7 @@ class MultiModal(Module):
                 return True
 
         regex_match = bool(FLEXIBLE_VISION_PATTERN.search(lowered))
-        phrase_match = any(trigger in lowered for trigger in CONVERSATIONAL_TRIGGERS)
+        phrase_match = self._phrase_triggers_vision(lowered)
 
         if not (regex_match or phrase_match):
             return False

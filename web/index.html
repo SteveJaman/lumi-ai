@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumi</title>
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+
+<div id="auth-screen" class="auth-screen hidden">
+  <div class="auth-card">
+    <div class="auth-header">
+      <div class="auth-logo">◆</div>
+      <div class="auth-title" id="auth-title">Welcome back</div>
+      <div class="auth-sub" id="auth-sub">Sign in to continue</div>
+    </div>
+
+    <div id="auth-error" class="auth-error"></div>
+
+    <form id="auth-form" autocomplete="on">
+      <div class="field">
+        <label class="label" for="auth-username">Username</label>
+        <input class="input" id="auth-username" name="username"
+               autocomplete="username" required>
+      </div>
+      <div class="field" id="auth-display-field" style="display:none">
+        <label class="label" for="auth-display">Display name</label>
+        <input class="input" id="auth-display" name="display_name"
+               autocomplete="name">
+      </div>
+      <div class="field">
+        <label class="label" for="auth-password">Password</label>
+        <input class="input" id="auth-password" name="password"
+               type="password" autocomplete="current-password" required>
+      </div>
+      <button class="btn btn-primary" type="submit"
+              id="auth-submit" style="width:100%">Sign in</button>
+    </form>
+
+    <div class="auth-switch">
+      <span id="auth-switch-text">No account?</span>
+      <a id="auth-switch-link">Register</a>
+    </div>
+  </div>
+</div>
+
+<div id="app-shell" class="app hidden">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo">◆</div>
+      <div>
+        <div class="brand-name">Lumi</div>
+        <div class="brand-sub" id="host-name">—</div>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav"></nav>
+
+    <div class="sidebar-footer">
+      <div class="status-pills">
+        <div class="pill">
+          <span class="dot" id="dot-vts"></span> VTube Studio
+        </div>
+        <div class="pill">
+          <span class="dot" id="dot-mic"></span> Microphone
+        </div>
+        <div class="pill">
+          <span class="dot ok" id="dot-ollama"></span> Ollama
+        </div>
+      </div>
+
+      <div class="user-chip">
+        <div class="avatar" id="user-avatar">?</div>
+        <span class="grow" id="user-name">—</span>
+        <button class="btn btn-ghost btn-sm" id="btn-logout"
+                title="Sign out">⏻</button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main" id="main-content"></main>
+</div>
+
+<script type="module" src="/web/app.js"></script>
+</body>
+</html>

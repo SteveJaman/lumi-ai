@@ -22,7 +22,7 @@ import datetime
 import requests
 
 from modules.module import Module
-from constants import LLM_ENDPOINT, MODEL_NAME, AI_NAME, HOST_NAME
+from constants import LLM_ENDPOINT, MODEL_NAME, AI_NAME, HOST
 from modules.log_hub import emit as hub_emit
 
 
@@ -145,14 +145,52 @@ class Heartbeat(Module):
         return self._now() - self._last_utterance_time
 
     def _is_user_active(self):
-        """True if the user typed recently enough that we shouldn't interrupt."""
-        idle = self._seconds_since_user_message()
-        return idle < self.min_idle_seconds
+        """True if we should not interrupt right now.
+
+        Two independent checks, either one is enough:
+
+          1. The tail of history is a user message with no assistant
+             reply yet — the prompter is mid-turn, even if no busy
+             flag has been set.
+          2. The user spoke less than `min_idle_seconds` ago, as
+             measured by signals.last_message_time.
+
+        If neither timestamp nor a pending user message exists, we
+        default to *active* (do not speak) rather than idle. A fresh
+        session should stay silent until the user has actually gone
+        quiet, not fire on tick 1."""
+        # Check 1: unanswered user message at the tail of history
+        history = getattr(self.signals, "history", []) or []
+        if history and history[-1].get("role") == "user":
+            return True
+
+        # Check 2: recent user timestamp
+        last = getattr(self.signals, "last_message_time", 0) or 0
+        if last == 0:
+            # No timestamp at all. Be conservative.
+            return True
+
+        return (self._now() - last) < self.min_idle_seconds
 
     def _is_busy(self):
-        """True if the prompter is currently thinking or speaking."""
-        return getattr(self.signals, "AI_thinking", False) or \
-               getattr(self.signals, "AI_speaking", False)
+        """True if the prompter is currently thinking, speaking, or
+        anywhere in an agent turn.
+
+        Checks multiple flag names because the prompter sets different
+        ones at different stages (LLM call, tool dispatch, TTS). Any one
+        of them being True means we stay quiet."""
+        for flag in (
+            "AI_thinking",
+            "AI_speaking",
+            "agent_turn_active",
+            "in_agent_turn",
+            "agent_busy",
+            "prompter_busy",
+            "processing",
+        ):
+            if getattr(self.signals, flag, False):
+                return True
+        return False
 
     def _is_in_cooldown(self):
         """True if we spoke unprompted recently."""
@@ -231,19 +269,37 @@ class Heartbeat(Module):
     # ---------------------------------------------------------------
     # Decision logic
     # ---------------------------------------------------------------
+    def _fmt_age(self, seconds):
+        """Format a duration for log messages. Handles float('inf')
+        (fresh session, no user message yet) and NaN without raising."""
+        if seconds == float("inf") or seconds != seconds:   # inf or NaN
+            return "never"
+        try:
+            return f"{int(seconds)}s"
+        except (OverflowError, ValueError):
+            return "∞"
+
     def _should_consider_acting(self):
         """Cheap gating before we even call the model. Returns
         (True, reason) or (False, reason)."""
         if self._is_busy():
             return False, "prompter busy"
+
+        user_age = self._seconds_since_user_message()
         if self._is_user_active():
-            return False, f"user active ({int(self._seconds_since_user_message())}s ago)"
+            return False, f"user active ({self._fmt_age(user_age)} ago)"
+
+        our_age = self._seconds_since_our_last_utterance()
         if self._is_in_cooldown():
-            return False, f"cooldown ({int(self._seconds_since_our_last_utterance())}s)"
-        # Late night has a stricter idle threshold
+            return False, f"cooldown ({self._fmt_age(our_age)})"
+
         if self._is_late_night():
-            if self._seconds_since_user_message() < LATE_NIGHT_IDLE_SECONDS:
-                return False, f"late night, not idle enough ({int(self._seconds_since_user_message())}s)"
+            if user_age < LATE_NIGHT_IDLE_SECONDS:
+                return False, (
+                    f"late night, not idle enough "
+                    f"({self._fmt_age(user_age)} ago)"
+                )
+
         return True, "eligible"
 
     def _ask_model(self):
@@ -256,7 +312,7 @@ class Heartbeat(Module):
 
         prompt = DECISION_PROMPT.format(
             ai_name=AI_NAME,
-            host_name=HOST_NAME,
+            host_name=HOST.name,
             time_str=time_str,
             idle_min=idle_min,
             last_topic=self._last_topic(),

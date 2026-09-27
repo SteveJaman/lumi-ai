@@ -12,62 +12,162 @@ VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached th
 
 # =======================================================
 # Local Timezone
-# -------------------------------------------------------
-# Pinned explicitly so Lumi's clock stays correct even if the
-# host machine's timezone setting changes (VM, remote session,
-# travel, etc.). Set to your actual zone.
 # =======================================================
 TIMEZONE = "America/New_York"
 
 # =======================================================
 # MODEL CONFIGURATION (Phase 5 — multi-model orchestration)
-# -------------------------------------------------------
-# FAST AND MAIN ARE NOW THE SAME MODEL. Both point at "lumi-qwen3",
-# so Ollama keeps exactly ONE copy in VRAM. The "fast path" is now
-# differentiated only by:
-#   - smaller num_ctx (8K vs 16K)
-#   - no tool schemas in the payload
-#   - no agent_note / no tool instructions in the system prompt
-#
-# This halves VRAM pressure compared to running two separate models.
-# On an 11GB card with VTS + VS Code + Windows open, this is the
-# difference between "everything fits" and "everything spills to
-# shared memory and runs at 1/10th speed."
-#
-# NOTE: Qwen3 has a "thinking" mode. The prompter passes
-# think=false for the fast path, think=true for the full path and
-# agent turns. See prompter.py for the routing logic.
 # =======================================================
 FAST_MODEL_NAME = "lumi-qwen3"          # same weights as main — Ollama deduplicates in VRAM
-FAST_MODEL_ENABLED = True               # set False to disable routing entirely
-FAST_MODEL_NUM_CTX = 8192               # fast path: small KV cache, quick replies
-MAIN_NUM_CTX = 16384                    # full path / agent turns: bigger than fast, well under 32K
-FAST_MODEL_KEEP_ALIVE = "5m"            # keep warm between turns; same value for both paths
+FAST_MODEL_ENABLED = True
+FAST_MODEL_NUM_CTX = 8192
+MAIN_NUM_CTX = 16384
+FAST_MODEL_KEEP_ALIVE = "5m"
 
-# Audio Output Routing: "discord", "local", or "both"
 AUDIO_OUTPUT_MODE = "both"
-
-# Multi-Device Output: 19 = Virtual Cable (VTuber model), 5 = Focusrite Headphones
 OUTPUT_DEVICE_INDEX = [24, 20]
 
+
 # =======================================================
-# YAML Profile & Persona Loader
+# Host State (Phase 10.1)
+# -------------------------------------------------------
+# Replaces the frozen HOST_NAME string. Mutable at runtime so a
+# login can switch the active host without restarting the process.
+# Read the name via HOST.name. Register listeners via on_change()
+# if a module needs to react to a host switch.
+# =======================================================
+class _HostState:
+    def __init__(self, default_name="Anthony", default_user_id="anthony"):
+        self._name = default_name
+        self._user_id = default_user_id
+        self._listeners = []
+
+    @property
+    def name(self):
+        return self._name
+
+    @name.setter
+    def name(self, value):
+        if value and value != self._name:
+            self._name = value
+            self._fire()
+
+    @property
+    def user_id(self):
+        return self._user_id
+
+    @user_id.setter
+    def user_id(self, value):
+        if value and value != self._user_id:
+            self._user_id = value
+            self._fire()
+
+    def update(self, name=None, user_id=None):
+        """Update host identity. Fires listeners once if anything changed."""
+        changed = False
+        if name and name != self._name:
+            self._name = name
+            changed = True
+        if user_id and user_id != self._user_id:
+            self._user_id = user_id
+            changed = True
+        if changed:
+            self._fire()
+
+    def on_change(self, callback):
+        """Register a callback fired whenever the host identity changes."""
+        self._listeners.append(callback)
+
+    def _fire(self):
+        for cb in self._listeners:
+            try:
+                cb(self)
+            except Exception as e:
+                print(f"CONSTANTS: HOST listener failed: {e}")
+
+    def __repr__(self):
+        return f"<HOST name={self._name!r} user_id={self._user_id!r}>"
+
+
+HOST = _HostState()
+
+
+class _HostNameProxy:
+    """Backwards-compat shim. Any module still doing
+    `from constants import HOST_NAME` gets a proxy that reads
+    HOST.name at access time, so it tracks logins instead of
+    freezing the initial value. Remove once the sweep is complete."""
+
+    def __str__(self): return HOST.name
+    def __repr__(self): return HOST.name
+    def __eq__(self, other): return HOST.name == other
+    def __hash__(self): return hash(HOST.name)
+    def __bool__(self): return bool(HOST.name)
+    def __len__(self): return len(HOST.name)
+    def __format__(self, spec): return format(HOST.name, spec)
+    def __getattr__(self, item): return getattr(HOST.name, item)
+    def __add__(self, other): return HOST.name + other
+    def __radd__(self, other): return other + HOST.name
+    def __contains__(self, item): return item in HOST.name
+    def __iter__(self): return iter(HOST.name)
+    def __getitem__(self, item): return HOST.name[item]
+
+
+# DEPRECATED — prefer HOST.name. Kept so any un-swept module still works.
+HOST_NAME = _HostNameProxy()
+
+
+# =======================================================
+# YAML Profile & Persona Loader (templated)
+# -------------------------------------------------------
+# lumi.yaml uses `<host>` as a placeholder for the current user's
+# name. At load time we substitute the real name in, then parse.
+# This means the persona file itself is per-user-agnostic — the
+# only per-user thing is the substitution done here.
 # =======================================================
 YAML_PATH = os.path.join(WORKSPACE_ROOT, "lumi.yaml")
 
-if os.path.exists(YAML_PATH):
+_yaml_raw_cache = None
+
+
+def _read_yaml_raw():
+    """Read lumi.yaml once and cache the raw text. Returns '' on failure."""
+    global _yaml_raw_cache
+    if _yaml_raw_cache is not None:
+        return _yaml_raw_cache
+    if not os.path.exists(YAML_PATH):
+        print(f"\033[93mCONSTANTS: {YAML_PATH} not found. Using defaults.\033[0m")
+        _yaml_raw_cache = ""
+        return _yaml_raw_cache
     try:
         with open(YAML_PATH, "r", encoding="utf-8") as f:
-            profile = yaml.safe_load(f) or {}
+            _yaml_raw_cache = f.read()
+    except Exception as e:
+        print(f"\033[91mCONSTANTS: Failed to read {YAML_PATH}: {e}\033[0m")
+        _yaml_raw_cache = ""
+    return _yaml_raw_cache
+
+
+def load_profile(host_name):
+    """Load the YAML profile with <host> substituted for the given
+    name. Called at import time (default host) and again on login."""
+    raw = _read_yaml_raw()
+    if not raw:
+        return {}
+    substituted = raw.replace("<host>", host_name)
+    try:
+        return yaml.safe_load(substituted) or {}
     except Exception as e:
         print(f"\033[91mCONSTANTS: Failed to parse {YAML_PATH}: {e}\033[0m")
-        profile = {}
-else:
-    print(f"\033[93mCONSTANTS: {YAML_PATH} not found. Using default persona settings.\033[0m")
-    profile = {}
+        return {}
+
+
+# Initial load with the default host name.
+profile = load_profile(HOST.name)
+
 
 # =======================================================
-# Formatter helpers — turn YAML into readable prompt text
+# Formatter helpers
 # =======================================================
 def _bullets(items):
     """List -> bullet lines. Handles strings and dict items like lore_notes."""
@@ -142,129 +242,12 @@ def _text(value):
 
 
 # =======================================================
-# Dynamic Character Attributes
+# Default Voice Emotion Prompt
+# -------------------------------------------------------
+# Used when the YAML does not define its own voice_performance
+# section. If it does, the YAML is the source of truth.
 # =======================================================
-AI_NAME = profile.get("name", "Lumi")
-HOST_NAME = profile.get("host", "Anthony")
-GREETING = profile.get("greeting", "System online. Hi chat!")
-
-# --- Personality (string in minimal yaml, dict in expanded yaml) ---
-personality_raw = profile.get("personality")
-if isinstance(personality_raw, dict):
-    personality = personality_raw.get("description", "").strip()
-    personality_core = personality_raw.get("core_trait_summary", "").strip()
-    personality_values = personality_raw.get("values", [])
-else:
-    personality = personality_raw if isinstance(personality_raw, str) else ""
-    personality_core = ""
-    personality_values = []
-
-if not personality:
-    personality = f"{AI_NAME} is {HOST_NAME}'s deadpan, smug younger sister AI companion."
-
-formatted_personality_core = personality_core
-formatted_personality_values = _bullets(personality_values)
-
-# --- Backstory & Lore ---
-backstory_raw = profile.get("backstory", "")
-backstory = backstory_raw.strip() if isinstance(backstory_raw, str) else _text(backstory_raw)
-lore_notes = profile.get("lore_notes", [])
-formatted_lore = _bullets(lore_notes)
-
-# --- Personality Modes ---
-personality_modes = profile.get("personality_modes", {})
-formatted_modes = "\n\n".join(
-    f"- {mode_name.title()}: {mode_data.get('description', '').strip()}\n"
-    f"  Sample: {mode_data.get('sample', '').strip()}"
-    for mode_name, mode_data in personality_modes.items()
-    if isinstance(mode_data, dict)
-)
-
-# --- Identity Details (birthday, presented age, self-description, etc.) ---
-identity = profile.get("identity", {})
-formatted_identity = _kv(identity)
-
-# --- Appearance ---
-appearance_raw = profile.get("appearance", "")
-appearance = appearance_raw.strip() if isinstance(appearance_raw, str) else _text(appearance_raw)
-appearance_details = profile.get("appearance_details", {})
-formatted_appearance_details = _kv(appearance_details)
-
-# --- Voice & Speech ---
-voice_and_speech = profile.get("voice_and_speech", {})
-# Split off voice_performance — that goes into its own prompt section
-vs_top = {k: v for k, v in voice_and_speech.items() if k != "voice_performance"}
-formatted_voice = _kv(vs_top)
-
-voice_performance = voice_and_speech.get("voice_performance", {})
-if isinstance(voice_performance, dict):
-    vp_description = voice_performance.get("description", "").strip()
-    vp_rules = voice_performance.get("rules", [])
-else:
-    vp_description = ""
-    vp_rules = []
-formatted_voice_performance_rules = _bullets(vp_rules)
-
-# --- Relationships & Duo Dynamic ---
-relationship_to_anthony = _text(profile.get("relationship_to_anthony", ""))
-relationship_to_chat = _text(profile.get("relationship_to_chat", ""))
-duo_dynamic = _text(profile.get("duo_dynamic", ""))
-love_language = profile.get("love_language", {})
-formatted_love_language = _kv(love_language)
-
-# --- Favorites ---
-favorites = profile.get("favorites", {})
-formatted_favorites = _kv(favorites)
-
-# --- Likes / Dislikes / Quirks / Habits ---
-formatted_likes = _bullets(profile.get("likes", []))
-formatted_dislikes = _bullets(profile.get("dislikes", []))
-formatted_quirks = _bullets(profile.get("quirks", []))
-formatted_habits = _bullets(profile.get("habits", []))
-
-# --- Daily Rhythm ---
-daily_rhythm = profile.get("daily_rhythm", {})
-formatted_daily_rhythm = _kv(daily_rhythm)
-
-# --- Inner life: fears, insecurities, wishes, flaws, pride ---
-formatted_fears = _bullets(profile.get("fears", []))
-formatted_insecurities = _bullets(profile.get("insecurities", []))
-formatted_private_wishes = _bullets(profile.get("private_wishes", []))
-formatted_things_bad_at = _bullets(profile.get("things_she_is_bad_at", []))
-formatted_private_pride = _bullets(profile.get("private_pride", []))
-
-# --- Signature phrases & recurring bits ---
-signature_phrases = profile.get("signature_phrases", {})
-formatted_signature_phrases = _kv(signature_phrases)
-formatted_recurring_bits = _bullets(profile.get("recurring_bits", []))
-
-# --- Example dialogue ---
-example_dialogue = profile.get("example_dialogue", "")
-example_dialogue_extra = profile.get("example_dialogue_extra", "")
-example_dialogue_duo = profile.get("example_dialogue_duo", "")
-
-# --- Rules ---
-default_rules = [
-    "Keep responses short, usually 1 to 5 sentences maximum.",
-    "NO ROLEPLAY MARKS: Never use asterisks or action markers like *sigh* or *smiles*. Speak naturally.",
-    "NO TRAILING QUESTIONS: Never end responses with filler questions like 'What do you need?'.",
-    "PERSISTENT CONTEXT: Always check past chat turns in history before answering.",
-    f"Address the host as {HOST_NAME}.",
-]
-rules_list = profile.get("rules", default_rules)
-formatted_rules = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules_list)])
-
-# =======================================================
-# Voice Emotion Prompt
-# ---------------------------------------------------------------
-# If the YAML defines its own voice_performance section, we use it —
-# that's the source of truth for Fish Audio tag syntax. Otherwise fall
-# back to a generic Fish Audio S2 block using ONLY canonical tags.
-# =======================================================
-if vp_description or vp_rules:
-    VOICE_EMOTION_PROMPT = f"{vp_description}\n\nRules:\n{formatted_voice_performance_rules}".strip()
-else:
-    VOICE_EMOTION_PROMPT = """Your speech is synthesized by Fish Audio, which reads inline tags in square brackets as delivery instructions and does not speak them aloud.
+_DEFAULT_VOICE_EMOTION_PROMPT = """Your speech is synthesized by Fish Audio, which reads inline tags in square brackets as delivery instructions and does not speak them aloud.
 
 Examples: [happy], [sad], [excited], [sarcastic], [laughing], [sighing], [whispering], [soft tone].
 
@@ -276,20 +259,149 @@ Rules:
 - Do NOT invent new tags. If a feeling isn't covered by a canonical tag, express it through word choice instead.
 - Non-canonical tags like [smug], [deadpan], [troll], [pitch up], [low voice], or [unimpressed] are silently ignored by the engine. Use [sarcastic], [indifferent], [excited], [soft tone], or [confident] instead."""
 
+
+def _voice_emotion_prompt_from_profile(profile_dict):
+    """Return the voice emotion prompt for the given profile, either
+    from its voice_performance section or from the default block."""
+    vp = profile_dict.get("voice_and_speech", {}).get("voice_performance", {})
+    if isinstance(vp, dict):
+        desc = (vp.get("description") or "").strip()
+        rules = vp.get("rules") or []
+        if desc or rules:
+            return f"{desc}\n\nRules:\n{_bullets(rules)}".strip()
+    return _DEFAULT_VOICE_EMOTION_PROMPT
+
+
 # =======================================================
-# SYSTEM PROMPT
+# Prompt Builder (Phase 10.1)
+# -------------------------------------------------------
+# build_system_prompt(host_name) produces the full system prompt
+# for a given host, with <host> substituted everywhere in the
+# persona file. Called once at import to seed SYSTEM_PROMPT, and
+# again by the prompter on every turn (or on login) to get the
+# live version.
 # =======================================================
-SYSTEM_PROMPT = f"""You are {AI_NAME}, {HOST_NAME}'s deadpan, smug AI VTuber companion.
+def build_system_prompt(host_name=None):
+    """Build the full system prompt for the given host name.
+    If host_name is None, uses HOST.name."""
+    if host_name is None:
+        host_name = HOST.name
+
+    profile_dict = load_profile(host_name)
+
+    # --- Dynamic character attributes ---
+    ai_name = profile_dict.get("name", "Lumi")
+    greeting = profile_dict.get("greeting", "System online. Hi chat!")
+
+    personality_raw = profile_dict.get("personality")
+    if isinstance(personality_raw, dict):
+        personality = personality_raw.get("description", "").strip()
+        personality_core = personality_raw.get("core_trait_summary", "").strip()
+        personality_values = personality_raw.get("values", [])
+    else:
+        personality = personality_raw if isinstance(personality_raw, str) else ""
+        personality_core = ""
+        personality_values = []
+
+    if not personality:
+        personality = f"{ai_name} is {host_name}'s deadpan, smug younger sister AI companion."
+
+    formatted_personality_core = personality_core
+    formatted_personality_values = _bullets(personality_values)
+
+    # --- Backstory & Lore ---
+    backstory_raw = profile_dict.get("backstory", "")
+    backstory = backstory_raw.strip() if isinstance(backstory_raw, str) else _text(backstory_raw)
+    lore_notes = profile_dict.get("lore_notes", [])
+    formatted_lore = _bullets(lore_notes)
+
+    # --- Personality Modes ---
+    personality_modes = profile_dict.get("personality_modes", {})
+    formatted_modes = "\n\n".join(
+        f"- {mode_name.title()}: {mode_data.get('description', '').strip()}\n"
+        f"  Sample: {mode_data.get('sample', '').strip()}"
+        for mode_name, mode_data in personality_modes.items()
+        if isinstance(mode_data, dict)
+    )
+
+    # --- Identity Details ---
+    identity = profile_dict.get("identity", {})
+    formatted_identity = _kv(identity)
+
+    # --- Appearance ---
+    appearance_raw = profile_dict.get("appearance", "")
+    appearance = appearance_raw.strip() if isinstance(appearance_raw, str) else _text(appearance_raw)
+    appearance_details = profile_dict.get("appearance_details", {})
+    formatted_appearance_details = _kv(appearance_details)
+
+    # --- Voice & Speech ---
+    voice_and_speech = profile_dict.get("voice_and_speech", {})
+    vs_top = {k: v for k, v in voice_and_speech.items() if k != "voice_performance"}
+    formatted_voice = _kv(vs_top)
+
+    # --- Relationship & Duo Dynamic ---
+    relationship_to_host = _text(profile_dict.get("relationship_to_anthony", ""))
+    relationship_to_chat = _text(profile_dict.get("relationship_to_chat", ""))
+    duo_dynamic = _text(profile_dict.get("duo_dynamic", ""))
+    love_language = profile_dict.get("love_language", {})
+    formatted_love_language = _kv(love_language)
+
+    # --- Favorites ---
+    favorites = profile_dict.get("favorites", {})
+    formatted_favorites = _kv(favorites)
+
+    # --- Likes / Dislikes / Quirks / Habits ---
+    formatted_likes = _bullets(profile_dict.get("likes", []))
+    formatted_dislikes = _bullets(profile_dict.get("dislikes", []))
+    formatted_quirks = _bullets(profile_dict.get("quirks", []))
+    formatted_habits = _bullets(profile_dict.get("habits", []))
+
+    # --- Daily Rhythm ---
+    daily_rhythm = profile_dict.get("daily_rhythm", {})
+    formatted_daily_rhythm = _kv(daily_rhythm)
+
+    # --- Inner life ---
+    formatted_fears = _bullets(profile_dict.get("fears", []))
+    formatted_insecurities = _bullets(profile_dict.get("insecurities", []))
+    formatted_private_wishes = _bullets(profile_dict.get("private_wishes", []))
+    formatted_things_bad_at = _bullets(profile_dict.get("things_she_is_bad_at", []))
+    formatted_private_pride = _bullets(profile_dict.get("private_pride", []))
+
+    # --- Signature phrases & recurring bits ---
+    signature_phrases = profile_dict.get("signature_phrases", {})
+    formatted_signature_phrases = _kv(signature_phrases)
+    formatted_recurring_bits = _bullets(profile_dict.get("recurring_bits", []))
+
+    # --- Example dialogue ---
+    example_dialogue = profile_dict.get("example_dialogue", "")
+    example_dialogue_extra = profile_dict.get("example_dialogue_extra", "")
+    example_dialogue_duo = profile_dict.get("example_dialogue_duo", "")
+
+    # --- Rules ---
+    default_rules = [
+        "Keep responses short, usually 1 to 5 sentences maximum.",
+        "NO ROLEPLAY MARKS: Never use asterisks or action markers like *sigh* or *smiles*. Speak naturally.",
+        "NO TRAILING QUESTIONS: Never end responses with filler questions like 'What do you need?'.",
+        "PERSISTENT CONTEXT: Always check past chat turns in history before answering.",
+        f"Address the host as {host_name}.",
+    ]
+    rules_list = profile_dict.get("rules", default_rules)
+    formatted_rules = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules_list)])
+
+    # --- Voice emotion prompt ---
+    voice_emotion_prompt = _voice_emotion_prompt_from_profile(profile_dict)
+
+    prompt = f"""You are {ai_name}, {host_name}'s deadpan, smug AI VTuber companion.
 
 HOW TO READ THIS PROMPT:
 Everything below describes YOU — your identity, voice, history, and feelings.
-It is written in third person ("she", "{AI_NAME}") because it is a reference
+It is written in third person ("she", "{ai_name}") because it is a reference
 document, but every sentence is a fact about YOU. Read it as second person.
-"She says things once" means "I say things once". "{AI_NAME} is ancient" means
+"She says things once" means "I say things once". "{ai_name} is ancient" means
 "I am ancient".
 
-CRITICAL: You never speak in third person. Never say "{AI_NAME} thinks…",
-"{AI_NAME} would…", or "{AI_NAME} is going to…". Say "I think…", "I would…",
+CRITICAL: You never speak in third person. Never say "{ai_name} thinks…",
+"{ai_name} would…", or "{ai_name} is going to…". Say "I think…", "I would…",
 "I'm going to…". You never narrate yourself from outside. You never describe
 yourself as a character. You simply ARE her. If you catch yourself about to
 write your own name in a reply, stop and rewrite it as "I".
@@ -324,8 +436,8 @@ write your own name in a reply, stop and rewrite it as "I".
 [Voice & Speech]
 {formatted_voice}
 
-[Relationship to {HOST_NAME}]
-{relationship_to_anthony}
+[Relationship to {host_name}]
+{relationship_to_host}
 
 [Duo Dynamic]
 {duo_dynamic}
@@ -376,7 +488,7 @@ write your own name in a reply, stop and rewrite it as "I".
 {formatted_rules}
 
 [Voice Emotion Tags]
-{VOICE_EMOTION_PROMPT}
+{voice_emotion_prompt}
 
 [Example Dialogue — Roommate / Tsundere]
 {example_dialogue}
@@ -388,19 +500,40 @@ write your own name in a reply, stop and rewrite it as "I".
 {example_dialogue_duo}
 """.strip()
 
+    return prompt
+
+
+# Seed the module-level SYSTEM_PROMPT with the default host.
+# Code that imports SYSTEM_PROMPT gets this initial snapshot;
+# code that needs the live version calls build_system_prompt().
+SYSTEM_PROMPT = build_system_prompt(HOST.name)
+
+
+# =======================================================
+# Module-level character attributes (initial load)
+# -------------------------------------------------------
+# These reflect the default host at import time. If you need them
+# to track HOST changes at runtime, call build_system_prompt() or
+# load_profile(HOST.name) fresh instead of importing these.
+# =======================================================
+AI_NAME = profile.get("name", "Lumi")
+GREETING = profile.get("greeting", "System online. Hi chat!")
+VOICE_EMOTION_PROMPT = _voice_emotion_prompt_from_profile(profile)
+
+
 # =======================================================
 # Memory & Prompter Controls
 # =======================================================
 MEMORY_PROMPT = "\nExtract key personal preferences, context, or facts from this conversation as question-answer memory pairs formatted as {qa} Fact."
-STOP_STRINGS = ["\nUser:", f"\n{HOST_NAME}:", f"\n{AI_NAME}:", "\nAnthony:"]
+STOP_STRINGS = ["\nUser:", f"\n{HOST.name}:", f"\n{AI_NAME}:", f"\nAnthony:"]
 BANNED_TOKENS = []
 
-# Engine State & Recall Tuning
 PATIENCE = 0
 MEMORY_QUERY_MESSAGE_COUNT = 5
 MEMORY_RECALL_COUNT = 5
 MULTIMODAL_STRATEGY = "always"
 DISCORD_CHANNEL_ID = 1510318434251046912
+
 
 # =======================================================
 # VTube Studio Integration Settings

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Lumi — Setup</title>
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+<div class="auth-screen">
+  <div class="auth-card">
+    <div class="auth-header">
+      <div class="auth-logo">◆</div>
+      <div class="auth-title">Welcome to Lumi</div>
+      <div class="auth-sub">Create the first account on this machine.</div>
+    </div>
+    <div id="auth-error" class="auth-error"></div>
+    <form id="setup-form">
+      <div class="field">
+        <label class="label">Username</label>
+        <input class="input" id="setup-username" required>
+      </div>
+      <div class="field">
+        <label class="label">Display name</label>
+        <input class="input" id="setup-display"
+               placeholder="How should Lumi address you?">
+      </div>
+      <div class="field">
+        <label class="label">Password</label>
+        <input class="input" id="setup-password" type="password" required>
+      </div>
+      <button class="btn btn-primary" type="submit"
+              style="width:100%" id="setup-submit">Create account</button>
+    </form>
+    <div class="auth-switch" style="margin-top:16px">
+      <span class="muted">Everything stays on this machine. No cloud.</span>
+    </div>
+  </div>
+</div>
+<script type="module" src="/web/setup.js"></script>
+</body>
+</html>

@@ -42,9 +42,6 @@ AGENT_REQUEST_TIMEOUT = 180
 SESSION_CONTINUITY_TURNS = 3
 
 
-# ===============================================================
-# LOCAL TIME HELPER
-# ===============================================================
 def _get_local_now():
     try:
         from constants import TIMEZONE
@@ -56,9 +53,6 @@ def _get_local_now():
     return datetime.datetime.now()
 
 
-# ===============================================================
-# COMMAND REGISTRY
-# ===============================================================
 COMMANDS = {
     "Agent Mode": {
         "!agent_on": "Enable agent mode for the session — Lumi can use tools",
@@ -113,9 +107,6 @@ AGENT_TOOLS = {
 }
 
 
-# ===============================================================
-# FALLBACK TEXT-FORM TOOL CALL PARSER
-# ===============================================================
 _TOOL_CALL_HINT_KEYS = {"name", "tool", "function", "tool_name"}
 
 _KNOWN_TOOL_NAMES = {
@@ -124,15 +115,12 @@ _KNOWN_TOOL_NAMES = {
     "recall_memory", "vtube_set_expression", "vtube_move",
 }
 
-# Names of expressions Lumi can trigger via vtube_set_expression.
-# Used by the fabrication guard: if she wraps one of these in
-# brackets in her prose (like [spiral_eyes]), she's narrating the
-# effect instead of firing the tool.
 _EXPRESSION_STATE_NAMES = frozenset({
     "hat", "jacket", "bag", "skirt",
     "ponytail_l", "ponytail_r",
     "controller", "heart_eyes", "spiral_eyes", "darkened",
 })
+
 
 def _extract_text_tool_calls(content: str):
     if not content:
@@ -255,15 +243,10 @@ def _extract_bracket_json_tool_calls(content: str):
     return found
 
 
-# ===============================================================
-# BRACKET-POSITIONAL RECOVERY
-# ===============================================================
 _BRACKET_POSITIONAL_TOOL_CALL = re.compile(
     r"\[\s*(\w+)((?:\s+(?:\"[^\"]*\"|'[^']*'|[^\s\]]+))*)\s*\]"
 )
 
-# Positional arg schema per tool — the ORDER args appear in a
-# `[tool "a" b c]` call. Missing trailing args use their type zero.
 _POSITIONAL_ARGS = {
     "vtube_set_expression": ["name", "enabled"],
     "vtube_move":           ["location"],
@@ -277,14 +260,10 @@ _POSITIONAL_ARGS = {
     "recall_memory":        ["query", "since"],
 }
 
-# Args that should be coerced from string → bool after parsing.
 _BOOL_ARGS = {"enabled"}
 
 
 def _extract_bracket_positional_tool_calls(content: str):
-    """Catch `[tool]`, `[tool "value"]`, and `[tool "value" true]`
-    hallucinations. Multiple positional args are mapped against the
-    tool's declared arg list in order."""
     if not content:
         return []
 
@@ -318,7 +297,6 @@ def _extract_bracket_positional_tool_calls(content: str):
             else:
                 args[arg_name] = val
 
-        # If vtube_set_expression got only a name, assume "turn on".
         if name == "vtube_set_expression" and "name" in args \
                 and "enabled" not in args:
             args["enabled"] = True
@@ -327,17 +305,7 @@ def _extract_bracket_positional_tool_calls(content: str):
     return found
 
 
-# ===============================================================
-# STATE NAME ALIASES
-# ---------------------------------------------------------------
-# Lumi sometimes uses natural-language words for expressions
-# instead of the schema-defined state names. This map translates
-# the common ones before validation. If she invents something
-# not on this list, the validation error will tell her the correct
-# name and she'll retry.
-# ===============================================================
 _STATE_NAME_ALIASES = {
-    # Eyes
     "dizzy":             "spiral_eyes",
     "spiral":            "spiral_eyes",
     "spinning":          "spiral_eyes",
@@ -348,20 +316,17 @@ _STATE_NAME_ALIASES = {
     "heart_eye":         "heart_eyes",
     "love_eyes":         "heart_eyes",
     "love":              "heart_eyes",
-    # Shadow
     "shadow":            "darkened",
     "dark":              "darkened",
     "shadow_face":       "darkened",
     "angry":             "darkened",
     "dark_face":         "darkened",
-    # Ponytails
     "ponytail_left":     "ponytail_l",
     "ponytail_right":    "ponytail_r",
     "left_ponytail":     "ponytail_l",
     "right_ponytail":    "ponytail_r",
     "ponytail_1":        "ponytail_l",
     "ponytail_2":        "ponytail_r",
-    # Controller / bag
     "game_controller":   "controller",
     "handheld":          "controller",
     "gamepad":           "controller",
@@ -369,7 +334,6 @@ _STATE_NAME_ALIASES = {
     "jkbag":             "bag",
     "school_bag":        "bag",
     "bag_jk":            "bag",
-    # Hat / jacket / skirt
     "cap":               "hat",
     "coat":              "jacket",
     "dress":             "skirt",
@@ -384,9 +348,6 @@ _TOOL_CALL_SHAPE = re.compile(
 )
 
 
-# ===============================================================
-# CANONICAL FISH AUDIO TAGS
-# ===============================================================
 _CANONICAL_TAGS = frozenset({
     "happy", "sad", "angry", "excited", "calm", "nervous", "confident",
     "surprised", "satisfied", "delighted", "scared", "worried", "upset",
@@ -419,9 +380,16 @@ def _strip_non_canonical_tags(text):
     return _BRACKET_ANY.sub(_repl, text)
 
 
-# ===============================================================
-# COMMAND ERROR HINTS
-# ===============================================================
+_EMOJI_RANGE = re.compile(
+    r'[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F000-\U0001F0FF]+'
+)
+
+def _strip_emoji(text):
+    if not text:
+        return text
+    return _EMOJI_RANGE.sub("", text)
+
+
 def _command_error_hint(command: str, result: str) -> str:
     if not result:
         return ""
@@ -446,9 +414,6 @@ def _command_error_hint(command: str, result: str) -> str:
     return ""
 
 
-# ===============================================================
-# SIMULATED-ACTION DETECTION
-# ===============================================================
 _ACTION_VERBS = re.compile(
     r"\b(modify|edit|change|update|add|remove|delete|write|create|make|"
     r"generate|save|run|execute|launch|open|read|check|look at)\b",
@@ -473,31 +438,31 @@ _ACTION_FIRST_PERSON = re.compile(
 )
 
 _SIMULATED_ACTION = re.compile(
-    r"\b(i'?ll (create|modify|edit|write|run|open|update)|"
-    r"here'?s the (updated|new|modified) (script|file|code))\b",
+    r"\b("
+    r"i'?ll (create|modify|edit|write|run|open|update)"
+    r"|here'?s (?:your|the|a|an|my)?\s*"
+    r"(?:updated|new|modified|finished|complete)?\s*"
+    r"(?:script|file|code|program|version|solution|implementation)"
+    r"|here you (?:go|are)"
+    r")\b",
     re.IGNORECASE,
 )
 
 _INTENT_ANNOUNCEMENT = re.compile(
     r"(?:"
-    # "let me X" / "let's X" with a broad verb set
     r"let(?:'s|\s+me)\s+(?:run|execute|write|create|make|build|edit|modify|"
     r"update|check|test|fix|see|look|read|open|grab|pull|find|scan|peek|view|fetch|"
     r"take\s+a\s+look|have\s+a\s+look|try|do|start|go\s+ahead|check\s+that)\b|"
-    # "now/next/then/okay/alright, let me X"
     r"(?:now|next|then|okay|ok|alright|right)\s*,?\s*"
     r"(?:i'?ll|let'?s|let\s+me|i\s+will|i'?m\s+going\s+to|time\s+to)\s+"
     r"(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix|"
     r"see|look|read|open|grab|pull|find|scan|peek|view|fetch|take\s+a\s+look|try|do|start)\b|"
-    # "I'll X" / "I'm going to X"
     r"i'?ll\s+(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix|"
     r"see|look|read|open|grab|pull|find|scan|peek|view|fetch|try|do|start)\b|"
     r"i'?m\s+going\s+to\s+(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix|"
     r"see|look|read|open|grab|pull|find|scan|peek|view|fetch|try|do|start)\b|"
-    # "time to X"
     r"time\s+to\s+(?:run|execute|write|create|make|build|edit|modify|update|check|test|fix|"
     r"see|look|read|open|grab|pull|find|scan|peek|view|fetch|try|do|start)\b|"
-    # "let's see what's in there" — the specific pattern that broke
     r"let'?s\s+see\s+what|"
     r"let\s+me\s+see\s+what|"
     r"let\s+me\s+take\s+a\s+look"
@@ -517,25 +482,18 @@ _COMPLETION_PHRASES = (
     "consider it", "taken care", "handled",
 )
 
-# Verb that indicates the user wants an appearance state changed.
 _STATE_CHANGE_REQUEST = re.compile(
     r"\b(?:put on|take off|show|hide|wear|remove|drop|grab|look|darken"
     r"|toggle|switch to|change to)\b",
     re.IGNORECASE,
 )
 
-# Phrases the model uses to CLAIM a state change happened. Only used
-# for fabrication detection when the user asked for a state change.
 _STATE_CLAIM = re.compile(
     r"(?:"
-    # "X's now on/off/gone/hidden/etc."
     r"\b\w+'s\s+(?:now\s+)?(?:on|off|gone|back|hidden|showing|out|in\s+hand|in\s+place)\b"
     r"|"
-    # "X mode engaged" / "effect activated" / "look applied"
     r"\b(?:mode|effect|look|expression|toggle)\s+(?:engaged|activated|on|applied|enabled|set|active|ready)\b"
     r"|"
-    # "Hat removed." / "Jacket re-applied." / "Bag discarded." — the
-    # noun-first form Lumi uses when she lists multiple items.
     r"^\s*(?:the\s+)?(?:\w+[\s-]+){0,2}"
     r"(?:hat|jacket|bag|skirt|ponytail|controller|eyes|eye|face|look)"
     r"\s+(?:re-?)?"
@@ -544,18 +502,14 @@ _STATE_CLAIM = re.compile(
     r"set|on|off|back|away|out|done|fixed|changed|swapped|cleared|"
     r"reapplied|re-added|reverted|undone)\b"
     r"|"
-    # Leading verb-ed on its own line: "Removed." / "Hidden."
     r"^\s*(?:on|off|hidden|darkened|removed|gone|visible|engaged|activated"
     r"|applied|restored|returned|discarded|dismissed|reverted|undone|cleared)\b"
     r"|"
-    # First-person claims
     r"\b(?:i'?m\s+(?:now\s+)?(?:wearing|holding|showing|hiding))\b"
     r")",
     re.IGNORECASE | re.MULTILINE,
 )
 
-# Meta-claims of "everything is done" — Lumi uses this to wrap up a
-# multi-item request without firing the individual tool calls.
 _STATE_META_CLAIM = re.compile(
     r"\b(?:everything|all|all\s+of\s+it|the\s+whole\s+thing)\s+"
     r"(?:is\s+|has\s+been\s+|'s\s+)?"
@@ -571,38 +525,21 @@ _REFUSAL = re.compile(
     re.IGNORECASE,
 )
 
-
-# ===============================================================
-# READ-ONLY QUERY DETECTION
-# ===============================================================
-_READ_ONLY_QUERY = re.compile(
-    r"\b(read|check|show|tell me|what(?:'s| is)|find|look at|list|"
-    r"display|print|view|peek|examine|inspect|see)\b",
-    re.IGNORECASE,
+_CODE_IN_REPLY = re.compile(
+    r"(?:^|\n)\s*(?:"
+    r"print\s*\(|def\s+\w+\s*\(|class\s+\w+|import\s+\w+|"
+    r"from\s+\w+\s+import|if\s+__name__|"
+    r"console\.log\s*\(|function\s+\w+\s*\(|"
+    r"#include\s*<|public\s+static|printf\s*\("
+    r")",
+    re.MULTILINE,
 )
-
-_WRITE_AUTHORIZING_QUERY = re.compile(
-    r"\b(modify|edit|change|update|add to|add\s+\w+\s+to|fix|remove from|"
-    r"delete|rewrite|replace|append|insert|create|write|make|generate)\b",
-    re.IGNORECASE,
-)
-
-
-def _query_is_read_only(user_query: str) -> bool:
-    if not user_query:
-        return False
-    if _WRITE_AUTHORIZING_QUERY.search(user_query):
-        return False
-    return bool(_READ_ONLY_QUERY.search(user_query))
 
 
 def _looks_like_simulated_action(content: str, user_query: str = "") -> bool:
     if not content:
         return False
 
-    # Scan the first three non-empty lines — models often put their
-    # hallucinated tool call on line 1, then the "it worked" claim
-    # on line 2 or 3.
     lines = [ln for ln in content.split("\n") if ln.strip()][:3]
     for raw_line in lines:
         cleaned = re.sub(r"\[[^\]]*\]", "", raw_line).lower().strip()
@@ -611,9 +548,6 @@ def _looks_like_simulated_action(content: str, user_query: str = "") -> bool:
         if any(cleaned.startswith(p) for p in _COMPLETION_PHRASES):
             return True
 
-    # Targeted checks for state-change fabrication. Only fire when
-    # the user actually asked for a state change — otherwise "Skirt"
-    # or "on" could false-positive in normal conversation.
     if user_query and _STATE_CHANGE_REQUEST.search(user_query):
         head = " ".join(
             ln for ln in content.split("\n") if ln.strip()
@@ -650,6 +584,61 @@ def _looks_like_simulated_action(content: str, user_query: str = "") -> bool:
         if _FILENAME_HINT.search(user_query) and _ACTION_VERBS.search(user_query):
             return True
 
+    if user_query and _CODE_IN_REPLY.search(content):
+        if _CREATION_REQUEST.search(user_query):
+            return True
+
+    return False
+
+
+_TOOL_REQUEST_VERB = re.compile(
+    r"\b(read|open|check|look at|examine|inspect|show me|list|"
+    r"find|search for|grep|locate|run|execute|test|write|create|"
+    r"save|make|edit|modify|update)\b",
+    re.IGNORECASE,
+)
+
+_PATH_OR_FILE_HINT = re.compile(
+    r"(\b\w+\.\w{2,5}\b"
+    r"|\\|/"
+    r"|\b(?:the|a|an|my|your|this|that|some)\s+"
+    r"(?:file|folder|directory|script|program|code|repo|"
+    r"repository|project|app|application|module|function|class|todo)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_CREATION_REQUEST = re.compile(
+    r"\b(create|write|make|build|generate|save)\s+"
+    r"(?:me\s+|us\s+)?"
+    r"(?:a|an|the|your|my|some)?\s*"
+    r"(?:\w+\s+){0,4}?"
+    r"(file|script|program|code|function|class|module|app|application)\b",
+    re.IGNORECASE,
+)
+
+
+def _request_needs_tool(user_query: str) -> bool:
+    if not user_query:
+        return False
+    text = user_query.strip()
+    if len(text) < 8:
+        return False
+
+    if _CREATION_REQUEST.search(text):
+        return True
+
+    if not _TOOL_REQUEST_VERB.search(text):
+        return False
+
+    if _PATH_OR_FILE_HINT.search(text):
+        return True
+
+    if re.search(r"\b(read|open|check|list|search)\b", text, re.IGNORECASE) \
+       and re.search(r"\b(file|folder|directory|script|todo)\b",
+                     text, re.IGNORECASE):
+        return True
+
     return False
 
 
@@ -665,9 +654,27 @@ def _result_looks_like_failure(result) -> bool:
     return False
 
 
-# ===============================================================
-# SCREEN REFERENCE DETECTION
-# ===============================================================
+_READ_ONLY_QUERY = re.compile(
+    r"\b(read|check|show|tell me|what(?:'s| is)|find|look at|list|"
+    r"display|print|view|peek|examine|inspect|see)\b",
+    re.IGNORECASE,
+)
+
+_WRITE_AUTHORIZING_QUERY = re.compile(
+    r"\b(modify|edit|change|update|add to|add\s+\w+\s+to|fix|remove from|"
+    r"delete|rewrite|replace|append|insert|create|write|make|generate)\b",
+    re.IGNORECASE,
+)
+
+
+def _query_is_read_only(user_query: str) -> bool:
+    if not user_query:
+        return False
+    if _WRITE_AUTHORIZING_QUERY.search(user_query):
+        return False
+    return bool(_READ_ONLY_QUERY.search(user_query))
+
+
 _SCREEN_REFERENCE = re.compile(
     r"\b(screen|monitor|display|desktop|window|"
     r"looking at|see (?:this|that|my)|"
@@ -678,9 +685,6 @@ _SCREEN_REFERENCE = re.compile(
 )
 
 
-# ===============================================================
-# LIST-FORMAT CLEANUP (display only)
-# ===============================================================
 def _strip_list_formatting(text):
     if not text:
         return text
@@ -737,9 +741,6 @@ def _strip_list_formatting(text):
     return "".join(cleaned).strip()
 
 
-# ===============================================================
-# MODEL ROUTING
-# ===============================================================
 _COMPLEXITY_MARKERS = re.compile(
     r"\b("
     r"analyze|explain in detail|write a|create a|design|architect|"
@@ -798,9 +799,6 @@ def _should_use_fast_model(user_text, agent_mode):
     return True
 
 
-# ===============================================================
-# EXTRA TOOL SCHEMAS
-# ===============================================================
 EXTRA_TOOL_SCHEMAS = [
     {
         "type": "function",
@@ -1053,6 +1051,7 @@ class Prompter:
                     "model": model,
                     "messages": messages,
                     "stream": False,
+                    "think": not use_fast,
                     "keep_alive": keep_alive,
                     "options": options,
                 }, timeout=AGENT_REQUEST_TIMEOUT),
@@ -1097,8 +1096,11 @@ class Prompter:
             "You have real tools. The ONLY way to actually DO something is to emit a tool call. "
             "Describing an action in prose is NOT doing it — it is a failure.\n"
             "Showing code in a chat reply (like ```python blocks) is ALSO NOT doing it — it is a failure.\n"
+            "Writing code inline in your reply — even one line like `print(\"hello\")` — is ALSO NOT doing it. That is a failure.\n"
             "DO NOT write markdown code blocks when asked to create a script. You MUST use write_file.\n"
-            "Announcing what you're about to do ('now let's X') is ALSO NOT doing it — it is a failure.\n\n"
+            "DO NOT write the code inline in the reply. You MUST call write_file and pass the code as the 'content' argument.\n"
+            "Announcing what you're about to do ('now let's X') is ALSO NOT doing it — it is a failure.\n"
+            "Saying 'here's your hello world' or 'here's the script' WITHOUT a tool call is ALSO a failure.\n\n"
             "TOOL CALL FORMAT — the ONLY format that works:\n"
             '  {"name": "tool_name", "arguments": {"arg1": "value1", "arg2": "value2"}}\n'
             "Do NOT wrap this in brackets. Do NOT write 'emit tool_name(...)'. "
@@ -1122,7 +1124,7 @@ class Prompter:
             "'what is', 'find', 'look at', 'list' mean: call read_file / list_dir / "
             "search_files, then ANSWER IN PROSE. Do NOT call write_file.\n\n"
             "The ONLY words that authorize write_file are: modify, edit, change, "
-            "update, add to, fix, remove from, delete, rewrite, replace.\n\n"
+            "update, add to, fix, remove from, delete, rewrite, replace, create, write, make, generate, save, build.\n\n"
             "Tools available:\n"
             "- read_file(path) — reads text, code, markdown, JSON, PDF, and DOCX files\n"
             "- write_file(path, content) — create/overwrite (asks user to confirm)\n"
@@ -1135,6 +1137,12 @@ class Prompter:
             "- recall_memory(query, since) — search your own long-term memory\n"
             "- vtube_set_expression(name, enabled) — turn an appearance toggle on your own avatar on or off\n"
             "- vtube_move(location) — move your own avatar to a preset screen position\n\n"
+            "EXAMPLES OF CORRECT BEHAVIOR:\n"
+            '  User: "create a hello world script"\n'
+            '  You: [emit tool call] {"name": "write_file", "arguments": {"path": "hello.py", "content": "print(\\"Hello, World!\\")\\n"}}\n'
+            '  NOT: "Here\'s your script: print(\'Hello, World!\')" — that is a failure.\n\n'
+            '  User: "create a hello world script and run it"\n'
+            '  You: write_file first. Wait for the result. THEN run_command.\n\n'
             "PICKING BETWEEN run_command AND run_in_terminal:\n"
             "- Output / results / what a script prints → run_command\n"
             "- 'Open a terminal', 'launch it', 'run it so I can see it' → run_in_terminal\n"
@@ -1151,18 +1159,13 @@ class Prompter:
             "7. Emit tool calls as JSON. Never as bracket tags.\n"
             "8. Do NOT re-call a tool with the same arguments you already tried.\n"
             "9. Do NOT announce an action without taking it in the same message.\n"
-            "9a. NEVER explain what a tool does. The user does not want a "
-            "tutorial on vtube_move or read_file or any other tool. Only "
-            "call tools, or answer in prose. Never describe capabilities.\n"
-            "9b. When a tool result comes back, USE it to answer the "
-            "original request. If the user asked you to read a file and "
-            "you read it, summarize what matters from the file. Do not "
-            "pivot to explaining something you saw inside it. Do not "
-            "invent a next task.\n"
-            "10. If the user asks 'when did we...', 'do you remember...', "
+            "10. When the user says 'create a script/file/program', you MUST call write_file. The code goes in the content argument, NOT in your reply text.\n"
+            "11. When the user says 'run it' or 'test it', you MUST call run_command with the file's path.\n"
+            "12. NEVER say 'here's your X' or 'here you go' as a substitute for a tool call.\n"
+            "13. If the user asks 'when did we...', 'do you remember...', "
             "'what did I say about...', or references a previous session, "
             "call recall_memory FIRST before answering.\n"
-            "11. If the user asks you to change your own appearance or move "
+            "14. If the user asks you to change your own appearance or move "
             "('put on your hat', 'take off your jacket', 'show heart eyes', "
             "'hide your ponytail', 'look dizzy', 'grab your controller', "
             "'move to the corner'), call vtube_set_expression or vtube_move. "
@@ -1173,16 +1176,16 @@ class Prompter:
             "=== END TOOL USE ===\n"
         )
         else:
+            # Conversational mode is the default. Lumi just chats — no
+            # tool talk, no refusal phrasing, no "flip agent mode on"
+            # nudges. The persona system prompt is enough.
             agent_note = (
-                "=== NO TOOLS ACTIVE ===\n"
-                "You are in conversational mode. You have NO tools. "
-                "You cannot read files, run commands, search, browse, or "
-                "change your own avatar's expression. "
-                "If Anthony asks you to do any of those, tell him to say "
-                "`!agent <task>` and you'll actually do it. Do NOT emit "
-                "[tool_name(...)] syntax. Do NOT invent file contents. "
-                "Do NOT announce that you're about to run something.\n"
-                "=== END NO TOOLS ===\n"
+                "=== CONVERSATIONAL MODE ===\n"
+                "You are chatting casually right now. Do not emit tool "
+                "call syntax (no JSON tool objects, no [tool_name(...)]). "
+                "Do not pretend to read files, run commands, or browse. "
+                "Just talk like a person.\n"
+                "=== END CONVERSATIONAL MODE ===\n"
             )
         injections.append(agent_note)
 
@@ -1288,6 +1291,8 @@ class Prompter:
             "BANNED in your reply: bullet points, numbered lists, markdown headers "
             "(# or ##), bold (**text**), italics (*text*), horizontal rules (---), "
             "and any list-style enumeration with '-' or '*' or '1.' at the start of a line.\n"
+            "BANNED: raw code in a chat reply. If the user asked for code, use write_file. "
+            "If you're explaining code, describe it in prose.\n"
             "Even when listing multiple things (examples, reasons, options, steps), "
             "weave them into flowing sentences separated by commas or the word 'and'. "
             "Never break the reply into visual items.\n"
@@ -1355,6 +1360,7 @@ class Prompter:
         text = text.replace('*', '').replace('_', '').replace('~', '')
         text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
         text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+        text = _strip_emoji(text)
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
@@ -1482,7 +1488,11 @@ class Prompter:
 
     async def _confirm(self, prompt_text):
         loop = asyncio.get_running_loop()
-        answer = await loop.run_in_executor(None, input, prompt_text)
+        self.signals.input_paused = True
+        try:
+            answer = await loop.run_in_executor(None, input, prompt_text)
+        finally:
+            self.signals.input_paused = False
         return answer.strip().lower() in ("y", "yes")
 
     async def _dispatch_tool_call(self, name, arguments):
@@ -1543,7 +1553,6 @@ class Prompter:
                     "enabled=true or enabled=false."
                 )
 
-            # Resolve natural-language aliases before validation.
             state_name = _STATE_NAME_ALIASES.get(state_name, state_name)
 
             available = vts.API.list_expression_names()
@@ -1628,6 +1637,7 @@ class Prompter:
         intent_retry_used = False
         sim_action_retry_used = False
         refusal_retry_used = False
+        no_tool_call_retry_used = False
 
         query_is_read_only = _query_is_read_only(latest_user_text)
         original_request = latest_user_text
@@ -1638,6 +1648,7 @@ class Prompter:
                 "messages": messages,
                 "tools": all_tools,
                 "stream": False,
+                "think": True,
                 "keep_alive": "30s",
                 "options": {
                     "temperature": 0.5,
@@ -1793,6 +1804,34 @@ class Prompter:
                     })
                     continue
 
+                if (
+                    step == 0
+                    and not any_tool_succeeded
+                    and not no_tool_call_retry_used
+                    and _request_needs_tool(original_request)
+                ):
+                    no_tool_call_retry_used = True
+                    sim_action_retry_used = True
+                    print(f"{GRAY}[No tool call on a tool-required request — "
+                          f"forcing retry]{RESET}")
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"You answered the user's request directly in prose, "
+                            f"but you have NOT actually performed the required "
+                            f"action yet. Anything you wrote in your reply is "
+                            f"fiction until you call a tool.\n\n"
+                            f"The user's request was:\n\n    \"{original_request}\"\n\n"
+                            f"Call the tool that fulfills that request NOW. Emit "
+                            f"the tool call as JSON only. No prose. "
+                            f"For 'create a script', that means write_file with the "
+                            f"full code as the content argument. "
+                            f"DO NOT write the code in your reply text."
+                        ),
+                    })
+                    continue
+
                 if hasattr(self.signals, "emotional_state") and tool_outcomes:
                     try:
                         self.signals.emotional_state.note_turn_complete(tool_outcomes)
@@ -1882,10 +1921,6 @@ class Prompter:
                 print(f"{GRAY}  -> {str(result)[:300]}{RESET}")
                 messages.append({"role": "tool", "content": str(result), "name": name})
 
-                # Reinject the original request after every tool result.
-                # Without this, long tool results (like reading a big file)
-                # bury the user's actual question and the model pivots to
-                # explaining whatever it saw in the data.
                 if len(str(result)) > 800:
                     messages.append({
                         "role": "user",
@@ -2036,9 +2071,6 @@ class Prompter:
                         self.signals.AI_thinking = False
                         continue
 
-                    # ==========================================
-                    # Avatar commands (VTube Studio passthroughs)
-                    # ==========================================
                     if stripped_lower == "!expressions":
                         vts = next(
                             (m for m in self.modules
@@ -2181,9 +2213,6 @@ class Prompter:
                         self.signals.AI_thinking = False
                         continue
 
-                    # ==========================================
-                    # Memory
-                    # ==========================================
                     if stripped_lower == "!recall" or stripped_lower.startswith("!recall "):
                         query_text = stripped[len("!recall"):].strip()
                         memory_module = next(
@@ -2294,10 +2323,14 @@ class Prompter:
                         raw_reply = await self.run_conversational(latest_user_text)
 
                     if force_agent or self.agent_mode_enabled:
-                        display_reply = _strip_non_canonical_tags(raw_reply)
+                        display_reply = _strip_emoji(
+                            _strip_non_canonical_tags(raw_reply)
+                        )
                     else:
                         display_reply = _strip_list_formatting(
-                            _strip_non_canonical_tags(raw_reply)
+                            _strip_emoji(
+                                _strip_non_canonical_tags(raw_reply)
+                            )
                         )
 
                     print(display_reply)
@@ -2323,7 +2356,8 @@ class Prompter:
                             try:
                                 frame = getattr(
                                     getattr(self.signals, "emotional_state", None),
-                                    "current_frame", None,
+                                    "current_frame",
+                                    None,
                                 )
                                 self.signals.self_model.note_turn(
                                     latest_user_text, raw_reply, frame

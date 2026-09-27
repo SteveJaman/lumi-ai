@@ -5,6 +5,12 @@ At the end of a session, asks the LLM to summarize the recent conversation
 into a small JSON blob and writes it to memories/session_state.json. On the
 next startup, Prompter reads it and injects it into the first few turns so
 Lumi can open with continuity instead of a blank slate.
+
+Phase 10.1 note: This module is host-agnostic. It uses generic "User" /
+"Lumi" role labels in transcripts and refers to "the user" in injected
+continuity text — never a hardcoded name. No sweep needed here for the
+identity refactor. Per-user isolation (Phase 10.15) will later split the
+state file per user_id, but that is out of scope for 10.1.
 """
 
 import os

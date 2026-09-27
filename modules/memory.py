@@ -11,7 +11,7 @@ similarity. Older memories naturally fade; important recent ones surface.
 
 from modules.module import Module
 from constants import (
-    AI_NAME, HOST_NAME, MEMORY_PROMPT, LLM_ENDPOINT, MODEL_NAME,
+    AI_NAME, HOST, MEMORY_PROMPT, LLM_ENDPOINT, MODEL_NAME,
     MEMORY_QUERY_MESSAGE_COUNT, MEMORY_RECALL_COUNT,
     FAST_MODEL_NAME,
 )
@@ -28,25 +28,16 @@ import datetime
 import re
 
 
-# ===============================================================
-# REFLECTION PROMPT
-# ---------------------------------------------------------------
-# Rewritten to produce structured JSON, not free text. Each fact
-# gets an importance score and an emotional-valence tag so
-# retrieval can reweight later.
-#
-# NOTE: This is a .replace() template, NOT a .format() template.
-# The JSON example below contains literal braces, which would break
-# str.format(). The chat text is injected via the <<CHAT_SECTION>>
-# sentinel instead.
-# ===============================================================
 REFLECTION_PROMPT = """Analyze the conversation excerpt below and extract key personal facts, preferences, or context about the user that would be useful to remember long-term.
 
 For each fact, output ONE JSON object on its own line with exactly these keys:
   {"fact": "short statement of the fact", "importance": 0.0-1.0, "valence": "one-word emotion or null"}
 
 Guidance:
-  - fact:      a concise, standalone statement. Bad: "he said X." Good: "Anthony prefers Python over JavaScript."
+  - fact:      a concise, standalone statement with NO subject name.
+               Bad:  "he said X."
+               Bad:  "Anthony prefers Python over JavaScript."
+               Good: "Prefers Python over JavaScript."
   - importance: 0.9+ for durable facts (name, preferences, major life events),
                 0.5-0.8 for useful context (ongoing projects, current goals),
                 0.3-0.5 for transient details (mood today, what he ate).
@@ -61,25 +52,17 @@ CONVERSATION:
 """
 
 
-# ===============================================================
-# RETRIEVAL WEIGHTS
-# ===============================================================
 W_SIMILARITY = 0.50
 W_IMPORTANCE = 0.30
 W_RECENCY    = 0.20
-RECENCY_HALFLIFE_DAYS = 30.0      # score drops to 0.5 after this many days
-RETRIEVAL_BUFFER = 3              # fetch 3× more than we need, then rerank
+RECENCY_HALFLIFE_DAYS = 30.0
+RETRIEVAL_BUFFER = 3
 
-# Default importance for memories that predate this schema change
 DEFAULT_IMPORTANCE = 0.5
 
-# Placeholder strings the model sometimes emits instead of JSON null.
 _BAD_VALENCE_STRINGS = {"", "null", "none", "nil", "undefined", "n/a"}
 
 
-# ===============================================================
-# TEMPORAL QUERY DETECTION
-# ===============================================================
 _TEMPORAL_PATTERNS = [
     (re.compile(r"\b(yesterday)\b", re.IGNORECASE), 1),
     (re.compile(r"\b(today)\b", re.IGNORECASE), 0),
@@ -90,8 +73,6 @@ _TEMPORAL_PATTERNS = [
 
 
 def _parse_temporal_hint(text):
-    """Return a datetime cutoff if the text looks like a temporal query,
-    or None if it isn't one."""
     if not text:
         return None
     now = datetime.datetime.now()
@@ -109,7 +90,6 @@ def _parse_temporal_hint(text):
 
 
 def _format_age_hint(ts, now):
-    """Human-readable age like '(2d ago)' or '(3w ago)'. Empty if no ts."""
     if ts is None:
         return ""
     age = now - ts
@@ -128,12 +108,6 @@ def _format_age_hint(ts, now):
 
 
 def _clean_valence(raw):
-    """Normalize a raw valence value into a clean one-word string or None.
-
-    Rejects: non-strings, empty strings, placeholder strings the model
-    sometimes emits instead of JSON null ("null", "none", "n/a", etc.),
-    and multi-word phrases. Only returns a single lowercase word.
-    """
     if raw is None:
         return None
     if not isinstance(raw, str):
@@ -146,9 +120,6 @@ def _clean_valence(raw):
     return v
 
 
-# ===============================================================
-# MODULE
-# ===============================================================
 class Memory(Module):
 
     def __init__(self, signals, enabled=True):
@@ -160,8 +131,6 @@ class Memory(Module):
 
         self.processed_count = 0
 
-        # Unique id for this process run, so memories made this session
-        # can be grouped and (later) pruned if needed.
         self.session_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
         self.chroma_client = chromadb.PersistentClient(
@@ -177,29 +146,17 @@ class Memory(Module):
             print("MEMORY: Empty database. Importing from memoryinit.json")
             self.API.import_json(path="./memories/memoryinit.json")
 
-        # One-time repair pass — fixes any memories whose metadata was
-        # stored before the schema upgrade (empty/null timestamp etc).
         self._normalize_all_metadata()
 
-        # Expose ourselves on signals so other modules (prompter, agent tools)
-        # can reach the temporal query API without importing this file.
         signals.memory_module = self
 
     def clear_database(self):
-        """Bridge method called by prompter to wipe ChromaDB collection."""
         self.API.wipe()
 
     # ---------------------------------------------------------------
     # Metadata migration
     # ---------------------------------------------------------------
     def _normalize_all_metadata(self):
-        """One-time migration pass: ensure every stored memory has a
-        valid timestamp, importance, valence, and session_id.
-
-        Fixes memories that were imported before the schema upgrade —
-        empty or null values that slipped through the old setdefault()
-        backfill. Idempotent: safe to call on every startup; prints
-        nothing when there's nothing to fix."""
         try:
             total = self.collection.count()
             if total == 0:
@@ -229,7 +186,7 @@ class Memory(Module):
             imp = meta.get("importance")
             try:
                 f = float(imp)
-                if f != f or f < 0.0 or f > 1.0:   # NaN or out-of-range
+                if f != f or f < 0.0 or f > 1.0:
                     raise ValueError
             except (TypeError, ValueError):
                 meta["importance"] = DEFAULT_IMPORTANCE
@@ -262,18 +219,15 @@ class Memory(Module):
             )
 
     # ---------------------------------------------------------------
-    # Retrieval
+    # Retrieval scoring
     # ---------------------------------------------------------------
     def _score_memory(self, doc, meta, distance, now):
-        """Combined score = similarity + importance + recency."""
-        # ChromaDB returns distance (lower = better). Convert to similarity.
         similarity = 1.0 - float(distance) if distance is not None else 0.5
         similarity = max(0.0, min(1.0, similarity))
 
         importance = float(meta.get("importance", DEFAULT_IMPORTANCE))
         importance = max(0.0, min(1.0, importance))
 
-        # Recency: exponential decay by half-life
         ts_str = meta.get("timestamp")
         if ts_str:
             try:
@@ -283,7 +237,6 @@ class Memory(Module):
             except Exception:
                 recency = 0.5
         else:
-            # Old memories without a timestamp get a neutral recency
             recency = 0.5
 
         return (
@@ -295,10 +248,9 @@ class Memory(Module):
     def get_prompt_injection(self):
         query = ""
 
-        # Build a query from recent history
         for message in self.signals.history[-MEMORY_QUERY_MESSAGE_COUNT:]:
             if message.get("role") == "user" and message.get("content"):
-                query += HOST_NAME + ": " + str(message["content"]) + "\n"
+                query += HOST.name + ": " + str(message["content"]) + "\n"
             elif message.get("role") == "assistant" and message.get("content"):
                 query += AI_NAME + ": " + str(message["content"]) + "\n"
 
@@ -306,7 +258,6 @@ class Memory(Module):
             self.prompt_injection.text = ""
             return self.prompt_injection
 
-        # How many to over-fetch before rerank
         fetch_n = max(MEMORY_RECALL_COUNT * RETRIEVAL_BUFFER, MEMORY_RECALL_COUNT + 3)
         total = self.collection.count()
         if total == 0:
@@ -314,7 +265,6 @@ class Memory(Module):
             return self.prompt_injection
         fetch_n = min(fetch_n, total)
 
-        # Detect temporal hint so we can filter
         cutoff = _parse_temporal_hint(query)
 
         try:
@@ -342,7 +292,6 @@ class Memory(Module):
         for doc, meta, dist in zip(docs, metas, dists):
             meta = meta or {}
 
-            # If a temporal hint was present, filter out older memories
             if cutoff is not None:
                 ts_str = meta.get("timestamp")
                 if ts_str:
@@ -363,7 +312,6 @@ class Memory(Module):
             self.prompt_injection.text = ""
             return self.prompt_injection
 
-        # Format for the prompt, including age hints
         lines = [f"{AI_NAME} remembers these relevant details:"]
         for score, doc, meta in top:
             ts_str = meta.get("timestamp")
@@ -386,13 +334,15 @@ class Memory(Module):
     # ---------------------------------------------------------------
     async def run(self):
         while not self.signals.terminate:
-            if self.processed_count > len(self.signals.history):
+            # FIX: was ">" — with ">" the counter sticks forever once
+            # history is trimmed to the 20-message cap and processed_count
+            # equals it. ">=" resets correctly so reflection keeps firing.
+            if self.processed_count >= len(self.signals.history):
                 self.processed_count = 0
 
             if len(self.signals.history) - self.processed_count >= 10:
                 if getattr(self.signals, 'new_message', False) or \
                    getattr(self.signals, 'AI_thinking', False):
-                    # Skip this cycle so we don't collide with active turns
                     await asyncio.sleep(2)
                     continue
 
@@ -402,20 +352,20 @@ class Memory(Module):
 
                 chat_section = ""
                 for message in messages:
-                    role = HOST_NAME if message.get("role") == "user" else AI_NAME
+                    role = HOST.name if message.get("role") == "user" else AI_NAME
                     chat_section += f"{role}: {message.get('content', '')}\n"
 
-                # NOTE: .replace() not .format() — the prompt body contains
-                # literal JSON braces that would confuse str.format().
                 prompt = REFLECTION_PROMPT.replace("<<CHAT_SECTION>>", chat_section)
 
-                # Reflection is a structured extraction task — the fast
-                # model handles it fine, and it keeps the main model
-                # free for user-facing turns.
                 data = {
                     "model": FAST_MODEL_NAME,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
+                    # FIX: Qwen3 spends all num_predict tokens on internal
+                    # reasoning and returns an empty content field unless
+                    # think is disabled. This is the reason no memories
+                    # were ever being stored.
+                    "think": False,
                     "keep_alive": "30s",
                     "options": {
                         "temperature": 0.3,
@@ -442,9 +392,6 @@ class Memory(Module):
 
             await asyncio.sleep(5)
 
-    # ---------------------------------------------------------------
-    # Parse the JSON lines and upsert with metadata
-    # ---------------------------------------------------------------
     def _store_extracted_memories(self, raw_text):
         if not raw_text:
             return
@@ -456,13 +403,11 @@ class Memory(Module):
             line = line.strip()
             if not line or line.startswith("```"):
                 continue
-            # Strip trailing commas, semicolons that some models add
             line = line.rstrip(",;")
 
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:
-                # Fall back to regex-scan for a JSON object inside the line
                 match = re.search(r"\{.*\}", line)
                 if not match:
                     continue
@@ -511,30 +456,50 @@ class Memory(Module):
             except Exception:
                 pass
 
-    # ---------------------------------------------------------------
-    # Public API
-    # ---------------------------------------------------------------
+    # ===============================================================
+    # Public API — used by prompter (recall_memory tool), !recall
+    # command, and the web memory browser (Phase 10.11).
+    # ===============================================================
     class API:
         def __init__(self, outer):
             self.outer = outer
 
-        def create_memory(self, data):
-            """Manual memory insertion — used by !remember in prompter."""
+        # -----------------------------------------------------------
+        # Mutations
+        # -----------------------------------------------------------
+        def create_memory(self, data, importance=0.9, valence=None):
+            """Insert a memory. `data` is the fact string. Used by both
+            the terminal prompter's manual !remember path and the web
+            browser's + Add modal."""
             now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+            new_id = str(uuid.uuid4())
+            try:
+                imp = float(importance)
+            except (TypeError, ValueError):
+                imp = 0.9
+            imp = max(0.0, min(1.0, imp))
+            val = _clean_valence(valence)
+
             self.outer.collection.upsert(
-                ids=[str(uuid.uuid4())],
+                ids=[new_id],
                 documents=[data],
                 metadatas=[{
                     "type": "manual",
                     "timestamp": now_iso,
-                    "importance": 0.9,
-                    "valence": None,
+                    "importance": imp,
+                    "valence": val,
                     "session_id": self.outer.session_id,
                 }],
             )
+            return new_id
 
-        def delete_memory(self, id):
-            self.outer.collection.delete(id)
+        def delete_memory(self, mem_id):
+            try:
+                self.outer.collection.delete(ids=[mem_id])
+                return True
+            except Exception as e:
+                print(f"\033[91mMEMORY: delete failed: {e}\033[0m")
+                return False
 
         def wipe(self):
             try:
@@ -546,26 +511,137 @@ class Memory(Module):
             )
             print("MEMORY: Database successfully wiped and reset.")
 
+        def update_memory(self, mem_id, document=None,
+                          importance=None, valence=None):
+            """Update a memory in place. Pass only the fields you want
+            to change; unset fields are preserved. Returns (ok, error)."""
+            if not mem_id:
+                return False, "Missing id."
+            try:
+                existing = self.outer.collection.get(ids=[mem_id])
+            except Exception as e:
+                return False, f"Lookup failed: {e}"
+
+            if not existing or not existing.get("ids"):
+                return False, "Memory not found."
+
+            old_doc = (existing.get("documents") or [""])[0] or ""
+            old_meta = dict((existing.get("metadatas") or [{}])[0] or {})
+
+            new_doc = document if document is not None else old_doc
+            new_meta = dict(old_meta)
+
+            if importance is not None:
+                try:
+                    imp = float(importance)
+                except (TypeError, ValueError):
+                    return False, "Importance must be a number."
+                new_meta["importance"] = max(0.0, min(1.0, imp))
+
+            if valence is not None:
+                new_meta["valence"] = _clean_valence(valence)
+
+            try:
+                self.outer.collection.update(
+                    ids=[mem_id],
+                    documents=[new_doc],
+                    metadatas=[new_meta],
+                )
+            except Exception as e:
+                return False, f"Update failed: {e}"
+            return True, None
+
+        # -----------------------------------------------------------
+        # Reads
+        # -----------------------------------------------------------
+        def count(self):
+            try:
+                return int(self.outer.collection.count())
+            except Exception:
+                return 0
+
+        def _row_from_parts(self, mem_id, doc, meta):
+            meta = meta or {}
+            return {
+                "id": mem_id,
+                "fact": doc or "",
+                "timestamp": meta.get("timestamp") or "",
+                "importance": meta.get("importance", DEFAULT_IMPORTANCE),
+                "valence": meta.get("valence"),
+                "session_id": meta.get("session_id") or "",
+                "type": meta.get("type") or "short-term",
+            }
+
+        def list_all(self, limit=200, offset=0, sort="recent"):
+            """Return memories sorted by `sort` (recent|oldest|importance).
+            Includes the total count so the UI can show a helpful header."""
+            total = self.count()
+            if total == 0:
+                return {"total": 0, "memories": []}
+
+            fetch_n = min(total, 2000)
+            try:
+                results = self.outer.collection.get(limit=fetch_n)
+            except Exception as e:
+                print(f"\033[91mMEMORY: list_all failed: {e}\033[0m")
+                return {"total": total, "memories": []}
+
+            ids = results.get("ids") or []
+            docs = results.get("documents") or []
+            metas = results.get("metadatas") or []
+
+            rows = [
+                self._row_from_parts(i, d, m)
+                for i, d, m in zip(ids, docs, metas)
+            ]
+
+            if sort == "oldest":
+                rows.sort(key=lambda r: r["timestamp"] or "")
+            elif sort == "importance":
+                rows.sort(key=lambda r: -(float(r["importance"] or 0.0)))
+            else:  # recent
+                rows.sort(key=lambda r: r["timestamp"] or "", reverse=True)
+
+            return {"total": total, "memories": rows[offset:offset + limit]}
+
+        def get_by_id(self, mem_id):
+            try:
+                res = self.outer.collection.get(ids=[mem_id])
+            except Exception:
+                return None
+            if not res or not res.get("ids"):
+                return None
+            doc = (res.get("documents") or [""])[0]
+            meta = (res.get("metadatas") or [{}])[0]
+            return self._row_from_parts(res["ids"][0], doc, meta)
+
+        def export_all(self):
+            """Full dump of every memory, for the Export JSON button."""
+            total = self.count()
+            if total == 0:
+                return []
+            fetch_n = min(total, 5000)
+            try:
+                res = self.outer.collection.get(limit=fetch_n)
+            except Exception:
+                return []
+            ids = res.get("ids") or []
+            docs = res.get("documents") or []
+            metas = res.get("metadatas") or []
+            return [
+                {
+                    "id": i,
+                    "fact": d or "",
+                    "metadata": m or {},
+                }
+                for i, d, m in zip(ids, docs, metas)
+            ]
+
+        # -----------------------------------------------------------
+        # Semantic + temporal query (existing behaviour)
+        # -----------------------------------------------------------
         def query_temporal(self, query, since=None, limit=10):
-            """Query memories with temporal semantics.
-
-            Unlike get_prompt_injection(), this does NOT reweight by
-            recency — temporal queries are about the past, so sorting
-            oldest-first is the point.
-
-            Args:
-                query: free-text semantic query
-                since: optional natural-language time hint
-                       ("yesterday", "last week", "3 days ago")
-                limit: max results to return
-
-            Returns:
-                List of dicts: {fact, timestamp, importance, valence, age_hint}
-                sorted ascending by timestamp (oldest first).
-            """
             if not query or not query.strip():
-                # Allow a pure temporal query with no text — the user
-                # asked "what did we do last week" and we still want hits.
                 if not since:
                     return []
 
@@ -573,18 +649,14 @@ class Memory(Module):
             if total == 0:
                 return []
 
-            # Resolve temporal cutoff if a hint was given.
             cutoff = None
             if since:
                 cutoff = _parse_temporal_hint(since)
             if cutoff is None and query:
-                # Also try to parse a temporal hint out of the query itself.
                 cutoff = _parse_temporal_hint(query)
 
-            # Over-fetch to survive the cutoff filter.
             fetch_n = min(max(limit * 4, 20), total)
 
-            # ChromaDB needs a non-empty string for query_texts.
             effective_query = query.strip() if query and query.strip() else (since or "memory")
 
             try:
@@ -633,8 +705,6 @@ class Memory(Module):
                     "age_hint": _format_age_hint(ts, now),
                 })
 
-            # Sort ascending by time so the narrative reads chronologically.
-            # Memories without timestamps go last (they can't be placed).
             hits.sort(
                 key=lambda h: h["timestamp"] or "9999-12-31T23:59:59"
             )
@@ -642,24 +712,17 @@ class Memory(Module):
             return hits[:limit]
 
         def format_recall(self, hits):
-            """Render query_temporal output as a readable block.
-
-            Used both by the !recall command (terminal output) and by the
-            recall_memory tool (as the tool-result string fed back to the
-            model)."""
             if not hits:
                 return "No memories matched."
 
             lines = []
             for h in hits:
-                # Trim to a friendly date; keep the time if it's today.
                 ts_display = ""
                 if h["timestamp"]:
                     try:
                         ts = datetime.datetime.fromisoformat(h["timestamp"])
                         now = datetime.datetime.now()
                         if ts.date() == now.date():
-                            # %#I is Windows strftime for "no leading zero"
                             try:
                                 ts_display = ts.strftime("%#I:%M %p")
                             except ValueError:
@@ -696,10 +759,6 @@ class Memory(Module):
             for memory in data.get("memories", []):
                 meta = dict(memory.get("metadata", {}) or {})
 
-                # Explicit truthiness checks instead of setdefault —
-                # setdefault only fills MISSING keys, so a source JSON
-                # with `"timestamp": null` or `"timestamp": ""` would
-                # slip through and get stored as a bad value.
                 ts = meta.get("timestamp")
                 if not ts or not isinstance(ts, str) or not ts.strip():
                     meta["timestamp"] = datetime.datetime.now().isoformat(
@@ -709,7 +768,7 @@ class Memory(Module):
                 imp = meta.get("importance")
                 try:
                     f = float(imp)
-                    if f != f or f < 0.0 or f > 1.0:   # NaN or out-of-range
+                    if f != f or f < 0.0 or f > 1.0:
                         raise ValueError
                 except (TypeError, ValueError):
                     meta["importance"] = DEFAULT_IMPORTANCE
