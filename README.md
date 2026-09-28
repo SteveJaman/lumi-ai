@@ -12,6 +12,11 @@ tool calling** through Ollama's native `/api/chat` tool interface. When she
 calls a tool, it actually runs. When she says she did something, you can check
 the log and see that she did.
 
+Since Phase 10 she also has a **local web client** at `127.0.0.1:5000` — a
+fully offline hub for chat, memory browsing, dashboards, and (eventually)
+persona editing. The terminal remains a first-class developer tool; the two
+surfaces share the same state and history.
+
 ---
 
 ## Table of Contents
@@ -28,10 +33,12 @@ the log and see that she did.
   - [Autonomous Heartbeat](#autonomous-heartbeat)
   - [Ambient Screen Awareness](#ambient-screen-awareness)
   - [Avatar Control (VTube Studio)](#avatar-control-vtube-studio)
+  - [Local Web Client](#local-web-client)
   - [Multimodal (Optional)](#multimodal-optional)
   - [Diagnostics Dashboard](#diagnostics-dashboard)
   - [Integrations](#integrations)
 - [Terminal Commands](#terminal-commands)
+- [Web Client](#web-client)
 - [Architecture](#architecture)
   - [Turn Flow](#turn-flow)
   - [Architecture Topology](#architecture-topology)
@@ -44,6 +51,7 @@ the log and see that she did.
   - [Agent Mode Example](#agent-mode-example)
   - [Avatar Control Example](#avatar-control-example)
   - [Memory Query Example](#memory-query-example)
+  - [Memory Backfill](#memory-backfill)
   - [Self-Model Query Example](#self-model-query-example)
   - [Model Routing Query Example](#model-routing-query-example)
 - [Voice Customization](#voice-customization)
@@ -79,6 +87,14 @@ to do next — up to `MAX_AGENT_STEPS = 6` per turn.
 
 Because `write_file`, `run_command`, and `run_in_terminal` are gated behind a
 `y/n` prompt, nothing destructive ever runs without your explicit approval.
+`ConsoleInput` yields stdin during the confirmation prompt (via
+`signals.input_paused`) so the terminal's own reader doesn't steal the
+keystroke.
+
+**Agent mode is a pure toggle.** Off means conversational only — no tools, no
+notices, no refusals. On means full agentic loop. There is no in-between
+heuristic. Toggle it with `!agent_on` / `!agent_off` in the terminal, or the
+agent chip in the web chat.
 
 ### Multi-Step Task Execution
 
@@ -105,6 +121,10 @@ files it wasn't asked to write, or looping on the same failed command:
 - **Intent-announcement guard** — catches "let me X" / "let's see" / "now
   let's" without an actual tool call
 - **Refusal guard** — catches "I can't" and re-prompts with the original request
+- **No-tool-call retry** — if step 0 returns prose for a request that clearly
+  needs a tool, forces one retry with an explicit "call the tool, don't
+  narrate it" nudge. This catches the "create a hello world script" case
+  where the model tries to write code inline
 - **Read-only query gate** — refuses `write_file` when the user only asked to read
 - **No-op write guard** — refuses writes identical to the current file
 - **Duplicate-call guard** — skips repeat tool calls; clears the memory after a
@@ -152,10 +172,23 @@ state.
 
 **Qwen3 thinking mode.** Qwen3 has an internal reasoning scratchpad that's on
 by default. It's genuinely useful for complex queries and agent turns — the
-model plans before acting. It's pure overhead for casual chat. Lumi passes
-`think=false` for the fast path and `think=true` for the full path and agent
-turns. Background tasks (memory reflection, session summary, self-model)
-always pass `think=false` — they're structured extraction, not reasoning.
+model plans before acting. It's pure overhead for casual chat and **actively
+breaks structured extraction tasks** because the model spends the entire
+`num_predict` budget on reasoning and returns an empty `content` field.
+
+| Task | think flag |
+|---|---|
+| Fast conversational path | `false` |
+| Full conversational path | `true` |
+| Agent turns | `true` |
+| Memory reflection | `false` |
+| Session summary | `false` |
+| Self-model reflection | `false` |
+| Heartbeat decision | `false` |
+
+This distinction matters. Without `think=false` on the background tasks, the
+reflection loop silently returns empty content and no memories ever get
+stored. The fix is in `modules/memory.py` and `modules/session_state.py`.
 
 ### Persona & Voice
 
@@ -190,17 +223,25 @@ ChromaDB-backed long-term memory with **timestamped, importance-scored facts**.
   `0.50 * similarity + 0.30 * importance + 0.20 * recency`, with a 30-day
   half-life on the recency term. Old facts naturally fade; important recent
   ones surface.
-- Two query surfaces:
+- Three query surfaces:
   - `!recall <query>` — terminal command, sorted oldest-first, with
     importance markers (`★` for 0.85+, `·` for 0.6+) and age hints
     (`[6:16 PM]`, `[yesterday]`, `[2d ago]`)
   - `recall_memory(query, since)` — an agent tool Lumi can call on her own
     when you ask "do you remember…" or "when did we talk about…"
+  - **Memory page in the web client** — full table, semantic search, edit,
+    delete, add, export
 - Temporal hints (`yesterday`, `last week`, `3 days ago`) are parsed in both
   the injection path and the explicit query path.
 - A migration pass runs on startup and repairs any legacy records with
   missing or malformed metadata. Idempotent — silent when there's nothing
   to fix.
+- **Reflection payload passes `think=False`** so Qwen3 writes JSON directly
+  to content instead of burning tokens on reasoning. This was a silent
+  bug that made reflection appear to succeed while storing zero facts.
+- **`processed_count` reset uses `>=`** so the counter doesn't stick after
+  history hits the 20-message trim cap. Without this, reflection fires twice
+  per session and then stops.
 
 ### Emotional State & Cognitive Frames
 
@@ -245,7 +286,7 @@ first and hallucinated numbers ("an hour" for a 5-minute session, "two
 unprompted messages" when the count was 0). The larger model reports
 accurately.
 
-Check current state any time with `!self`.
+Check current state any time with `!self` in the terminal.
 
 ### Autonomous Heartbeat
 
@@ -261,6 +302,9 @@ active window title, current mood, and her recent unprompted messages (to
 avoid repeating herself). She responds with either a short anchored message or
 the literal token `SILENCE`. When in doubt, she leans toward speaking — a
 companion who only talks when something is wrong is not good company.
+
+`_fmt_age()` handles `float('inf')` (fresh session, no user message yet) and
+NaN without raising — the earlier overflow bug in the gating logic is fixed.
 
 ### Ambient Screen Awareness
 
@@ -338,6 +382,41 @@ fall through the guard. For batch operations use the terminal commands
 (`!set hat off`, `!set jacket on`, etc.) — they're idempotent, always land,
 and skip the LLM entirely.
 
+### Local Web Client
+
+A fully offline localhost web application served at `http://127.0.0.1:5000/`
+by `modules/socketIO.py`. Replaces the terminal as the primary product
+surface. Target audience is non-technical — every setup step that currently
+requires editing a code file becomes a form (in progress).
+
+**Shipped pages:**
+
+- **Auth** — first-run redirects to `/setup` (single-screen register form).
+  Subsequent visits hit `/` and the login card. Argon2id hashes, 30-day
+  sliding session, 5/min/user login rate limit. `SameSite=Lax`, HttpOnly
+  session cookie. CSRF double-submit on every state-changing POST.
+- **Chat** — default landing page. Message bubbles with avatars, Fish Audio
+  tag chips above each reply, agent-mode toggle chip in the status strip.
+  Polls `/api/history` every 1.5s so the log survives tab switches. Enter
+  sends, Shift+Enter newline. Optimistic render of outgoing messages.
+- **Dashboard** — stat cards + live event stream from the log hub
+  (`127.0.0.1:5001`), filterable by category chip. Refresh button.
+- **Memory browser** — full table of every stored fact. Star marker for
+  importance, age, valence chip, Edit / Delete buttons. Semantic search
+  (hits ChromaDB vector index, not substring). Sort by newest/oldest/
+  importance. Expandable rows show full metadata. `+ Add memory` modal.
+  `Export JSON` button.
+- **Persona, Models, Integrations, Settings** — placeholder stubs. Designed,
+  not built.
+
+**Terminal and web share state.** Typing in the terminal appends to the same
+`signals.history` the web client polls. Messages sent from the browser go
+through the same prompter loop. Agent mode is one shared boolean — flipping
+the chip flips terminal behavior, and vice versa.
+
+**Persistence.** Users live in `memories/users.db` (SQLite). Sessions survive
+process restarts. Memory facts live in `memories/chroma.db` (ChromaDB).
+
 ### Multimodal (Optional)
 
 `MultiModal` module captures your primary/secondary monitor on demand, asks a
@@ -403,10 +482,39 @@ Type `!list` at any time to see the full command card. Summary:
 | `wipe memory` | Clear all long-term ChromaDB memories |
 
 **Agent mode is OFF by default.** At startup, every message goes through a
-plain chat completion with no tools — Lumi can't invent tasks on idle banter.
-Only `!agent_on` or `!agent <task>` opens the tool interface. The `!set`,
-`!expression`, `!move`, `!hotkeys`, `!positions`, and `!expressions` commands
-do NOT require agent mode — they pass through to VTS directly.
+plain chat completion with no tools. Only `!agent_on` or `!agent <task>`
+opens the tool interface. The `!set`, `!expression`, `!move`, `!hotkeys`,
+`!positions`, and `!expressions` commands do NOT require agent mode — they
+pass through to VTS directly.
+
+---
+
+## Web Client
+
+`python main.py` starts both the terminal prompt and the web client. Open
+`http://127.0.0.1:5000/` in a browser.
+
+**First boot:** you'll be redirected to `/setup`. Create an account (username
++ password + optional display name). Lumi's persona will address you by the
+display name from then on — the running `HOST` object updates on login and
+the system prompt rebuilds.
+
+**Subsequent boots:** login screen → chat.
+
+**What works:**
+- Chat with tag chips, agent-mode toggle, message persistence across tabs
+- Memory browser with semantic search, edit, delete, add, export
+- Dashboard with live log hub event stream
+- Terminal input from the same page — messages sent from the terminal show
+  up in the web chat within ~1.5s
+
+**What doesn't yet:**
+- Persona editor (10.10)
+- Model manager (10.12)
+- Integrations cards (10.13)
+- Settings page (10.14)
+- Per-user memory/emotional isolation (10.15, 10.16)
+- Full multi-step setup wizard (10.8 — currently single-screen)
 
 ---
 
@@ -415,22 +523,28 @@ do NOT require agent mode — they pass through to VTS directly.
 ### Turn Flow
 
 ```
-User input (terminal, mic, or Discord)
+User input (terminal, mic, Discord, or web chat)
         │
         ▼
-Command router (checks !agent_on/off, !list, !state, !recall, !self, !model,
-                mood, memory wipes, !set, !expressions, !expression, !move,
-                !hotkeys, !positions)
+Append to signals.history + flip signals.new_message = True
         │
-        ├─── conversational mode
+        ▼
+Prompter run loop picks it up
+        │
+        ├─── command router (checks !agent_on/off, !list, !state, !recall,
+        │                    !self, !model, mood, memory wipes, !set,
+        │                    !expressions, !expression, !move, !hotkeys,
+        │                    !positions)
+        │
+        ├─── conversational mode (agent mode OFF)
         │     ├─ Routing decision: fast or full path
-        │     ├─ Build system prompt (persona + tool directive + memory + mood
-        │     │  + emotional state + cognitive frame + ambient context
+        │     ├─ Build system prompt (persona + no-tools directive + memory
+        │     │  + mood + emotional state + cognitive frame + ambient context
         │     │  + self-model observations + continuity)
         │     └─ POST to Ollama /api/chat (no tools; think flag per path)
         │
         ├─── agent mode → run_agent_turn() on main path:
-        │     ├─ Build system prompt (same injection stack)
+        │     ├─ Build system prompt (same injection stack + tool directive)
         │     ├─ Append history
         │     ├─ POST to Ollama /api/chat with tool schemas, think=true
         │     ├─ If tool_calls returned:
@@ -448,7 +562,10 @@ Command router (checks !agent_on/off, !list, !state, !recall, !self, !model,
               └─ !move / vtube_move → reposition model
         │
         ▼
-Self-model note_turn() — records tags, frame, length for the next reflection
+Self-model note_turn() — records tags, frame, length for next reflection
+        │
+        ▼
+Web clients polling /api/history see the new turn within ~1.5s
 ```
 
 ### Architecture Topology
@@ -464,6 +581,7 @@ flowchart TD
         TERM[Terminal]
         MIC[Microphone]
         DISC[Discord Text / Voice]
+        WEB[Web Chat<br/>127.0.0.1:5000]
     end
 
     STT[faster-whisper STT<br/>GPU float16, VAD barge-in]
@@ -473,6 +591,7 @@ flowchart TD
     TERM --> CR
     STT --> CR
     DISC --> CR
+    WEB -->|HTTP /api/chat/send| CR
 
     CR -->|"!agent_on/off, !list, !state,<br/>!recall, !self, !model, mood,<br/>!set, !expression, !move"| CMDS[Direct Command Handlers]
     CR -->|conversational| CONV[Conversational Mode]
@@ -528,6 +647,24 @@ flowchart TD
     TTS --> OUT_DISC[Discord Voice]
     TTS -.->|first canonical tag| VTS
 
+    GUARDS -->|assistant reply| HIST[signals.history]
+    HIST --> WEB
+
+    %% ===== WEB LAYER =====
+    subgraph WEBSTACK["Web Client Stack"]
+        SIO[aiohttp + python-socketio<br/>127.0.0.1:5000]
+        AUTH[user_auth.py<br/>SQLite + argon2id]
+        BROWSER[Browser SPA<br/>web/index.html + app.js]
+    end
+    WEB --> SIO
+    SIO --> AUTH
+    SIO --> BROWSER
+    BROWSER -->|poll /api/history 1.5s| SIO
+    BROWSER -->|poll /api/status 2s| SIO
+    BROWSER -->|POST /api/chat/send| SIO
+    BROWSER -->|POST /api/agent/toggle| SIO
+    BROWSER -->|CRUD /api/memories/*| SIO
+
     %% ===== BACKGROUND LOOPS =====
     subgraph BG["Background Modules — always running"]
         direction TB
@@ -535,7 +672,7 @@ flowchart TD
         AMBIENT_MOD[Ambient Perception<br/>screen sampler every 30s]
         SELFMODEL[Self-Model<br/>snapshot 60s / reflect 10min]
         EMOSTATE[Emotional State<br/>decay every 30s]
-        MEMREFLECT[Memory Reflection<br/>every ~10 messages]
+        MEMREFLECT[Memory Reflection<br/>every ~10 messages<br/>think = false]
     end
 
     HEARTBEAT -->|message or SILENCE| OLLAMA
@@ -546,11 +683,12 @@ flowchart TD
     MEMREFLECT --> CHROMA[("ChromaDB<br/>timestamp / importance / valence")]
     CHROMA --> MEM_INJ
     MEM_TOOL --> CHROMA
+    SIO --> CHROMA
 
     %% ===== DIAGNOSTICS =====
     subgraph DIAG["Diagnostics"]
-        LOGHUB[Log Hub]
-        DASH["Dashboard<br/>127.0.0.1:5001"]
+        LOGHUB[Log Hub<br/>127.0.0.1:5001]
+        DASH[Dashboard page]
     end
     HEARTBEAT -.-> LOGHUB
     AMBIENT_MOD -.-> LOGHUB
@@ -560,6 +698,7 @@ flowchart TD
     VTS -.-> LOGHUB
     TTS -.-> LOGHUB
     LOGHUB --> DASH
+    BROWSER -.->|iframe or fetch| LOGHUB
 
     %% ===== STYLING =====
     classDef input fill:#2b6cb0,stroke:#1a4971,color:#fff
@@ -571,30 +710,33 @@ flowchart TD
     classDef storage fill:#718096,stroke:#4a5568,color:#fff
     classDef output fill:#e53e3e,stroke:#9b2c2c,color:#fff
     classDef diag fill:#a0aec0,stroke:#4a5568,color:#1a202c
+    classDef web fill:#4299e1,stroke:#2b6cb0,color:#fff
 
-    class TERM,MIC,DISC,STT input
+    class TERM,MIC,DISC,STT,WEB input
     class CR,CMDS,CONV,AGENT,ROUTE_DECISION,DISPATCH,CONFIRM router
     class PERSONA,MEM_INJ,MOOD,EMO,FRAME,AMBIENT,SELF_INJ,CONT context
     class FAST_PATH,MAIN_PATH,OLLAMA model
     class FILE_TOOLS,CMD_TOOLS,WEB_TOOLS,MEM_TOOL,AVATAR_TOOLS,EXEC,VTS,GUARDS tools
     class HEARTBEAT,AMBIENT_MOD,SELFMODEL,EMOSTATE,MEMREFLECT,VLM background
     class CHROMA storage
-    class TTS,OUT_SPEAK,OUT_DISC,SKIP output
+    class TTS,OUT_SPEAK,OUT_DISC,SKIP,HIST output
     class LOGHUB,DASH diag
+    class SIO,AUTH,BROWSER web
 ```
 
 **Legend**
 
 | Color | Layer |
 |---|---|
-| Blue | Input sources (terminal, mic, Discord, STT) |
+| Blue | Input sources (terminal, mic, Discord, STT, web chat) |
 | Purple | Routing / dispatch logic |
 | Green | System prompt context-injection stack |
 | Orange | Ollama model paths (fast / main, shared weights) |
 | Pink | Agent tools + safety guards |
 | Teal | Always-on background modules |
 | Gray | Persistent storage (ChromaDB) |
-| Red | Output (TTS, speakers, Discord voice) |
+| Red | Output (TTS, speakers, Discord voice, history) |
+| Light blue | Web client stack |
 | Light gray | Diagnostics / dashboard |
 
 ### Key Files
@@ -605,18 +747,24 @@ flowchart TD
 | `modules/prompter.py` | Agent loop, command router, detection guards, model routing, format enforcement, avatar tool dispatch |
 | `modules/agent_tools.py` | Tool schemas + filesystem/command execution |
 | `modules/vtubeStudio.py` | VTube Studio controller — expression state tracking, parameter probing, keyboard fallback, organic motion |
-| `modules/memory.py` | ChromaDB long-term memory, reflection loop, temporal queries |
+| `modules/memory.py` | ChromaDB long-term memory, reflection loop, temporal queries, browser API |
+| `modules/import_chat_history.py` | Offline backfill from `logs/chat_history.json` |
+| `modules/user_auth.py` | SQLite + argon2id user store, session tokens |
+| `modules/socketIO.py` | Web client host — aiohttp HTTP routes + python-socketio events + static file serving |
 | `modules/emotional_state.py` | Traits, state variables, cognitive frame selection |
 | `modules/self_model.py` | Pattern tracking, periodic reflection, sparse injection |
 | `modules/heartbeat.py` | Autonomous initiation loop |
 | `modules/ambient_perception.py` | Background screen sampler + VLM descriptions |
 | `modules/session_state.py` | Cross-session continuity (focus, unresolved, running bits) |
 | `modules/log_hub.py` | Structured diagnostics stream + localhost dashboard |
-| `modules/console_input.py` | Prompt-pinned terminal UI |
-| `modules/socketIO.py` | Web control panel backend (Socket.io on port 5000) |
+| `modules/console_input.py` | Prompt-pinned terminal UI (yields stdin during confirmations) |
 | `modules/tts.py` | Fish Audio HTTP client with per-language reference support |
-| `signals.py` | Shared state object (history, flags, queues) |
-| `constants.py` | Config, workspace path, YAML persona loader, model names |
+| `web/index.html` | SPA shell — auth card + app layout |
+| `web/style.css` | Design system — tokens, components, layout |
+| `web/app.js` | SPA router, auth, chat, dashboard, memory browser |
+| `web/setup.html` / `web/setup.js` | First-run single-screen register form |
+| `signals.py` | Shared state object (history, flags, queues, input_paused) |
+| `constants.py` | Config, workspace path, YAML persona loader, HOST object, model names |
 | `lumi.yaml` | Full persona definition — personality, lore, favorites, fears |
 
 ### Background Modules
@@ -636,6 +784,12 @@ Each module runs in its own thread with its own event loop, spawned by
 - **PyYAML** (`pip install pyyaml`)
 - **pyvts** (`pip install pyvts`) — for VTube Studio avatar control
 - **keyboard** (`pip install keyboard`) — for VTS hotkey simulation
+- **aiohttp** + **python-socketio** (`pip install aiohttp python-socketio`) —
+  for the local web client
+- **argon2-cffi** (`pip install argon2-cffi`) — for password hashing in
+  `user_auth.py`. Falls back to `pbkdf2_hmac` if missing, but argon2id is
+  recommended
+- **chromadb** (`pip install chromadb`) — long-term memory
 - **Conda** recommended for environment isolation
 
 ### Recommended Models
@@ -677,7 +831,12 @@ setup and is what makes the whole stack fit comfortably on an 11 GB card.
 - Fast path: `think=false` — no reasoning block, minimal latency
 - Full path: `think=true` — reasoning enabled for depth
 - Agent turns: `think=true` — the model plans multi-step tool sequences
-- Background tasks (memory, session, self-model, heartbeat): `think=false`
+- Background tasks (memory reflection, session summary, self-model,
+  heartbeat): `think=false` — structured extraction, not reasoning
+
+The `think=false` on background tasks is not optional. Qwen3 will otherwise
+consume the entire `num_predict` budget on internal reasoning and return an
+empty `content` field, silently breaking memory extraction.
 
 **Alternative models:** any tool-calling model works. Qwen2.5:7b is a good
 fallback if Qwen3's thinking mode causes issues on your Ollama version.
@@ -711,8 +870,12 @@ mangling on injected context.
 
    ```bash
    pip install -r requirements.txt
+   pip install aiohttp python-socketio argon2-cffi chromadb
    playwright install firefox
    ```
+
+   If `requirements.txt` already lists these, the second line is redundant.
+   Check with `pip list | grep -E "aiohttp|socketio|argon2|chroma"`.
 
 4. **Create `.env`** at the workspace root:
 
@@ -767,8 +930,27 @@ You'll see the audio routing menu:
 Select audio routing (1/2/3):
 ```
 
-Once initialized, talk to her in the terminal, over the mic (`\` to toggle
-mute), or via Discord text/voice.
+Once initialized:
+
+```
+=======================================================
+  Lumi AI Ready — Audio routed to: LOCAL
+  Mic: active (press \ to toggle mute)
+  Web client:  http://127.0.0.1:5000/
+  Diagnostics: http://127.0.0.1:5001/
+=======================================================
+```
+
+Three ways to interact:
+
+- **Terminal** — type at the prompt, `\` toggles mic mute
+- **Microphone** — just talk, VAD triggers recording
+- **Web client** — open `http://127.0.0.1:5000/`, first visit redirects to
+  setup, subsequent visits go to login → chat
+
+All three share the same `signals.history`. A message typed at the terminal
+shows up in the web chat within 1.5 seconds. A message sent from the browser
+goes through the same prompter loop that handles terminal input.
 
 ### Agent Mode Example
 
@@ -801,6 +983,11 @@ Thinking (agent step 2/6)...
 
 [confident] There you go. The output is real — I actually ran it.
 ```
+
+The same turn can be driven from the web chat. Click the **Agent mode** chip
+so it says `⚡ Agent mode: ON`, then type the request into the browser input.
+The confirmations still happen in the terminal — that's where the `y/n`
+prompt lives — but the message and Lumi's reply both appear in the web chat.
 
 ### Avatar Control Example
 
@@ -874,6 +1061,36 @@ Memory recall: 'perception'
 
 The `★` marker means importance ≥ 0.85, `·` means ≥ 0.6.
 
+Or in the web client — click **Memory** in the sidebar. Same data, sortable,
+searchable, editable.
+
+### Memory Backfill
+
+If your `memories/chroma.db` is empty but you have prior conversations saved
+in `logs/chat_history.json`, run the importer to backfill:
+
+```bash
+# Make sure main.py is closed — ChromaDB takes an exclusive file lock
+python modules\import_chat_history.py --dry-run
+```
+
+The dry-run shows what would be stored without writing anything. Look at the
+extracted facts. If they're sensible, run it for real:
+
+```bash
+python modules\import_chat_history.py
+```
+
+Options:
+
+- `--wipe` — delete the entire collection before importing
+- `--dry-run` — show what would be stored without writing
+- `--chunk-size N` — messages per reflection chunk (default 12)
+
+The script dedupes against existing facts by exact text match, so running it
+twice won't create duplicates. Move the file to `modules/` (it lives there)
+and run it as `python modules\import_chat_history.py` from the workspace root.
+
 ### Self-Model Query Example
 
 ```
@@ -936,6 +1153,9 @@ is forwarded to the VTube Studio module as an expression trigger — `[moved]`
 fires heart eyes, `[angry]` fires the shadow face, `[confused]` fires spiral
 eyes. So her choice of delivery tag colors both voice and face at once.
 
+**In the web client**, the tags appear as small chips above each message
+bubble instead of raw `[sarcastic]` text.
+
 **To change the voice:** record a 10–30 second clip of the voice you want,
 upload it to Fish Audio, get a `reference_id`, and update `.env`. Voice quality
 is heavily influenced by the reference clip — quiet room, consistent volume,
@@ -944,10 +1164,7 @@ and varied intonation all matter.
 **Pitch limitations:** Fish Audio's tag system lets you influence *delivery*
 (tone, pace, emphasis) but not raw pitch. Per-word F0 modulation — the kind
 you hear in Evil Neuro — requires a custom TTS pipeline with an explicit pitch
-extractor and a neural vocoder. Not included. Attempting pitch-shift
-post-processing with ffmpeg was tried and rejected — the reference voice is
-already at the high end of natural range, and any meaningful shift reads as
-artificial.
+extractor and a neural vocoder. Not included.
 
 ---
 
@@ -957,9 +1174,7 @@ Lumi is designed to run on a single consumer GPU, but idle resource use can be
 trimmed significantly:
 
 1. **Share model weights between paths.** Both main and fast use the same
-   `lumi-qwen3` model name, so Ollama keeps one copy in VRAM. The alternative
-   (two separate models) doubles LLM VRAM usage for no quality benefit on
-   this workload.
+   `lumi-qwen3` model name, so Ollama keeps one copy in VRAM.
 
 2. **Unload model between turns.** `keep_alive` is set to `5m` on both paths,
    so the model unloads after 5 minutes of inactivity. Idle GPU drops to
@@ -972,14 +1187,16 @@ trimmed significantly:
    - `DiscordClient` — loads a second Whisper model
    - `BrowserController` — holds a Playwright Firefox context
    - `VtubeStudio` — light when idle, but requires VTS to be running
-   - `MicInput` — set to `False` if you mostly type at the terminal
+   - `MicInput` — set to `False` if you mostly type
+   - `SocketIOServer` — set to skip startup if you don't want the web client
+     (you'll need to remove the `threading.Thread(target=sio_server.run)`
+     block in `main.py`)
 
-4. **Auto-detect remote sessions.** `MicInput` is disabled automatically when
-   `SESSIONNAME` starts with `RDP-` in `constants.py`, so remote sessions boot
-   without mic load.
+4. **Reduce `num_ctx`.** From `16384` to `8192` saves ~0.5 GB VRAM.
 
-5. **Reduce `num_ctx`.** From `16384` to `8192` saves ~0.5 GB VRAM and slightly
-   reduces per-token inference cost on the main path.
+5. **Trim history.** Prompter trims to 20 messages by default. Raising this
+   increases prompt size on every turn but preserves more backfill material
+   for the memory importer.
 
 ---
 
@@ -998,45 +1215,48 @@ trimmed significantly:
   `[tool "val" true]`. All are recovered by a chain of parsers, but the
   bracket-positional form occasionally needs an extra retry step when the
   user asks for many things at once.
+- **Qwen3 thinking mode** — Every background task that expects structured
+  JSON output (memory reflection, session summary, self-model, heartbeat)
+  must pass `think=false`. If you swap models, verify this behavior carries
+  over. Qwen2.5 does not have a reasoning mode and ignores the flag safely.
+- **Memory reflection latency** — The reflection loop only fires when
+  `new_message` and `AI_thinking` are both False, i.e. between turns.
+  During an active conversation it queues up and runs on the first idle
+  tick. If you talk continuously for a long stretch, memories accumulate
+  slower than turns.
+- **Memory reflection quality** — The current reflection prompt does not
+  explicitly forbid facts about Lumi herself. Recent backfills produced
+  rows like "Lumi Voidwright can see through their code" which pollute
+  retrieval. A tightened prompt is on the TODO list.
 - **VTS avatar multi-item fabrications** — On requests with more than ~3
-  items ("reset everything, take off your hat, put your jacket on, hide both
-  ponytails, drop the controller..."), Lumi sometimes narrates success in
-  prose instead of firing each individual `vtube_set_expression` tool call.
-  The fabrication guard catches most shapes but not all. Use `!set` terminal
-  commands for batch operations — they bypass the LLM entirely and always
-  land.
+  items, Lumi sometimes narrates success in prose instead of firing each
+  individual `vtube_set_expression` tool call. Use `!set` terminal commands
+  for batch operations.
 - **VTS state drift** — If you manually press a bound hotkey in VTS
   (Ctrl+3 for hat, etc.), the module's internal `_toggle_state` dict drifts
-  from the actual model state. A subsequent `vtube_set_expression` call may
-  no-op when it should fire. Fix: `!set <name> on` / `!set <name> off`
-  re-syncs the tracked state idempotently. VTS does not expose a read API for
-  current expression state, so a true auto-resync isn't possible.
+  from the actual model state. Fix: `!set <name> on` / `!set <name> off`
+  re-syncs the tracked state idempotently.
 - **VTS focus stealing** — The keyboard fallback path briefly focuses the
   VTS window to send the keypress (~250ms per hotkey). If a batch of hotkeys
-  fires, focus returns to whatever you were doing after the last one. Any
-  keystrokes you type during that window may land in VTS instead of your
-  active application.
-- **VTS parameter injection on physics-managed params** — Some model configs
-  (`UseBreathing: true`, head-sway physics writing back to `ParamAngleX`)
-  refuse direct API injection into managed parameters. The VTS module probes
-  the model at boot to discover which params accept injection and which
-  silently reject it; managed params are skipped.
+  fires, focus returns after the last one.
 - **Discord voice receive** — Discord's DAVE end-to-end encryption requires
   `discord-ext-voice-recv >= 0.5.2a`. Older versions connect but receive no
   audio. Voice receive is currently paused in this build; text works.
-- **Voice pitch control** — Fish Audio's tag system influences delivery but
-  not raw pitch. See [Voice Customization](#voice-customization).
-- **Ambient VLM accuracy** — moondream is a small model. It reliably
-  identifies general context (code editor open, browser page, terminal) but
-  can misname specific applications ("code editor" for a browser window, for
-  example). Descriptions are structurally correct even when not perfectly
-  app-accurate.
+- **Web client /api/memories search** — Semantic search results do not
+  carry IDs back from ChromaDB, so the Edit / Delete buttons are hidden on
+  search hits. Find the memory in the full list first.
+- **Web client chat depends on polling** — The chat log refreshes from
+  `/api/history` every 1.5 seconds. There is no live push. Socket.io is
+  wired but not required. If the socket fails (proxy, extension, antivirus
+  HTTPS scanner on localhost), chat still works — just with a small delay.
+- **Single active user** — The web client is one-user-at-a-time. Logging in
+  as a second user switches the shared `HOST` object. Per-user isolation of
+  memory and emotional state is Phase 10.15 / 10.16.
 - **Self-modification** — Lumi can edit `prompter.py` and other writable
   files in the workspace. Always read the `write_file` confirmation blob
   before confirming; a `.bak` is saved automatically.
-- **Port conflicts** — the log hub listens on `127.0.0.1:5001` and the
-  Socket.io control panel on `5000`. Both must be free at boot. Change
-  `DEFAULT_PORT` in `modules/log_hub.py` if 5001 is occupied.
+- **Port conflicts** — the log hub listens on `127.0.0.1:5001` and the web
+  client on `5000`. Both must be free at boot.
 
 ---
 
@@ -1044,8 +1264,7 @@ trimmed significantly:
 
 Architectural phases inspired by Neuro-sama (Vedal987). The goal is not
 intelligence parity — it's architectural parity. Neuro runs continuously, has
-internal state, makes her own decisions, and acts without being prompted. This
-project closes that gap in measurable steps.
+internal state, makes her own decisions, and acts without being prompted.
 
 | Phase | Description | Status |
 |---|---|---|
@@ -1058,22 +1277,48 @@ project closes that gap in measurable steps.
 | 6.5 | Avatar control (VTube Studio) | ✅ Complete |
 | 7 | Discord voice bridge (C# sidecar) | ⏳ In progress |
 | 8 | External SDK (websocket plugin host) | ⏳ Planned |
-| 9 | Security hardening | ⏳ Planned |
-| 10 | Local web client | 🟡 Designed |
+| 9 | Security hardening | 🟡 Partial (see below) |
+| 10 | Local web client | 🟡 MVP shipped |
 
-Every phase through 6.5 is shipped and stable. Phases 7–10 are documented in
-the project roadmap and represent optional polish — nothing is broken, and
-the existing architecture supports all of them cleanly.
+**Phase 10** went from "designed" to "MVP shipped" this cycle:
 
-**Phase 10 (local web client)** is the next major surface change: a
-fully-offline localhost web application at `127.0.0.1:5000` with user
-registration, chat interface, embedded dashboard, and settings panel. This
-replaces the terminal as the primary interaction surface while keeping the
-terminal as an optional debug client. All assets vendored locally — no CDN,
-no external requests.
+- ✅ 10.1 Identity refactor — `HOST` mutable, `build_system_prompt(host)`,
+  `<host>` templating
+- ✅ 10.2 Design system — `web/style.css` with tokens + components
+- ✅ 10.3 User auth — `modules/user_auth.py`, SQLite + argon2id
+- ✅ 10.4 Auth HTTP routes — register / login / logout / me
+- ✅ 10.5 Shell + navigation — sidebar, user chip, status pills
+- ✅ 10.6 Login / Register UI
+- ✅ 10.7 Chat page — polling, tag chips, agent-mode toggle
+- 🟡 10.8 Setup wizard — single-screen form; full multi-step pending
+- ✅ 10.9 Dashboard page — stat cards + log hub event stream
+- ❌ 10.10 Persona editor
+- ✅ 10.11 Memory browser — table, search, edit, delete, add, export
+- ❌ 10.12 Model manager
+- ❌ 10.13 Integrations page
+- ❌ 10.14 Settings page
+- ❌ 10.15 Per-user memory isolation
+- ❌ 10.16 Per-user emotional state isolation
+- 🟡 10.17 Security hardening — CSRF, origin check, SameSite, rate limit,
+  sandbox, textContent rendering all done; full audit pending
+- ✅ 10.18 Terminal as fallback client — shares `signals.history`
+- ❌ 10.19 Voice in browser (deferred)
 
-Use her for a week before deciding which (if any) of the remaining items
-matter. Real use drives the next round of tuning, not a checklist.
+**Phase 9** is partially addressed by what shipped alongside Phase 10:
+
+- ✅ CSRF double-submit on all state-changing POSTs
+- ✅ Origin check on WebSocket handshake
+- ✅ Rate limit `/auth/login` to 5/min/user
+- ✅ aiohttp bound strictly to `127.0.0.1`
+- ✅ Static file handler refuses path traversal
+- ✅ Frontend rendering via `textContent`, never `innerHTML`
+- ❌ Prompt injection provenance tagging (9.1)
+- ❌ SDK authentication (9.2)
+- ❌ `realpath()` fix on the file sandbox (9.5)
+- ❌ Self-modification guard (9.10)
+
+Use her for a week before deciding which of the remaining items matter. Real
+use drives the next round of tuning, not a checklist.
 
 ---
 
@@ -1085,7 +1330,7 @@ Built as a personal project. Architecture inspired by Neuro-sama
 * **VTube Model:** [Arii / Ariu (Booth)](https://booth.pm/en/items/5879420)
 
 Built using Ollama, ChromaDB, Faster-Whisper, Fish Audio, Playwright,
-pyvts, and pyautogui.
+pyvts, aiohttp, python-socketio, and pyautogui.
 
 ---
 
