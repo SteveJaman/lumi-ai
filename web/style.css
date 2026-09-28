@@ -527,6 +527,7 @@ button { font-family: inherit; cursor: pointer; }
 .cat.mic       { color: var(--accent); }
 .cat.vts       { color: var(--teal); }
 .cat.system    { color: var(--text-dim); }
+.cat.discord { color: #7c9cff; }
 .cat.print     { color: var(--text-mute); font-style: italic; }
 
 /* ============================================================

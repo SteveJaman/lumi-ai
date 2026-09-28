@@ -421,7 +421,10 @@ class Memory(Module):
 
                 chat_section = ""
                 for message in messages:
-                    role = HOST.name if message.get("role") == "user" else AI_NAME
+                    if message.get("role") == "user":
+                        role = message.get("speaker") or HOST.name
+                    else:
+                        role = AI_NAME
                     chat_section += f"{role}: {message.get('content', '')}\n"
 
                 prompt = REFLECTION_PROMPT.replace("<<CHAT_SECTION>>", chat_section)

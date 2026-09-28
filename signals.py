@@ -30,6 +30,12 @@ class Signals:
         # Load history and force-initialize file on disk
         self.history = self.load_history(limit=30)
         self.save_history()
+        
+        # Phase 7.3-7.5 — voice-channel context. Populated by
+        # DiscordClient when the bot is in a voice channel; read by
+        # the prompter on every turn. None when not in voice.
+        self.voice_context = None
+        self.last_voice_speaker = None
 
     def load_history(self, limit=30):
         """Loads previous conversation turns from disk on startup."""
@@ -79,13 +85,24 @@ class Signals:
         except Exception as e:
             print(f"\033[90mHISTORY: Quantization skipped due to connection error: {e}\033[0m")
 
-    def add_message(self, role, content):
-        """Appends a message, quantizes if necessary, and persists to disk."""
-        self.history.append({"role": role, "content": content})
-        
+    def add_message(self, role, content, speaker=None, source=None):
+        """Appends a message, quantizes if necessary, and persists to disk.
+
+        `speaker` and `source` are optional metadata (Phase 7.3) used
+        for Discord voice attribution. They persist in the JSONL
+        history but are never sent to the LLM — the prompter reads only
+        role and content when building the message list.
+        """
+        msg = {"role": role, "content": content}
+        if speaker:
+            msg["speaker"] = speaker
+        if source:
+            msg["source"] = source
+        self.history.append(msg)
+
         if len(self.history) > 25:
             self.quantize_history()
-            
+
         self.save_history()
 
     def save_history(self):

@@ -999,6 +999,46 @@ class Prompter:
     def _agent_mode_banner(self):
         state = f"{GREEN}ON{RESET}" if self.agent_mode_enabled else f"{YELLOW}OFF{RESET}"
         return f"{GRAY}[agent mode: {state}{GRAY}]{RESET}"
+    
+    def _format_voice_context(self, vc):
+        """Render the Discord voice context into a prompt block."""
+        lines = ["=== DISCORD VOICE CONTEXT ==="]
+        lines.append(
+            f'You are in a Discord voice channel: "{vc.get("channel_name")}" '
+            f'on the server "{vc.get("guild_name")}".'
+        )
+
+        humans = [m for m in vc.get("roster", []) if not m.get("is_bot")]
+        mode = vc.get("mode", "solo")
+
+        if mode == "group" and humans:
+            names = ", ".join(m["display_name"] for m in humans)
+            lines.append(
+                f"Present in the channel: {names} ({len(humans)} people)."
+            )
+            lines.append(
+                "You're speaking to a room, not to one person. When a "
+                "message starts with '<Name>: ', that's who is talking "
+                "right now — address them by name when it clarifies who "
+                "you mean. Don't assume the last speaker is the only "
+                "listener. If a comment is aimed at the group, don't "
+                "force it into a reply to one person."
+            )
+        elif humans:
+            name = humans[0]["display_name"]
+            lines.append(f"Present in the channel: {name}.")
+            lines.append(
+                "You're in a 1:1 voice call with them. Casual, direct."
+            )
+        else:
+            lines.append("Nobody else is in the channel right now.")
+
+        last = getattr(self.signals, "last_voice_speaker", None)
+        if last:
+            lines.append(f"Last to speak: {last}.")
+
+        lines.append("=== END VOICE CONTEXT ===")
+        return "\n".join(lines)
 
     def render_command_list(self):
         lines = []
@@ -1223,6 +1263,16 @@ class Prompter:
                     title = ambient.current_window
                     if title:
                         injections.append(f"[Active window] {title}")
+                        
+                        # Phase 7.4 — Discord voice context. Only injected when the bot
+                        # is actively in a voice channel; None otherwise.
+                        voice_ctx = getattr(self.signals, "voice_context", None)
+                        if voice_ctx and voice_ctx.get("active"):
+                            try:
+                                injections.append(self._format_voice_context(voice_ctx))
+                            except Exception:
+                                pass
+                        
             except Exception:
                 pass
 

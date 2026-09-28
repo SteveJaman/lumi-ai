@@ -3,18 +3,17 @@
   Goal: Move from reactive chatbot to autonomous companion
   Reference: Neuro-sama (Vedal987) architecture
   Created:  2026-09-19
-  Updated:  2026-09-28 (PHASE 10 COMPLETE. Every item from 10.1
-                        through 10.20 shipped. Web client is now
-                        feature-complete end-to-end: chat, memory,
-                        persona editor, model manager, providers,
-                        integrations, settings, setup wizard, and
-                        voice-in-browser. All four background call
-                        sites (memory, session_state, self_model,
-                        heartbeat) route through chat_sync.
-                        Per-user memory AND emotional state
-                        isolation landed. Only Phases 7, 8, and 9
-                        remain.)
-  Prev:     2026-09-28 PM (Phase 10.10, 10.12, 10.13, 10.14)
+  Updated:  2026-09-28 PM3 (PHASE 7 COMPLETE. Discord voice receive
+                        and send both work. DAVE end-to-end
+                        encryption solved in pure Python via davey
+                        + DaveDecryptor — no C# sidecar needed.
+                        Multi-speaker attribution, group context,
+                        and roster injection all shipped. The only
+                        remaining phases are 8 (SDK) and 9
+                        (security hardening).)
+  Prev:     2026-09-28 PM2 (Phase 10 complete — web client,
+                        providers, per-user isolation, voice in
+                        browser, setup wizard.)
   (Streaming pipeline excluded by request)
 ================================================================
 
@@ -31,120 +30,120 @@ later items assume earlier ones are done.
   PROGRESS SUMMARY
 ================================================================
 
-  Phases fully complete:  1, 2, 3, 4, 5, 6, 6.5, 10
-  Phases remaining:       7 (Discord voice), 8 (SDK), 9 (security)
-  Phase 10:               COMPLETE. Every sub-phase 10.1-10.20
-                          is done. Web client at 127.0.0.1:5000 is
-                          the primary product surface, fully
-                          editable, with a first-run wizard, cloud
-                          provider support, per-user isolation, and
-                          voice-in-browser.
+  Phases fully complete:  1, 2, 3, 4, 5, 6, 6.5, 7, 10
+  Phases remaining:       8 (SDK), 9 (security hardening)
+  Optional polish:        7.6 (silero-vad), 7.7 (presence tracking)
 
-  Notable delta since last update (2026-09-28 PM2):
-    - PHASE 10.8 SHIPPED (FULL SETUP WIZARD).
-      Multi-step /setup route: account → providers → integrations
-      → done. Progress dots, ?step= routing, optional skips, client
-      picks its own starting step based on auth + setup-status.
+  Phase 7:                COMPLETE. The DAVE end-to-end encryption
+                          blocker that made this phase "IN PROGRESS"
+                          for weeks is now solved in pure Python.
+                          No C# sidecar. No external process. The
+                          bot receives encrypted Discord voice,
+                          decrypts it with the DaveSession
+                          discord.py already negotiated, decodes
+                          Opus per-SSRC, runs RMS VAD with
+                          hysteresis, and feeds faster-whisper.
+                          Send path works too. Multi-speaker
+                          attribution, group context, and roster
+                          awareness are all wired into the prompt.
 
-    - PHASE 10.15 SHIPPED (PER-USER MEMORY ISOLATION).
-      Every stored fact now carries a user_id matching HOST.user_id
-      at write time. get_prompt_injection, query_temporal, list_all,
-      get_by_id, export_all, update_memory, delete_memory, and wipe
-      all filter by the current user. A migration pass on init
-      backfills legacy rows with user_id="anthony". wipe_all_users()
-      added for the Advanced settings reset. ChromaDB `where` filter
-      used on every query.
+  Notable delta since last update (2026-09-28 PM3):
+    - PHASE 7.1 SUPERSEDED. The C# sidecar plan was the
+      workaround for a problem that no longer exists. The
+      Python `davey` module (the same Rust implementation
+      used by @snazzah/davey in AIRI's TypeScript bot) is
+      installed alongside discord.py 2.7+ and exposes the
+      DaveSession that discord.py negotiates on the
+      connection object. We read it lazily and decrypt in
+      the sink. No sidecar needed.
 
-    - PHASE 10.16 SHIPPED (PER-USER EMOTIONAL STATE ISOLATION).
-      EmotionalStateModule now keeps a dict of EmotionalState
-      instances keyed by user_id. Each state persists to
-      memories/emotional_state/{user_id}.json with a 5-minute
-      background flush and a final flush on shutdown. HOST.on_change
-      callback fires on login switch: outgoing state is persisted,
-      incoming one loaded from disk, signals.emotional_state re-
-      points to the new active instance. Every consumer keeps
-      working unchanged.
+    - PHASE 7.2 SHIPPED (Python receiver).
+      modules/discordClient.py now has:
+        · DaveDecryptor — reads vc._connection.dave_session,
+          decrypts each Opus frame via davey.MediaType.audio,
+          passes through when session isn't ready.
+        · OpusDecoderPool — one discord.opus.Decoder per
+          SSRC. Opus decoders carry inter-frame state, so
+          mixing speakers through one decoder corrupts both.
+        · LocalAudioSink with wants_opus() -> True.
+          The extension's PCM path decodes ciphertext into
+          noise, so we bypass it entirely.
+        · RMS VAD with hysteresis (start 0.020, stop 0.010).
+          Replaced the original peak-amplitude VAD which was
+          too spiky and merged utterances across pauses.
+        · silence_ms = 500, min_speech_ms = 250.
+          Matches the local mic path's feel.
+        · faster-whisper transcribe on 16 kHz mono PCM.
 
-    - PHASE 10.19 SHIPPED (VOICE IN BROWSER).
-      Two features in one:
-        · TTS playback: tts.py calls signals.broadcast_tts_audio()
-          when an utterance starts. socketIO fans the raw WAV bytes
-          out via socket.io to every opted-in client, base64 encoded.
-          Chat page has a persistent Voice: ON/OFF toggle (stored
-          in localStorage), which drives the opt-in handshake.
-        · Mic capture: "Hold to talk" button records via
-          MediaRecorder, POSTs the webm blob to /api/voice_message,
-          which transcribes with faster-whisper and injects the text
-          as a user message. Bypasses browser speech APIs so the
-          transcript matches the server model exactly.
+    - PHASE 7.3 SHIPPED (multi-speaker attribution).
+      Sink tracks per-user buffers keyed by user.id, so
+      transcripts are correctly attributed even when two
+      people overlap. signals.add_message() now accepts
+      speaker= and source= kwargs that persist in history
+      JSONL for later reflection. last_voice_speaker is
+      updated on every transcript.
 
-    - PHASE 10.20 COMPLETE (CLOUD PROVIDERS, FULLY WIRED).
-      All four remaining call sites now route through chat_sync:
-        · modules/memory.py — reflection
-        · modules/session_state.py — summarize_session
-        · modules/self_model.py — _reflect
-        · modules/heartbeat.py — _ask_model
-      The OllamaClient / OpenAICompatClient / AnthropicClient trio
-      already dropped Ollama-only fields (think, num_ctx,
-      keep_alive) for non-Ollama providers, so cloud specs work
-      transparently. Point FAST_MODEL_NAME at groq:llama-3.3-70b
-      and background reflection fires on Groq while the main path
-      keeps running on local lumi-qwen3.
+    - PHASE 7.4 SHIPPED (group context).
+      signals.voice_context dict is populated by
+      DiscordClient and read by the prompter. Contains:
+      guild_name, channel_name, roster (list of
+      {id, display_name, is_bot}), human_count, mode
+      ("solo" | "group"). Prompter injects a
+      [Discord Voice Context] block on every turn that
+      changes how the persona addresses the room.
+      Persona rule added to lumi.yaml: GROUP AWARENESS.
 
-    - NEW FILES THIS SESSION:
-      · modules/llm_providers.py    — provider abstraction
-      · modules/model_manager.py    — Ollama + constants.py patcher
-      · modules/persona_editor.py   — ruamel.yaml round-trip
-      · modules/integrations.py     — 5 integration cards
-      · modules/settings_manager.py — general/about/advanced
-      · web/login.html + web/login.js — standalone login page
-      · web/setup.html + web/setup.js — full setup wizard
+    - PHASE 7.5 SHIPPED (roster awareness).
+      DiscordClient hooks on_voice_state_update to refresh
+      the roster whenever someone joins, leaves, or moves
+      in a guild we're connected to. Roster pushes through
+      to signals.voice_context immediately. Cleared on
+      !leave and on shutdown.
 
-    - FILES REWRITTEN THIS SESSION:
-      · modules/memory.py          — per-user isolation
-      · modules/emotional_state.py — per-user instances + persistence
-      · modules/user_auth.py       — 4 session-mgmt methods added
-      · modules/socketIO.py        — 30+ new routes
-      · web/app.js                 — 7 pages wired
-      · web/style.css              — 6 new sections
+    - MIC INPUT BYPASS. MicInput no longer loads its own
+      Whisper model when audio_mode is "discord". Saves
+      ~1 GB RAM and several seconds of startup.
+
+    - LOG HUB ROUTING. STT transcripts, Discord text
+      messages, connection events, and errors all go to
+      the log hub under the "mic" and "discord" categories
+      instead of spamming the terminal. New "discord"
+      category chip on the dashboard.
+
+    - FFMPEG PATH FIX. A broken conda ffmpeg.exe shim
+      was shadowing the working winget install and
+      silently breaking every send. `where.exe ffmpeg`
+      now resolves to the working binary. Same fix
+      unblocks pydub and any other FFmpeg consumer.
 
   Earlier deltas:
-    2026-09-28 PM: Phase 10.10, 10.12, 10.13, 10.14 shipped.
-    2026-09-28 AM: Provider, model manager, persona editor backends.
-    2026-09-27:    Phase 10 MVP (chat, memory browser, dashboard,
-                   auth, agent toggle). Memory reflection Qwen3
-                   think-mode bug fixed. Agent-mode-off notice
-                   removed. Import script added for backfilling
-                   memories. Console/confirmation race fixed. Chat
-                   log persistence fixed. SameSite=Lax.
+    2026-09-28 PM2: Phase 10 complete.
+    2026-09-28 PM:  Phase 10.10, 10.12, 10.13, 10.14.
+    2026-09-28 AM:  Provider, model manager, persona backends.
+    2026-09-27:     Phase 10 MVP.
+    2026-09-19:     Initial roadmap.
 
   Known outstanding after this session:
-    - Signature-phrases rule not yet added to lumi.yaml.
-    - Memory reflection prompt lets through facts about Lumi
-      herself. Tighten the prompt to extract only facts about
-      the user, no subject pronouns.
-    - History trim at 20 messages caps backfill depth. Raise
-      to 100 in prompter.py and heartbeat.py if you want more
-      historical material for reflection.
-    - .env is not in .gitignore yet. API keys stored plaintext
-      with 0600 perms on POSIX but a single git add -A leaks
-      them.
-    - ruamel.yaml may not be installed; persona editor falls
-      back to PyYAML with a UI banner. Run "pip install
-      ruamel.yaml" once to silence it.
+    - Signature-phrases rule still not added to lumi.yaml.
+    - Memory reflection prompt still lets through facts
+      about Lumi herself.
+    - History trim at 20 messages caps backfill depth.
+    - .env is not in .gitignore yet. Keys stored plaintext
+      with 0600 perms on POSIX but a single git add -A
+      leaks them.
+    - ruamel.yaml may not be installed; persona editor
+      falls back to PyYAML with a UI banner.
 
   The core agentic loop is stable and self-correcting.
-  Lumi runs autonomously on a timer, reacts to events with
-  runtime emotional state, expresses mood through word
-  choice and canonical emotion tags, accumulates
-  timestamped per-user memories, answers "when did we..."
-  questions, perceives what you're working on without being
-  told, routes chat through a fast path when it's safe to,
-  keeps a persistent self-model of her own patterns, drives
-  her own VTuber avatar in real time, reports her internals
-  to a clean dashboard, and now has a complete browser UI
-  with a setup wizard, cloud providers, per-user isolation,
-  and voice in the browser.
+  Lumi runs autonomously, reacts with runtime emotional
+  state, expresses mood through word choice and canonical
+  emotion tags, accumulates per-user memories, answers
+  "when did we..." questions, perceives what you're
+  working on without being told, keeps a persistent
+  self-model, drives her own VTuber avatar, has a full
+  web client with setup wizard / cloud providers /
+  voice-in-browser, and now hears and talks in Discord
+  voice with correct DAVE end-to-end encryption.
 
 ================================================================
   PHASE 1 — THE HEARTBEAT (foundational)   ✅ COMPLETE
@@ -154,18 +153,14 @@ later items assume earlier ones are done.
 [X] 1.2  Give the heartbeat awareness of context        DONE
 [X] 1.3  Tune the heartbeat's restraint                 DONE
 [X] 1.4  Add an explicit idle-detection signal          DONE
-[X] 1.5  Fix float('inf') overflow in gating            DONE  (2026-09-27)
+[X] 1.5  Fix float('inf') overflow in gating            DONE
 
          Files:     modules/heartbeat.py
          Status:    Fires every 30s. Gates on idle (5 min),
                     cooldown (10 min), busy state, late-
-                    night thresholds. Reads foreground window
-                    title via ctypes. Decision prompt includes
-                    time, idle minutes, last topic, active
-                    window, mood, last 3 unprompted messages.
-                    Two-tier prompt (reactive + spontaneous).
-                    Anchored to specific context. _fmt_age
-                    helper handles inf/NaN without raising.
+                    night thresholds. Decision prompt is
+                    now routed through chat_sync so cloud
+                    providers work transparently.
 
 ================================================================
   PHASE 2 — COGNITIVE STATE MACHINE (emotional depth)   ✅ COMPLETE
@@ -180,9 +175,10 @@ later items assume earlier ones are done.
          Files:     lumi.yaml, modules/emotional_state.py,
                     prompter.py
          Status:    Eight traits, five state variables, six
-                    cognitive frames. Trait-modulated deltas,
-                    per-turn accounting, decay every 30s,
-                    context-aware frame selection.
+                    frames. Per-user instances keyed by
+                    HOST.user_id (Phase 10.16). HOST.on_change
+                    callback swaps the active state on login.
+                    Persisted to memories/emotional_state/.
 
 ================================================================
   PHASE 3 — CONTINUOUS PERCEPTION (ambient awareness)   ✅ COMPLETE
@@ -197,9 +193,7 @@ later items assume earlier ones are done.
                     modules/prompter.py, modules/heartbeat.py
          Status:    Samples screen every 30s. 8×8 average
                     hash + hamming >14 triggers VLM. Two-tier
-                    injection: [Active window] every turn,
-                    [Screen Context] only when user's message
-                    matches _SCREEN_REFERENCE.
+                    injection.
 
 ================================================================
   PHASE 4 — EPISODIC MEMORY (temporal depth)            ✅ COMPLETE
@@ -211,31 +205,22 @@ later items assume earlier ones are done.
 [X] 4.4  Reflection prompt crash fix                    DONE
 [X] 4.5  Normalize import_json timestamps               DONE
 [X] 4.6  Sanitize valence field                         DONE
-[X] 4.7  Fix Qwen3 thinking-mode empty-content bug      DONE  (2026-09-27)
-[X] 4.8  Fix processed_count >= reset                    DONE  (2026-09-27)
-[X] 4.9  Backfill importer from chat_history.json       DONE  (2026-09-27)
+[X] 4.7  Fix Qwen3 thinking-mode empty-content bug      DONE
+[X] 4.8  Fix processed_count >= reset                    DONE
+[X] 4.9  Backfill importer from chat_history.json       DONE
 
          Files:     modules/memory.py,
                     modules/import_chat_history.py,
                     modules/prompter.py
          Status:    Every stored fact carries timestamp /
                     importance / valence / session_id /
-                    user_id. Retrieval reweights by (0.5 sim
-                    + 0.3 importance + 0.2 recency), 30-day
-                    half-life. Two interfaces (!recall and
-                    recall_memory). Temporal hints parsed in
-                    both paths. Metadata migration pass.
-                    _clean_valence rejects placeholders.
-                    Reflection payload now passes think=False
-                    and routes through chat_sync so cloud
-                    provider specs apply. Importer backfills
-                    from on-disk chat history with dedupe +
-                    dry-run.
+                    user_id. Reflection payload routes
+                    through chat_sync. Speaker names from
+                    voice transcripts are preserved in the
+                    reflection prompt so the model doesn't
+                    misattribute quotes.
          TODO:      Tighten reflection prompt — currently
                     lets through facts about Lumi herself.
-                    Add explicit "facts about the user only,
-                    no subject pronouns, no facts about the
-                    assistant" rules.
 
 ================================================================
   PHASE 5 — MULTI-MODEL ORCHESTRATION                   ✅ COMPLETE
@@ -247,16 +232,9 @@ later items assume earlier ones are done.
 
          Files:     constants.py, prompter.py, memory.py,
                     session_state.py
-         Status:    Fast and main paths use the same weights
-                    (lumi-qwen3) by default — Ollama dedupes
-                    in VRAM. Fast path differentiated by
-                    context size (8K vs 16K) and payload
-                    shape. Qwen3 thinking disabled for fast
-                    path, enabled for full path and agent
-                    turns. Background extraction tasks pass
-                    think=False and now route through
-                    chat_sync so a cloud FAST_MODEL_NAME
-                    works too.
+         Status:    Fast and main paths both provider-aware
+                    via chat_sync. Cloud specs work end to
+                    end.
 
 ================================================================
   PHASE 6 — SELF-MODEL                                  ✅ COMPLETE
@@ -268,13 +246,7 @@ later items assume earlier ones are done.
 
          Files:     modules/self_model.py, prompter.py,
                     modules/heartbeat.py
-         Status:    Emotional snapshots every 60s. Per-turn
-                    stats (tags, frame, length). Heartbeat
-                    notes unprompted. Reflection every 10
-                    min → 2-4 grounded observations.
-                    Persisted cross-session. Injected
-                    sparsely when fresh. !self command.
-                    Reflection now routes through chat_sync.
+         Status:    Reflection now routes through chat_sync.
 
 ================================================================
   PHASE 6.5 — AVATAR CONTROL (VTube Studio)             ✅ COMPLETE
@@ -291,35 +263,102 @@ later items assume earlier ones are done.
 [X] 6.5.9  Terminal commands                            DONE
 [X] 6.5.10 Persona awareness                            DONE
 [X] 6.5.11 Focus + timing reliability                   DONE
-[X] 6.5.12 Known limitation — multi-item fabrications   KNOWN
+[X] 6.5.12 Multi-item fabrications                      KNOWN (low priority)
 
 ================================================================
-  PHASE 7 — DISCORD VOICE BRIDGE                     IN PROGRESS
+  PHASE 7 — DISCORD VOICE BRIDGE                    ✅ COMPLETE
 ================================================================
 
-Goal: Enable Lumi to hear and attribute Discord voice channel
-audio in real time. Blocked by Discord's DAVE end-to-end
-encryption, which the Python voice-receive library does not
-support. Solution: a small C# sidecar that decrypts and
-forwards PCM to Python over local TCP. Mirrors Vedal's
-architecture.
+Goal: Enable Lumi to hear and attribute Discord voice
+channel audio in real time, and speak back through the same
+channel.
 
-[ ] 7.1  C# sidecar — Discord client joins VC and receives   NOT STARTED
-[ ] 7.2  Python receiver module                              NOT STARTED
-[ ] 7.3  Multi-speaker attribution                           NOT STARTED
-[ ] 7.4  Persona — group context                             NOT STARTED
-[ ] 7.5  Roster awareness injection                          NOT STARTED
-[ ] 7.6  VAD upgrade (silero-vad)                            OPTIONAL
-[ ] 7.7  True presence tracking                              OPTIONAL
+The original plan called for a C# sidecar because the
+Python ecosystem had no working DAVE decryption at the
+time. Since then, the `davey` Rust library was ported to
+Python and discord.py 2.7 integrated it for the send path.
+That made a pure-Python solution possible, and this is
+what shipped.
+
+[X] 7.1  C# sidecar — Discord client joins VC and receives
+         SUPERSEDED. No sidecar needed. The Python `davey`
+         module provides the same Rust implementation used
+         by AIRI's TypeScript bot (@snazzah/davey). Combined
+         with discord.py 2.7's DAVE negotiation on the
+         connection object, we decrypt in-process.
+
+[X] 7.2  Python receiver module                          DONE
+         Files:     modules/discordClient.py
+         Status:    DaveDecryptor + OpusDecoderPool +
+                    LocalAudioSink with RMS VAD. Reads
+                    vc._connection.dave_session lazily on
+                    first write. Falls back to passthrough
+                    when the session isn't ready yet.
+                    Opus decoder pool keyed by SSRC.
+
+[X] 7.3  Multi-speaker attribution                       DONE
+         Files:     modules/discordClient.py,
+                    modules/signals.py
+         Status:    Per-user buffers keyed by user.id.
+                    Transcripts written with speaker= and
+                    source="discord_voice" metadata.
+                    Reflection prompt uses the speaker
+                    name when present.
+
+[X] 7.4  Persona — group context                         DONE
+         Files:     modules/discordClient.py,
+                    modules/prompter.py, lumi.yaml
+         Status:    signals.voice_context contains
+                    roster + mode ("solo" | "group").
+                    Prompter injects a [Discord Voice
+                    Context] block on every turn. Persona
+                    rule "GROUP AWARENESS" added to
+                    lumi.yaml.
+
+[X] 7.5  Roster awareness injection                      DONE
+         Files:     modules/discordClient.py
+         Status:    on_voice_state_update refreshes the
+                    roster on every join/leave/move in a
+                    guild we're connected to. Pushed to
+                    signals.voice_context immediately.
+                    Cleared on !leave and shutdown.
+
+[ ] 7.6  VAD upgrade (silero-vad)                        OPTIONAL
+         Status:    RMS + hysteresis is working. Silero
+                    would handle noise, breathing, and
+                    soft speech better but isn't blocking
+                    anything. Skip unless real calls
+                    reveal a problem.
+
+[ ] 7.7  True presence tracking                          OPTIONAL
+         Status:    No defined use case. "Presence"
+                    would mean tracking who's actively
+                    listening vs. just idle in the
+                    channel, but nothing in the persona
+                    or prompt currently needs that.
+                    Defer until a concrete feature asks
+                    for it.
+
+Known minor limitations:
+  - DAVE drops ~15-20% of frames on session boundaries.
+    This is universal, not a bug. The middle of each
+    utterance always decodes cleanly.
+  - Never disconnect/reconnect the voice client at
+    runtime. Reconnects leave the DAVE session out of
+    sync with the sink and it goes deaf silently. If
+    receive fails, restart the process.
+  - Single-channel at a time. The bot can be in one
+    voice channel per guild. Multi-guild support works
+    because each guild gets its own connection and sink.
 
 ================================================================
   PHASE 8 — EXTERNAL SDK                              NOT STARTED
 ================================================================
 
-Goal: Invert the tool direction. External applications connect
-to Lumi over a websocket protocol, register their own actions,
-send context, and receive invocations. Lumi becomes a plugin
-host. Mirrors the Neuro SDK architecture.
+Goal: Invert the tool direction. External applications
+connect to Lumi over a websocket protocol, register their
+own actions, send context, and receive invocations. Lumi
+becomes a plugin host. Mirrors the Neuro SDK architecture.
 
 [ ] 8.1  Protocol definition                                NOT STARTED
 [ ] 8.2  Server module                                      NOT STARTED
@@ -334,30 +373,47 @@ host. Mirrors the Neuro SDK architecture.
   PHASE 9 — SECURITY HARDENING                        NOT STARTED
 ================================================================
 
-Goal: Close attack surfaces across Phases 1-10. The threat
-model is not a remote attacker — it's (a) malicious content
-Lumi reads, (b) a malicious external app that connects to the
-SDK, (c) accidental self-modification, and (d) other local
-processes or browser tabs reaching the web client.
+Goal: Close attack surfaces across the entire stack. The
+threat model is not a remote attacker — it's (a) malicious
+content Lumi reads, (b) a malicious external app that
+connects to the SDK, (c) accidental self-modification, and
+(d) other local processes or browser tabs reaching the web
+client.
 
-[X] 9.1  Prompt injection defense                    HIGH PRIORITY  PARTIAL
-         (provenance tagging still pending; basic sandbox in place)
+  In scope:   prompt injection via file/web/memory/SDK
+              content; SDK hijacking; self-modification;
+              API key exposure; command escalation; network
+              exposure; CSRF and DNS-rebinding against the
+              web client; session hijacking via malicious
+              browser extension.
+  Out of scope: kernel compromise, hardware attacks,
+              physical access, supply-chain attacks on
+              Ollama.
+
+[~] 9.1  Prompt injection defense                    HIGH PRIORITY  PARTIAL
+         (provenance tagging not implemented; basic
+          sandbox + protected files in place)
 [ ] 9.2  SDK authentication and allowlist            HIGH PRIORITY
 [ ] 9.3  Capability categories for actions           HIGH PRIORITY
 [ ] 9.4  Command execution sandboxing                MEDIUM PRIORITY
-[ ] 9.5  Filesystem sandbox edge cases               MEDIUM PRIORITY
-         (realpath() fix not yet applied)
+[~] 9.5  Filesystem sandbox edge cases               MEDIUM PRIORITY  PARTIAL
+         (string-prefix matching today; realpath()
+          fix not yet applied — a symlink inside the
+          workspace can escape to anywhere)
 [~] 9.6  API key and token handling                  MEDIUM PRIORITY  PARTIAL
-         (keys stored in .env with 0600 perms on POSIX, masked
-          in every UI response via mask_key; rotation UI,
-          .gitignore check, and log-redaction audit pending)
+         (keys in .env with 0600 perms, masked in every
+          UI response; rotation UI, .gitignore check,
+          and log-redaction audit pending)
 [ ] 9.7  Network exposure audit                      MEDIUM PRIORITY
 [ ] 9.8  Memory poisoning defense                    MEDIUM PRIORITY
 [ ] 9.9  Discord bot token and message safety        MEDIUM PRIORITY
-[ ] 9.10 Self-modification guard                     HIGH PRIORITY
-         (settings manager's constants.py write path is
-          sandboxed to a fixed allowlist; still no guard
-          against a tool call editing prompter.py)
+[~] 9.10 Self-modification guard                     HIGH PRIORITY  PARTIAL
+         (constants.py and .env write paths are sandboxed
+          to fixed allowlists; PROTECTED_FILES in
+          agent_tools.py still only covers main.py,
+          constants.py, .env, Modelfile. A tool call can
+          overwrite prompter.py, socketIO.py, memory.py,
+          and any other file that matters.)
 [ ] 9.11 Tool call anomaly detection                 LOW PRIORITY
 [ ] 9.12 Encryption of session state at rest         LOW PRIORITY
 [ ] 9.13 Dependency and supply chain review          LOW PRIORITY
@@ -367,436 +423,73 @@ processes or browser tabs reaching the web client.
   PHASE 10 — LOCAL WEB CLIENT                        ✅ COMPLETE
 ================================================================
 
-Goal: Replace the terminal as the primary product surface.
-A fully-offline localhost web application at 127.0.0.1:5000
-that serves as THE hub for everything Lumi. Target audience
-is a non-technical user: every setup step that currently
-requires editing a code file becomes a form. Terminal remains
-available as a developer tool, but the default experience is
-the browser.
-
-Architecture (as built):
-  Browser → http://127.0.0.1:5000  (aiohttp + python-socketio)
-       ├─ HTTP routes: /auth/*, /api/*, /api/memories/*,
-       │               /api/persona/*, /api/models/*,
-       │               /api/providers/*, /api/integrations/*,
-       │               /api/settings/*, /api/voice_message,
-       │               /setup-status, static /web/*
-       ├─ Socket.io on same origin (used for voice audio
-       │               streaming; HTTP polling for everything
-       │               else)
-       └─ Static assets served from web/
-  Browser → direct link to log_hub dashboard at 127.0.0.1:5001
-  Backend → Lumi core (prompter, memory, emotional_state,
-              self_model, vtubeStudio)
-  Terminal → optional debug client, same signals
-
-Storage (as built):
-  memories/users.db              (SQLite) — user rows, argon2id
-                                              hashes, session tokens
-  memories/chroma.db             (ChromaDB) — memory facts with
-                                              per-user metadata
-  memories/emotional_state/*.json — per-user emotional snapshots
-  memories/session_state.json    — cross-session continuity
-  memories/self_model.json       — self-model observations
-  .env                            — provider keys, integration keys,
-                                    Discord token, Fish Audio keys
-
-Stack (as built):
-  - Backend: aiohttp + python-socketio
-  - Auth DB: sqlite3 stdlib
-  - Hashing: argon2-cffi (falls back to pbkdf2_hmac)
-  - Frontend: plain HTML/CSS/JS. No framework, no build step.
-  - Design system: web/style.css — token-based CSS with
-    palette, spacing, radius, shadows, and every component
-    from buttons to integration cards to setup wizard steps.
+Every sub-phase 10.1 through 10.20 is done. Full web client
+at 127.0.0.1:5000 with chat, dashboard, memory browser,
+persona editor, model manager, cloud providers,
+integrations page, settings page, setup wizard, voice in
+browser, per-user memory isolation, and per-user emotional
+state isolation.
 
 [X] 10.1  Identity refactor                              DONE
-         Files:     constants.py, lumi.yaml,
-                    modules/prompter.py,
-                    modules/console_input.py,
-                    modules/heartbeat.py,
-                    modules/memory.py,
-                    modules/self_model.py,
-                    modules/session_state.py
-         Status:    HOST mutable object with name / user_id
-                    and on_change listeners. HOST_NAME proxy
-                    for backwards compat. build_system_prompt
-                    (host) with <host> templating in
-                    lumi.yaml. HOST.update() called on web
-                    login so the persona rebuilds. Emotional
-                    state module subscribes to on_change for
-                    per-user switching.
-
-[X] 10.2  Design system + static mockup                 DONE
-         Files:     web/style.css
-         Status:    Token-based CSS system. Dark palette
-                    (GitHub-dark). Components: buttons,
-                    inputs, textareas, selects, cards,
-                    modals, chips, empty states, stat
-                    cards, event stream, chat bubbles,
-                    memory table, sidebar, avatar, provider
-                    grid, integration grid, settings
-                    sidebar, toggle switch, session table,
-                    setup wizard steps.
-
-[X] 10.3  User auth module                              DONE
-         Files:     modules/user_auth.py
-         Status:    UserDB class on SQLite.
-                    register(), authenticate(),
-                    validate_session(), delete_session().
-                    argon2id hashing. 30-day sliding
-                    session TTL. Rate limit: 5 failed
-                    logins per username per minute.
-                    Sessions persist across restart.
-                    Added in 10.14: change_password(),
-                    list_sessions(), delete_session_by_prefix(),
-                    delete_other_sessions().
-
-[X] 10.4  Auth HTTP routes                              DONE
-         Files:     modules/socketIO.py
-         Status:    POST /auth/register, /auth/login,
-                    /auth/logout; GET /auth/me.
-                    Cookie: HttpOnly, SameSite=Lax.
-                    On login: HOST.update(name=..., user_id=...).
-
-[X] 10.5  Shell + navigation                            DONE
-         Files:     web/index.html, web/style.css,
-                    web/app.js
-         Status:    Sidebar layout with brand, nav,
-                    status pills, user chip. Content area
-                    swaps based on active nav. Tab state
-                    persists in URL fragment (#/chat,
-                    #/dashboard, #/memory, #/persona,
-                    #/models, #/integrations, #/settings).
-
-[X] 10.6  Login / Register UI                           DONE
-         Files:     web/login.html, web/login.js,
-                    web/index.html, web/app.js,
-                    modules/socketIO.py
-         Status:    Dedicated /login page. Server-side
-                    gating: / redirects unauthenticated
-                    users to /login; /login redirects authed
-                    users to /. No more in-page auth overlay.
-                    Centered card with username / password /
-                    optional display name. Register link
-                    toggles in-place. Errors surface inline.
-
-[X] 10.7  Chat page                                     DONE
-         Files:     web/index.html, web/app.js,
-                    modules/socketIO.py
-         Status:    Default landing page. Message list
-                    with role styling, avatar, tag chips
-                    above messages. Fixed bottom input
-                    with Enter/Shift+Enter. Agent-mode
-                    toggle chip, voice playback chip, and
-                    mic chip in the status strip. Chat polls
-                    /api/history every 1.5s so the log
-                    persists across tab switches.
-                    Optimistic send. Failed sends surface
-                    as system messages.
-
-[X] 10.8  Full setup wizard                             DONE  (2026-09-28 PM2)
-         Files:     web/setup.html, web/setup.js,
-                    modules/socketIO.py
-         Status:    Multi-step /setup route with progress
-                    dots and ?step= client-side routing.
-                    Steps: account → providers → integrations
-                    → done. Server always serves the wizard;
-                    the client picks its starting step from
-                    /setup-status + /auth/me. Optional steps
-                    have skip buttons. Provider and
-                    integration cards reuse the same modals
-                    as the Models and Integrations pages.
-
-[X] 10.9  Dashboard page                                DONE
-         Files:     web/index.html, web/app.js,
-                    modules/log_hub.py
-         Status:    Stat cards + event stream with
-                    category filter chips. Reads directly
-                    from log_hub on port 5001.
-
-[X] 10.10 Persona editor                                DONE
-         Files:     modules/persona_editor.py,
-                    modules/socketIO.py, modules/prompter.py,
-                    modules/constants.py, web/app.js,
-                    web/style.css, lumi.yaml
-         Status:    Backend + UI both live. ruamel.yaml
-                    round-trip (comments, key order, block-
-                    scalar styles preserved), PyYAML fallback
-                    with a yellow banner. build_system_prompt
-                    (host, profile_dict) accepts a draft for
-                    preview; get_system_prompt() caches per
-                    host and invalidates on save.
-                    UI: 14 sections in the sidebar plus a Raw
-                    YAML tab. Field editors: text, textarea,
-                    list-str, list-obj, kv, obj-map,
-                    trait-slider. Save / Revert / Reload /
-                    Preview Prompt with a copy button.
-
-[X] 10.11 Memory browser                                DONE
-         Files:     web/index.html, web/app.js,
-                    modules/socketIO.py, modules/memory.py
-         Status:    Table of stored facts. Star marker,
-                    fact text, age, valence chip, Edit/
-                    Delete. Semantic search via ChromaDB
-                    query. Sort by newest/oldest/importance.
-                    Expandable rows show full metadata
-                    including user_id. + Add memory modal.
-                    Export JSON button. Every read/write is
-                    scoped to the current user.
-
-[X] 10.12 Model manager                                 DONE
-         Files:     modules/model_manager.py,
-                    modules/socketIO.py, web/app.js,
-                    web/style.css
-         Status:    Backend + UI both live. Ollama
-                    /api/tags, /api/ps, /api/generate,
-                    /api/pull (streaming), /api/delete.
-                    constants.py line patcher with comment
-                    preservation, compile-check, .bak saved
-                    before each write, live-rebind of every
-                    consumer module.
-                    UI: Loaded now, Installed (filter,
-                    Load/Unload/Delete, loaded badge), Pull
-                    (input + progress bar with indeterminate,
-                    percentage, digest), Routing (dropdowns
-                    with Ollama + cloud optgroups).
-
-[X] 10.13 Integrations page                             DONE
-         Files:     modules/integrations.py,
-                    modules/socketIO.py, web/app.js,
-                    web/style.css
-         Status:    Five cards — Ollama, VTube Studio
-                    (with module-enable toggle), Discord,
-                    Fish Audio, Browser. State pills
-                    (ok/warn/err/off), live status message,
-                    Test button, Configure modal. Keys are
-                    masked. Same 0600-perm .env writer as
-                    the provider module.
-
-[X] 10.14 Settings page                                 DONE
-         Files:     modules/settings_manager.py,
-                    modules/socketIO.py, modules/user_auth.py,
-                    web/app.js, web/style.css
-         Status:    Four sub-tabs.
-                    General — editable timezone (zoneinfo-
-                    validated) and Ollama endpoint (URL-
-                    validated), read-only info block.
-                    Writes through the same constants.py
-                    line patcher as the model manager.
-                    Security — change password, active
-                    sessions table with redacted prefixes
-                    and "current" badge, per-session Revoke,
-                    Sign-out-other-sessions bulk action.
-                    Advanced — 5 reset actions behind a
-                    Danger Zone header: chat history,
-                    session state, self-model, events log,
-                    long-term memory (per-user wipe).
-                    About — version, python, platform,
-                    workspace, endpoints, models, uptime,
-                    loaded module chips, credits.
-
-[X] 10.15 Per-user memory isolation                     DONE  (2026-09-28 PM2)
-         Files:     modules/memory.py
-         Status:    Every stored fact carries a user_id
-                    matching HOST.user_id at write time.
-                    get_prompt_injection, query_temporal,
-                    list_all, get_by_id, export_all,
-                    update_memory, delete_memory, and wipe
-                    all filter by the current user. Migration
-                    pass on init backfills legacy rows with
-                    user_id="anthony". wipe_all_users() added
-                    for the Advanced settings reset. ChromaDB
-                    `where` filter used on every query.
-         Verify:    Log in as Guest, ask "what do you know
-                    about me?" — no Anthony memories.
-
-[X] 10.16 Per-user emotional state isolation            DONE  (2026-09-28 PM2)
-         Files:     modules/emotional_state.py
-         Status:    EmotionalStateModule keeps a dict of
-                    EmotionalState instances keyed by
-                    user_id. Each persists to
-                    memories/emotional_state/{user_id}.json
-                    with a 5-min background flush and final
-                    flush on shutdown. HOST.on_change callback
-                    fires on login switch: outgoing state
-                    persisted, incoming loaded, signals.
-                    emotional_state re-points. All consumers
-                    keep working unchanged.
-         Verify:    Log in as Guest, push frustration up.
-                    Log in as Anthony — his state unaffected.
-
-[X] 10.17 Security hardening                            PARTIAL
-         Files:     modules/socketIO.py,
-                    modules/user_auth.py, web/app.js,
-                    modules/settings_manager.py,
-                    modules/model_manager.py,
-                    modules/llm_providers.py,
-                    modules/integrations.py
-         Status:    a. CSRF token on login, required on
-                       every state-changing request. DONE
-                    b. Origin check on socket handshake and
-                       HTTP POSTs. DONE
-                    c. HttpOnly session cookie, SameSite=Lax.
-                       DONE
-                    d. Rate limit /auth/login. DONE
-                    e. aiohttp bound strictly to 127.0.0.1.
-                       DONE
-                    f. Frontend rendering via textContent.
-                       DONE
-                    g. Static server refuses path traversal.
-                       DONE
-                    h. constants.py writes go through a
-                       single regex line patcher (only top-
-                       level NAME = ... assignments touched,
-                       result compile()-checked, .bak saved).
-                       DONE
-                    i. .env writes use a single atomic writer
-                       (comment-preserving, 0600 on POSIX).
-                       DONE
-                    j. Every provider / integration key is
-                       masked before leaving the server. DONE
-                    k. Advanced reset actions confined to a
-                       server-side allowlist. DONE
-         TODO:      Full audit pending. Filesystem sandbox
-                    still uses string-prefix matching.
-                    Prompt-injection provenance tagging not
-                    implemented. No self-modification guard
-                    for prompter.py.
-
-[X] 10.18 Terminal as fallback client                   DONE
-         Files:     modules/prompter.py,
-                    modules/console_input.py,
-                    modules/signals.py
-         Status:    ConsoleInput writes lines directly
-                    into signals.history and flips
-                    new_message. Prompter picks them up on
-                    its next tick — identical path to the
-                    web client. Both surfaces share state.
-                    signals.input_paused yields stdin during
-                    y/N confirmation prompts.
-
-[X] 10.19 Voice in browser                              DONE  (2026-09-28 PM2)
-         Files:     modules/tts.py, modules/socketIO.py,
-                    web/app.js, web/style.css, web/index.html
-         Status:    Two features.
-                    TTS playback: tts.py calls signals.
-                    broadcast_tts_audio() on utterance start.
-                    socketIO fans the WAV bytes out via
-                    socket.io, base64 encoded, to every
-                    opted-in client. Chat page has a
-                    persistent Voice: ON/OFF chip (localStorage
-                    backed) driving the opt-in handshake.
-                    Mic capture: "Hold to talk" chip records
-                    via MediaRecorder, POSTs the webm blob to
-                    /api/voice_message, which transcribes with
-                    faster-whisper and injects the text as a
-                    user message. Bypasses browser speech APIs
-                    so the transcript matches the server model
-                    exactly.
-
-[X] 10.20 Cloud / multi-provider LLMs                   DONE
-         Files:     modules/llm_providers.py,
-                    modules/socketIO.py, modules/prompter.py,
-                    modules/memory.py, modules/session_state.py,
-                    modules/self_model.py, modules/heartbeat.py,
-                    modules/constants.py, web/app.js,
-                    web/style.css
-         Status:    Provider abstraction: OllamaClient,
-                    OpenAICompatClient, AnthropicClient.
-                    chat_sync(model_spec) parses
-                    "provider:model" specs; bare names
-                    default to Ollama. Covers OpenAI,
-                    Anthropic, Gemini, Groq, OpenRouter,
-                    DeepSeek, and any OpenAI-compatible
-                    endpoint (Together, vLLM, LM Studio).
-                    Provider config in .env, masked in every
-                    response. Endpoints: list, save, test,
-                    models.
-                    ALL SIX CALL SITES now route through
-                    chat_sync: prompter run_conversational,
-                    prompter run_agent_turn, memory
-                    reflection, session summary, self-model
-                    reflection, heartbeat decision. Ollama-
-                    only fields (think, num_ctx, keep_alive)
-                    silently dropped by non-Ollama clients.
-                    Providers UI on the Models page: cards
-                    with masked keys, Configure modal,
-                    Test button, "Get key" links. Cloud
-                    model specs appear as optgroups in the
-                    routing dropdowns.
+[X] 10.2  Design system + static mockup                  DONE
+[X] 10.3  User auth module                               DONE
+[X] 10.4  Auth HTTP routes                               DONE
+[X] 10.5  Shell + navigation                             DONE
+[X] 10.6  Login / Register UI                            DONE
+[X] 10.7  Chat page                                      DONE
+[X] 10.8  Full setup wizard                              DONE
+[X] 10.9  Dashboard page                                 DONE
+[X] 10.10 Persona editor                                 DONE
+[X] 10.11 Memory browser                                 DONE
+[X] 10.12 Model manager                                  DONE
+[X] 10.13 Integrations page                              DONE
+[X] 10.14 Settings page                                  DONE
+[X] 10.15 Per-user memory isolation                      DONE
+[X] 10.16 Per-user emotional state isolation             DONE
+[X] 10.17 Security hardening                             PARTIAL
+[X] 10.18 Terminal as fallback client                    DONE
+[X] 10.19 Voice in browser                               DONE
+[X] 10.20 Cloud / multi-provider LLMs                    DONE
 
 ================================================================
   PENDING FIXES
 ================================================================
 
-[X] Memory reflection silently storing zero facts     RESOLVED (2026-09-27)
-[X] Agent-mode-off notice false positives             RESOLVED (2026-09-27)
-[X] Console input stealing y/n keystrokes             RESOLVED (2026-09-27)
-[X] Chat log disappearing on tab switch               RESOLVED (2026-09-27)
-[X] Socket handshake rejected in Chromium             RESOLVED (2026-09-27)
-[X] Login page scroll-ghost                           RESOLVED (2026-09-28)
-[X] Missing Optional import in socketIO.py            RESOLVED (2026-09-28)
-[X] UserDB missing session-management methods         RESOLVED (2026-09-28)
-[X] Intent-announcement regex                         RESOLVED (earlier)
-[X] Large tool results burying original request       RESOLVED (earlier)
-[X] Multimodal VLM firing on file-read requests       RESOLVED (earlier)
-[X] Emoji in agent-mode replies                       RESOLVED (earlier)
-
 [ ] Signature phrases copied verbatim                 HIGH
-    Status: Lumi pastes signature_phrases.exit
-            ("I'm going to do literally anything else
-            for a minute") and example dialogue lines
-            into unrelated contexts.
-    Fix:    Add rule to lumi.yaml:
+    Fix:    Add rule via persona editor:
             "SIGNATURE PHRASES ARE VOCABULARY, NOT
-             SCRIPT: The signature_phrases and
+             SCRIPT. The signature_phrases and
              recurring_bits sections describe the shape
              of things you say — a tone, a rhythm, a
              habit. They are NOT lines to quote
-             verbatim. Rewrite them in your own words
-             for the moment."
-    Note:   The persona editor makes this a two-minute
-            edit — open the Rules section, add the line,
-            Save.
+             verbatim."
 
 [ ] Memory reflection prompt lets Lumi-facts through  MEDIUM
-    Status: The reflection prompt does not explicitly
-            forbid facts about the assistant. Recent
-            backfill produced facts like "Lumi
-            Voidwright can see through their code"
-            which pollute retrieval.
     Fix:    Replace REFLECTION_PROMPT in
-            modules/memory.py and in the importer
-            with the tightened version that:
-              · forbids subject pronouns and names
-              · forbids facts about the assistant
-              · forbids meta-observations about the
-                conversation itself
-              · uses null instead of "neutral" for
-                valence
+            modules/memory.py and
+            modules/import_chat_history.py with a
+            version that forbids facts about the
+            assistant and subject pronouns.
 
 [ ] .env not in .gitignore                             HIGH
-    Status: .env contains OPENAI_API_KEY, ANTHROPIC_API_KEY,
-            DISCORD_BOT_TOKEN, FISH_API_KEY and every other
-            secret the web client can write. Stored
-            plaintext with 0600 perms on POSIX, but a
-            single git add -A will leak it.
-    Fix:    Add ".env", "memories/", and "logs/" to
-            .gitignore.
+    Fix:    Add ".env", "memories/", "logs/", and
+            "temp_discord_audio_*.wav" to .gitignore.
 
 [ ] ruamel.yaml not installed                          LOW
-    Status: The persona editor falls back to PyYAML and
-            shows a banner in the UI. Comments in lumi.yaml
-            will be dropped on the first save.
-    Fix:    pip install ruamel.yaml and restart.
+    Fix:    pip install ruamel.yaml
 
 [ ] History trim caps backfill depth                   LOW
-    Status: signals.history is trimmed to 20 messages
-            in prompter.py and heartbeat.py.
-    Fix:    Raise the trim to 100 in both files.
-            Optional.
+    Fix:    Raise the trim from 20 to 100 in
+            prompter.py and heartbeat.py.
+
+[ ] ffmpeg conda shim regression risk                  LOW
+    Status: The broken conda ffmpeg.exe was removed
+            from PATH but if conda ever reinstalls it,
+            it will shadow the working winget build
+            again and silently break Discord send.
+    Fix:    Optional — add a startup check that runs
+            `ffmpeg -version` and warns if it exits
+            with no output.
 
 ================================================================
   KNOWN OUTSTANDING ISSUES
@@ -804,19 +497,19 @@ Stack (as built):
 
 [!] VTS multi-item request fabrications
     Fix:    Use !set terminal commands for batch
-            operations. Long-term: vtube_reset_all().
+            operations.
 
 [!] VTS state drift on manual hotkey presses
     Fix:    !set <name> on/off corrects state
             idempotently.
 
-[!] Discord voice receive (Python-only path)          DEPRECATED
-    Status: discord-ext-voice-recv does not implement
-            DAVE. Phase 7 replaces it.
-
-[!] Memory attribution for multi-speaker
-    Fix:    Reflection prompt to include speaker
-            prefixes. Phase 7 follow-up.
+[!] Voice client fragility
+    Status: The Discord voice receive path is
+            DAVE-bound. Any disconnect/reconnect at
+            runtime leaves the sink orphaned. Restart
+            the process if receive fails.
+    Fix:    Never add reconnect helpers. Documented
+            in discordClient.py's module docstring.
 
 [!] SDK has no authentication yet
     Fix:    Phase 9.2 mandatory before Phase 8 ships.
@@ -827,12 +520,10 @@ Stack (as built):
 [!] File path sandbox uses string prefix matching
     Fix:    Phase 9.5 realpath() fix.
 
-[!] Self-modification allowed without review
+[!] Self-modification allowed for anything outside
+    PROTECTED_FILES
     Fix:    Phase 9.10 expanded PROTECTED_FILES +
-            !edit command with diff review. PROTECTED_FILES
-            today only covers main.py, constants.py, .env,
-            and Modelfile — a tool call can still overwrite
-            prompter.py.
+            !edit command with diff review.
 
 [!] Host name baked into memory facts
     Fix:    Tighten reflection prompt.
@@ -843,49 +534,54 @@ Stack (as built):
 [!] Model pickiness on tool format                    KNOWN
 [!] Log hub port conflict risk                        KNOWN
     5001 (log hub), 5000 (socketIO/web), 5055 (voice
-    bridge), 5056 (SDK). All must remain free.
+    bridge port reserved), 5056 (SDK). All must remain
+    free.
 
 ================================================================
   RECOMMENDED NEXT STEPS
 ================================================================
 
   Step 0  ->  SMALL FIXES + HOUSEKEEPING (~15 min).
-              (1) pip install ruamel.yaml (enables comment
-                  preservation on persona saves).
-              (2) Add ".env", "memories/", "logs/" to
-                  .gitignore.
+              (1) pip install ruamel.yaml
+              (2) Add .env, memories/, logs/, and
+                  temp_discord_audio_*.wav to
+                  .gitignore
               (3) Use the persona editor to add the
-                  "SIGNATURE PHRASES ARE VOCABULARY, NOT
-                  SCRIPT" rule to the Rules section.
+                  "SIGNATURE PHRASES ARE VOCABULARY,
+                  NOT SCRIPT" rule
               (4) Tighten REFLECTION_PROMPT in
                   modules/memory.py and
-                  modules/import_chat_history.py.
+                  modules/import_chat_history.py
 
   Step 1  ->  USE LUMI FOR A WEEK.
-              Every page is now editable end-to-end. Watch
-              for friction with real use. Session quality
-              data — memory retrieval, agentic turns,
-              persona drift, voice reliability — should
-              drive the next round of tuning.
+              Every page is editable end-to-end, voice
+              works on both sides, cloud providers are
+              wired through every call site, and
+              per-user isolation is in place. Real use
+              drives the next round of tuning — not a
+              checklist.
 
   Step 2  ->  PHASE 9 (SECURITY HARDENING).
-              Before exposing the web client beyond
-              localhost and before the SDK ships. Focus:
-                9.5  realpath sandbox
-                9.10 self-modification guard
-                9.1  prompt-injection provenance tagging
-                9.6  rotation UI, .gitignore check,
-                     log-redaction audit
+              Before the SDK ships. Focus in this
+              order:
+                9.5  realpath() fix — one line,
+                     closes a real path-traversal
+                     hole
+                9.10 expanded PROTECTED_FILES —
+                     prompter.py, socketIO.py,
+                     memory.py, discordClient.py,
+                     and any module under modules/
+                9.1  prompt-injection provenance
+                     tagging — the design-heavy one
+                9.6  rotation UI, log-redaction
+                     audit, .gitignore check
 
-  Step 3  ->  PHASE 7 (DISCORD VOICE BRIDGE).
-              Back to original roadmap priority. This is
-              the last structural gap between Lumi and
-              Neuro's interaction model.
+  Step 3  ->  PHASE 8 (EXTERNAL SDK).
+              Requires 9.2 (SDK auth) and 9.3
+              (capability scoping) to ship first.
 
-  Step 4  ->  PHASE 9.2 + 9.3 THEN PHASE 8 (SDK).
-              Security before the plugin system ships.
-
-  Ongoing ->  Real use drives the next round of tuning.
+  Ongoing ->  Real use drives the next round of
+              tuning.
 
 ================================================================
   WHAT VEDAL HAS THAT THIS WON'T FULLY CLOSE
@@ -943,35 +639,43 @@ Stack (as built):
     ✅ Fabrication guard for narrated state changes
     ✅ Passive emotion → expression visual manifestation
     ✅ VRAM deduplication (fast and main share weights)
-    ✅ Web client — all pages (Phase 10.1–10.7, 10.9, 10.11)
-    ✅ Persona editor — backend + UI (Phase 10.10)
-    ✅ Model manager — backend + UI (Phase 10.12)
-    ✅ Integrations page (Phase 10.13)
-    ✅ Settings page (Phase 10.14)
+    ✅ Web client — all pages (Phase 10.1–10.20)
+    ✅ Persona editor — backend + UI
+    ✅ Model manager — backend + UI
+    ✅ Integrations page
+    ✅ Settings page
     ✅ Multi-provider LLM — backend + UI + full call-site
-      wiring (Phase 10.20)
-    ✅ Agent mode toggle (chip + HTTP endpoint)
+      wiring
+    ✅ Agent mode toggle
     ✅ Terminal + web input share one path
-    ✅ Dedicated /login page (no more scroll-ghost)
-    ✅ CSRF + origin + rate limit + sandbox (Phase 10.17)
+    ✅ Dedicated /login page
+    ✅ Full setup wizard
+    ✅ Per-user memory isolation
+    ✅ Per-user emotional state isolation
+    ✅ Voice in browser (TTS playback + mic capture)
+    ✅ Cloud provider support (OpenAI, Anthropic, Gemini,
+      Groq, OpenRouter, any OpenAI-compatible endpoint)
+    ✅ CSRF + origin + rate limit + sandbox
     ✅ constants.py line patcher with compile-check + .bak
     ✅ .env writer with 0600 perms + masked-key responses
     ✅ Settings Advanced reset allowlist
-    ✅ Full setup wizard (Phase 10.8)
-    ✅ Per-user memory isolation (Phase 10.15)
-    ✅ Per-user emotional state isolation (Phase 10.16)
-    ✅ Voice in browser — TTS playback + mic capture
-      (Phase 10.19)
+    ✅ Discord voice receive — DAVE end-to-end encryption
+      solved in pure Python
+    ✅ Discord voice send — FFmpeg + server-mute auto-clear
+    ✅ Multi-speaker attribution
+    ✅ Group context injection
+    ✅ Roster awareness
+    ✅ MicInput bypass in Discord-only mode
 
   What you have NOT closed:
-    ❌ Discord voice receive (Phase 7)
-    ❌ Multi-speaker memory attribution (Phase 7 follow-up)
     ❌ External SDK (Phase 8)
     ❌ Security hardening audit (Phase 9)
     ❌ SDK authentication (Phase 9.2)
     ❌ Prompt injection defense (Phase 9.1)
-    ❌ Self-modification guard for prompter.py (Phase 9.10)
+    ❌ Self-modification guard for modules/ (Phase 9.10)
     ❌ Filesystem sandbox realpath() fix (Phase 9.5)
+    ❌ Silero-VAD (Phase 7.6 — optional)
+    ❌ True presence tracking (Phase 7.7 — optional)
 
 ================================================================
   END OF ROADMAP

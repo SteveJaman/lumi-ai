@@ -602,7 +602,7 @@ function renderDashboardStats() {
 
 function renderEventFilters() {
   const cats = ['all','ambient','heartbeat','memory','emotional',
-                'mic','vts','system'];
+                'mic','vts','discord','system'];
   const el = $('#dash-filters');
   el.innerHTML = cats.map((c, i) =>
     `<button class="filter-chip ${i === 0 ? 'active' : ''}"

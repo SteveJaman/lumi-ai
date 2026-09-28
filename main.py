@@ -115,12 +115,14 @@ def main():
 
     _global_signals = signals
 
+    mic_enabled = selected_audio_mode in ("local", "both")
+
     modules = [
         Memory(signals, enabled=True),
         MultiModal(signals, enabled=True),
         LocalInput(signals, enabled=True),
         ConsoleInput(signals, enabled=True),
-        MicInput(signals, enabled=True),
+        MicInput(signals, enabled=mic_enabled),
         DiscordClient(signals, enabled=True, audio_mode=selected_audio_mode),
         VtubeStudio(signals, enabled=True),
         BrowserController(signals, enabled=True),

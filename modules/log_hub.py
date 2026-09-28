@@ -177,6 +177,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .cat.print     { color:var(--print); font-style:italic; }
   .cat.system    { color:var(--system); }
   .cat.log       { color:var(--dim); }
+  .cat.discord   { color:#7c9cff; }
   .msg { color:var(--text); word-break:break-word; line-height:1.45; }
   .msg.warn  { color:var(--warn); }
   .msg.error { color:var(--error); }
@@ -196,7 +197,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <div id="events"><div class="empty">Waiting for events…</div></div>
 <script>
   const CATEGORIES = ['all','ambient','heartbeat','memory',
-                      'emotional','mic','vts','system','print'];
+                      'emotional','mic','vts','discord','system','print'];
   let activeFilter = 'all';
   let events = [];
 

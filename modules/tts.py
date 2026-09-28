@@ -262,14 +262,6 @@ class TTS:
     def play_audio(self, message, audio_bytes):
         """Physically plays the bytes and routes to Discord."""
         self.signals.sio_queue.put(("current_message", message))
-        
-        # Phase 10.19 — broadcast audio bytes to connected web clients.
-        # socketIO watches this signal and pushes to browser listeners.
-        if hasattr(self.signals, "broadcast_tts_audio"):
-            try:
-                self.signals.broadcast_tts_audio(audio_bytes)
-            except Exception as e:
-                print(f"\033[90mTTS: browser broadcast failed: {e}\033[0m")
 
         # Discord Routing
         if self.audio_mode in ["discord", "both"]:
@@ -305,23 +297,13 @@ class TTS:
 
                     bytes_per_chunk = 1024 * channels_val * wf.getsampwidth()
 
-                    # Pre-compute the mouth envelope once. The VTS module
-                    # lookup is also cached — no per-chunk scanning.
                     vts = self._find_vts()
                     envelope = self._audio_to_mouth_envelope(audio_bytes) if vts else []
-
-                    # Only one device thread drives the mouth. Picking
-                    # the first in the list avoids two threads racing to
-                    # update the same target value.
                     mouth_driver_idx = device_indices[0] if device_indices else None
 
                     threads = []
 
                     def device_worker(dev_idx):
-                        """Independent thread for writing to a specific
-                        hardware device. If this thread is the designated
-                        mouth driver, it also pushes one MouthOpen value
-                        per chunk to VTS."""
                         try:
                             kwargs = {}
                             if dev_idx is not None:
@@ -371,9 +353,6 @@ class TTS:
                     p.terminate()
 
                 else:
-                    # simpleaudio fallback — no lip-sync here because
-                    # we can't hook into playback at chunk granularity.
-                    # The mouth will move via the VTS idle loop instead.
                     wave_obj = sa.WaveObject.from_wave_file(io.BytesIO(audio_bytes))
                     self._current_sa_obj = wave_obj.play()
                     while self._current_sa_obj.is_playing() and self.is_playing:
