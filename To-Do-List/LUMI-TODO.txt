@@ -3,7 +3,10 @@
   Goal: Move from reactive chatbot to autonomous companion
   Reference: Neuro-sama (Vedal987) architecture
   Created:  2026-09-19
-  Updated:  2026-09-27 (Phase 10 MVP shipped — chat, memory
+  Updated:  2026-09-28 (Backends landed for multi-provider LLMs,
+                        model manager, and persona editor. Their
+                        web UIs are still pending.)
+  Prev:     2026-09-27 (Phase 10 MVP shipped — chat, memory
                         browser, dashboard, auth, agent toggle.
                         Memory reflection Qwen3 thinking-mode bug
                         fixed. Agent-mode-off notice removed.)
@@ -27,12 +30,45 @@ later items assume earlier ones are done.
   Phases remaining:       7 (Discord voice), 8 (SDK), 9 (security)
   Phase 10:               MVP SHIPPED. Chat, auth, memory browser,
                           dashboard, settings-shell all live at
-                          127.0.0.1:5000. Remaining hub pages
-                          (persona, models, integrations,
-                          settings detail, per-user isolation)
-                          still pending but the product is usable.
+                          127.0.0.1:5000. Backends now exist for
+                          persona editor, model manager, and cloud
+                          providers — only their UI pages remain.
+                          Still pending: integrations page,
+                          settings detail, per-user isolation.
 
-  Notable delta since last update:
+  Notable delta since last update (2026-09-28):
+    - MULTI-PROVIDER LLM LAYER (10.20, backend DONE).
+      modules/llm_providers.py: OllamaClient,
+      OpenAICompatClient, AnthropicClient normalize
+      requests / responses / tool calls into LLMResponse +
+      ToolCall. chat_sync(model_spec, ...) parses specs like
+      "openai:gpt-4o-mini" or "deepseek:deepseek-chat";
+      bare names default to Ollama (e.g. "lumi-qwen3").
+      Covers OpenAI, Anthropic, Gemini, Groq, OpenRouter,
+      Together, DeepSeek. API keys persist to .env via
+      write_env_var / save_provider_config and are always
+      masked (mask_key) before reaching the UI.
+    - MODEL MANAGER BACKEND (10.12, backend DONE).
+      modules/model_manager.py talks to Ollama (/api/tags,
+      /api/ps, /api/generate, /api/pull, /api/delete) and
+      hot-patches constants.py with a regex line patcher
+      (MODEL_NAME, FAST_MODEL_NAME, FAST_MODEL_ENABLED,
+      context lengths, keep-alive) that preserves comments
+      and formatting. _rebind_consumers re-points already-
+      imported modules (prompter, memory, session_state,
+      etc.) so changes apply without a restart.
+    - NEW HTTP ENDPOINTS in modules/socketIO.py:
+        · /api/models/* — inspect, load/unload, routing
+          updates, background pull
+        · /api/providers, /api/providers/{pid},
+          /api/providers/{pid}/test,
+          /api/providers/{pid}/models
+    - PERSONA EDITOR BACKEND (10.10, backend DONE).
+      modules/persona_editor.py round-trips lumi.yaml via
+      ruamel.yaml (keeps comments, key order, block-scalar
+      styles) with a PyYAML fallback.
+
+  Earlier delta (2026-09-27):
     - Phase 10 MVP COMPLETE. Local web client runs at
       127.0.0.1:5000 with:
         · Auth: SQLite + argon2id, sliding session TTL,
@@ -303,7 +339,9 @@ processes or browser tabs reaching the web client.
 [ ] 9.4  Command execution sandboxing                MEDIUM PRIORITY
 [ ] 9.5  Filesystem sandbox edge cases               MEDIUM PRIORITY
          (realpath() fix not yet applied)
-[ ] 9.6  API key and token handling                  MEDIUM PRIORITY
+[~] 9.6  API key and token handling                  MEDIUM PRIORITY  PARTIAL
+         (keys stored in .env, masked in UI via mask_key;
+          rotation UI, .gitignore check and log-redaction audit pending)
 [ ] 9.7  Network exposure audit                      MEDIUM PRIORITY
 [ ] 9.8  Memory poisoning defense                    MEDIUM PRIORITY
 [ ] 9.9  Discord bot token and message safety        MEDIUM PRIORITY
@@ -448,10 +486,18 @@ Stack (as built):
                     on the hub). Refresh button. Mini-
                     graphs still TODO.
 
-[ ] 10.10 Persona editor                                NOT STARTED
+[~] 10.10 Persona editor                                BACKEND DONE / UI TODO
          Files:     web/index.html, web/app.js,
-                    modules/socketIO.py, lumi.yaml
-         Status:    Left sidebar with sections (Identity,
+                    modules/socketIO.py, lumi.yaml,
+                    modules/persona_editor.py (NEW)
+         Done:      Backend helper: ruamel.yaml round-trip
+                    load/edit/save of lumi.yaml, PyYAML
+                    fallback. Comments, key order, and
+                    block-scalar styles preserved.
+         TODO:      HTTP endpoints for persona read/write/
+                    preview/revert in socketIO.py, plus the
+                    whole frontend below.
+         Spec:      Left sidebar with sections (Identity,
                     Traits, Personality, Examples, Voice).
                     Main panel with form fields for the
                     active section. Trait sliders 0-1 with
@@ -477,10 +523,18 @@ Stack (as built):
                     update_memory, export_all, delete_memory,
                     create_memory through Memory.API.
 
-[ ] 10.12 Model manager                                 NOT STARTED
+[~] 10.12 Model manager                                 BACKEND DONE / UI TODO
          Files:     web/index.html, web/app.js,
-                    modules/socketIO.py
-         Status:    Which models are installed (query
+                    modules/socketIO.py,
+                    modules/model_manager.py (NEW)
+         Done:      Backend + /api/models/* endpoints: list,
+                    loaded state, load/unload, routing
+                    update (hot-patches constants.py and
+                    rebinds live modules), background pull,
+                    delete.
+         TODO:      Frontend page (cards, Load/Unload, pull
+                    progress bar, routing form).
+         Spec:      Which models are installed (query
                     Ollama /api/tags). Which is currently
                     loaded (via /api/ps). VRAM usage per
                     model. Load/Unload buttons. Pull new
@@ -498,6 +552,7 @@ Stack (as built):
                     opens a modal with integration-
                     specific settings. Test button runs
                     a connectivity check.
+         Note:      LLM provider cards (10.20) can live here.
 
 [ ] 10.14 Settings page                                 NOT STARTED
          Files:     web/index.html, web/app.js,
@@ -576,6 +631,31 @@ Stack (as built):
                     streaming over the socket. Optional
                     mic capture via MediaRecorder →
                     server STT.
+
+[~] 10.20 Cloud / multi-provider LLMs                   BACKEND DONE / UI TODO
+         Files:     modules/llm_providers.py (NEW),
+                    modules/socketIO.py, .env
+         Done:      Provider abstraction (Ollama +
+                    OpenAI-compatible + Anthropic),
+                    chat_sync("provider:model"), masked
+                    key storage in .env, provider
+                    list/save/test/models endpoints.
+         TODO:      a. Providers UI (add key, test, pick
+                       model) — fits under Integrations
+                       (10.13) or Settings > Security.
+                    b. Model-spec picker in the Model
+                       Manager routing form so MODEL_NAME /
+                       FAST_MODEL_NAME can be "provider:model".
+                    c. Route prompter / memory reflection /
+                       self_model / heartbeat calls through
+                       chat_sync so cloud specs actually get
+                       used (verify each call site).
+                    d. Make the Ollama-only payload fields
+                       ("think": False, num_ctx,
+                       keep_alive) provider-aware so they are
+                       not sent to cloud APIs.
+                    e. End-to-end test per provider using
+                       the /test endpoint.
 
 ================================================================
   PENDING FIXES
@@ -740,9 +820,10 @@ Stack (as built):
                   lumi.yaml.
               Optional: bump history trim from 20 to 100.
 
-  Step 1  ->  BUILD PHASE 10.10 (PERSONA EDITOR).
-              Biggest UX unlock for non-technical users.
-              Needs ruamel.yaml. Multi-session build.
+  Step 1  ->  BUILD PHASE 10.10 FRONTEND (PERSONA EDITOR).
+              Backend (persona_editor.py) is done. Needs
+              HTTP endpoints + the form UI. Biggest UX
+              unlock for non-technical users.
 
   Step 2  ->  BUILD PHASE 10.15 + 10.16 (PER-USER
               ISOLATION).
@@ -750,10 +831,11 @@ Stack (as built):
               user. Pure backend, testable from the
               terminal.
 
-  Step 3  ->  BUILD PHASE 10.12 + 10.13 (MODEL MANAGER
-              + INTEGRATIONS).
-              Both are read-mostly cards with a couple
-              of buttons — small builds.
+  Step 3  ->  BUILD PHASE 10.12 + 10.20 + 10.13 UIs
+              (MODEL MANAGER, PROVIDERS, INTEGRATIONS).
+              Backends and endpoints are done — these are
+              front-end cards/forms. Then wire chat_sync
+              into the remaining call sites (10.20c/d).
 
   Step 4  ->  BUILD PHASE 10.14 (SETTINGS).
               Housekeeping. General / Security /
@@ -845,6 +927,9 @@ Stack (as built):
     ✅ Memory browser (Phase 10.11)
     ✅ Agent mode toggle (chip + HTTP endpoint)
     ✅ Terminal + web input share one path
+    ✅ Multi-provider LLM backend (10.20 backend)
+    ✅ Model manager backend + hot-patching (10.12 backend)
+    ✅ Persona editor backend (10.10 backend)
     ✅ CSRF + origin + rate limit + sandbox (Phase 10.17 partial)
 
   What you have NOT closed:
@@ -855,8 +940,9 @@ Stack (as built):
     ❌ SDK authentication (Phase 9.2)
     ❌ Prompt injection defense (Phase 9.1)
     ❌ Self-modification guard (Phase 9.10)
-    ❌ Persona editor (Phase 10.10)
-    ❌ Model manager (Phase 10.12)
+    ❌ Persona editor UI (Phase 10.10 — backend done)
+    ❌ Model manager UI (Phase 10.12 — backend done)
+    ❌ Provider settings UI + call-site wiring (Phase 10.20)
     ❌ Integrations page (Phase 10.13)
     ❌ Settings page (Phase 10.14)
     ❌ Full setup wizard (Phase 10.8)

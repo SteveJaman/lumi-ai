@@ -1,6 +1,7 @@
 import os
 import yaml
 import random
+import re as _re
 
 # =======================================================
 # System & Local LLM Endpoint Setup & Workspace Paths
@@ -23,6 +24,43 @@ FAST_MODEL_ENABLED = True
 FAST_MODEL_NUM_CTX = 8192
 MAIN_NUM_CTX = 16384
 FAST_MODEL_KEEP_ALIVE = "5m"
+
+# =======================================================
+# Cloud provider routing (Phase 10.12b)
+# -------------------------------------------------------
+# MODEL_NAME and FAST_MODEL_NAME accept either a bare model name
+# (treated as Ollama) or a "provider:model" spec. To point the main
+# path at OpenAI: MODEL_NAME = "openai:gpt-4o-mini".
+#
+# Legacy bare-name values keep working — parse_model_spec() defaults
+# to the Ollama provider. Nothing else in the codebase has to know
+# which provider is in play; every LLM call routes through
+# modules.llm_providers.chat_sync(spec, ...).
+# =======================================================
+MODEL_PROVIDER = "ollama"   # informational only; derived from MODEL_NAME
+
+def _split_model_spec(spec):
+    """'openai:gpt-4o-mini' → ('openai', 'gpt-4o-mini')
+    'lumi-qwen3'           → ('ollama', 'lumi-qwen3')"""
+    s = (spec or "").strip()
+    if not s:
+        return ("ollama", "")
+    if ":" in s:
+        head, rest = s.split(":", 1)
+        # Only treat as provider-prefixed if head looks like one of our
+        # known providers — otherwise a model tag like "qwen3:8b"
+        # would be misparsed.
+        try:
+            from modules.llm_providers import PROVIDER_PRESETS
+            if head.lower() in PROVIDER_PRESETS:
+                return (head.lower(), rest)
+        except Exception:
+            if head.lower() in {
+                "ollama", "openai", "anthropic", "gemini",
+                "groq", "openrouter",
+            }:
+                return (head.lower(), rest)
+    return ("ollama", s)
 
 AUDIO_OUTPUT_MODE = "both"
 OUTPUT_DEVICE_INDEX = [24, 20]
@@ -162,6 +200,24 @@ def load_profile(host_name):
         return {}
 
 
+def _substitute_host(value, host_name):
+    """Deep-substitute <host> in every string, including dict keys.
+    Used by build_system_prompt when given a raw profile_dict that
+    still contains <host> placeholders (e.g. a draft from the persona
+    editor preview path)."""
+    if isinstance(value, str):
+        return value.replace("<host>", host_name)
+    if isinstance(value, dict):
+        return {
+            (_substitute_host(k, host_name) if isinstance(k, str) else k):
+            _substitute_host(v, host_name)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_substitute_host(v, host_name) for v in value]
+    return value
+
+
 # Initial load with the default host name.
 profile = load_profile(HOST.name)
 
@@ -273,21 +329,34 @@ def _voice_emotion_prompt_from_profile(profile_dict):
 
 
 # =======================================================
-# Prompt Builder (Phase 10.1)
+# Prompt Builder (Phase 10.1, extended in 10.10)
 # -------------------------------------------------------
-# build_system_prompt(host_name) produces the full system prompt
-# for a given host, with <host> substituted everywhere in the
-# persona file. Called once at import to seed SYSTEM_PROMPT, and
-# again by the prompter on every turn (or on login) to get the
-# live version.
+# build_system_prompt(host_name, profile_dict=None) produces the full
+# system prompt for a given host.
+#
+#   - If profile_dict is None (the common case), lumi.yaml is read
+#     fresh and <host> is substituted at load time.
+#   - If profile_dict is provided (persona editor live preview), it
+#     is used directly and <host> is substituted here instead — the
+#     draft came from the editor and still contains placeholders.
 # =======================================================
-def build_system_prompt(host_name=None):
+def build_system_prompt(host_name=None, profile_dict=None):
     """Build the full system prompt for the given host name.
-    If host_name is None, uses HOST.name."""
+
+    If host_name is None, uses HOST.name.
+
+    If profile_dict is provided, it is used instead of reading lumi.yaml
+    — this is how the persona editor's live preview works. The dict is
+    expected to still contain <host> placeholders; they're substituted
+    here.
+    """
     if host_name is None:
         host_name = HOST.name
 
-    profile_dict = load_profile(host_name)
+    if profile_dict is None:
+        profile_dict = load_profile(host_name)
+    else:
+        profile_dict = _substitute_host(profile_dict, host_name)
 
     # --- Dynamic character attributes ---
     ai_name = profile_dict.get("name", "Lumi")
@@ -340,7 +409,14 @@ def build_system_prompt(host_name=None):
     formatted_voice = _kv(vs_top)
 
     # --- Relationship & Duo Dynamic ---
-    relationship_to_host = _text(profile_dict.get("relationship_to_anthony", ""))
+    # The YAML key is `relationship_to_<host>`. After substitution
+    # this becomes `relationship_to_<actual_name>`, so we can't hardcode
+    # the key. Scan for the first `relationship_to_*` key instead.
+    relationship_to_host = ""
+    for k, v in profile_dict.items():
+        if isinstance(k, str) and k.startswith("relationship_to_"):
+            relationship_to_host = _text(v)
+            break
     relationship_to_chat = _text(profile_dict.get("relationship_to_chat", ""))
     duo_dynamic = _text(profile_dict.get("duo_dynamic", ""))
     love_language = profile_dict.get("love_language", {})
@@ -505,16 +581,102 @@ write your own name in a reply, stop and rewrite it as "I".
 
 # Seed the module-level SYSTEM_PROMPT with the default host.
 # Code that imports SYSTEM_PROMPT gets this initial snapshot;
-# code that needs the live version calls build_system_prompt().
+# code that needs the live version calls get_system_prompt() (or
+# build_system_prompt() to force a rebuild).
 SYSTEM_PROMPT = build_system_prompt(HOST.name)
+
+
+# =======================================================
+# Live prompt cache + persona save / reload (Phase 10.10)
+# -------------------------------------------------------
+# get_system_prompt() returns the current prompt for a host,
+# rebuilding when the host changes or the cache is invalidated.
+# save_persona_* helpers write back to lumi.yaml and refresh every
+# cache so the running prompter picks up the change on the next turn.
+# =======================================================
+_PROMPT_CACHE = {"host": None, "prompt": None}
+
+
+def get_system_prompt(host_name=None):
+    """Return the live system prompt for the given host, cached per host."""
+    if host_name is None:
+        host_name = HOST.name
+    if _PROMPT_CACHE["host"] == host_name and _PROMPT_CACHE["prompt"]:
+        return _PROMPT_CACHE["prompt"]
+    prompt = build_system_prompt(host_name)
+    _PROMPT_CACHE["host"] = host_name
+    _PROMPT_CACHE["prompt"] = prompt
+    return prompt
+
+
+def invalidate_prompt_cache():
+    _PROMPT_CACHE["host"] = None
+    _PROMPT_CACHE["prompt"] = None
+
+
+def reload_profile(host_name=None):
+    """Reload lumi.yaml from disk and rebuild the profile + prompt
+    caches. Called after the persona editor saves.
+
+    Also refreshes the module-level AI_NAME / GREETING /
+    VOICE_EMOTION_PROMPT attributes and rebuilds SYSTEM_PROMPT so
+    anything importing them gets the new values on next read."""
+    global profile, _yaml_raw_cache, AI_NAME, GREETING, VOICE_EMOTION_PROMPT, SYSTEM_PROMPT
+    _yaml_raw_cache = None
+    if host_name is None:
+        host_name = HOST.name
+    profile = load_profile(host_name)
+    AI_NAME = profile.get("name", "Lumi")
+    GREETING = profile.get("greeting", "System online. Hi chat!")
+    VOICE_EMOTION_PROMPT = _voice_emotion_prompt_from_profile(profile)
+    invalidate_prompt_cache()
+    SYSTEM_PROMPT = build_system_prompt(host_name)
+    return profile
+
+
+def save_persona_parsed(parsed_data):
+    """Write a modified persona dict back to lumi.yaml, preserving
+    comments via ruamel round-trip. `parsed_data` is a plain dict of
+    the full persona (still containing <host> placeholders).
+
+    Returns (ok, error)."""
+    try:
+        from modules.persona_editor import (
+            load_parsed, merge_into, save_parsed,
+        )
+        current = load_parsed(YAML_PATH)
+        merged = merge_into(current, parsed_data)
+        save_parsed(YAML_PATH, merged)
+        reload_profile()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def save_persona_raw(raw_text):
+    """Overwrite lumi.yaml with raw text. Validates that it parses
+    first (with <host> substituted, since that's how it'll be read).
+    Returns (ok, error)."""
+    import yaml as _std_yaml
+    try:
+        _std_yaml.safe_load(raw_text.replace("<host>", HOST.name))
+    except Exception as e:
+        return False, f"Invalid YAML: {e}"
+    try:
+        with open(YAML_PATH, "w", encoding="utf-8") as f:
+            f.write(raw_text)
+        reload_profile()
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 # =======================================================
 # Module-level character attributes (initial load)
 # -------------------------------------------------------
 # These reflect the default host at import time. If you need them
-# to track HOST changes at runtime, call build_system_prompt() or
-# load_profile(HOST.name) fresh instead of importing these.
+# to track HOST changes at runtime, call get_system_prompt() /
+# reload_profile() instead of importing these.
 # =======================================================
 AI_NAME = profile.get("name", "Lumi")
 GREETING = profile.get("greeting", "System online. Hi chat!")

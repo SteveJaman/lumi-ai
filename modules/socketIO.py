@@ -1,15 +1,22 @@
 """
 Socket.io server + local HTTP/SPA host for the Phase 10 web client.
 
-Serves three things from one aiohttp app on 127.0.0.1:5000:
+Serves:
   1. Socket.io events on the default namespace
-  2. HTTP routes: /auth/*, /api/*, /setup-status, /api/memories/*
+  2. HTTP routes: /auth/*, /api/*, /api/memories/*, /api/persona/*,
+     /api/models/*
   3. Static files from web/
+  4. Auth pages: /login (login/register), /setup (first run)
+
+Page gating (server-side, not client-side):
+  /            → /setup if no users, /login if not authed, else index.html
+  /login       → /setup if no users, /         if authed, else login.html
+  /setup       → /        if users exist,     else setup.html
 
 Security posture (Phase 10.17):
   - Bound strictly to 127.0.0.1
   - HttpOnly, SameSite=Lax session cookie
-  - CSRF on every state-changing POST/PATCH/DELETE
+  - CSRF on every state-changing POST/PATCH/PUT/DELETE
   - Origin validated on socket.io handshake and HTTP POSTs
   - Static handler refuses path traversal
 """
@@ -17,6 +24,7 @@ Security posture (Phase 10.17):
 import os
 import time
 import secrets
+import asyncio
 import mimetypes
 
 from aiohttp import web
@@ -56,13 +64,14 @@ def _parse_cookies(cookie_header):
 
 class SocketIOServer:
     def __init__(self, signals, stt=None, tts=None, llmWrapper=None,
-                 prompter=None, modules=None):
+                 prompter=None, modules=None, model_manager=None):
         self.signals = signals
         self.stt = stt
         self.tts = tts
         self.llmWrapper = llmWrapper
         self.prompter = prompter
         self.modules = modules if modules is not None else {}
+        self.model_manager = model_manager
 
         self.user_db = UserDB()
         self.sio = socketio.AsyncServer(
@@ -77,24 +86,44 @@ class SocketIOServer:
         self._register_http_routes()
         self._register_socket_events()
 
+    def _model_manager(self):
+        if self.model_manager is not None:
+            return self.model_manager
+        try:
+            from modules.model_manager import ModelManager
+        except Exception:
+            return None
+        self.model_manager = ModelManager()
+        return self.model_manager
+
     # ==================================================================
     # HTTP routes
     # ==================================================================
     def _register_http_routes(self):
         r = self.app.router
-        r.add_get("/",              self._handle_index)
-        r.add_get("/setup",         self._handle_setup_page)
-        r.add_get("/setup-status",  self._handle_setup_status)
+
+        # --- Pages ---
+        r.add_get("/",         self._handle_index)
+        r.add_get("/login",    self._handle_login_page)
+        r.add_get("/register", self._handle_register_page)
+        r.add_get("/setup",    self._handle_setup_page)
+
+        # --- Static files ---
         r.add_get("/web/{tail:.*}", self._handle_static)
 
+        # --- Setup status (public) ---
+        r.add_get("/setup-status", self._handle_setup_status)
+
+        # --- Auth ---
         r.add_post("/auth/register", self._handle_register)
         r.add_post("/auth/login",    self._handle_login)
         r.add_post("/auth/logout",   self._handle_logout)
         r.add_get("/auth/me",        self._handle_me)
 
-        r.add_get("/api/status",       self._handle_status)
-        r.add_get("/api/history",      self._handle_history)
-        r.add_post("/api/chat/send",   self._handle_chat_send)
+        # --- API ---
+        r.add_get("/api/status",        self._handle_status)
+        r.add_get("/api/history",       self._handle_history)
+        r.add_post("/api/chat/send",    self._handle_chat_send)
         r.add_post("/api/agent/toggle", self._handle_agent_toggle)
 
         # Memory browser — export route MUST register before the
@@ -105,6 +134,27 @@ class SocketIOServer:
         r.add_get("/api/memories/{mem_id}",     self._handle_memory_get)
         r.add_patch("/api/memories/{mem_id}",   self._handle_memory_update)
         r.add_delete("/api/memories/{mem_id}",  self._handle_memory_delete)
+
+        # Persona editor — Phase 10.10
+        r.add_get("/api/persona",           self._handle_persona_get)
+        r.add_put("/api/persona",           self._handle_persona_put)
+        r.add_post("/api/persona/raw",      self._handle_persona_raw)
+        r.add_post("/api/persona/preview",  self._handle_persona_preview)
+
+        # Model manager — Phase 10.12
+        r.add_get("/api/models",          self._handle_models_get)
+        r.add_get("/api/models/pull",     self._handle_models_pull_status)
+        r.add_post("/api/models/load",    self._handle_models_load)
+        r.add_post("/api/models/unload",  self._handle_models_unload)
+        r.add_post("/api/models/pull",    self._handle_models_start_pull)
+        r.add_post("/api/models/delete",  self._handle_models_delete)
+        r.add_put("/api/models/routing",  self._handle_models_routing_save)
+        
+        # LLM providers — Phase 10.12b
+        r.add_get("/api/providers",              self._handle_providers_list)
+        r.add_put("/api/providers/{pid}",        self._handle_provider_save)
+        r.add_post("/api/providers/{pid}/test",  self._handle_provider_test)
+        r.add_get("/api/providers/{pid}/models", self._handle_provider_models)
 
     def _current_user(self, request):
         cookies = _parse_cookies(request.headers.get("Cookie", ""))
@@ -349,12 +399,6 @@ class SocketIOServer:
 
         try:
             if q:
-                # Semantic search. query_temporal returns hits without ids;
-                # the browser can still show/edit by looking them up in
-                # the full list, but for consistency we re-fetch the full
-                # list and rank it in-memory against the query is not
-                # feasible here. Instead, return the query hits as the
-                # response and note they are search results.
                 hits = api.query_temporal(q, limit=limit)
                 rows = []
                 for h in hits:
@@ -464,7 +508,6 @@ class SocketIOServer:
         importance = body.get("importance")
         valence = body.get("valence")
 
-        # Allow clearing valence by passing empty string.
         if valence is None and "valence" in body:
             valence = body.get("valence")
 
@@ -506,18 +549,465 @@ class SocketIOServer:
         return web.json_response({"ok": True})
 
     # ------------------------------------------------------------------
-    # Static / SPA shell
+    # Persona editor (Phase 10.10)
+    # ------------------------------------------------------------------
+    async def _handle_persona_get(self, request):
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            from modules.persona_editor import (
+                load_raw_text, load_parsed, parsed_to_plain,
+                backend_name, backend_preserves_comments,
+            )
+            from constants import YAML_PATH, build_system_prompt, HOST
+        except Exception as e:
+            return _json_error(500, f"Persona module unavailable: {e}")
+
+        try:
+            raw = load_raw_text(YAML_PATH)
+            parsed = load_parsed(YAML_PATH)
+            plain = parsed_to_plain(parsed)
+            prompt = build_system_prompt(HOST.name)
+        except Exception as e:
+            return _json_error(500, f"Failed to read persona: {e}")
+
+        return web.json_response({
+            "yaml": plain,
+            "raw": raw,
+            "system_prompt": prompt,
+            "backend": backend_name(),
+            "preserves_comments": backend_preserves_comments(),
+        })
+
+    async def _handle_persona_put(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        persona = body.get("yaml")
+        if not isinstance(persona, dict):
+            return _json_error(400, "Missing 'yaml' object.")
+
+        from constants import save_persona_parsed, build_system_prompt, HOST
+        ok, err = save_persona_parsed(persona)
+        if not ok:
+            return _json_error(400, f"Save failed: {err}")
+
+        prompt = build_system_prompt(HOST.name)
+        return web.json_response({"ok": True, "system_prompt": prompt})
+
+    async def _handle_persona_raw(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        raw = body.get("raw")
+        if not isinstance(raw, str):
+            return _json_error(400, "Missing 'raw' string.")
+
+        from constants import save_persona_raw, build_system_prompt, HOST
+        ok, err = save_persona_raw(raw)
+        if not ok:
+            return _json_error(400, err)
+
+        prompt = build_system_prompt(HOST.name)
+        return web.json_response({"ok": True, "system_prompt": prompt})
+
+    async def _handle_persona_preview(self, request):
+        """Build the system prompt from a draft persona WITHOUT saving."""
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        persona = body.get("yaml")
+        if not isinstance(persona, dict):
+            return _json_error(400, "Missing 'yaml' object.")
+
+        from constants import build_system_prompt, HOST
+        try:
+            prompt = build_system_prompt(HOST.name, profile_dict=persona)
+        except Exception as e:
+            return _json_error(500, f"Preview failed: {e}")
+
+        return web.json_response({"system_prompt": prompt})
+
+    # ------------------------------------------------------------------
+    # Model manager (Phase 10.12)
+    # ------------------------------------------------------------------
+    async def _handle_models_get(self, request):
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        mm = self._model_manager()
+        if mm is None:
+            return _json_error(503, "Model manager unavailable.")
+
+        loop = asyncio.get_event_loop()
+        try:
+            installed = await loop.run_in_executor(None, mm.list_installed)
+            loaded    = await loop.run_in_executor(None, mm.list_loaded)
+        except Exception as e:
+            return _json_error(500, f"Ollama query failed: {e}")
+
+        return web.json_response({
+            "endpoint":        mm.endpoint,
+            "installed":       installed.get("models", []),
+            "installed_error": installed.get("error"),
+            "loaded":          loaded.get("models", []),
+            "loaded_error":    loaded.get("error"),
+            "routing":         mm.get_routing(),
+            "pull":            mm.get_pull_status(),
+        })
+
+    async def _handle_models_pull_status(self, request):
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        mm = self._model_manager()
+        if mm is None:
+            return _json_error(503, "Model manager unavailable.")
+        return web.json_response({"pull": mm.get_pull_status()})
+
+    async def _handle_models_load(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        mm = self._model_manager()
+        if mm is None:
+            return _json_error(503, "Model manager unavailable.")
+
+        name = (body.get("model") or "").strip()
+        if not name:
+            return _json_error(400, "Missing 'model'.")
+
+        loop = asyncio.get_event_loop()
+        ok, err = await loop.run_in_executor(None, mm.preload, name)
+        if not ok:
+            return _json_error(400, f"Load failed: {err}")
+        return web.json_response({"ok": True})
+
+    async def _handle_models_unload(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        mm = self._model_manager()
+        if mm is None:
+            return _json_error(503, "Model manager unavailable.")
+
+        name = (body.get("model") or "").strip()
+        if not name:
+            return _json_error(400, "Missing 'model'.")
+
+        loop = asyncio.get_event_loop()
+        ok, err = await loop.run_in_executor(None, mm.unload, name)
+        if not ok:
+            return _json_error(400, f"Unload failed: {err}")
+        return web.json_response({"ok": True})
+
+    async def _handle_models_start_pull(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        mm = self._model_manager()
+        if mm is None:
+            return _json_error(503, "Model manager unavailable.")
+
+        name = (body.get("model") or "").strip()
+        ok, err = mm.start_pull(name)
+        if not ok:
+            return _json_error(400, err)
+        return web.json_response({"ok": True, "pull": mm.get_pull_status()})
+
+    async def _handle_models_delete(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        mm = self._model_manager()
+        if mm is None:
+            return _json_error(503, "Model manager unavailable.")
+
+        name = (body.get("model") or "").strip()
+        if not name:
+            return _json_error(400, "Missing 'model'.")
+
+        loop = asyncio.get_event_loop()
+        ok, err = await loop.run_in_executor(None, mm.delete_model, name)
+        if not ok:
+            return _json_error(400, f"Delete failed: {err}")
+        return web.json_response({"ok": True})
+
+    async def _handle_models_routing_save(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        mm = self._model_manager()
+        if mm is None:
+            return _json_error(503, "Model manager unavailable.")
+
+        patch = body.get("routing")
+        if not isinstance(patch, dict):
+            return _json_error(400, "Missing 'routing' object.")
+
+        loop = asyncio.get_event_loop()
+        ok, err = await loop.run_in_executor(None, mm.save_routing, patch)
+        if not ok:
+            return _json_error(400, f"Save failed: {err}")
+
+        return web.json_response({
+            "ok": True,
+            "routing": mm.get_routing(),
+        })
+    
+    # ------------------------------------------------------------------
+    # LLM providers (Phase 10.12b)
+    # ------------------------------------------------------------------
+    def _provider_list_for_ui(self):
+        """Assemble the provider list plus a catalog of cloud models
+        suitable for the routing dropdowns."""
+        try:
+            from modules.llm_providers import list_providers, get_client
+        except Exception as e:
+            return None, f"Provider module unavailable: {e}"
+
+        providers = list_providers()
+
+        # For each configured provider, try to fetch its model list so
+        # the routing dropdown can show cloud models inline.
+        catalog = []
+        for p in providers:
+            if p["id"] == "ollama":
+                continue
+            if not p["configured"]:
+                continue
+            try:
+                client = get_client(p["id"])
+                models, err = client.list_models()
+                if err or not models:
+                    continue
+                for m in models:
+                    catalog.append({
+                        "provider": p["id"],
+                        "provider_label": p["label"],
+                        "name": m["name"],
+                        "spec": f"{p['id']}:{m['name']}",
+                    })
+            except Exception:
+                continue
+
+        catalog.sort(key=lambda x: (x["provider"], x["name"]))
+        return {"providers": providers, "catalog": catalog}, None
+
+    async def _handle_providers_list(self, request):
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+
+        loop = asyncio.get_event_loop()
+        data, err = await loop.run_in_executor(None, self._provider_list_for_ui)
+        if err:
+            return _json_error(500, err)
+        return web.json_response(data)
+
+    async def _handle_provider_save(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        try:
+            from modules.llm_providers import save_provider_config
+        except Exception as e:
+            return _json_error(503, f"Provider module unavailable: {e}")
+
+        pid = request.match_info.get("pid", "")
+
+        # Distinguish "leave alone" (None) from "clear" ("").
+        api_key = None
+        if "api_key" in body:
+            api_key = str(body.get("api_key") or "")
+
+        base_url = None
+        if "base_url" in body:
+            base_url = str(body.get("base_url") or "")
+
+        loop = asyncio.get_event_loop()
+        ok, err = await loop.run_in_executor(
+            None, save_provider_config, pid, api_key, base_url,
+        )
+        if not ok:
+            return _json_error(400, f"Save failed: {err}")
+
+        # Return the refreshed list so the UI can update without a second round-trip.
+        data, err = await loop.run_in_executor(None, self._provider_list_for_ui)
+        if err:
+            return _json_error(500, err)
+        return web.json_response({"ok": True, **data})
+
+    async def _handle_provider_test(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        try:
+            from modules.llm_providers import test_provider
+        except Exception as e:
+            return _json_error(503, f"Provider module unavailable: {e}")
+
+        pid = request.match_info.get("pid", "")
+        loop = asyncio.get_event_loop()
+        ok, msg = await loop.run_in_executor(None, test_provider, pid)
+        return web.json_response({"ok": ok, "message": msg})
+
+    async def _handle_provider_models(self, request):
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+
+        try:
+            from modules.llm_providers import get_client
+        except Exception as e:
+            return _json_error(503, f"Provider module unavailable: {e}")
+
+        pid = request.match_info.get("pid", "")
+        loop = asyncio.get_event_loop()
+        try:
+            client = get_client(pid)
+            models, err = await loop.run_in_executor(None, client.list_models)
+        except Exception as e:
+            return _json_error(400, str(e))
+
+        if err:
+            return _json_error(400, err)
+        return web.json_response({
+            "provider": pid,
+            "models": models,
+        })
+
+    # ------------------------------------------------------------------
+    # Page handlers (server-side gating)
     # ------------------------------------------------------------------
     async def _handle_index(self, request):
         if not self.user_db.has_users():
             raise web.HTTPFound("/setup")
+        user = self._current_user(request)
+        if not user:
+            raise web.HTTPFound("/login")
         return await self._serve_file(os.path.join(_WEB_ROOT, "index.html"))
+
+    async def _handle_login_page(self, request):
+        if not self.user_db.has_users():
+            raise web.HTTPFound("/setup")
+        if self._current_user(request):
+            raise web.HTTPFound("/")
+        return await self._serve_file(os.path.join(_WEB_ROOT, "login.html"))
+
+    async def _handle_register_page(self, request):
+        # Same page as login — the client toggles to register mode.
+        return await self._handle_login_page(request)
 
     async def _handle_setup_page(self, request):
         if self.user_db.has_users():
             raise web.HTTPFound("/")
         return await self._serve_file(os.path.join(_WEB_ROOT, "setup.html"))
 
+    # ------------------------------------------------------------------
+    # Static file serving
+    # ------------------------------------------------------------------
     async def _handle_static(self, request):
         rel = request.match_info.get("tail", "")
         if not rel or ".." in rel.split("/") or rel.startswith("/"):

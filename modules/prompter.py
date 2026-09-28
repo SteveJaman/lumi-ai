@@ -15,7 +15,7 @@ from constants import (
     LLM_ENDPOINT,
     MODEL_NAME,
     VISION_MODEL_NAME,
-    SYSTEM_PROMPT,
+    get_system_prompt, 
     AI_NAME,
     STOP_STRINGS,
     WORKSPACE_ROOT,
@@ -27,6 +27,7 @@ from constants import (
 )
 from modules.agent_tools import TOOL_SCHEMAS, CONFIRM_REQUIRED_TOOLS, execute_tool
 from modules.session_state import SessionState
+from modules.llm_providers import chat_sync, LLMResponse
 
 MAGENTA = "\033[95m"
 GRAY = "\033[90m"
@@ -767,6 +768,15 @@ def _check_fast_model_available():
     global _FAST_MODEL_AVAILABLE
     if _FAST_MODEL_AVAILABLE is not None:
         return _FAST_MODEL_AVAILABLE
+
+    # Fast path is Ollama-only today. If FAST_MODEL_NAME has a
+    # provider prefix, treat it as available and let chat_sync decide.
+    from constants import _split_model_spec
+    provider, _model = _split_model_spec(FAST_MODEL_NAME)
+    if provider != "ollama":
+        _FAST_MODEL_AVAILABLE = True
+        return True
+
     try:
         r = requests.get(f"{LLM_ENDPOINT}/api/tags", timeout=3)
         if r.status_code != 200:
@@ -1021,7 +1031,7 @@ class Prompter:
         label = "fast" if use_fast else "full"
 
         context_injections = self.gather_injections(latest_user_text, agent_context=False)
-        messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{context_injections}"}]
+        messages = [{"role": "system", "content": f"{get_system_prompt()}\n\n{context_injections}"}]
 
         for msg in self.signals.history[-10:]:
             role = msg.get("role", "user")
@@ -1041,23 +1051,19 @@ class Prompter:
             options["num_ctx"] = MAIN_NUM_CTX
 
         loop = asyncio.get_running_loop()
-        url = f"{LLM_ENDPOINT}/api/chat"
 
         print(f"{GRAY}Thinking (conversational, {label})...{RESET}")
         try:
-            response = await loop.run_in_executor(
+            resp: LLMResponse = await loop.run_in_executor(
                 None,
-                lambda: requests.post(url, json={
-                    "model": model,
-                    "messages": messages,
-                    "stream": False,
-                    "think": not use_fast,
-                    "keep_alive": keep_alive,
-                    "options": options,
-                }, timeout=AGENT_REQUEST_TIMEOUT),
+                lambda: chat_sync(
+                    model,
+                    messages,
+                    think=not use_fast,
+                    keep_alive=keep_alive,
+                    options=options,
+                ),
             )
-            response.raise_for_status()
-            data = response.json()
         except Exception as e:
             print(f"\n{GRAY}[System Error: Chat request failed - {e}]{RESET}")
             return "Something went wrong talking to my own model — check the terminal for the error."
@@ -1065,12 +1071,12 @@ class Prompter:
         try:
             from modules.log_hub import emit as hub_emit
             hub_emit(self.signals, "system",
-                     f"chat turn → {label} model ({model})")
+                     f"chat turn → {label} ({resp.provider}:{resp.model}, "
+                     f"{resp.latency_ms}ms)")
         except Exception:
             pass
 
-        msg = data.get("message", {}) or {}
-        return (msg.get("content") or "").strip() or "..."
+        return (resp.content or "").strip() or "..."
 
     def gather_injections(self, user_query="", agent_context=None):
         if agent_context is None:
@@ -1618,7 +1624,7 @@ class Prompter:
 
     async def run_agent_turn(self, latest_user_text):
         context_injections = self.gather_injections(latest_user_text, agent_context=True)
-        messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{context_injections}"}]
+        messages = [{"role": "system", "content": f"{get_system_prompt()}\n\n{context_injections}"}]
 
         for msg in self.signals.history[-10:]:
             role = msg.get("role", "user")
@@ -1628,7 +1634,6 @@ class Prompter:
 
         all_tools = TOOL_SCHEMAS + EXTRA_TOOL_SCHEMAS
         loop = asyncio.get_running_loop()
-        url = f"{LLM_ENDPOINT}/api/chat"
 
         executed_this_turn = set()
         any_tool_succeeded = False
@@ -1643,38 +1648,34 @@ class Prompter:
         original_request = latest_user_text
 
         for step in range(MAX_AGENT_STEPS):
-            payload = {
-                "model": MODEL_NAME,
-                "messages": messages,
-                "tools": all_tools,
-                "stream": False,
-                "think": True,
-                "keep_alive": "30s",
-                "options": {
-                    "temperature": 0.5,
-                    "top_p": 0.9,
-                    "repeat_penalty": 1.15,
-                    "repeat_last_n": 64,
-                    "num_ctx": MAIN_NUM_CTX,
-                },
+            agent_options = {
+                "temperature": 0.5,
+                "top_p": 0.9,
+                "repeat_penalty": 1.15,
+                "repeat_last_n": 64,
+                "num_ctx": MAIN_NUM_CTX,
             }
 
             print(f"{GRAY}Thinking (agent step {step + 1}/{MAX_AGENT_STEPS})...{RESET}")
 
             try:
-                response = await loop.run_in_executor(
+                resp: LLMResponse = await loop.run_in_executor(
                     None,
-                    lambda: requests.post(url, json=payload, timeout=AGENT_REQUEST_TIMEOUT),
+                    lambda: chat_sync(
+                        MODEL_NAME,
+                        messages,
+                        tools=all_tools,
+                        think=True,
+                        keep_alive="30s",
+                        options=agent_options,
+                    ),
                 )
-                response.raise_for_status()
-                data = response.json()
             except Exception as e:
                 print(f"\n{GRAY}[System Error: Agent request failed - {e}]{RESET}")
                 return "Something went wrong talking to my own model — check the terminal for the error."
 
-            message = data.get("message", {}) or {}
-            tool_calls = message.get("tool_calls") or []
-            content = (message.get("content") or "").strip()
+            tool_calls = [tc.as_ollama() for tc in resp.tool_calls]
+            content = (resp.content or "").strip()
 
             if not tool_calls and content:
                 recovered = [

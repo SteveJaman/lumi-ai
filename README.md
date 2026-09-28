@@ -13,9 +13,10 @@ calls a tool, it actually runs. When she says she did something, you can check
 the log and see that she did.
 
 Since Phase 10 she also has a **local web client** at `127.0.0.1:5000` — a
-fully offline hub for chat, memory browsing, dashboards, and (eventually)
-persona editing. The terminal remains a first-class developer tool; the two
-surfaces share the same state and history.
+fully offline hub for chat, memory browsing, and dashboards. Backends for
+persona editing, model management, and optional cloud LLM providers are now in
+place; their web pages are next. The terminal remains a first-class developer
+tool; the two surfaces share the same state and history.
 
 ---
 
@@ -26,6 +27,7 @@ surfaces share the same state and history.
   - [Multi-Step Task Execution](#multi-step-task-execution)
   - [Safety Layers](#safety-layers)
   - [Multi-Model Orchestration](#multi-model-orchestration)
+  - [Model Providers & Model Manager](#model-providers--model-manager)
   - [Persona & Voice](#persona--voice)
   - [Episodic Memory](#episodic-memory)
   - [Emotional State & Cognitive Frames](#emotional-state--cognitive-frames)
@@ -189,6 +191,52 @@ breaks structured extraction tasks** because the model spends the entire
 This distinction matters. Without `think=false` on the background tasks, the
 reflection loop silently returns empty content and no memories ever get
 stored. The fix is in `modules/memory.py` and `modules/session_state.py`.
+
+### Model Providers & Model Manager
+
+Lumi is local-first: everything defaults to Ollama. Since the latest update
+there is also an optional provider layer for cloud models, plus a backend for
+managing local ones. The web pages for both are still to come (Phase 10.12 /
+10.20); the backends and HTTP endpoints are live.
+
+**Provider abstraction** (`modules/llm_providers.py`)
+
+- Three client classes — `OllamaClient`, `OpenAICompatClient`, and
+  `AnthropicClient` — normalize request payloads, responses, and tool calls
+  into one shape (`LLMResponse`, `ToolCall`).
+- OpenAI-compatible endpoints cover OpenAI, Gemini, Groq, OpenRouter,
+  Together, DeepSeek, and similar.
+- `chat_sync(model_spec, messages, ...)` parses provider-prefixed specs such
+  as `openai:gpt-4o-mini` or `deepseek:deepseek-chat`. A bare name like
+  `lumi-qwen3` still means local Ollama.
+- API keys and base URLs are saved to `.env` (`write_env_var`,
+  `save_provider_config`) and are always masked (`mask_key`) before anything
+  reaches the UI.
+
+**Model manager** (`modules/model_manager.py`)
+
+- Talks to Ollama's HTTP API: `/api/tags` (installed), `/api/ps` (loaded),
+  `/api/generate` (load/unload), `/api/pull`, `/api/delete`.
+- Hot-patches routing in `constants.py` (`MODEL_NAME`, `FAST_MODEL_NAME`,
+  `FAST_MODEL_ENABLED`, context lengths, keep-alive) with a line-level regex
+  patcher that preserves surrounding comments and formatting.
+- `_rebind_consumers` re-points modules that already imported those values
+  (`prompter`, `memory`, `session_state`, …) so a routing change applies
+  without restarting the process.
+
+**HTTP endpoints** (in `modules/socketIO.py`)
+
+| Endpoint | Purpose |
+|---|---|
+| `/api/models/*` | Inspect installed/loaded models, load/unload, update routing, background pull |
+| `/api/providers` | List configured providers |
+| `/api/providers/{pid}` | Save provider config (key + base URL) |
+| `/api/providers/{pid}/test` | Connectivity check |
+| `/api/providers/{pid}/models` | Fetch the provider's available models |
+
+> **Privacy note:** pointing a path at a cloud provider sends that path's
+> prompts — persona, injected memories, screen context — to that provider.
+> The default configuration never leaves your machine.
 
 ### Persona & Voice
 
@@ -406,8 +454,11 @@ requires editing a code file becomes a form (in progress).
   (hits ChromaDB vector index, not substring). Sort by newest/oldest/
   importance. Expandable rows show full metadata. `+ Add memory` modal.
   `Export JSON` button.
-- **Persona, Models, Integrations, Settings** — placeholder stubs. Designed,
-  not built.
+- **Persona, Models, Integrations, Settings** — placeholder stubs in the UI.
+  Backends exist for the persona editor (`persona_editor.py`), the model
+  manager (`model_manager.py`, `/api/models/*`), and cloud providers
+  (`llm_providers.py`, `/api/providers/*`); the pages themselves are not
+  built yet. Integrations and Settings are still design-only.
 
 **Terminal and web share state.** Typing in the terminal appends to the same
 `signals.history` the web client polls. Messages sent from the browser go
@@ -509,8 +560,9 @@ the system prompt rebuilds.
   up in the web chat within ~1.5s
 
 **What doesn't yet:**
-- Persona editor (10.10)
-- Model manager (10.12)
+- Persona editor page (10.10) — backend done
+- Model manager page (10.12) — backend done
+- Provider settings page (10.20) — backend done
 - Integrations cards (10.13)
 - Settings page (10.14)
 - Per-user memory/emotional isolation (10.15, 10.16)
@@ -664,6 +716,12 @@ flowchart TD
     BROWSER -->|POST /api/chat/send| SIO
     BROWSER -->|POST /api/agent/toggle| SIO
     BROWSER -->|CRUD /api/memories/*| SIO
+    SIO --> MODELMGR[model_manager.py<br/>hot-patch constants.py]
+    SIO --> PROVIDERS[llm_providers.py<br/>Ollama / OpenAI-compat / Anthropic]
+    MODELMGR -.->|/api/tags, /api/ps, /api/pull| OLLAMA
+    PROVIDERS -.->|optional| CLOUD[("Cloud LLM APIs")]
+    SIO --> PERSONAED[persona_editor.py<br/>ruamel.yaml round-trip]
+    PERSONAED -.-> PERSONA
 
     %% ===== BACKGROUND LOOPS =====
     subgraph BG["Background Modules — always running"]
@@ -721,7 +779,8 @@ flowchart TD
     class CHROMA storage
     class TTS,OUT_SPEAK,OUT_DISC,SKIP,HIST output
     class LOGHUB,DASH diag
-    class SIO,AUTH,BROWSER web
+    class SIO,AUTH,BROWSER,MODELMGR,PROVIDERS,PERSONAED web
+    class CLOUD storage
 ```
 
 **Legend**
@@ -750,7 +809,10 @@ flowchart TD
 | `modules/memory.py` | ChromaDB long-term memory, reflection loop, temporal queries, browser API |
 | `modules/import_chat_history.py` | Offline backfill from `logs/chat_history.json` |
 | `modules/user_auth.py` | SQLite + argon2id user store, session tokens |
-| `modules/socketIO.py` | Web client host — aiohttp HTTP routes + python-socketio events + static file serving |
+| `modules/socketIO.py` | Web client host — aiohttp HTTP routes (auth, memories, models, providers) + python-socketio events + static file serving |
+| `modules/llm_providers.py` | Multi-provider LLM clients (Ollama, OpenAI-compatible, Anthropic), `chat_sync("provider:model")`, masked `.env` key storage |
+| `modules/model_manager.py` | Ollama model management + live hot-patching of `constants.py` routing |
+| `modules/persona_editor.py` | Comment-preserving `lumi.yaml` load/edit/save (ruamel.yaml, PyYAML fallback) |
 | `modules/emotional_state.py` | Traits, state variables, cognitive frame selection |
 | `modules/self_model.py` | Pattern tracking, periodic reflection, sparse injection |
 | `modules/heartbeat.py` | Autonomous initiation loop |
@@ -790,6 +852,9 @@ Each module runs in its own thread with its own event loop, spawned by
   `user_auth.py`. Falls back to `pbkdf2_hmac` if missing, but argon2id is
   recommended
 - **chromadb** (`pip install chromadb`) — long-term memory
+- **ruamel.yaml** (`pip install ruamel.yaml`) — comment-preserving edits to
+  `lumi.yaml` in `persona_editor.py`. Optional; falls back to PyYAML, which
+  drops comments on save
 - **Conda** recommended for environment isolation
 
 ### Recommended Models
@@ -822,6 +887,10 @@ FAST_MODEL_NUM_CTX = 8192
 MAIN_NUM_CTX = 16384
 FAST_MODEL_KEEP_ALIVE = "5m"
 ```
+
+Model names can also be provider-prefixed specs such as
+`"deepseek:deepseek-chat"` (see [Model Providers & Model
+Manager](#model-providers--model-manager)); a bare name stays on local Ollama.
 
 Because both names point at the same model, Ollama loads it once and shares
 it between paths. This is a ~5 GB VRAM savings over the older two-model
@@ -886,6 +955,9 @@ mangling on injected context.
    DISCORD_VOICE_CHANNEL_ID=000000000000000000
    DISCORD_CHANNEL_ID=000000000000000000
    ```
+
+   Cloud provider keys are optional. If you use the provider endpoints, they
+   write their keys and base URLs into this same `.env`.
 
 5. **Configure `constants.py`** — set `WORKSPACE_ROOT`, `LLM_ENDPOINT`,
    `TIMEZONE`, and `OUTPUT_DEVICE_INDEX` for your machine. Run
@@ -1249,6 +1321,15 @@ trimmed significantly:
   `/api/history` every 1.5 seconds. There is no live push. Socket.io is
   wired but not required. If the socket fails (proxy, extension, antivirus
   HTTPS scanner on localhost), chat still works — just with a small delay.
+- **Cloud providers are backend-only for now** — `llm_providers.py` and the
+  `/api/providers/*` endpoints work, but there is no UI yet and the
+  Ollama-specific payload fields (`think`, `num_ctx`, `keep_alive`) still need
+  provider-aware handling before every background task can run on a cloud
+  spec. Cloud specs also send prompt content off-machine.
+- **Model manager patches `constants.py`** — routing changes rewrite lines in
+  that file (comments preserved). It's on the protected-files list for Lumi's
+  own tools, but the manager writes it directly; keep it under version
+  control.
 - **Single active user** — The web client is one-user-at-a-time. Logging in
   as a second user switches the shared `HOST` object. Per-user isolation of
   memory and emotional state is Phase 10.15 / 10.16.
@@ -1280,7 +1361,8 @@ internal state, makes her own decisions, and acts without being prompted.
 | 9 | Security hardening | 🟡 Partial (see below) |
 | 10 | Local web client | 🟡 MVP shipped |
 
-**Phase 10** went from "designed" to "MVP shipped" this cycle:
+**Phase 10** is at "MVP shipped", with backends now landing ahead of their
+pages:
 
 - ✅ 10.1 Identity refactor — `HOST` mutable, `build_system_prompt(host)`,
   `<host>` templating
@@ -1292,9 +1374,9 @@ internal state, makes her own decisions, and acts without being prompted.
 - ✅ 10.7 Chat page — polling, tag chips, agent-mode toggle
 - 🟡 10.8 Setup wizard — single-screen form; full multi-step pending
 - ✅ 10.9 Dashboard page — stat cards + log hub event stream
-- ❌ 10.10 Persona editor
+- 🟡 10.10 Persona editor — backend done (`persona_editor.py`); UI pending
 - ✅ 10.11 Memory browser — table, search, edit, delete, add, export
-- ❌ 10.12 Model manager
+- 🟡 10.12 Model manager — backend + `/api/models/*` done; UI pending
 - ❌ 10.13 Integrations page
 - ❌ 10.14 Settings page
 - ❌ 10.15 Per-user memory isolation
@@ -1303,6 +1385,8 @@ internal state, makes her own decisions, and acts without being prompted.
   sandbox, textContent rendering all done; full audit pending
 - ✅ 10.18 Terminal as fallback client — shares `signals.history`
 - ❌ 10.19 Voice in browser (deferred)
+- 🟡 10.20 Multi-provider LLMs — `llm_providers.py` + `/api/providers/*` done;
+  UI and per-call-site wiring pending
 
 **Phase 9** is partially addressed by what shipped alongside Phase 10:
 
@@ -1312,6 +1396,8 @@ internal state, makes her own decisions, and acts without being prompted.
 - ✅ aiohttp bound strictly to `127.0.0.1`
 - ✅ Static file handler refuses path traversal
 - ✅ Frontend rendering via `textContent`, never `innerHTML`
+- 🟡 API key handling (9.6) — keys live in `.env` and are masked in API
+  responses; rotation UI and log-redaction audit pending
 - ❌ Prompt injection provenance tagging (9.1)
 - ❌ SDK authentication (9.2)
 - ❌ `realpath()` fix on the file sandbox (9.5)
@@ -1330,7 +1416,7 @@ Built as a personal project. Architecture inspired by Neuro-sama
 * **VTube Model:** [Arii / Ariu (Booth)](https://booth.pm/en/items/5879420)
 
 Built using Ollama, ChromaDB, Faster-Whisper, Fish Audio, Playwright,
-pyvts, aiohttp, python-socketio, and pyautogui.
+pyvts, aiohttp, python-socketio, ruamel.yaml, and pyautogui.
 
 ---
 
