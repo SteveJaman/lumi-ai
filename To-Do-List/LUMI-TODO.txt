@@ -305,7 +305,7 @@ to Lumi over a websocket protocol, register their own actions,
 send context, and receive invocations. Lumi becomes a plugin
 host. Mirrors the Neuro SDK architecture.
 
-[ ] 8.1  Protocol definition                                 NOT STARTED
+[ ] 8.1  Protocol definition                                NOT STARTED
 [ ] 8.2  Server module                                      NOT STARTED
 [ ] 8.3  Prompter integration                               NOT STARTED
 [ ] 8.4  Reference client (Python)                          NOT STARTED
