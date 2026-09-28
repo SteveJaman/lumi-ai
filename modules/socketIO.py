@@ -4,14 +4,21 @@ Socket.io server + local HTTP/SPA host for the Phase 10 web client.
 Serves:
   1. Socket.io events on the default namespace
   2. HTTP routes: /auth/*, /api/*, /api/memories/*, /api/persona/*,
-     /api/models/*
+     /api/models/*, /api/providers/*, /api/integrations/*,
+     /api/settings/*, /api/voice_message
   3. Static files from web/
-  4. Auth pages: /login (login/register), /setup (first run)
+  4. Auth pages: /login (login/register), /setup (first-run wizard)
 
 Page gating (server-side, not client-side):
   /            → /setup if no users, /login if not authed, else index.html
   /login       → /setup if no users, /         if authed, else login.html
-  /setup       → /        if users exist,     else setup.html
+  /setup       → wizard (client picks the step based on auth + ?step=)
+
+Phase 10.19 — voice in browser:
+  - tts.py calls signals.broadcast_tts_audio(bytes) to fan out WAV
+    audio to every opted-in web client.
+  - POST /api/voice_message accepts a webm/ogg/wav blob, transcribes
+    with faster-whisper, injects the transcript as a user message.
 
 Security posture (Phase 10.17):
   - Bound strictly to 127.0.0.1
@@ -22,10 +29,13 @@ Security posture (Phase 10.17):
 """
 
 import os
+import io
 import time
+import base64
 import secrets
 import asyncio
 import mimetypes
+from typing import Optional
 
 from aiohttp import web
 import socketio
@@ -62,6 +72,18 @@ def _parse_cookies(cookie_header):
     return out
 
 
+# Lazy faster-whisper loader for the voice-in-browser path.
+_voice_whisper = None
+
+
+def _get_voice_whisper_model():
+    global _voice_whisper
+    if _voice_whisper is None:
+        from faster_whisper import WhisperModel
+        _voice_whisper = WhisperModel("base", device="cpu", compute_type="int8")
+    return _voice_whisper
+
+
 class SocketIOServer:
     def __init__(self, signals, stt=None, tts=None, llmWrapper=None,
                  prompter=None, modules=None, model_manager=None):
@@ -82,6 +104,10 @@ class SocketIOServer:
         )
         self.app = web.Application()
         self.sio.attach(self.app)
+
+        # Phase 10.19 — voice in browser.
+        self._tts_clients = set()
+        self.signals.broadcast_tts_audio = self._broadcast_tts_audio
 
         self._register_http_routes()
         self._register_socket_events()
@@ -149,12 +175,32 @@ class SocketIOServer:
         r.add_post("/api/models/pull",    self._handle_models_start_pull)
         r.add_post("/api/models/delete",  self._handle_models_delete)
         r.add_put("/api/models/routing",  self._handle_models_routing_save)
-        
-        # LLM providers — Phase 10.12b
+
+        # LLM providers — Phase 10.12b / 10.20
         r.add_get("/api/providers",              self._handle_providers_list)
         r.add_put("/api/providers/{pid}",        self._handle_provider_save)
         r.add_post("/api/providers/{pid}/test",  self._handle_provider_test)
         r.add_get("/api/providers/{pid}/models", self._handle_provider_models)
+
+        # Integrations — Phase 10.13
+        r.add_get("/api/integrations",               self._handle_integrations_list)
+        r.add_put("/api/integrations/{iid}",         self._handle_integration_save)
+        r.add_post("/api/integrations/{iid}/test",   self._handle_integration_test)
+        r.add_post("/api/integrations/{iid}/toggle", self._handle_integration_toggle)
+
+        # Settings — Phase 10.14
+        r.add_get("/api/settings/general",                     self._handle_settings_general_get)
+        r.add_put("/api/settings/general",                     self._handle_settings_general_put)
+        r.add_get("/api/settings/about",                       self._handle_settings_about)
+        r.add_get("/api/settings/advanced",                    self._handle_settings_advanced_get)
+        r.add_post("/api/settings/advanced/reset",             self._handle_settings_reset)
+        r.add_post("/api/settings/security/password",          self._handle_settings_password)
+        r.add_get("/api/settings/security/sessions",           self._handle_settings_sessions_list)
+        r.add_post("/api/settings/security/sessions/revoke",   self._handle_settings_session_revoke)
+        r.add_post("/api/settings/security/sessions/revoke-others", self._handle_settings_session_revoke_others)
+
+        # Voice in browser — Phase 10.19
+        r.add_post("/api/voice_message", self._handle_voice_message)
 
     def _current_user(self, request):
         cookies = _parse_cookies(request.headers.get("Cookie", ""))
@@ -633,7 +679,6 @@ class SocketIOServer:
         return web.json_response({"ok": True, "system_prompt": prompt})
 
     async def _handle_persona_preview(self, request):
-        """Build the system prompt from a draft persona WITHOUT saving."""
         if not self._origin_ok(request):
             return _json_error(403, "Bad origin.")
         user = self._current_user(request)
@@ -835,13 +880,11 @@ class SocketIOServer:
             "ok": True,
             "routing": mm.get_routing(),
         })
-    
+
     # ------------------------------------------------------------------
-    # LLM providers (Phase 10.12b)
+    # LLM providers (Phase 10.12b / 10.20)
     # ------------------------------------------------------------------
     def _provider_list_for_ui(self):
-        """Assemble the provider list plus a catalog of cloud models
-        suitable for the routing dropdowns."""
         try:
             from modules.llm_providers import list_providers, get_client
         except Exception as e:
@@ -849,8 +892,6 @@ class SocketIOServer:
 
         providers = list_providers()
 
-        # For each configured provider, try to fetch its model list so
-        # the routing dropdown can show cloud models inline.
         catalog = []
         for p in providers:
             if p["id"] == "ollama":
@@ -907,7 +948,6 @@ class SocketIOServer:
 
         pid = request.match_info.get("pid", "")
 
-        # Distinguish "leave alone" (None) from "clear" ("").
         api_key = None
         if "api_key" in body:
             api_key = str(body.get("api_key") or "")
@@ -923,7 +963,6 @@ class SocketIOServer:
         if not ok:
             return _json_error(400, f"Save failed: {err}")
 
-        # Return the refreshed list so the UI can update without a second round-trip.
         data, err = await loop.run_in_executor(None, self._provider_list_for_ui)
         if err:
             return _json_error(500, err)
@@ -979,6 +1018,384 @@ class SocketIOServer:
         })
 
     # ------------------------------------------------------------------
+    # Integrations (Phase 10.13)
+    # ------------------------------------------------------------------
+    async def _handle_integrations_list(self, request):
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            from modules.integrations import list_integrations
+        except Exception as e:
+            return _json_error(503, f"Integrations module unavailable: {e}")
+
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(
+            None, list_integrations, self.modules, self.signals,
+        )
+        return web.json_response({"integrations": data})
+
+    async def _handle_integration_save(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        try:
+            from modules.integrations import save_integration_config
+        except Exception as e:
+            return _json_error(503, f"Integrations module unavailable: {e}")
+
+        iid = request.match_info.get("iid", "")
+        values = body.get("values") or {}
+        loop = asyncio.get_event_loop()
+        ok, err = await loop.run_in_executor(
+            None, save_integration_config, iid, values,
+        )
+        if not ok:
+            return _json_error(400, f"Save failed: {err}")
+        return web.json_response({"ok": True})
+
+    async def _handle_integration_test(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        try:
+            from modules.integrations import test_integration
+        except Exception as e:
+            return _json_error(503, f"Integrations module unavailable: {e}")
+
+        iid = request.match_info.get("iid", "")
+        loop = asyncio.get_event_loop()
+        ok, msg = await loop.run_in_executor(
+            None, test_integration, iid, self.modules, self.signals,
+        )
+        return web.json_response({"ok": ok, "message": msg})
+
+    async def _handle_integration_toggle(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        try:
+            from modules.integrations import toggle_integration
+        except Exception as e:
+            return _json_error(503, f"Integrations module unavailable: {e}")
+
+        iid = request.match_info.get("iid", "")
+        enabled = bool(body.get("enabled", True))
+        loop = asyncio.get_event_loop()
+        ok, msg = await loop.run_in_executor(
+            None, toggle_integration, iid, enabled,
+            self.modules, self.signals,
+        )
+        if not ok:
+            return _json_error(400, msg)
+        return web.json_response({"ok": True, "message": msg})
+
+    # ------------------------------------------------------------------
+    # Settings (Phase 10.14)
+    # ------------------------------------------------------------------
+    def _current_session_token(self, request) -> Optional[str]:
+        cookies = _parse_cookies(request.headers.get("Cookie", ""))
+        return cookies.get(_SESSION_COOKIE)
+
+    async def _handle_settings_general_get(self, request):
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            from modules.settings_manager import get_general
+        except Exception as e:
+            return _json_error(503, f"Settings module unavailable: {e}")
+        return web.json_response(get_general())
+
+    async def _handle_settings_general_put(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        try:
+            from modules.settings_manager import save_general, get_general
+        except Exception as e:
+            return _json_error(503, f"Settings module unavailable: {e}")
+
+        values = body.get("values") or {}
+        loop = asyncio.get_event_loop()
+        ok, err = await loop.run_in_executor(None, save_general, values)
+        if not ok:
+            return _json_error(400, f"Save failed: {err}")
+
+        return web.json_response({
+            "ok": True,
+            "general": get_general(),
+        })
+
+    async def _handle_settings_about(self, request):
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            from modules.settings_manager import get_about
+        except Exception as e:
+            return _json_error(503, f"Settings module unavailable: {e}")
+
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(
+            None, get_about, self.modules, self.signals,
+        )
+        return web.json_response(data)
+
+    async def _handle_settings_advanced_get(self, request):
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            from modules.settings_manager import list_reset_targets
+        except Exception as e:
+            return _json_error(503, f"Settings module unavailable: {e}")
+        return web.json_response({"targets": list_reset_targets()})
+
+    async def _handle_settings_reset(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        try:
+            from modules.settings_manager import reset_target
+        except Exception as e:
+            return _json_error(503, f"Settings module unavailable: {e}")
+
+        target = (body.get("target") or "").strip()
+        if not target:
+            return _json_error(400, "Missing 'target'.")
+
+        loop = asyncio.get_event_loop()
+        ok, msg = await loop.run_in_executor(
+            None, reset_target, target, self.modules, self.signals,
+        )
+        if not ok:
+            return _json_error(400, msg)
+        return web.json_response({"ok": True, "message": msg})
+
+    async def _handle_settings_password(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        old_pw = body.get("old_password") or ""
+        new_pw = body.get("new_password") or ""
+
+        ok, msg = self.user_db.change_password(user["id"], old_pw, new_pw)
+        if not ok:
+            return _json_error(400, msg)
+        return web.json_response({"ok": True, "message": msg})
+
+    async def _handle_settings_sessions_list(self, request):
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        token = self._current_session_token(request)
+        sessions = self.user_db.list_sessions(user["id"], current_token=token)
+        return web.json_response({"sessions": sessions})
+
+    async def _handle_settings_session_revoke(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        prefix = (body.get("prefix") or "").strip()
+        if not prefix:
+            return _json_error(400, "Missing session prefix.")
+
+        current = self._current_session_token(request)
+        if current and current.startswith(prefix.rstrip("…")):
+            return _json_error(
+                400,
+                "Cannot revoke the current session. Use Sign out instead.",
+            )
+
+        ok, msg = self.user_db.delete_session_by_prefix(user["id"], prefix)
+        if not ok:
+            return _json_error(400, msg)
+        return web.json_response({"ok": True, "message": msg})
+
+    async def _handle_settings_session_revoke_others(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            return _json_error(400, "Invalid JSON.")
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        token = self._current_session_token(request)
+        n = self.user_db.delete_other_sessions(user["id"], keep_token=token)
+        return web.json_response({
+            "ok": True,
+            "revoked": int(n),
+            "message": f"Revoked {n} other session(s).",
+        })
+
+    # ------------------------------------------------------------------
+    # Voice in browser (Phase 10.19)
+    # ------------------------------------------------------------------
+    def _broadcast_tts_audio(self, audio_bytes):
+        """Called by tts.py when an utterance starts playing."""
+        if not self._tts_clients:
+            return
+        try:
+            b64 = base64.b64encode(audio_bytes).decode("ascii")
+        except Exception:
+            return
+
+        async def _send():
+            try:
+                await self.sio.emit("tts_audio", {
+                    "format": "wav",
+                    "data": b64,
+                })
+            except Exception:
+                pass
+
+        try:
+            self.sio.start_background_task(_send)
+        except Exception:
+            pass
+
+    async def _handle_voice_message(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+
+        try:
+            reader = await request.multipart()
+            field = await reader.next()
+            if field is None or field.name != "audio":
+                return _json_error(400, "Expected multipart field 'audio'.")
+            blob = await field.read()
+            if not blob:
+                return _json_error(400, "Empty audio blob.")
+        except Exception as e:
+            return _json_error(400, f"Could not read audio: {e}")
+
+        loop = asyncio.get_event_loop()
+
+        def _transcribe():
+            try:
+                from faster_whisper import WhisperModel  # noqa: F401
+            except ImportError:
+                return None, "faster-whisper is not installed."
+            try:
+                import tempfile
+                fd, tmp = tempfile.mkstemp(suffix=".webm")
+                os.close(fd)
+                try:
+                    with open(tmp, "wb") as f:
+                        f.write(blob)
+                    model = _get_voice_whisper_model()
+                    segments, _ = model.transcribe(tmp, beam_size=5)
+                    text = " ".join(s.text for s in segments).strip()
+                finally:
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
+                return text, None
+            except Exception as e:
+                return None, str(e)
+
+        text, err = await loop.run_in_executor(None, _transcribe)
+        if err:
+            return _json_error(500, f"Transcription failed: {err}")
+        if not text:
+            return web.json_response({"ok": True, "text": ""})
+
+        self.signals.history.append({"role": "user", "content": text})
+        self.signals.new_message = True
+        self.signals.last_message_time = time.time()
+        if hasattr(self.signals, "save_history"):
+            self.signals.save_history()
+
+        await self.sio.emit("web_message", {
+            "role": "user",
+            "content": text,
+            "ts": time.time(),
+        })
+
+        return web.json_response({"ok": True, "text": text})
+
+    # ------------------------------------------------------------------
     # Page handlers (server-side gating)
     # ------------------------------------------------------------------
     async def _handle_index(self, request):
@@ -997,12 +1414,11 @@ class SocketIOServer:
         return await self._serve_file(os.path.join(_WEB_ROOT, "login.html"))
 
     async def _handle_register_page(self, request):
-        # Same page as login — the client toggles to register mode.
         return await self._handle_login_page(request)
 
     async def _handle_setup_page(self, request):
-        if self.user_db.has_users():
-            raise web.HTTPFound("/")
+        # Always serve the wizard. The client decides which step to
+        # show based on auth + ?step=.
         return await self._serve_file(os.path.join(_WEB_ROOT, "setup.html"))
 
     # ------------------------------------------------------------------
@@ -1272,6 +1688,7 @@ class SocketIOServer:
 
         @sio.event
         def disconnect(sid):
+            self._tts_clients.discard(sid)
             print(f"\033[90mSOCKETIO: client {sid} disconnected\033[0m")
 
         @sio.event
@@ -1304,6 +1721,17 @@ class SocketIOServer:
                 await sio.emit("web_agent_mode", {
                     "enabled": self.prompter.agent_mode_enabled,
                 })
+
+        @sio.event
+        async def web_voice_optin(sid, payload):
+            sess = await sio.get_session(sid)
+            if not sess or not sess.get("user"):
+                return
+            enabled = bool((payload or {}).get("enabled", True))
+            if enabled:
+                self._tts_clients.add(sid)
+            else:
+                self._tts_clients.discard(sid)
 
     # ==================================================================
     # Background: broadcast new history entries

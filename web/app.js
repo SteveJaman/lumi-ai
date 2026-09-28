@@ -1,8 +1,9 @@
 /* ============================================================
-   Lumi web client — SPA router, auth, chat, dashboard, memory,
-   persona editor, models.
-   Polling-based; no Socket.IO dependency on the client.
-   The login / register flow lives on its own page (/login).
+   Lumi web client — SPA router, chat, dashboard, memory,
+   persona editor, models + providers, integrations, settings,
+   voice in browser.
+   Polling-based; socket.io is best-effort for audio only.
+   Login / register live on their own page (/login).
    ============================================================ */
 
 const $  = (sel, root = document) => root.querySelector(sel);
@@ -50,7 +51,7 @@ const ICONS = {
 };
 
 /* --------------------------------------------------------------
-   Auth bootstrap — redirect to /login if not authenticated.
+   Auth bootstrap
    -------------------------------------------------------------- */
 async function checkAuth() {
   try {
@@ -183,7 +184,7 @@ async function toggleAgentMode() {
 }
 
 /* --------------------------------------------------------------
-   Views
+   View dispatcher
    -------------------------------------------------------------- */
 function render() {
   const main = $('#main-content');
@@ -194,10 +195,8 @@ function render() {
     case 'memory':       return renderMemory(main);
     case 'persona':      return renderPersona(main);
     case 'models':       return renderModels(main);
-    case 'integrations': return renderStub(main, 'Integrations',
-      'VTS, Discord, browser, Fish Audio — status and config. Phase 10.13.');
-    case 'settings':     return renderStub(main, 'Settings',
-      'General, security, advanced, about. Phase 10.14.');
+    case 'integrations': return renderIntegrations(main);
+    case 'settings':     return renderSettings(main);
   }
 }
 
@@ -240,6 +239,10 @@ async function renderChatView(main) {
         <div class="chat-status">
           <button class="mode-chip" id="agent-chip"
                   title="Toggle agent mode">⚡ Agent mode: OFF</button>
+          <button class="mode-chip" id="tts-toggle"
+                  title="Toggle voice playback in this tab">🔇 Voice: OFF</button>
+          <button class="mode-chip" id="mic-toggle"
+                  title="Hold to record a voice message">🎤 Hold to talk</button>
           <span class="muted" id="chat-typing"></span>
           <span class="grow"></span>
           <span class="muted" id="chat-host"></span>
@@ -280,6 +283,8 @@ async function renderChatView(main) {
   $('#chat-send').addEventListener('click', sendChat);
 
   $('#agent-chip').addEventListener('click', toggleAgentMode);
+
+  initVoiceControls();
 }
 
 function renderChat() {
@@ -382,6 +387,158 @@ async function sendChat() {
     });
     renderChat();
   }
+}
+
+/* ==============================================================
+   VOICE IN BROWSER (Phase 10.19)
+   ============================================================== */
+
+let _voiceSocket = null;
+let _voiceEnabled = false;
+let _mediaRecorder = null;
+let _mediaChunks = [];
+
+function initVoiceControls() {
+  const ttsBtn = $('#tts-toggle');
+  const micBtn = $('#mic-toggle');
+
+  if (ttsBtn) {
+    _voiceEnabled = localStorage.getItem('lumi_voice') === 'on';
+    updateVoiceButton();
+    ttsBtn.addEventListener('click', () => {
+      _voiceEnabled = !_voiceEnabled;
+      localStorage.setItem('lumi_voice', _voiceEnabled ? 'on' : 'off');
+      updateVoiceButton();
+      ensureVoiceSocket();
+    });
+  }
+
+  if (micBtn) {
+    micBtn.addEventListener('mousedown', startMicRecording);
+    micBtn.addEventListener('mouseup', stopMicRecording);
+    micBtn.addEventListener('mouseleave', () => {
+      if (_mediaRecorder && _mediaRecorder.state === 'recording') {
+        stopMicRecording();
+      }
+    });
+  }
+
+  ensureVoiceSocket();
+}
+
+function updateVoiceButton() {
+  const btn = $('#tts-toggle');
+  if (!btn) return;
+  btn.textContent = _voiceEnabled ? '🔊 Voice: ON' : '🔇 Voice: OFF';
+  btn.classList.toggle('agent', _voiceEnabled);
+}
+
+async function ensureVoiceSocket() {
+  if (typeof io === 'undefined') return;
+
+  if (_voiceSocket && _voiceSocket.connected) {
+    if (_voiceEnabled) {
+      _voiceSocket.emit('web_voice_optin', { enabled: true });
+    }
+    return;
+  }
+
+  try {
+    _voiceSocket = io({
+      transports: ['websocket', 'polling'],
+      withCredentials: true,
+    });
+
+    _voiceSocket.on('connect', () => {
+      _voiceSocket.emit('web_voice_optin', { enabled: _voiceEnabled });
+    });
+
+    _voiceSocket.on('tts_audio', (payload) => {
+      if (!_voiceEnabled) return;
+      if (!payload || !payload.data) return;
+      playTtsAudio(payload.data);
+    });
+
+    _voiceSocket.on('disconnect', () => {});
+  } catch (e) {
+    console.warn('voice socket failed', e);
+  }
+}
+
+function playTtsAudio(b64) {
+  try {
+    const bytes = atob(b64);
+    const arr = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    const blob = new Blob([arr], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.addEventListener('ended', () => URL.revokeObjectURL(url));
+    audio.play().catch(() => URL.revokeObjectURL(url));
+  } catch (e) {
+    console.warn('audio playback failed', e);
+  }
+}
+
+async function startMicRecording() {
+  const btn = $('#mic-toggle');
+  if (!btn) return;
+  if (_mediaRecorder && _mediaRecorder.state === 'recording') return;
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    alert('Microphone permission denied.');
+    return;
+  }
+
+  _mediaChunks = [];
+  _mediaRecorder = new MediaRecorder(stream);
+  _mediaRecorder.addEventListener('dataavailable', (e) => {
+    if (e.data.size > 0) _mediaChunks.push(e.data);
+  });
+  _mediaRecorder.addEventListener('stop', async () => {
+    stream.getTracks().forEach(t => t.stop());
+    const blob = new Blob(_mediaChunks, { type: 'audio/webm' });
+    _mediaChunks = [];
+    if (blob.size < 1000) return;
+
+    btn.textContent = '🎤 Transcribing…';
+    btn.disabled = true;
+    try {
+      const fd = new FormData();
+      fd.append('audio', blob, 'clip.webm');
+      const res = await fetch('/api/voice_message', {
+        method: 'POST',
+        credentials: 'same-origin',
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (data.text) {
+        state.history.push({ role: 'user', content: data.text });
+        renderChat();
+      }
+    } catch (e) {
+      alert('Voice message failed: ' + e.message);
+    } finally {
+      btn.textContent = '🎤 Hold to talk';
+      btn.disabled = false;
+    }
+  });
+
+  _mediaRecorder.start();
+  btn.textContent = '🎤 Recording… (release)';
+  btn.classList.add('agent');
+}
+
+function stopMicRecording() {
+  const btn = $('#mic-toggle');
+  if (_mediaRecorder && _mediaRecorder.state === 'recording') {
+    _mediaRecorder.stop();
+  }
+  if (btn) btn.classList.remove('agent');
 }
 
 /* ==============================================================
@@ -542,7 +699,7 @@ async function loadMemories() {
   if (!tableEl) return;
 
   const q = ($('#memory-search')?.value || '').trim();
-  const sort = $('#memory-sort')?.value || 'recent';
+  const sort = ($('#memory-sort')?.value || 'recent');
   _memoryState.query = q;
   _memoryState.sort = sort;
   _memoryState.searchMode = !!q;
@@ -695,6 +852,7 @@ function buildMemoryRow(mem) {
       ['Valence',    mem.valence || '(none)'],
       ['Session',    mem.session_id || '(none)'],
       ['Type',       mem.type || '(unknown)'],
+      ['User',       mem.user_id || '(unknown)'],
     ];
     for (const [k, v] of pairs) {
       const dt = document.createElement('dt');
@@ -1841,7 +1999,7 @@ function openPromptModal(text) {
 }
 
 /* ==============================================================
-   MODELS (Phase 10.12)
+   MODELS + PROVIDERS (Phase 10.12 / 10.12b)
    ============================================================== */
 
 let _modelsTimer = null;
@@ -1854,8 +2012,6 @@ const _modelsState = {
   pull: null,
   filter: '',
   lastError: null,
-
-  // Phase 10.12b
   providers: [],
   providerCatalog: [],
 };
@@ -1869,7 +2025,6 @@ function stopPullPolling() {
   if (_pullTimer) { clearInterval(_pullTimer); _pullTimer = null; }
 }
 
-/* ---- Formatting helpers -------------------------------------- */
 function formatBytes(n) {
   if (!n || n < 0) return '—';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -1891,7 +2046,6 @@ function formatExpiresIn(ts) {
   } catch { return ''; }
 }
 
-/* ---- Entry point --------------------------------------------- */
 async function renderModels(main) {
   main.innerHTML = `
     <div class="page">
@@ -1935,8 +2089,6 @@ async function loadModelsPage() {
   _modelsState.routing   = data.routing   || {};
   _modelsState.pull      = data.pull      || null;
 
-  // Providers are a separate request so a broken API key on one
-  // provider doesn't stop the rest of the page rendering.
   try {
     const prov = await api('/api/providers');
     _modelsState.providers       = prov.providers || [];
@@ -1969,7 +2121,6 @@ async function loadModelsPage() {
   }
 }
 
-/* ---- Loaded section ------------------------------------------ */
 function renderLoadedSection() {
   const host = $('#models-loaded-section');
   if (!host) return;
@@ -2024,7 +2175,6 @@ function renderLoadedSection() {
   }
 }
 
-/* ---- Installed section --------------------------------------- */
 function renderInstalledSection() {
   const host = $('#models-installed-section');
   if (!host) return;
@@ -2141,7 +2291,6 @@ function renderInstalledList() {
   }
 }
 
-/* ---- Pull section -------------------------------------------- */
 function renderPullSection() {
   const host = $('#models-pull-section');
   if (!host) return;
@@ -2224,7 +2373,6 @@ function renderPullSection() {
   host.appendChild(wrap);
 }
 
-/* ---- Providers section (Phase 10.12b) ------------------------ */
 function renderProvidersSection() {
   const host = $('#models-providers-section');
   if (!host) return;
@@ -2240,7 +2388,7 @@ function renderProvidersSection() {
   help.textContent =
     'Point Lumi at OpenAI, Claude, Gemini, Groq, or OpenRouter. ' +
     'API keys are stored locally in .env and never sent anywhere ' +
-    'except the provider’s own API.';
+    'except the provider\u2019s own API.';
   host.appendChild(help);
 
   const grid = document.createElement('div');
@@ -2353,7 +2501,6 @@ function openProviderModal(p) {
   header.appendChild(closeBtn);
   card.appendChild(header);
 
-  // API key field
   const keyField = document.createElement('div');
   keyField.className = 'field';
   const keyLabel = document.createElement('label');
@@ -2376,7 +2523,6 @@ function openProviderModal(p) {
     'Never returned to the browser after saving.';
   card.appendChild(keyHint);
 
-  // Base URL field
   const urlField = document.createElement('div');
   urlField.className = 'field';
   urlField.style.marginTop = '16px';
@@ -2399,7 +2545,6 @@ function openProviderModal(p) {
     'or alternative OpenAI-compatible endpoint.';
   card.appendChild(urlHint);
 
-  // Actions
   const actions = document.createElement('div');
   actions.className = 'modal-actions';
 
@@ -2476,7 +2621,6 @@ function openProviderModal(p) {
   setTimeout(() => keyInput.focus(), 50);
 }
 
-/* ---- Routing section ----------------------------------------- */
 function renderRoutingSection() {
   const host = $('#models-routing-section');
   if (!host) return;
@@ -2559,7 +2703,6 @@ function routingSelect(id, current, names) {
   sel.className = 'routing-input';
   sel.id = id;
 
-  // Group 1: local Ollama models
   const localGroup = document.createElement('optgroup');
   localGroup.label = 'Ollama (local)';
 
@@ -2586,7 +2729,6 @@ function routingSelect(id, current, names) {
   }
   sel.appendChild(localGroup);
 
-  // Group 2: cloud models, one optgroup per configured provider
   const byProvider = {};
   for (const cm of _modelsState.providerCatalog) {
     (byProvider[cm.provider_label] ||= []).push(cm);
@@ -2604,9 +2746,6 @@ function routingSelect(id, current, names) {
     sel.appendChild(grp);
   }
 
-  // If current is a cloud spec that isn't in the catalog (e.g. the
-  // key was removed), still show it as an option so the user can see
-  // what's configured.
   if (current && current.includes(':')
       && !_modelsState.providerCatalog.some(c => c.spec === current)) {
     const grp = document.createElement('optgroup');
@@ -2644,7 +2783,6 @@ function routingText(id, value, placeholder) {
   return el;
 }
 
-/* ---- Actions ------------------------------------------------- */
 async function onLoadClick(name) {
   try {
     await api('/api/models/load', {
@@ -2742,7 +2880,6 @@ async function onSaveRouting() {
   }
 }
 
-/* ---- Pull polling -------------------------------------------- */
 function startPullPolling() {
   stopPullPolling();
   _pullTimer = setInterval(pollPullStatus, 1000);
@@ -2766,36 +2903,908 @@ async function pollPullStatus() {
 }
 
 /* ==============================================================
-   STUB
+   INTEGRATIONS (Phase 10.13)
+   ============================================================== */
+
+const _integrationsState = {
+  items: [],
+  loading: false,
+};
+
+async function renderIntegrations(main) {
+  main.innerHTML = `
+    <div class="page">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Integrations</div>
+          <div class="page-sub">Connect Lumi to external services.</div>
+        </div>
+        <button class="btn btn-sm" id="integrations-refresh">Refresh</button>
+      </div>
+      <div class="page-scroll">
+        <div class="integration-grid" id="integrations-grid">
+          <div class="integration-empty">Loading…</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('#integrations-refresh').addEventListener('click', loadIntegrations);
+  await loadIntegrations();
+}
+
+async function loadIntegrations() {
+  const grid = $('#integrations-grid');
+  if (!grid) return;
+  try {
+    const res = await api('/api/integrations');
+    _integrationsState.items = res.integrations || [];
+    renderIntegrationCards();
+  } catch (e) {
+    grid.innerHTML = `<div class="integration-empty">
+      Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderIntegrationCards() {
+  const grid = $('#integrations-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  if (!_integrationsState.items.length) {
+    grid.innerHTML = '<div class="integration-empty">No integrations available.</div>';
+    return;
+  }
+  for (const it of _integrationsState.items) {
+    grid.appendChild(buildIntegrationCard(it));
+  }
+}
+
+const _INTEGRATION_STATE_LABEL = {
+  ok:   'connected',
+  warn: 'warning',
+  err:  'error',
+  off:  'not configured',
+};
+
+function buildIntegrationCard(it) {
+  const card = document.createElement('div');
+  card.className = 'integration-card';
+
+  const header = document.createElement('div');
+  header.className = 'integration-header';
+
+  const emoji = document.createElement('div');
+  emoji.className = 'integration-emoji';
+  emoji.textContent = it.emoji || '◆';
+  header.appendChild(emoji);
+
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'integration-title-wrap';
+
+  const name = document.createElement('div');
+  name.className = 'integration-name';
+  name.textContent = it.label;
+  titleWrap.appendChild(name);
+
+  const status = document.createElement('span');
+  status.className = `integration-status state-${it.state}`;
+  status.textContent = _INTEGRATION_STATE_LABEL[it.state] || it.state;
+  titleWrap.appendChild(status);
+
+  header.appendChild(titleWrap);
+  card.appendChild(header);
+
+  const desc = document.createElement('div');
+  desc.className = 'integration-desc';
+  desc.textContent = it.description;
+  card.appendChild(desc);
+
+  if (it.message) {
+    const msg = document.createElement('div');
+    msg.className = 'integration-message';
+    msg.textContent = it.message;
+    card.appendChild(msg);
+  }
+
+  if (it.has_toggle) {
+    const row = document.createElement('div');
+    row.className = 'integration-toggle-row';
+
+    const label = document.createElement('span');
+    label.textContent = 'Module enabled';
+    row.appendChild(label);
+
+    const sw = document.createElement('label');
+    sw.className = 'switch';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!it.toggle_on;
+    cb.addEventListener('change', () =>
+      onToggleIntegration(it.id, cb.checked));
+    const slider = document.createElement('span');
+    slider.className = 'switch-slider';
+    sw.appendChild(cb);
+    sw.appendChild(slider);
+    row.appendChild(sw);
+
+    card.appendChild(row);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'integration-actions';
+
+  if (it.fields && it.fields.length) {
+    const cfgBtn = document.createElement('button');
+    cfgBtn.className = 'btn btn-sm';
+    cfgBtn.textContent = it.fields.some(f => f.is_set) ? 'Edit' : 'Configure';
+    cfgBtn.addEventListener('click', () => openIntegrationModal(it));
+    actions.appendChild(cfgBtn);
+  }
+
+  const testBtn = document.createElement('button');
+  testBtn.className = 'btn btn-sm';
+  testBtn.textContent = 'Test';
+  testBtn.addEventListener('click', () => onTestIntegration(it.id, testBtn));
+  actions.appendChild(testBtn);
+
+  if (it.docs) {
+    const link = document.createElement('a');
+    link.className = 'integration-link';
+    link.href = it.docs;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = 'Docs ↗';
+    actions.appendChild(link);
+  }
+
+  card.appendChild(actions);
+  return card;
+}
+
+async function onTestIntegration(id, btn) {
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Testing…';
+  try {
+    const res = await api(`/api/integrations/${encodeURIComponent(id)}/test`, {
+      method: 'POST', body: {}, csrf: true,
+    });
+    alert((res.ok ? '✓ ' : '✗ ') + res.message);
+    if (res.ok) loadIntegrations();
+  } catch (e) {
+    alert('Test failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+async function onToggleIntegration(id, enabled) {
+  try {
+    await api(`/api/integrations/${encodeURIComponent(id)}/toggle`, {
+      method: 'POST', body: { enabled }, csrf: true,
+    });
+    loadIntegrations();
+  } catch (e) {
+    alert('Toggle failed: ' + e.message);
+    loadIntegrations();
+  }
+}
+
+function openIntegrationModal(it) {
+  document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+
+  const header = document.createElement('div');
+  header.className = 'modal-header';
+  const title = document.createElement('div');
+  title.className = 'modal-title';
+  title.textContent = `${it.emoji || ''} ${it.label}`.trim();
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'modal-close';
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', () => overlay.remove());
+  header.appendChild(title);
+  header.appendChild(closeBtn);
+  card.appendChild(header);
+
+  const hint = document.createElement('div');
+  hint.className = 'provider-hint';
+  hint.style.marginBottom = '16px';
+  hint.textContent =
+    'Values are written to .env with restricted permissions. ' +
+    'Leave a field blank to keep its current value. ' +
+    'Some changes require a restart to take effect.';
+  card.appendChild(hint);
+
+  const inputs = {};
+  for (const f of it.fields) {
+    const field = document.createElement('div');
+    field.className = 'field';
+
+    const lbl = document.createElement('label');
+    lbl.className = 'label';
+    lbl.textContent = f.label;
+    field.appendChild(lbl);
+
+    const inp = document.createElement('input');
+    inp.type = f.secret ? 'password' : 'text';
+    inp.className = 'input';
+    if (f.is_set) {
+      inp.placeholder = f.secret
+        ? `Current: ${f.masked} — leave blank to keep`
+        : `Current: ${f.masked || 'set'} — leave blank to keep`;
+    } else {
+      inp.placeholder = f.placeholder || '';
+    }
+    field.appendChild(inp);
+    inputs[f.key] = inp;
+    card.appendChild(field);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+
+  const anySet = it.fields.some(f => f.is_set);
+  if (anySet) {
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'btn btn-sm btn-danger';
+    clearBtn.textContent = 'Clear all';
+    clearBtn.style.marginRight = 'auto';
+    clearBtn.addEventListener('click', async () => {
+      if (!confirm(`Remove all stored values for ${it.label}?`)) return;
+      const values = {};
+      for (const f of it.fields) values[f.key] = '';
+      clearBtn.disabled = true;
+      try {
+        await api(`/api/integrations/${encodeURIComponent(it.id)}`, {
+          method: 'PUT', body: { values }, csrf: true,
+        });
+        overlay.remove();
+        loadIntegrations();
+      } catch (e) {
+        alert('Clear failed: ' + e.message);
+        clearBtn.disabled = false;
+      }
+    });
+    actions.appendChild(clearBtn);
+  }
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', () => overlay.remove());
+  actions.appendChild(cancelBtn);
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn btn-primary';
+  saveBtn.textContent = 'Save';
+  saveBtn.addEventListener('click', async () => {
+    const values = {};
+    for (const [key, inp] of Object.entries(inputs)) {
+      const v = inp.value.trim();
+      if (v) values[key] = v;
+    }
+    if (!Object.keys(values).length) {
+      overlay.remove();
+      return;
+    }
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    try {
+      await api(`/api/integrations/${encodeURIComponent(it.id)}`, {
+        method: 'PUT', body: { values }, csrf: true,
+      });
+      overlay.remove();
+      loadIntegrations();
+    } catch (e) {
+      alert('Save failed: ' + e.message);
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save';
+    }
+  });
+  actions.appendChild(saveBtn);
+
+  card.appendChild(actions);
+
+  overlay.appendChild(card);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  document.body.appendChild(overlay);
+
+  const firstEmpty = it.fields.find(f => !f.is_set);
+  if (firstEmpty && inputs[firstEmpty.key]) {
+    setTimeout(() => inputs[firstEmpty.key].focus(), 50);
+  }
+}
+
+/* ==============================================================
+   SETTINGS (Phase 10.14)
+   ============================================================== */
+
+const _settingsState = {
+  activeTab: 'general',
+  general:   null,
+  about:     null,
+  advanced:  null,
+  sessions:  null,
+};
+
+const SETTINGS_TABS = [
+  { id: 'general',  label: 'General' },
+  { id: 'security', label: 'Security' },
+  { id: 'advanced', label: 'Advanced' },
+  { id: 'about',    label: 'About' },
+];
+
+async function renderSettings(main) {
+  main.innerHTML = `
+    <div class="page">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Settings</div>
+          <div class="page-sub" id="settings-sub">Configure Lumi.</div>
+        </div>
+      </div>
+      <div class="settings-wrap">
+        <aside class="settings-sidebar" id="settings-sidebar"></aside>
+        <div class="settings-main">
+          <div class="settings-fields" id="settings-fields">
+            <div class="integration-empty">Loading…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  renderSettingsSidebar();
+  await loadSettingsTab();
+}
+
+function renderSettingsSidebar() {
+  const side = $('#settings-sidebar');
+  if (!side) return;
+  side.innerHTML = '';
+  for (const t of SETTINGS_TABS) {
+    const el = document.createElement('div');
+    el.className = 'settings-nav-item' +
+      (t.id === _settingsState.activeTab ? ' active' : '');
+    el.textContent = t.label;
+    el.addEventListener('click', () => {
+      _settingsState.activeTab = t.id;
+      renderSettingsSidebar();
+      loadSettingsTab();
+    });
+    side.appendChild(el);
+  }
+}
+
+async function loadSettingsTab() {
+  const panel = $('#settings-fields');
+  const sub   = $('#settings-sub');
+  if (!panel) return;
+
+  panel.innerHTML = '<div class="integration-empty">Loading…</div>';
+
+  const tab = _settingsState.activeTab;
+  if (sub) sub.textContent = SETTINGS_TABS
+    .find(t => t.id === tab)?.label || 'Settings';
+
+  try {
+    if (tab === 'general') {
+      const data = await api('/api/settings/general');
+      _settingsState.general = data;
+      renderGeneralTab(panel, data);
+    } else if (tab === 'security') {
+      const sessions = await api('/api/settings/security/sessions');
+      _settingsState.sessions = sessions.sessions || [];
+      renderSecurityTab(panel);
+    } else if (tab === 'advanced') {
+      const data = await api('/api/settings/advanced');
+      _settingsState.advanced = data.targets || [];
+      renderAdvancedTab(panel);
+    } else if (tab === 'about') {
+      const data = await api('/api/settings/about');
+      _settingsState.about = data;
+      renderAboutTab(panel, data);
+    }
+  } catch (e) {
+    panel.innerHTML = `<div class="integration-empty">
+      Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderGeneralTab(panel, data) {
+  panel.innerHTML = '';
+
+  const h = document.createElement('h2');
+  h.className = 'settings-section-title';
+  h.textContent = 'General';
+  panel.appendChild(h);
+
+  const help = document.createElement('div');
+  help.className = 'settings-help';
+  help.textContent =
+    'These values write to constants.py. A .bak is saved before every ' +
+    'write and changes take effect on the next turn — no restart required.';
+  panel.appendChild(help);
+
+  panel.appendChild(buildSettingsField({
+    label: 'Timezone',
+    help: 'IANA timezone name, e.g. America/New_York or Europe/London.',
+    value: data.timezone,
+    key: 'timezone',
+  }));
+
+  panel.appendChild(buildSettingsField({
+    label: 'Ollama endpoint',
+    help: 'Base URL for the local Ollama server. Applies to all ' +
+          'Ollama-routed models.',
+    value: data.llm_endpoint,
+    key: 'llm_endpoint',
+  }));
+
+  const info = document.createElement('div');
+  info.className = 'settings-info-grid';
+  const readonly = [
+    ['Workspace root', data.workspace_root],
+    ['Main model',     data.model_name],
+    ['Fast model',     data.fast_model_name +
+      (data.fast_model_enabled ? '' : ' (disabled)')],
+    ['Python',         data.python_version],
+    ['Platform',       data.platform],
+  ];
+  for (const [k, v] of readonly) {
+    const dt = document.createElement('div');
+    dt.className = 'settings-info-key';
+    dt.textContent = k;
+    const dd = document.createElement('div');
+    dd.className = 'settings-info-val';
+    dd.textContent = v || '—';
+    info.appendChild(dt);
+    info.appendChild(dd);
+  }
+  panel.appendChild(info);
+
+  const actions = document.createElement('div');
+  actions.className = 'settings-actions';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn btn-primary';
+  saveBtn.textContent = 'Save changes';
+  saveBtn.addEventListener('click', onSaveGeneral);
+  actions.appendChild(saveBtn);
+  panel.appendChild(actions);
+}
+
+function buildSettingsField({ label, help, value, key, type = 'text' }) {
+  const wrap = document.createElement('div');
+  wrap.className = 'settings-field';
+
+  const lbl = document.createElement('label');
+  lbl.className = 'settings-label';
+  lbl.textContent = label;
+  wrap.appendChild(lbl);
+
+  const inp = document.createElement('input');
+  inp.type = type;
+  inp.className = 'settings-input';
+  inp.dataset.key = key;
+  inp.value = value == null ? '' : String(value);
+  wrap.appendChild(inp);
+
+  if (help) {
+    const h = document.createElement('div');
+    h.className = 'settings-field-help';
+    h.textContent = help;
+    wrap.appendChild(h);
+  }
+  return wrap;
+}
+
+async function onSaveGeneral() {
+  const btn = document.querySelector('.settings-actions .btn-primary');
+  const values = {};
+  const tzEl = document.querySelector('.settings-input[data-key="timezone"]');
+  const epEl = document.querySelector('.settings-input[data-key="llm_endpoint"]');
+  if (tzEl) values.timezone = tzEl.value.trim();
+  if (epEl) values.llm_endpoint = epEl.value.trim();
+
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    const res = await api('/api/settings/general', {
+      method: 'PUT', body: { values }, csrf: true,
+    });
+    _settingsState.general = res.general;
+    flashSettingsSaved('Saved. Live values refreshed.');
+    renderSettingsSidebar();
+    loadSettingsTab();
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
+}
+
+function renderSecurityTab(panel) {
+  panel.innerHTML = '';
+
+  const h = document.createElement('h2');
+  h.className = 'settings-section-title';
+  h.textContent = 'Security';
+  panel.appendChild(h);
+
+  const pwCard = document.createElement('div');
+  pwCard.className = 'settings-card';
+
+  const pwTitle = document.createElement('div');
+  pwTitle.className = 'settings-card-title';
+  pwTitle.textContent = 'Change password';
+  pwCard.appendChild(pwTitle);
+
+  const pwHelp = document.createElement('div');
+  pwHelp.className = 'settings-help';
+  pwHelp.textContent =
+    'Your current password is required. Other sessions stay signed in.';
+  pwCard.appendChild(pwHelp);
+
+  const oldField = document.createElement('div');
+  oldField.className = 'settings-field';
+  oldField.innerHTML = '<label class="settings-label">Current password</label>';
+  const oldInput = document.createElement('input');
+  oldInput.type = 'password';
+  oldInput.className = 'settings-input';
+  oldInput.id = 'pw-old';
+  oldInput.autocomplete = 'current-password';
+  oldField.appendChild(oldInput);
+  pwCard.appendChild(oldField);
+
+  const newField = document.createElement('div');
+  newField.className = 'settings-field';
+  newField.innerHTML = '<label class="settings-label">New password (min 8 chars)</label>';
+  const newInput = document.createElement('input');
+  newInput.type = 'password';
+  newInput.className = 'settings-input';
+  newInput.id = 'pw-new';
+  newInput.autocomplete = 'new-password';
+  newField.appendChild(newInput);
+  pwCard.appendChild(newField);
+
+  const confirmField = document.createElement('div');
+  confirmField.className = 'settings-field';
+  confirmField.innerHTML = '<label class="settings-label">Confirm new password</label>';
+  const confirmInput = document.createElement('input');
+  confirmInput.type = 'password';
+  confirmInput.className = 'settings-input';
+  confirmInput.id = 'pw-confirm';
+  confirmInput.autocomplete = 'new-password';
+  confirmField.appendChild(confirmInput);
+  pwCard.appendChild(confirmField);
+
+  const pwActions = document.createElement('div');
+  pwActions.className = 'settings-actions';
+  const pwBtn = document.createElement('button');
+  pwBtn.className = 'btn btn-primary';
+  pwBtn.textContent = 'Update password';
+  pwBtn.addEventListener('click', async () => {
+    const oldPw = $('#pw-old').value;
+    const newPw = $('#pw-new').value;
+    const cnf   = $('#pw-confirm').value;
+    if (!oldPw || !newPw) {
+      alert('Please fill in all three fields.');
+      return;
+    }
+    if (newPw !== cnf) {
+      alert('New passwords do not match.');
+      return;
+    }
+    if (newPw.length < 8) {
+      alert('New password must be at least 8 characters.');
+      return;
+    }
+    pwBtn.disabled = true;
+    pwBtn.textContent = 'Updating…';
+    try {
+      const res = await api('/api/settings/security/password', {
+        method: 'POST',
+        body: { old_password: oldPw, new_password: newPw },
+        csrf: true,
+      });
+      flashSettingsSaved(res.message || 'Password updated.');
+      $('#pw-old').value = '';
+      $('#pw-new').value = '';
+      $('#pw-confirm').value = '';
+    } catch (e) {
+      alert('Password update failed: ' + e.message);
+    } finally {
+      pwBtn.disabled = false;
+      pwBtn.textContent = 'Update password';
+    }
+  });
+  pwActions.appendChild(pwBtn);
+  pwCard.appendChild(pwActions);
+  panel.appendChild(pwCard);
+
+  const sessCard = document.createElement('div');
+  sessCard.className = 'settings-card';
+
+  const sessTitle = document.createElement('div');
+  sessTitle.className = 'settings-card-title';
+  sessTitle.textContent = 'Active sessions';
+  sessCard.appendChild(sessTitle);
+
+  const sessions = _settingsState.sessions || [];
+  if (!sessions.length) {
+    const empty = document.createElement('div');
+    empty.className = 'settings-help';
+    empty.textContent = 'No sessions found.';
+    sessCard.appendChild(empty);
+  } else {
+    const table = document.createElement('div');
+    table.className = 'settings-session-table';
+    for (const s of sessions) {
+      table.appendChild(buildSessionRow(s));
+    }
+    sessCard.appendChild(table);
+  }
+
+  const sessActions = document.createElement('div');
+  sessActions.className = 'settings-actions';
+  const revokeBtn = document.createElement('button');
+  revokeBtn.className = 'btn btn-sm btn-danger';
+  revokeBtn.textContent = 'Sign out other sessions';
+  revokeBtn.addEventListener('click', async () => {
+    if (!confirm('Sign out every session except this one?')) return;
+    revokeBtn.disabled = true;
+    revokeBtn.textContent = 'Revoking…';
+    try {
+      const res = await api('/api/settings/security/sessions/revoke-others', {
+        method: 'POST', body: {}, csrf: true,
+      });
+      flashSettingsSaved(res.message || 'Other sessions signed out.');
+      loadSettingsTab();
+    } catch (e) {
+      alert('Failed: ' + e.message);
+    } finally {
+      revokeBtn.disabled = false;
+      revokeBtn.textContent = 'Sign out other sessions';
+    }
+  });
+  sessActions.appendChild(revokeBtn);
+  sessCard.appendChild(sessActions);
+
+  panel.appendChild(sessCard);
+}
+
+function buildSessionRow(s) {
+  const row = document.createElement('div');
+  row.className = 'settings-session-row';
+
+  const left = document.createElement('div');
+  left.className = 'settings-session-left';
+
+  const idLine = document.createElement('div');
+  idLine.className = 'settings-session-id';
+  idLine.textContent = s.prefix;
+  if (s.is_current) {
+    const badge = document.createElement('span');
+    badge.className = 'settings-session-badge';
+    badge.textContent = 'current';
+    idLine.appendChild(badge);
+  }
+  left.appendChild(idLine);
+
+  const meta = document.createElement('div');
+  meta.className = 'settings-session-meta';
+  const age = formatDuration(s.age_seconds);
+  const exp = formatDuration(s.expires_in_seconds);
+  meta.textContent = `Active for ${age} · expires in ${exp}`;
+  left.appendChild(meta);
+
+  row.appendChild(left);
+
+  if (!s.is_current) {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-sm';
+    btn.textContent = 'Revoke';
+    btn.addEventListener('click', async () => {
+      if (!confirm(`Sign out session ${s.prefix}?`)) return;
+      btn.disabled = true;
+      try {
+        await api('/api/settings/security/sessions/revoke', {
+          method: 'POST', body: { prefix: s.prefix }, csrf: true,
+        });
+        loadSettingsTab();
+      } catch (e) {
+        alert('Failed: ' + e.message);
+        btn.disabled = false;
+      }
+    });
+    row.appendChild(btn);
+  }
+
+  return row;
+}
+
+function formatDuration(sec) {
+  if (sec == null || sec < 0) return '—';
+  if (sec < 60) return `${Math.round(sec)}s`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m`;
+  if (sec < 86400) return `${Math.round(sec / 3600)}h`;
+  const days = Math.round(sec / 86400);
+  return `${days}d`;
+}
+
+function renderAdvancedTab(panel) {
+  panel.innerHTML = '';
+
+  const h = document.createElement('h2');
+  h.className = 'settings-section-title';
+  h.textContent = 'Advanced';
+  panel.appendChild(h);
+
+  const warn = document.createElement('div');
+  warn.className = 'settings-danger-note';
+  warn.innerHTML =
+    '<strong>Danger zone.</strong> Actions below are irreversible. ' +
+    'Each one wipes data on disk. Nothing here touches constants.py or ' +
+    'your .env — only the runtime data files.';
+  panel.appendChild(warn);
+
+  for (const t of _settingsState.advanced || []) {
+    panel.appendChild(buildResetRow(t));
+  }
+}
+
+function buildResetRow(target) {
+  const row = document.createElement('div');
+  row.className = 'settings-reset-row' + (target.dangerous ? ' dangerous' : '');
+
+  const left = document.createElement('div');
+  left.className = 'settings-reset-left';
+
+  const name = document.createElement('div');
+  name.className = 'settings-reset-name';
+  name.textContent = target.id;
+  left.appendChild(name);
+
+  const desc = document.createElement('div');
+  desc.className = 'settings-reset-desc';
+  desc.textContent = target.label;
+  left.appendChild(desc);
+
+  row.appendChild(left);
+
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-sm ' + (target.dangerous ? 'btn-danger' : '');
+  btn.textContent = 'Reset';
+  btn.addEventListener('click', async () => {
+    const confirmText = target.dangerous
+      ? `Permanently wipe ${target.label}? This cannot be undone.`
+      : `Reset ${target.label}?`;
+    if (!confirm(confirmText)) return;
+    btn.disabled = true;
+    btn.textContent = 'Working…';
+    try {
+      const res = await api('/api/settings/advanced/reset', {
+        method: 'POST',
+        body: { target: target.id },
+        csrf: true,
+      });
+      flashSettingsSaved(res.message || 'Done.');
+    } catch (e) {
+      alert('Reset failed: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Reset';
+    }
+  });
+  row.appendChild(btn);
+
+  return row;
+}
+
+function renderAboutTab(panel, data) {
+  panel.innerHTML = '';
+
+  const h = document.createElement('h2');
+  h.className = 'settings-section-title';
+  h.textContent = 'About';
+  panel.appendChild(h);
+
+  const brand = document.createElement('div');
+  brand.className = 'settings-about-brand';
+  brand.innerHTML = `
+    <div class="settings-about-logo">◆</div>
+    <div>
+      <div class="settings-about-name">Lumi</div>
+      <div class="settings-about-version">v${escapeHtml(String(data.version))}</div>
+    </div>
+  `;
+  panel.appendChild(brand);
+
+  const info = document.createElement('div');
+  info.className = 'settings-info-grid';
+  const rows = [
+    ['Version',         data.version],
+    ['Python',          data.python_version],
+    ['Platform',        data.platform],
+    ['Workspace root',  data.workspace_root],
+    ['Ollama endpoint', data.llm_endpoint],
+    ['Main model',      data.model_name],
+    ['Fast model',      data.fast_model_name +
+      (data.fast_model_enabled ? '' : ' (disabled)')],
+    ['Uptime',          data.uptime_human],
+    ['Log hub port',    String(data.log_hub_port)],
+  ];
+  for (const [k, v] of rows) {
+    const dt = document.createElement('div');
+    dt.className = 'settings-info-key';
+    dt.textContent = k;
+    const dd = document.createElement('div');
+    dd.className = 'settings-info-val';
+    dd.textContent = v || '—';
+    info.appendChild(dt);
+    info.appendChild(dd);
+  }
+  panel.appendChild(info);
+
+  const modTitle = document.createElement('div');
+  modTitle.className = 'settings-card-title';
+  modTitle.style.marginTop = '24px';
+  modTitle.textContent = 'Modules loaded';
+  panel.appendChild(modTitle);
+
+  const modGrid = document.createElement('div');
+  modGrid.className = 'settings-module-grid';
+  for (const m of data.modules || []) {
+    const chip = document.createElement('span');
+    chip.className = 'settings-module-chip' + (m.enabled ? '' : ' off');
+    chip.textContent = m.name + (m.enabled ? '' : ' · off');
+    modGrid.appendChild(chip);
+  }
+  panel.appendChild(modGrid);
+
+  const credits = document.createElement('div');
+  credits.className = 'settings-credits';
+  credits.innerHTML = `
+    <div class="settings-card-title" style="margin-top:24px">Credits</div>
+    <p>Architecture inspired by <strong>Neuro-sama</strong> (Vedal987).</p>
+    <p>Built on Ollama, ChromaDB, faster-whisper, Fish Audio,
+       Playwright, pyvts, aiohttp, python-socketio, and pyautogui.</p>
+    <p class="settings-credits-foot">
+      Local, experimental AI companion project. All responses are
+      generated dynamically by the language model.
+    </p>
+  `;
+  panel.appendChild(credits);
+}
+
+function flashSettingsSaved(message) {
+  const sub = $('#settings-sub');
+  if (!sub) return;
+  const prev = sub.textContent;
+  sub.textContent = message || 'Saved.';
+  sub.classList.add('persona-saved');
+  setTimeout(() => {
+    sub.textContent = prev;
+    sub.classList.remove('persona-saved');
+  }, 2000);
+}
+
+/* ==============================================================
+   UTIL + BOOT
    ============================================================== */
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-function renderStub(main, title, desc) {
-  main.innerHTML = `
-    <div class="page">
-      <div class="page-header">
-        <div>
-          <div class="page-title">${title}</div>
-          <div class="page-sub">${desc}</div>
-        </div>
-      </div>
-      <div class="page-scroll">
-        <div class="empty">
-          <div class="empty-icon">◆</div>
-          <div class="empty-title">Not built yet</div>
-          <div class="empty-desc">${desc}</div>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-/* --------------------------------------------------------------
-   Boot
-   -------------------------------------------------------------- */
 (async () => {
   await checkAuth();
 })();

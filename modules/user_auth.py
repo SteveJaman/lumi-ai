@@ -20,6 +20,7 @@ import time
 import sqlite3
 import secrets
 import threading
+from typing import Any, Dict, List, Optional, Tuple
 
 # --- Password hashing ----------------------------------------------------
 # argon2-cffi is the target. If it's not installed we fall back to
@@ -141,7 +142,6 @@ class UserDB:
     def _rate_ok(self, username: str) -> bool:
         now = time.time()
         hist = self._login_attempts.setdefault(username, [])
-        # drop expired
         hist[:] = [t for t in hist if now - t < LOGIN_RATE_WINDOW]
         return len(hist) < LOGIN_RATE_MAX_ATTEMPTS
 
@@ -203,7 +203,6 @@ class UserDB:
 
         if not row:
             self._record_failure(username)
-            # Don't leak whether the user exists.
             return False, "Invalid username or password."
 
         if not _verify_password(row["password_hash"], password):
@@ -289,3 +288,128 @@ class UserDB:
                 "DELETE FROM sessions WHERE user_id = ?", (user_id,)
             )
             self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Password change + session management (Phase 10.14)
+    # ------------------------------------------------------------------
+    def change_password(self, user_id: int, old_password: str,
+                        new_password: str) -> Tuple[bool, str]:
+        """Verify the current password, then set a new one. Does NOT
+        invalidate sessions — the caller decides whether to keep them."""
+        if not new_password or len(new_password) < 8:
+            return False, "New password must be at least 8 characters."
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT password_hash FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+
+        if not row:
+            return False, "User not found."
+
+        if not _verify_password(row["password_hash"], old_password):
+            return False, "Current password is incorrect."
+
+        if _verify_password(row["password_hash"], new_password):
+            return False, "New password must be different from the old one."
+
+        new_hash = _hash_password(new_password)
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "UPDATE users SET password_hash = ? WHERE id = ?",
+                    (new_hash, user_id),
+                )
+                self._conn.commit()
+        except Exception as e:
+            return False, f"Update failed: {e}"
+
+        return True, "Password updated."
+
+    def list_sessions(self, user_id: int,
+                      current_token: Optional[str] = None
+                      ) -> List[Dict[str, Any]]:
+        """Return metadata for every active session belonging to user_id.
+        Token strings are redacted to a short prefix so nothing leaks."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT token, created_at, expires_at "
+                "FROM sessions WHERE user_id = ? "
+                "ORDER BY created_at DESC",
+                (user_id,),
+            ).fetchall()
+
+        now = time.time()
+        out = []
+        for r in rows:
+            token = r["token"]
+            prefix = token[:10] + "…"
+            is_current = bool(current_token and token == current_token)
+            out.append({
+                "prefix": prefix,
+                "created_at": float(r["created_at"]),
+                "expires_at": float(r["expires_at"]),
+                "age_seconds": int(now - r["created_at"]),
+                "expires_in_seconds": int(r["expires_at"] - now),
+                "is_current": is_current,
+            })
+        return out
+
+    def delete_session_by_prefix(self, user_id: int, token_prefix: str
+                                 ) -> Tuple[bool, str]:
+        """Delete a specific session given its redacted prefix."""
+        prefix = (token_prefix or "").rstrip("…")
+        if len(prefix) < 8:
+            return False, "Invalid session prefix."
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT token FROM sessions WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+
+            match = None
+            for r in rows:
+                if r["token"].startswith(prefix):
+                    match = r["token"]
+                    break
+
+            if not match:
+                return False, "Session not found."
+
+            self._conn.execute(
+                "DELETE FROM sessions WHERE token = ?", (match,),
+            )
+            self._conn.commit()
+
+        return True, "Session revoked."
+
+    def delete_other_sessions(self, user_id: int,
+                              keep_token: Optional[str]) -> int:
+        """Revoke every session for this user except the current one.
+        Returns the number of sessions deleted."""
+        if not keep_token:
+            with self._lock:
+                cur = self._conn.execute(
+                    "SELECT COUNT(*) AS c FROM sessions WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                self._conn.execute(
+                    "DELETE FROM sessions WHERE user_id = ?", (user_id,),
+                )
+                self._conn.commit()
+            return int(cur["c"]) if cur else 0
+
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) AS c FROM sessions "
+                "WHERE user_id = ? AND token != ?",
+                (user_id, keep_token),
+            ).fetchone()
+            self._conn.execute(
+                "DELETE FROM sessions WHERE user_id = ? AND token != ?",
+                (user_id, keep_token),
+            )
+            self._conn.commit()
+        return int(cur["c"]) if cur else 0

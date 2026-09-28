@@ -3,13 +3,18 @@
   Goal: Move from reactive chatbot to autonomous companion
   Reference: Neuro-sama (Vedal987) architecture
   Created:  2026-09-19
-  Updated:  2026-09-28 (Backends landed for multi-provider LLMs,
-                        model manager, and persona editor. Their
-                        web UIs are still pending.)
-  Prev:     2026-09-27 (Phase 10 MVP shipped — chat, memory
-                        browser, dashboard, auth, agent toggle.
-                        Memory reflection Qwen3 thinking-mode bug
-                        fixed. Agent-mode-off notice removed.)
+  Updated:  2026-09-28 (PHASE 10 COMPLETE. Every item from 10.1
+                        through 10.20 shipped. Web client is now
+                        feature-complete end-to-end: chat, memory,
+                        persona editor, model manager, providers,
+                        integrations, settings, setup wizard, and
+                        voice-in-browser. All four background call
+                        sites (memory, session_state, self_model,
+                        heartbeat) route through chat_sync.
+                        Per-user memory AND emotional state
+                        isolation landed. Only Phases 7, 8, and 9
+                        remain.)
+  Prev:     2026-09-28 PM (Phase 10.10, 10.12, 10.13, 10.14)
   (Streaming pipeline excluded by request)
 ================================================================
 
@@ -26,105 +31,120 @@ later items assume earlier ones are done.
   PROGRESS SUMMARY
 ================================================================
 
-  Phases fully complete:  1, 2, 3, 4, 5, 6, 6.5
+  Phases fully complete:  1, 2, 3, 4, 5, 6, 6.5, 10
   Phases remaining:       7 (Discord voice), 8 (SDK), 9 (security)
-  Phase 10:               MVP SHIPPED. Chat, auth, memory browser,
-                          dashboard, settings-shell all live at
-                          127.0.0.1:5000. Backends now exist for
-                          persona editor, model manager, and cloud
-                          providers — only their UI pages remain.
-                          Still pending: integrations page,
-                          settings detail, per-user isolation.
+  Phase 10:               COMPLETE. Every sub-phase 10.1-10.20
+                          is done. Web client at 127.0.0.1:5000 is
+                          the primary product surface, fully
+                          editable, with a first-run wizard, cloud
+                          provider support, per-user isolation, and
+                          voice-in-browser.
 
-  Notable delta since last update (2026-09-28):
-    - MULTI-PROVIDER LLM LAYER (10.20, backend DONE).
-      modules/llm_providers.py: OllamaClient,
-      OpenAICompatClient, AnthropicClient normalize
-      requests / responses / tool calls into LLMResponse +
-      ToolCall. chat_sync(model_spec, ...) parses specs like
-      "openai:gpt-4o-mini" or "deepseek:deepseek-chat";
-      bare names default to Ollama (e.g. "lumi-qwen3").
-      Covers OpenAI, Anthropic, Gemini, Groq, OpenRouter,
-      Together, DeepSeek. API keys persist to .env via
-      write_env_var / save_provider_config and are always
-      masked (mask_key) before reaching the UI.
-    - MODEL MANAGER BACKEND (10.12, backend DONE).
-      modules/model_manager.py talks to Ollama (/api/tags,
-      /api/ps, /api/generate, /api/pull, /api/delete) and
-      hot-patches constants.py with a regex line patcher
-      (MODEL_NAME, FAST_MODEL_NAME, FAST_MODEL_ENABLED,
-      context lengths, keep-alive) that preserves comments
-      and formatting. _rebind_consumers re-points already-
-      imported modules (prompter, memory, session_state,
-      etc.) so changes apply without a restart.
-    - NEW HTTP ENDPOINTS in modules/socketIO.py:
-        · /api/models/* — inspect, load/unload, routing
-          updates, background pull
-        · /api/providers, /api/providers/{pid},
-          /api/providers/{pid}/test,
-          /api/providers/{pid}/models
-    - PERSONA EDITOR BACKEND (10.10, backend DONE).
-      modules/persona_editor.py round-trips lumi.yaml via
-      ruamel.yaml (keeps comments, key order, block-scalar
-      styles) with a PyYAML fallback.
+  Notable delta since last update (2026-09-28 PM2):
+    - PHASE 10.8 SHIPPED (FULL SETUP WIZARD).
+      Multi-step /setup route: account → providers → integrations
+      → done. Progress dots, ?step= routing, optional skips, client
+      picks its own starting step based on auth + setup-status.
 
-  Earlier delta (2026-09-27):
-    - Phase 10 MVP COMPLETE. Local web client runs at
-      127.0.0.1:5000 with:
-        · Auth: SQLite + argon2id, sliding session TTL,
-          5/min/user rate limit
-        · Chat: polling /api/history every 1.5s, optimistic
-          sends, tag chips, agent-mode toggle chip
-        · Memory browser: table, semantic search, sort,
-          edit, delete, add, export JSON
-        · Dashboard: stat cards + live log_hub event stream
-        · Shell: sidebar nav, user chip, status pills
-    - MEMORY REFLECTION BUG FIXED (Qwen3 think mode). The
-      reflection loop was silently returning empty content
-      because Qwen3 spent the entire num_predict budget on
-      internal reasoning. Added "think": False to the
-      payload. This is the reason no memories were ever
-      being stored. Now working end-to-end.
-    - MEMORY THRESHOLD BUG FIXED. processed_count reset
-      condition was ">" — with history capped at 20, the
-      counter stuck forever after the second reflection
-      and memory stopped accumulating. Changed to ">=".
-    - AGENT-MODE-OFF NOTICE REMOVED. The heuristic detector
-      was firing on casual conversation. Deleted entirely.
-      Agent mode now works as a pure toggle: OFF = chat,
-      ON = full agentic loop. No notices, no refusals.
-    - IMPORT SCRIPT ADDED. modules/import_chat_history.py
-      backfills memories from logs/chat_history.json. Run
-      from workspace root as:
-        python modules\import_chat_history.py --dry-run
-    - CONSOLE INPUT / CONFIRMATION RACE FIXED. Added
-      signals.input_paused so ConsoleInput yields stdin
-      while the prompter is asking a y/n confirmation.
-    - CHAT LOG PERSISTENCE FIXED. Chat no longer disappears
-      on tab switch — the client fetches /api/history on
-      every view mount, and the socket is best-effort.
-    - USER_AUTH SAME-SITE FLAG. Changed Strict → Lax. Strict
-      was blocking the socket handshake in Chromium.
+    - PHASE 10.15 SHIPPED (PER-USER MEMORY ISOLATION).
+      Every stored fact now carries a user_id matching HOST.user_id
+      at write time. get_prompt_injection, query_temporal, list_all,
+      get_by_id, export_all, update_memory, delete_memory, and wipe
+      all filter by the current user. A migration pass on init
+      backfills legacy rows with user_id="anthony". wipe_all_users()
+      added for the Advanced settings reset. ChromaDB `where` filter
+      used on every query.
+
+    - PHASE 10.16 SHIPPED (PER-USER EMOTIONAL STATE ISOLATION).
+      EmotionalStateModule now keeps a dict of EmotionalState
+      instances keyed by user_id. Each state persists to
+      memories/emotional_state/{user_id}.json with a 5-minute
+      background flush and a final flush on shutdown. HOST.on_change
+      callback fires on login switch: outgoing state is persisted,
+      incoming one loaded from disk, signals.emotional_state re-
+      points to the new active instance. Every consumer keeps
+      working unchanged.
+
+    - PHASE 10.19 SHIPPED (VOICE IN BROWSER).
+      Two features in one:
+        · TTS playback: tts.py calls signals.broadcast_tts_audio()
+          when an utterance starts. socketIO fans the raw WAV bytes
+          out via socket.io to every opted-in client, base64 encoded.
+          Chat page has a persistent Voice: ON/OFF toggle (stored
+          in localStorage), which drives the opt-in handshake.
+        · Mic capture: "Hold to talk" button records via
+          MediaRecorder, POSTs the webm blob to /api/voice_message,
+          which transcribes with faster-whisper and injects the text
+          as a user message. Bypasses browser speech APIs so the
+          transcript matches the server model exactly.
+
+    - PHASE 10.20 COMPLETE (CLOUD PROVIDERS, FULLY WIRED).
+      All four remaining call sites now route through chat_sync:
+        · modules/memory.py — reflection
+        · modules/session_state.py — summarize_session
+        · modules/self_model.py — _reflect
+        · modules/heartbeat.py — _ask_model
+      The OllamaClient / OpenAICompatClient / AnthropicClient trio
+      already dropped Ollama-only fields (think, num_ctx,
+      keep_alive) for non-Ollama providers, so cloud specs work
+      transparently. Point FAST_MODEL_NAME at groq:llama-3.3-70b
+      and background reflection fires on Groq while the main path
+      keeps running on local lumi-qwen3.
+
+    - NEW FILES THIS SESSION:
+      · modules/llm_providers.py    — provider abstraction
+      · modules/model_manager.py    — Ollama + constants.py patcher
+      · modules/persona_editor.py   — ruamel.yaml round-trip
+      · modules/integrations.py     — 5 integration cards
+      · modules/settings_manager.py — general/about/advanced
+      · web/login.html + web/login.js — standalone login page
+      · web/setup.html + web/setup.js — full setup wizard
+
+    - FILES REWRITTEN THIS SESSION:
+      · modules/memory.py          — per-user isolation
+      · modules/emotional_state.py — per-user instances + persistence
+      · modules/user_auth.py       — 4 session-mgmt methods added
+      · modules/socketIO.py        — 30+ new routes
+      · web/app.js                 — 7 pages wired
+      · web/style.css              — 6 new sections
+
+  Earlier deltas:
+    2026-09-28 PM: Phase 10.10, 10.12, 10.13, 10.14 shipped.
+    2026-09-28 AM: Provider, model manager, persona editor backends.
+    2026-09-27:    Phase 10 MVP (chat, memory browser, dashboard,
+                   auth, agent toggle). Memory reflection Qwen3
+                   think-mode bug fixed. Agent-mode-off notice
+                   removed. Import script added for backfilling
+                   memories. Console/confirmation race fixed. Chat
+                   log persistence fixed. SameSite=Lax.
 
   Known outstanding after this session:
     - Signature-phrases rule not yet added to lumi.yaml.
     - Memory reflection prompt lets through facts about Lumi
-      herself. Tighten the prompt to extract only facts
-      about the user, no subject pronouns.
-    - History trim at 20 messages caps backfill depth.
-      Raise to 100 in prompter.py and heartbeat.py if you
-      want more historical material for reflection.
+      herself. Tighten the prompt to extract only facts about
+      the user, no subject pronouns.
+    - History trim at 20 messages caps backfill depth. Raise
+      to 100 in prompter.py and heartbeat.py if you want more
+      historical material for reflection.
+    - .env is not in .gitignore yet. API keys stored plaintext
+      with 0600 perms on POSIX but a single git add -A leaks
+      them.
+    - ruamel.yaml may not be installed; persona editor falls
+      back to PyYAML with a UI banner. Run "pip install
+      ruamel.yaml" once to silence it.
 
   The core agentic loop is stable and self-correcting.
   Lumi runs autonomously on a timer, reacts to events with
   runtime emotional state, expresses mood through word
   choice and canonical emotion tags, accumulates
-  timestamped memories, answers "when did we..." questions,
-  perceives what you're working on without being told,
-  routes chat through a fast path when it's safe to, keeps
-  a persistent self-model of her own patterns, drives her
-  own VTuber avatar in real time, reports her internals to
-  a clean dashboard, and now has a browser UI.
+  timestamped per-user memories, answers "when did we..."
+  questions, perceives what you're working on without being
+  told, routes chat through a fast path when it's safe to,
+  keeps a persistent self-model of her own patterns, drives
+  her own VTuber avatar in real time, reports her internals
+  to a clean dashboard, and now has a complete browser UI
+  with a setup wizard, cloud providers, per-user isolation,
+  and voice in the browser.
 
 ================================================================
   PHASE 1 — THE HEARTBEAT (foundational)   ✅ COMPLETE
@@ -196,21 +216,21 @@ later items assume earlier ones are done.
 [X] 4.9  Backfill importer from chat_history.json       DONE  (2026-09-27)
 
          Files:     modules/memory.py,
-                    modules/import_chat_history.py (NEW),
+                    modules/import_chat_history.py,
                     modules/prompter.py
          Status:    Every stored fact carries timestamp /
-                    importance / valence / session_id.
-                    Retrieval reweights by (0.5 sim + 0.3
-                    importance + 0.2 recency), 30-day half-
-                    life. Two interfaces (!recall and
+                    importance / valence / session_id /
+                    user_id. Retrieval reweights by (0.5 sim
+                    + 0.3 importance + 0.2 recency), 30-day
+                    half-life. Two interfaces (!recall and
                     recall_memory). Temporal hints parsed in
                     both paths. Metadata migration pass.
                     _clean_valence rejects placeholders.
                     Reflection payload now passes think=False
-                    so Qwen3 writes JSON to content instead
-                    of burning tokens on reasoning. Importer
-                    backfills from on-disk chat history with
-                    dedupe + dry-run.
+                    and routes through chat_sync so cloud
+                    provider specs apply. Importer backfills
+                    from on-disk chat history with dedupe +
+                    dry-run.
          TODO:      Tighten reflection prompt — currently
                     lets through facts about Lumi herself.
                     Add explicit "facts about the user only,
@@ -228,14 +248,15 @@ later items assume earlier ones are done.
          Files:     constants.py, prompter.py, memory.py,
                     session_state.py
          Status:    Fast and main paths use the same weights
-                    (lumi-qwen3) — Ollama dedupes in VRAM.
-                    Fast path differentiated by context size
-                    (8K vs 16K) and payload shape. Qwen3
-                    thinking disabled for fast path, enabled
-                    for full path and agent turns.
-                    Background extraction tasks (memory,
-                    session summary, self-model) now also
-                    pass think=False.
+                    (lumi-qwen3) by default — Ollama dedupes
+                    in VRAM. Fast path differentiated by
+                    context size (8K vs 16K) and payload
+                    shape. Qwen3 thinking disabled for fast
+                    path, enabled for full path and agent
+                    turns. Background extraction tasks pass
+                    think=False and now route through
+                    chat_sync so a cloud FAST_MODEL_NAME
+                    works too.
 
 ================================================================
   PHASE 6 — SELF-MODEL                                  ✅ COMPLETE
@@ -253,16 +274,11 @@ later items assume earlier ones are done.
                     min → 2-4 grounded observations.
                     Persisted cross-session. Injected
                     sparsely when fresh. !self command.
+                    Reflection now routes through chat_sync.
 
 ================================================================
   PHASE 6.5 — AVATAR CONTROL (VTube Studio)             ✅ COMPLETE
 ================================================================
-
-Goal: Give Lumi a body. She can change her own expression,
-toggle appearance items (hat, jacket, bag, ponytails,
-controller, skirt), and reposition her model on screen —
-both deliberately and as a visible manifestation of her
-runtime emotional state.
 
 [X] 6.5.1  VTS controller module                        DONE
 [X] 6.5.2  Expression state tracking                    DONE
@@ -324,14 +340,6 @@ Lumi reads, (b) a malicious external app that connects to the
 SDK, (c) accidental self-modification, and (d) other local
 processes or browser tabs reaching the web client.
 
-  In scope:   prompt injection via file/web/memory/SDK content;
-              SDK hijacking; self-modification; API key
-              exposure; command escalation; network exposure;
-              CSRF and DNS-rebinding against the web client;
-              session hijacking via malicious browser extension.
-  Out of scope: kernel compromise, hardware attacks, physical
-              access, supply-chain attacks on Ollama.
-
 [X] 9.1  Prompt injection defense                    HIGH PRIORITY  PARTIAL
          (provenance tagging still pending; basic sandbox in place)
 [ ] 9.2  SDK authentication and allowlist            HIGH PRIORITY
@@ -340,19 +348,23 @@ processes or browser tabs reaching the web client.
 [ ] 9.5  Filesystem sandbox edge cases               MEDIUM PRIORITY
          (realpath() fix not yet applied)
 [~] 9.6  API key and token handling                  MEDIUM PRIORITY  PARTIAL
-         (keys stored in .env, masked in UI via mask_key;
-          rotation UI, .gitignore check and log-redaction audit pending)
+         (keys stored in .env with 0600 perms on POSIX, masked
+          in every UI response via mask_key; rotation UI,
+          .gitignore check, and log-redaction audit pending)
 [ ] 9.7  Network exposure audit                      MEDIUM PRIORITY
 [ ] 9.8  Memory poisoning defense                    MEDIUM PRIORITY
 [ ] 9.9  Discord bot token and message safety        MEDIUM PRIORITY
 [ ] 9.10 Self-modification guard                     HIGH PRIORITY
+         (settings manager's constants.py write path is
+          sandboxed to a fixed allowlist; still no guard
+          against a tool call editing prompter.py)
 [ ] 9.11 Tool call anomaly detection                 LOW PRIORITY
 [ ] 9.12 Encryption of session state at rest         LOW PRIORITY
 [ ] 9.13 Dependency and supply chain review          LOW PRIORITY
 [ ] 9.14 Incident response playbook                  REQUIRED
 
 ================================================================
-  PHASE 10 — LOCAL WEB CLIENT                        MVP SHIPPED
+  PHASE 10 — LOCAL WEB CLIENT                        ✅ COMPLETE
 ================================================================
 
 Goal: Replace the terminal as the primary product surface.
@@ -366,20 +378,29 @@ the browser.
 Architecture (as built):
   Browser → http://127.0.0.1:5000  (aiohttp + python-socketio)
        ├─ HTTP routes: /auth/*, /api/*, /api/memories/*,
+       │               /api/persona/*, /api/models/*,
+       │               /api/providers/*, /api/integrations/*,
+       │               /api/settings/*, /api/voice_message,
        │               /setup-status, static /web/*
-       ├─ Socket.io on same origin (best-effort, used by the
-       │               legacy control panel; the SPA itself
-       │               polls HTTP and does not depend on it)
+       ├─ Socket.io on same origin (used for voice audio
+       │               streaming; HTTP polling for everything
+       │               else)
        └─ Static assets served from web/
   Browser → direct link to log_hub dashboard at 127.0.0.1:5001
   Backend → Lumi core (prompter, memory, emotional_state,
-              self_model, vtubeStudio) — HOST refactored
+              self_model, vtubeStudio)
   Terminal → optional debug client, same signals
 
 Storage (as built):
-  memories/users.db   (SQLite) — user rows, argon2id hashes,
-                                  session tokens
-  memories/chroma.db  (ChromaDB) — memory facts with metadata
+  memories/users.db              (SQLite) — user rows, argon2id
+                                              hashes, session tokens
+  memories/chroma.db             (ChromaDB) — memory facts with
+                                              per-user metadata
+  memories/emotional_state/*.json — per-user emotional snapshots
+  memories/session_state.json    — cross-session continuity
+  memories/self_model.json       — self-model observations
+  .env                            — provider keys, integration keys,
+                                    Discord token, Fish Audio keys
 
 Stack (as built):
   - Backend: aiohttp + python-socketio
@@ -387,8 +408,8 @@ Stack (as built):
   - Hashing: argon2-cffi (falls back to pbkdf2_hmac)
   - Frontend: plain HTML/CSS/JS. No framework, no build step.
   - Design system: web/style.css — token-based CSS with
-    palette, spacing, radius, shadows, buttons, inputs,
-    cards, modals, empty states, chat, memory table.
+    palette, spacing, radius, shadows, and every component
+    from buttons to integration cards to setup wizard steps.
 
 [X] 10.1  Identity refactor                              DONE
          Files:     constants.py, lumi.yaml,
@@ -403,7 +424,9 @@ Stack (as built):
                     for backwards compat. build_system_prompt
                     (host) with <host> templating in
                     lumi.yaml. HOST.update() called on web
-                    login so the persona rebuilds.
+                    login so the persona rebuilds. Emotional
+                    state module subscribes to on_change for
+                    per-user switching.
 
 [X] 10.2  Design system + static mockup                 DONE
          Files:     web/style.css
@@ -412,7 +435,10 @@ Stack (as built):
                     inputs, textareas, selects, cards,
                     modals, chips, empty states, stat
                     cards, event stream, chat bubbles,
-                    memory table, sidebar, avatar.
+                    memory table, sidebar, avatar, provider
+                    grid, integration grid, settings
+                    sidebar, toggle switch, session table,
+                    setup wizard steps.
 
 [X] 10.3  User auth module                              DONE
          Files:     modules/user_auth.py
@@ -423,16 +449,16 @@ Stack (as built):
                     session TTL. Rate limit: 5 failed
                     logins per username per minute.
                     Sessions persist across restart.
+                    Added in 10.14: change_password(),
+                    list_sessions(), delete_session_by_prefix(),
+                    delete_other_sessions().
 
 [X] 10.4  Auth HTTP routes                              DONE
          Files:     modules/socketIO.py
          Status:    POST /auth/register, /auth/login,
                     /auth/logout; GET /auth/me.
-                    Cookie: HttpOnly, SameSite=Lax,
-                    Secure=false, Path=/. (SameSite=Lax
-                    instead of Strict — Strict was blocking
-                    the socket handshake in Chromium.) On
-                    login: HOST.update(name=..., user_id=...).
+                    Cookie: HttpOnly, SameSite=Lax.
+                    On login: HOST.update(name=..., user_id=...).
 
 [X] 10.5  Shell + navigation                            DONE
          Files:     web/index.html, web/style.css,
@@ -441,15 +467,20 @@ Stack (as built):
                     status pills, user chip. Content area
                     swaps based on active nav. Tab state
                     persists in URL fragment (#/chat,
-                    #/dashboard, #/memory, etc.).
+                    #/dashboard, #/memory, #/persona,
+                    #/models, #/integrations, #/settings).
 
 [X] 10.6  Login / Register UI                           DONE
-         Files:     web/index.html, web/app.js
-         Status:    Centered auth card. Username +
-                    password + optional display name.
-                    Register link toggles to register
-                    form. Errors inline via #auth-error.
-                    On success: redirects into shell.
+         Files:     web/login.html, web/login.js,
+                    web/index.html, web/app.js,
+                    modules/socketIO.py
+         Status:    Dedicated /login page. Server-side
+                    gating: / redirects unauthenticated
+                    users to /login; /login redirects authed
+                    users to /. No more in-page auth overlay.
+                    Centered card with username / password /
+                    optional display name. Register link
+                    toggles in-place. Errors surface inline.
 
 [X] 10.7  Chat page                                     DONE
          Files:     web/index.html, web/app.js,
@@ -458,157 +489,181 @@ Stack (as built):
                     with role styling, avatar, tag chips
                     above messages. Fixed bottom input
                     with Enter/Shift+Enter. Agent-mode
-                    toggle chip in the status strip.
-                    Chat polls /api/history every 1.5s so
-                    the log persists across tab switches.
+                    toggle chip, voice playback chip, and
+                    mic chip in the status strip. Chat polls
+                    /api/history every 1.5s so the log
+                    persists across tab switches.
                     Optimistic send. Failed sends surface
                     as system messages.
-         Note:      Does not depend on socket.io. The
-                    socket is best-effort for latency but
-                    polling is the source of truth.
 
-[X] 10.8  First-run setup wizard                        PARTIAL
+[X] 10.8  Full setup wizard                             DONE  (2026-09-28 PM2)
          Files:     web/setup.html, web/setup.js,
                     modules/socketIO.py
-         Status:    Single-screen register form shown
-                    when no users exist. Redirects to /setup
-                    automatically. Full multi-step wizard
-                    (VRAM detect, Fish Audio test, audio
-                    device pickers, workspace path) still
-                    TODO.
+         Status:    Multi-step /setup route with progress
+                    dots and ?step= client-side routing.
+                    Steps: account → providers → integrations
+                    → done. Server always serves the wizard;
+                    the client picks its starting step from
+                    /setup-status + /auth/me. Optional steps
+                    have skip buttons. Provider and
+                    integration cards reuse the same modals
+                    as the Models and Integrations pages.
 
 [X] 10.9  Dashboard page                                DONE
          Files:     web/index.html, web/app.js,
                     modules/log_hub.py
          Status:    Stat cards + event stream with
                     category filter chips. Reads directly
-                    from log_hub on port 5001 (CORS is open
-                    on the hub). Refresh button. Mini-
-                    graphs still TODO.
+                    from log_hub on port 5001.
 
-[~] 10.10 Persona editor                                BACKEND DONE / UI TODO
-         Files:     web/index.html, web/app.js,
-                    modules/socketIO.py, lumi.yaml,
-                    modules/persona_editor.py (NEW)
-         Done:      Backend helper: ruamel.yaml round-trip
-                    load/edit/save of lumi.yaml, PyYAML
-                    fallback. Comments, key order, and
-                    block-scalar styles preserved.
-         TODO:      HTTP endpoints for persona read/write/
-                    preview/revert in socketIO.py, plus the
-                    whole frontend below.
-         Spec:      Left sidebar with sections (Identity,
-                    Traits, Personality, Examples, Voice).
-                    Main panel with form fields for the
-                    active section. Trait sliders 0-1 with
-                    descriptions. Rich text areas for
-                    descriptions. Add/remove example
-                    dialogues. Approved tag checkboxes.
-                    Every change has Preview (show
-                    resulting prompt) and Revert. Writes
-                    back to lumi.yaml preserving comments
-                    and structure via ruamel.yaml.
+[X] 10.10 Persona editor                                DONE
+         Files:     modules/persona_editor.py,
+                    modules/socketIO.py, modules/prompter.py,
+                    modules/constants.py, web/app.js,
+                    web/style.css, lumi.yaml
+         Status:    Backend + UI both live. ruamel.yaml
+                    round-trip (comments, key order, block-
+                    scalar styles preserved), PyYAML fallback
+                    with a yellow banner. build_system_prompt
+                    (host, profile_dict) accepts a draft for
+                    preview; get_system_prompt() caches per
+                    host and invalidates on save.
+                    UI: 14 sections in the sidebar plus a Raw
+                    YAML tab. Field editors: text, textarea,
+                    list-str, list-obj, kv, obj-map,
+                    trait-slider. Save / Revert / Reload /
+                    Preview Prompt with a copy button.
 
 [X] 10.11 Memory browser                                DONE
          Files:     web/index.html, web/app.js,
                     modules/socketIO.py, modules/memory.py
-         Status:    Table of stored facts. Star marker
-                    (★ high importance, · medium), fact
-                    text, age, valence chip, Edit/Delete
-                    buttons. Semantic search via ChromaDB
+         Status:    Table of stored facts. Star marker,
+                    fact text, age, valence chip, Edit/
+                    Delete. Semantic search via ChromaDB
                     query. Sort by newest/oldest/importance.
-                    Expandable rows show full metadata.
-                    + Add memory modal. Export JSON button.
-                    Backend exposes list_all, get_by_id,
-                    update_memory, export_all, delete_memory,
-                    create_memory through Memory.API.
+                    Expandable rows show full metadata
+                    including user_id. + Add memory modal.
+                    Export JSON button. Every read/write is
+                    scoped to the current user.
 
-[~] 10.12 Model manager                                 BACKEND DONE / UI TODO
-         Files:     web/index.html, web/app.js,
-                    modules/socketIO.py,
-                    modules/model_manager.py (NEW)
-         Done:      Backend + /api/models/* endpoints: list,
-                    loaded state, load/unload, routing
-                    update (hot-patches constants.py and
-                    rebinds live modules), background pull,
-                    delete.
-         TODO:      Frontend page (cards, Load/Unload, pull
-                    progress bar, routing form).
-         Spec:      Which models are installed (query
-                    Ollama /api/tags). Which is currently
-                    loaded (via /api/ps). VRAM usage per
-                    model. Load/Unload buttons. Pull new
-                    model (text field + progress bar).
-                    Routing configuration for fast/full
-                    paths. Writes to constants.py.
+[X] 10.12 Model manager                                 DONE
+         Files:     modules/model_manager.py,
+                    modules/socketIO.py, web/app.js,
+                    web/style.css
+         Status:    Backend + UI both live. Ollama
+                    /api/tags, /api/ps, /api/generate,
+                    /api/pull (streaming), /api/delete.
+                    constants.py line patcher with comment
+                    preservation, compile-check, .bak saved
+                    before each write, live-rebind of every
+                    consumer module.
+                    UI: Loaded now, Installed (filter,
+                    Load/Unload/Delete, loaded badge), Pull
+                    (input + progress bar with indeterminate,
+                    percentage, digest), Routing (dropdowns
+                    with Ollama + cloud optgroups).
 
-[ ] 10.13 Integrations page                             NOT STARTED
-         Files:     web/index.html, web/app.js,
-                    modules/socketIO.py
-         Status:    Cards per integration (VTS,
-                    Discord, Browser, Fish Audio). Each
-                    card shows status (Connected / Not
-                    connected / Ready). Configure button
-                    opens a modal with integration-
-                    specific settings. Test button runs
-                    a connectivity check.
-         Note:      LLM provider cards (10.20) can live here.
+[X] 10.13 Integrations page                             DONE
+         Files:     modules/integrations.py,
+                    modules/socketIO.py, web/app.js,
+                    web/style.css
+         Status:    Five cards — Ollama, VTube Studio
+                    (with module-enable toggle), Discord,
+                    Fish Audio, Browser. State pills
+                    (ok/warn/err/off), live status message,
+                    Test button, Configure modal. Keys are
+                    masked. Same 0600-perm .env writer as
+                    the provider module.
 
-[ ] 10.14 Settings page                                 NOT STARTED
-         Files:     web/index.html, web/app.js,
-                    modules/socketIO.py
-         Status:    Sub-tabs: General (workspace,
-                    timezone, autostart), Security
-                    (change password, sessions, API key
-                    rotation), Advanced (raw config
-                    editor with warning), About
-                    (version, credits).
+[X] 10.14 Settings page                                 DONE
+         Files:     modules/settings_manager.py,
+                    modules/socketIO.py, modules/user_auth.py,
+                    web/app.js, web/style.css
+         Status:    Four sub-tabs.
+                    General — editable timezone (zoneinfo-
+                    validated) and Ollama endpoint (URL-
+                    validated), read-only info block.
+                    Writes through the same constants.py
+                    line patcher as the model manager.
+                    Security — change password, active
+                    sessions table with redacted prefixes
+                    and "current" badge, per-session Revoke,
+                    Sign-out-other-sessions bulk action.
+                    Advanced — 5 reset actions behind a
+                    Danger Zone header: chat history,
+                    session state, self-model, events log,
+                    long-term memory (per-user wipe).
+                    About — version, python, platform,
+                    workspace, endpoints, models, uptime,
+                    loaded module chips, credits.
 
-[ ] 10.15 Per-user memory isolation                     NOT STARTED
+[X] 10.15 Per-user memory isolation                     DONE  (2026-09-28 PM2)
          Files:     modules/memory.py
-         Status:    Adds user_id metadata on every
-                    memory insert. get_prompt_injection()
-                    and query_temporal() filter by current
-                    user. Migration pass backfills
-                    existing memories with user_id:
-                    "anthony".
-         Verify:    Log in as Guest, ask "what do you
-                    know about me?" — must NOT return
-                    Anthony's memories.
+         Status:    Every stored fact carries a user_id
+                    matching HOST.user_id at write time.
+                    get_prompt_injection, query_temporal,
+                    list_all, get_by_id, export_all,
+                    update_memory, delete_memory, and wipe
+                    all filter by the current user. Migration
+                    pass on init backfills legacy rows with
+                    user_id="anthony". wipe_all_users() added
+                    for the Advanced settings reset. ChromaDB
+                    `where` filter used on every query.
+         Verify:    Log in as Guest, ask "what do you know
+                    about me?" — no Anthony memories.
 
-[ ] 10.16 Per-user emotional state isolation            NOT STARTED
+[X] 10.16 Per-user emotional state isolation            DONE  (2026-09-28 PM2)
          Files:     modules/emotional_state.py
-         Status:    Per-user EmotionalState instances
-                    keyed by user_id, persisted
-                    independently. HOST.user_id drives
-                    the lookup.
-         Verify:    Log in as Guest, push frustration
-                    to 0.8. Log in as Anthony — his
-                    state is unaffected.
+         Status:    EmotionalStateModule keeps a dict of
+                    EmotionalState instances keyed by
+                    user_id. Each persists to
+                    memories/emotional_state/{user_id}.json
+                    with a 5-min background flush and final
+                    flush on shutdown. HOST.on_change callback
+                    fires on login switch: outgoing state
+                    persisted, incoming loaded, signals.
+                    emotional_state re-points. All consumers
+                    keep working unchanged.
+         Verify:    Log in as Guest, push frustration up.
+                    Log in as Anthony — his state unaffected.
 
 [X] 10.17 Security hardening                            PARTIAL
          Files:     modules/socketIO.py,
-                    modules/user_auth.py, web/app.js
-         Status:    a. CSRF token issued on login,
-                       required on all state-changing
-                       POSTs (double-submit cookie
-                       pattern). DONE
-                    b. Origin check on WebSocket handshake
-                       — reject anything not
-                       127.0.0.1:5000. DONE
-                    c. HttpOnly session cookie, SameSite=Lax
-                       (changed from Strict to fix socket
-                       auth in Chromium). DONE
-                    d. Rate limit /auth/login to
-                       5/min/user. DONE
-                    e. aiohttp bound strictly to 127.0.0.1,
-                       no override constant. DONE
-                    f. Frontend rendering via textContent,
-                       never innerHTML. DONE
-                    g. Static server refuses path traversal,
-                       only serves from web/. DONE
-         TODO:      Full audit still pending. re-path
-                    sandbox not yet applied (Phase 9.5).
+                    modules/user_auth.py, web/app.js,
+                    modules/settings_manager.py,
+                    modules/model_manager.py,
+                    modules/llm_providers.py,
+                    modules/integrations.py
+         Status:    a. CSRF token on login, required on
+                       every state-changing request. DONE
+                    b. Origin check on socket handshake and
+                       HTTP POSTs. DONE
+                    c. HttpOnly session cookie, SameSite=Lax.
+                       DONE
+                    d. Rate limit /auth/login. DONE
+                    e. aiohttp bound strictly to 127.0.0.1.
+                       DONE
+                    f. Frontend rendering via textContent.
+                       DONE
+                    g. Static server refuses path traversal.
+                       DONE
+                    h. constants.py writes go through a
+                       single regex line patcher (only top-
+                       level NAME = ... assignments touched,
+                       result compile()-checked, .bak saved).
+                       DONE
+                    i. .env writes use a single atomic writer
+                       (comment-preserving, 0600 on POSIX).
+                       DONE
+                    j. Every provider / integration key is
+                       masked before leaving the server. DONE
+                    k. Advanced reset actions confined to a
+                       server-side allowlist. DONE
+         TODO:      Full audit pending. Filesystem sandbox
+                    still uses string-prefix matching.
+                    Prompt-injection provenance tagging not
+                    implemented. No self-modification guard
+                    for prompter.py.
 
 [X] 10.18 Terminal as fallback client                   DONE
          Files:     modules/prompter.py,
@@ -619,93 +674,75 @@ Stack (as built):
                     new_message. Prompter picks them up on
                     its next tick — identical path to the
                     web client. Both surfaces share state.
-                    Added signals.input_paused so the
-                    prompter can yield stdin during y/n
-                    confirmation prompts (ConsoleInput
-                    was stealing the keystrokes).
+                    signals.input_paused yields stdin during
+                    y/N confirmation prompts.
 
-[ ] 10.19 Voice in browser (deferred)                   NOT STARTED
-         Files:     web/app.js, modules/socketIO.py
-         Status:    Deferred to post-MVP. HTML5 audio
-                    playback for Lumi's TTS via audio
-                    streaming over the socket. Optional
-                    mic capture via MediaRecorder →
-                    server STT.
+[X] 10.19 Voice in browser                              DONE  (2026-09-28 PM2)
+         Files:     modules/tts.py, modules/socketIO.py,
+                    web/app.js, web/style.css, web/index.html
+         Status:    Two features.
+                    TTS playback: tts.py calls signals.
+                    broadcast_tts_audio() on utterance start.
+                    socketIO fans the WAV bytes out via
+                    socket.io, base64 encoded, to every
+                    opted-in client. Chat page has a
+                    persistent Voice: ON/OFF chip (localStorage
+                    backed) driving the opt-in handshake.
+                    Mic capture: "Hold to talk" chip records
+                    via MediaRecorder, POSTs the webm blob to
+                    /api/voice_message, which transcribes with
+                    faster-whisper and injects the text as a
+                    user message. Bypasses browser speech APIs
+                    so the transcript matches the server model
+                    exactly.
 
-[~] 10.20 Cloud / multi-provider LLMs                   BACKEND DONE / UI TODO
-         Files:     modules/llm_providers.py (NEW),
-                    modules/socketIO.py, .env
-         Done:      Provider abstraction (Ollama +
-                    OpenAI-compatible + Anthropic),
-                    chat_sync("provider:model"), masked
-                    key storage in .env, provider
-                    list/save/test/models endpoints.
-         TODO:      a. Providers UI (add key, test, pick
-                       model) — fits under Integrations
-                       (10.13) or Settings > Security.
-                    b. Model-spec picker in the Model
-                       Manager routing form so MODEL_NAME /
-                       FAST_MODEL_NAME can be "provider:model".
-                    c. Route prompter / memory reflection /
-                       self_model / heartbeat calls through
-                       chat_sync so cloud specs actually get
-                       used (verify each call site).
-                    d. Make the Ollama-only payload fields
-                       ("think": False, num_ctx,
-                       keep_alive) provider-aware so they are
-                       not sent to cloud APIs.
-                    e. End-to-end test per provider using
-                       the /test endpoint.
+[X] 10.20 Cloud / multi-provider LLMs                   DONE
+         Files:     modules/llm_providers.py,
+                    modules/socketIO.py, modules/prompter.py,
+                    modules/memory.py, modules/session_state.py,
+                    modules/self_model.py, modules/heartbeat.py,
+                    modules/constants.py, web/app.js,
+                    web/style.css
+         Status:    Provider abstraction: OllamaClient,
+                    OpenAICompatClient, AnthropicClient.
+                    chat_sync(model_spec) parses
+                    "provider:model" specs; bare names
+                    default to Ollama. Covers OpenAI,
+                    Anthropic, Gemini, Groq, OpenRouter,
+                    DeepSeek, and any OpenAI-compatible
+                    endpoint (Together, vLLM, LM Studio).
+                    Provider config in .env, masked in every
+                    response. Endpoints: list, save, test,
+                    models.
+                    ALL SIX CALL SITES now route through
+                    chat_sync: prompter run_conversational,
+                    prompter run_agent_turn, memory
+                    reflection, session summary, self-model
+                    reflection, heartbeat decision. Ollama-
+                    only fields (think, num_ctx, keep_alive)
+                    silently dropped by non-Ollama clients.
+                    Providers UI on the Models page: cards
+                    with masked keys, Configure modal,
+                    Test button, "Get key" links. Cloud
+                    model specs appear as optgroups in the
+                    routing dropdowns.
 
 ================================================================
   PENDING FIXES
 ================================================================
 
 [X] Memory reflection silently storing zero facts     RESOLVED (2026-09-27)
-    Root cause: Qwen3 defaulted to thinking mode and
-                consumed the entire num_predict budget
-                on reasoning, returning empty content.
-    Fix:        Added "think": False to the reflection
-                payload in modules/memory.py and in the
-                importer. Also added ">=" (not ">") to
-                the processed_count reset in memory.py
-                so reflection keeps firing after the
-                first 20-message window.
-
 [X] Agent-mode-off notice false positives             RESOLVED (2026-09-27)
-    Root cause: The heuristic detector matched target
-                nouns like "hat/jacket/web/page/memory"
-                near action verbs, so casual chat with
-                a coincidental word tripped it.
-    Fix:        Deleted the whole mechanism —
-                _request_requires_agent_mode,
-                _AGENT_OFF_NOTICES,
-                _agent_mode_off_reply, and the
-                short-circuit in run_conversational.
-                Agent mode is a pure toggle now.
-
 [X] Console input stealing y/n keystrokes             RESOLVED (2026-09-27)
-    Root cause: ConsoleInput's msvcrt loop and the
-                prompter's input() confirmation prompt
-                were reading the same console.
-    Fix:        Added signals.input_paused. Prompter
-                sets it True around input(); the
-                ConsoleInput read loop skips while it's
-                set.
-
 [X] Chat log disappearing on tab switch               RESOLVED (2026-09-27)
-    Root cause: state.history was only populated by
-                socket events. If the socket handshake
-                failed, the view rebuilt empty.
-    Fix:        renderChatView fetches /api/history
-                on every mount and polls every 1.5s.
-                Socket is best-effort but no longer
-                authoritative.
-
 [X] Socket handshake rejected in Chromium             RESOLVED (2026-09-27)
-    Root cause: SameSite=Strict cookies are not sent
-                on the cross-scheme websocket upgrade.
-    Fix:        SameSite=Lax on both cookies.
+[X] Login page scroll-ghost                           RESOLVED (2026-09-28)
+[X] Missing Optional import in socketIO.py            RESOLVED (2026-09-28)
+[X] UserDB missing session-management methods         RESOLVED (2026-09-28)
+[X] Intent-announcement regex                         RESOLVED (earlier)
+[X] Large tool results burying original request       RESOLVED (earlier)
+[X] Multimodal VLM firing on file-read requests       RESOLVED (earlier)
+[X] Emoji in agent-mode replies                       RESOLVED (earlier)
 
 [ ] Signature phrases copied verbatim                 HIGH
     Status: Lumi pastes signature_phrases.exit
@@ -720,6 +757,9 @@ Stack (as built):
              habit. They are NOT lines to quote
              verbatim. Rewrite them in your own words
              for the moment."
+    Note:   The persona editor makes this a two-minute
+            edit — open the Rules section, add the line,
+            Save.
 
 [ ] Memory reflection prompt lets Lumi-facts through  MEDIUM
     Status: The reflection prompt does not explicitly
@@ -737,18 +777,26 @@ Stack (as built):
               · uses null instead of "neutral" for
                 valence
 
-[ ] History trim caps backfill depth                  LOW
+[ ] .env not in .gitignore                             HIGH
+    Status: .env contains OPENAI_API_KEY, ANTHROPIC_API_KEY,
+            DISCORD_BOT_TOKEN, FISH_API_KEY and every other
+            secret the web client can write. Stored
+            plaintext with 0600 perms on POSIX, but a
+            single git add -A will leak it.
+    Fix:    Add ".env", "memories/", and "logs/" to
+            .gitignore.
+
+[ ] ruamel.yaml not installed                          LOW
+    Status: The persona editor falls back to PyYAML and
+            shows a banner in the UI. Comments in lumi.yaml
+            will be dropped on the first save.
+    Fix:    pip install ruamel.yaml and restart.
+
+[ ] History trim caps backfill depth                   LOW
     Status: signals.history is trimmed to 20 messages
-            in prompter.py and heartbeat.py. Older
-            turns overwrite and are lost for future
-            reflection.
+            in prompter.py and heartbeat.py.
     Fix:    Raise the trim to 100 in both files.
             Optional.
-
-[X] Intent-announcement regex                         RESOLVED (earlier)
-[X] Large tool results burying original request       RESOLVED (earlier)
-[X] Multimodal VLM firing on file-read requests       RESOLVED (earlier)
-[X] Emoji in agent-mode replies                       RESOLVED (earlier)
 
 ================================================================
   KNOWN OUTSTANDING ISSUES
@@ -781,20 +829,12 @@ Stack (as built):
 
 [!] Self-modification allowed without review
     Fix:    Phase 9.10 expanded PROTECTED_FILES +
-            !edit command with diff review.
-
-[!] Shared memory across users
-    Fix:    Phase 10.15 user_id metadata + query
-            filter.
-
-[!] Shared emotional state across users
-    Fix:    Phase 10.16 per-user emotional snapshots.
+            !edit command with diff review. PROTECTED_FILES
+            today only covers main.py, constants.py, .env,
+            and Modelfile — a tool call can still overwrite
+            prompter.py.
 
 [!] Host name baked into memory facts
-    Status: Reflection prompt was supposed to store
-            facts without subject names, but the
-            current prompt lets pronouns and "their"
-            through. See PENDING FIXES.
     Fix:    Tighten reflection prompt.
 
 [!] moondream description quality                     COSMETIC
@@ -809,55 +849,43 @@ Stack (as built):
   RECOMMENDED NEXT STEPS
 ================================================================
 
-  Step 0  ->  APPLY TWO PENDING FIXES (~30 min).
-              (1) Tighten REFLECTION_PROMPT in
+  Step 0  ->  SMALL FIXES + HOUSEKEEPING (~15 min).
+              (1) pip install ruamel.yaml (enables comment
+                  preservation on persona saves).
+              (2) Add ".env", "memories/", "logs/" to
+                  .gitignore.
+              (3) Use the persona editor to add the
+                  "SIGNATURE PHRASES ARE VOCABULARY, NOT
+                  SCRIPT" rule to the Rules section.
+              (4) Tighten REFLECTION_PROMPT in
                   modules/memory.py and
-                  modules/import_chat_history.py to
-                  forbid assistant-facts and subject
-                  pronouns.
-              (2) Add "SIGNATURE PHRASES ARE
-                  VOCABULARY, NOT SCRIPT" rule to
-                  lumi.yaml.
-              Optional: bump history trim from 20 to 100.
+                  modules/import_chat_history.py.
 
-  Step 1  ->  BUILD PHASE 10.10 FRONTEND (PERSONA EDITOR).
-              Backend (persona_editor.py) is done. Needs
-              HTTP endpoints + the form UI. Biggest UX
-              unlock for non-technical users.
+  Step 1  ->  USE LUMI FOR A WEEK.
+              Every page is now editable end-to-end. Watch
+              for friction with real use. Session quality
+              data — memory retrieval, agentic turns,
+              persona drift, voice reliability — should
+              drive the next round of tuning.
 
-  Step 2  ->  BUILD PHASE 10.15 + 10.16 (PER-USER
-              ISOLATION).
-              Memory and emotional state scoped per
-              user. Pure backend, testable from the
-              terminal.
-
-  Step 3  ->  BUILD PHASE 10.12 + 10.20 + 10.13 UIs
-              (MODEL MANAGER, PROVIDERS, INTEGRATIONS).
-              Backends and endpoints are done — these are
-              front-end cards/forms. Then wire chat_sync
-              into the remaining call sites (10.20c/d).
-
-  Step 4  ->  BUILD PHASE 10.14 (SETTINGS).
-              Housekeeping. General / Security /
-              Advanced / About sub-tabs.
-
-  Step 5  ->  BUILD PHASE 10.8 (FULL SETUP WIZARD).
-              Extends the current single-screen form
-              into a six-step wizard.
-
-  Step 6  ->  COMPLETE PHASE 10.17 SECURITY AUDIT.
+  Step 2  ->  PHASE 9 (SECURITY HARDENING).
               Before exposing the web client beyond
-              localhost.
+              localhost and before the SDK ships. Focus:
+                9.5  realpath sandbox
+                9.10 self-modification guard
+                9.1  prompt-injection provenance tagging
+                9.6  rotation UI, .gitignore check,
+                     log-redaction audit
 
-  Step 7  ->  PHASE 7 (DISCORD VOICE BRIDGE).
-              Back to original roadmap priority.
+  Step 3  ->  PHASE 7 (DISCORD VOICE BRIDGE).
+              Back to original roadmap priority. This is
+              the last structural gap between Lumi and
+              Neuro's interaction model.
 
-  Step 8  ->  PHASE 9.1/9.2/9.10 THEN PHASE 8 (SDK).
+  Step 4  ->  PHASE 9.2 + 9.3 THEN PHASE 8 (SDK).
               Security before the plugin system ships.
 
-  Ongoing ->  USE LUMI through the browser. Watch for
-              friction. Real use drives the next round
-              of tuning.
+  Ongoing ->  Real use drives the next round of tuning.
 
 ================================================================
   WHAT VEDAL HAS THAT THIS WON'T FULLY CLOSE
@@ -915,22 +943,25 @@ Stack (as built):
     ✅ Fabrication guard for narrated state changes
     ✅ Passive emotion → expression visual manifestation
     ✅ VRAM deduplication (fast and main share weights)
-    ✅ Web client — full MVP (Phase 10.1–10.9, 10.11, 10.18)
-    ✅ Identity refactor (Phase 10.1)
-    ✅ Design system (Phase 10.2)
-    ✅ User auth module (Phase 10.3)
-    ✅ Auth HTTP routes (Phase 10.4)
-    ✅ Shell + navigation (Phase 10.5)
-    ✅ Login / Register UI (Phase 10.6)
-    ✅ Chat page (Phase 10.7)
-    ✅ Dashboard page (Phase 10.9)
-    ✅ Memory browser (Phase 10.11)
+    ✅ Web client — all pages (Phase 10.1–10.7, 10.9, 10.11)
+    ✅ Persona editor — backend + UI (Phase 10.10)
+    ✅ Model manager — backend + UI (Phase 10.12)
+    ✅ Integrations page (Phase 10.13)
+    ✅ Settings page (Phase 10.14)
+    ✅ Multi-provider LLM — backend + UI + full call-site
+      wiring (Phase 10.20)
     ✅ Agent mode toggle (chip + HTTP endpoint)
     ✅ Terminal + web input share one path
-    ✅ Multi-provider LLM backend (10.20 backend)
-    ✅ Model manager backend + hot-patching (10.12 backend)
-    ✅ Persona editor backend (10.10 backend)
-    ✅ CSRF + origin + rate limit + sandbox (Phase 10.17 partial)
+    ✅ Dedicated /login page (no more scroll-ghost)
+    ✅ CSRF + origin + rate limit + sandbox (Phase 10.17)
+    ✅ constants.py line patcher with compile-check + .bak
+    ✅ .env writer with 0600 perms + masked-key responses
+    ✅ Settings Advanced reset allowlist
+    ✅ Full setup wizard (Phase 10.8)
+    ✅ Per-user memory isolation (Phase 10.15)
+    ✅ Per-user emotional state isolation (Phase 10.16)
+    ✅ Voice in browser — TTS playback + mic capture
+      (Phase 10.19)
 
   What you have NOT closed:
     ❌ Discord voice receive (Phase 7)
@@ -939,16 +970,8 @@ Stack (as built):
     ❌ Security hardening audit (Phase 9)
     ❌ SDK authentication (Phase 9.2)
     ❌ Prompt injection defense (Phase 9.1)
-    ❌ Self-modification guard (Phase 9.10)
-    ❌ Persona editor UI (Phase 10.10 — backend done)
-    ❌ Model manager UI (Phase 10.12 — backend done)
-    ❌ Provider settings UI + call-site wiring (Phase 10.20)
-    ❌ Integrations page (Phase 10.13)
-    ❌ Settings page (Phase 10.14)
-    ❌ Full setup wizard (Phase 10.8)
-    ❌ Per-user memory isolation (Phase 10.15)
-    ❌ Per-user emotional state (Phase 10.16)
-    ❌ Voice in browser (Phase 10.19)
+    ❌ Self-modification guard for prompter.py (Phase 9.10)
+    ❌ Filesystem sandbox realpath() fix (Phase 9.5)
 
 ================================================================
   END OF ROADMAP

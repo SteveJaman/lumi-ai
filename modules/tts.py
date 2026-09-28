@@ -262,6 +262,14 @@ class TTS:
     def play_audio(self, message, audio_bytes):
         """Physically plays the bytes and routes to Discord."""
         self.signals.sio_queue.put(("current_message", message))
+        
+        # Phase 10.19 — broadcast audio bytes to connected web clients.
+        # socketIO watches this signal and pushes to browser listeners.
+        if hasattr(self.signals, "broadcast_tts_audio"):
+            try:
+                self.signals.broadcast_tts_audio(audio_bytes)
+            except Exception as e:
+                print(f"\033[90mTTS: browser broadcast failed: {e}\033[0m")
 
         # Discord Routing
         if self.audio_mode in ["discord", "both"]:

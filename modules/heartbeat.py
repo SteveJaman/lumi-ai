@@ -24,7 +24,7 @@ import requests
 from modules.module import Module
 from constants import LLM_ENDPOINT, MODEL_NAME, AI_NAME, HOST
 from modules.log_hub import emit as hub_emit
-
+from modules.llm_providers import chat_sync, LLMResponse
 
 # ===============================================================
 # TUNING KNOBS
@@ -322,22 +322,12 @@ class Heartbeat(Module):
         )
 
         try:
-            response = requests.post(
-                f"{LLM_ENDPOINT}/api/chat",
-                json={
-                    "model": self.decision_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.7,
-                        "top_p": 0.9,
-                    },
-                },
-                timeout=30,
+            resp: LLMResponse = chat_sync(
+                self.decision_model,
+                [{"role": "user", "content": prompt}],
+                options={"temperature": 0.7, "top_p": 0.9},
             )
-            response.raise_for_status()
-            content = response.json()["message"]["content"].strip()
-            return content
+            return (resp.content or "").strip()
         except Exception as e:
             hub_emit(self.signals, "heartbeat",
                      f"decision call failed: {e}", level="warn")

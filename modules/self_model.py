@@ -30,7 +30,7 @@ import requests
 
 from modules.module import Module
 from constants import LLM_ENDPOINT, FAST_MODEL_NAME, MODEL_NAME, AI_NAME
-
+from modules.llm_providers import chat_sync, LLMResponse
 
 # ===============================================================
 # CONFIG
@@ -303,24 +303,17 @@ class SelfModel(Module):
         )
 
         try:
-            r = requests.post(
-                f"{LLM_ENDPOINT}/api/chat",
-                json={
-                    "model": MODEL_NAME,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                    "keep_alive": "30s",
-                    "options": {
-                        "temperature": 0.4,
-                        "num_ctx": 8192,
-                        "num_predict": 300,
-                    },
+            resp: LLMResponse = chat_sync(
+                MODEL_NAME,
+                [{"role": "user", "content": prompt}],
+                keep_alive="30s",
+                options={
+                    "temperature": 0.4,
+                    "num_ctx": 8192,
+                    "num_predict": 300,
                 },
-                timeout=45,
             )
-            if r.status_code != 200:
-                return
-            raw = r.json()["message"]["content"].strip()
+            raw = (resp.content or "").strip()
         except Exception as e:
             print(f"\033[90mSELF-MODEL: reflection call failed: {e}\033[0m")
             return

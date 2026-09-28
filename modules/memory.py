@@ -1,12 +1,22 @@
 """
 Long-term memory module.
 
-ChromaDB-backed. Every ~10 messages, a background reflection pass asks the
-LLM to extract facts from the recent conversation. Each fact is stored with
-metadata: timestamp, importance (0-1), emotional_valence, and session_id.
+ChromaDB-backed. Every ~10 messages, a background reflection pass asks
+the LLM to extract facts from the recent conversation. Each fact is
+stored with metadata: timestamp, importance (0-1), emotional_valence,
+session_id, and user_id.
 
 Retrieval reweights results by importance and recency, not just semantic
 similarity. Older memories naturally fade; important recent ones surface.
+
+Phase 10.15 — per-user isolation
+--------------------------------
+Every stored fact carries a `user_id` matching HOST.user_id at write
+time. Every read path (get_prompt_injection, query_temporal, list_all,
+get_by_id, export_all, update_memory, delete_memory) filters by the
+current user. A migration pass on init backfills legacy rows (created
+before this phase) with user_id="anthony" so the default host keeps
+seeing their existing history.
 """
 
 from modules.module import Module
@@ -15,6 +25,7 @@ from constants import (
     MEMORY_QUERY_MESSAGE_COUNT, MEMORY_RECALL_COUNT,
     FAST_MODEL_NAME,
 )
+from modules.llm_providers import chat_sync, LLMResponse
 from chromadb.config import Settings
 import chromadb
 import requests
@@ -59,6 +70,7 @@ RECENCY_HALFLIFE_DAYS = 30.0
 RETRIEVAL_BUFFER = 3
 
 DEFAULT_IMPORTANCE = 0.5
+LEGACY_USER_ID = "anthony"
 
 _BAD_VALENCE_STRINGS = {"", "null", "none", "nil", "undefined", "n/a"}
 
@@ -120,6 +132,15 @@ def _clean_valence(raw):
     return v
 
 
+def _current_user_id():
+    """The currently-active user_id. Every memory written or read is
+    scoped to this. Host switching via web login updates this live."""
+    try:
+        return HOST.user_id or LEGACY_USER_ID
+    except Exception:
+        return LEGACY_USER_ID
+
+
 class Memory(Module):
 
     def __init__(self, signals, enabled=True):
@@ -146,12 +167,58 @@ class Memory(Module):
             print("MEMORY: Empty database. Importing from memoryinit.json")
             self.API.import_json(path="./memories/memoryinit.json")
 
+        self._migrate_user_ids()
         self._normalize_all_metadata()
 
         signals.memory_module = self
 
     def clear_database(self):
         self.API.wipe()
+
+    # ---------------------------------------------------------------
+    # Per-user migration (Phase 10.15)
+    # ---------------------------------------------------------------
+    def _migrate_user_ids(self):
+        """Assign user_id=LEGACY_USER_ID to any memory created before
+        per-user isolation existed. Idempotent; silent when there's
+        nothing to do."""
+        try:
+            total = self.collection.count()
+            if total == 0:
+                return
+            results = self.collection.get()
+        except Exception as e:
+            print(f"\033[91mMEMORY: user_id migration read failed: {e}\033[0m")
+            return
+
+        ids = results.get("ids") or []
+        metas = results.get("metadatas") or []
+        if not ids:
+            return
+
+        to_update_ids = []
+        to_update_metas = []
+        for mem_id, meta in zip(ids, metas):
+            meta = dict(meta or {})
+            if not meta.get("user_id"):
+                meta["user_id"] = LEGACY_USER_ID
+                to_update_ids.append(mem_id)
+                to_update_metas.append(meta)
+
+        if not to_update_ids:
+            return
+
+        try:
+            self.collection.update(
+                ids=to_update_ids, metadatas=to_update_metas,
+            )
+            print(
+                f"\033[90mMEMORY: Backfilled user_id on "
+                f"{len(to_update_ids)} legacy memories "
+                f"(assigned to '{LEGACY_USER_ID}').\033[0m"
+            )
+        except Exception as e:
+            print(f"\033[91mMEMORY: user_id migration update failed: {e}\033[0m")
 
     # ---------------------------------------------------------------
     # Metadata migration
@@ -200,6 +267,10 @@ class Memory(Module):
             sid = meta.get("session_id")
             if not sid or not isinstance(sid, str):
                 meta["session_id"] = "import"
+                changed = True
+
+            if not meta.get("user_id"):
+                meta["user_id"] = LEGACY_USER_ID
                 changed = True
 
             if changed:
@@ -271,6 +342,7 @@ class Memory(Module):
             results = self.collection.query(
                 query_texts=query,
                 n_results=fetch_n,
+                where={"user_id": _current_user_id()},
             )
         except Exception as e:
             print(f"\033[91mMEMORY: query failed: {e}\033[0m")
@@ -334,9 +406,6 @@ class Memory(Module):
     # ---------------------------------------------------------------
     async def run(self):
         while not self.signals.terminate:
-            # FIX: was ">" — with ">" the counter sticks forever once
-            # history is trimmed to the 20-message cap and processed_count
-            # equals it. ">=" resets correctly so reflection keeps firing.
             if self.processed_count >= len(self.signals.history):
                 self.processed_count = 0
 
@@ -357,34 +426,20 @@ class Memory(Module):
 
                 prompt = REFLECTION_PROMPT.replace("<<CHAT_SECTION>>", chat_section)
 
-                data = {
-                    "model": FAST_MODEL_NAME,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                    # FIX: Qwen3 spends all num_predict tokens on internal
-                    # reasoning and returns an empty content field unless
-                    # think is disabled. This is the reason no memories
-                    # were ever being stored.
-                    "think": False,
-                    "keep_alive": "30s",
-                    "options": {
-                        "temperature": 0.3,
-                        "num_predict": 400,
-                        "num_ctx": 8192,
-                    },
-                }
-
                 try:
-                    response = requests.post(
-                        f"{LLM_ENDPOINT}/api/chat",
-                        json=data,
-                        timeout=45,
+                    resp: LLMResponse = chat_sync(
+                        FAST_MODEL_NAME,
+                        [{"role": "user", "content": prompt}],
+                        think=False,
+                        keep_alive="30s",
+                        options={
+                            "temperature": 0.3,
+                            "num_predict": 400,
+                            "num_ctx": 8192,
+                        },
                     )
-                    if response.status_code == 200:
-                        raw = response.json()["message"]["content"]
-                        self._store_extracted_memories(raw)
-                except requests.exceptions.Timeout:
-                    print("MEMORY: Reflection query timed out. Skipping this turn.")
+                    if resp.content:
+                        self._store_extracted_memories(resp.content)
                 except Exception as e:
                     print(f"MEMORY: Error during reflection query: {e}")
 
@@ -397,6 +452,7 @@ class Memory(Module):
             return
 
         now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+        user_id = _current_user_id()
 
         stored = 0
         for line in raw_text.splitlines():
@@ -434,6 +490,7 @@ class Memory(Module):
                 "importance": importance,
                 "valence": valence,
                 "session_id": self.session_id,
+                "user_id": user_id,
             }
 
             try:
@@ -451,26 +508,33 @@ class Memory(Module):
                 from modules.log_hub import emit as hub_emit
                 hub_emit(
                     self.signals, "memory",
-                    f"stored {stored} new memories (session {self.session_id})"
+                    f"stored {stored} new memories for '{user_id}' "
+                    f"(session {self.session_id})"
                 )
             except Exception:
                 pass
 
     # ===============================================================
-    # Public API — used by prompter (recall_memory tool), !recall
-    # command, and the web memory browser (Phase 10.11).
+    # Public API
     # ===============================================================
     class API:
         def __init__(self, outer):
             self.outer = outer
 
+        def _is_owned_by(self, mem_id, user_id):
+            try:
+                res = self.outer.collection.get(ids=[mem_id])
+            except Exception:
+                return False
+            if not res or not res.get("ids"):
+                return False
+            meta = (res.get("metadatas") or [{}])[0] or {}
+            return meta.get("user_id") == user_id
+
         # -----------------------------------------------------------
         # Mutations
         # -----------------------------------------------------------
         def create_memory(self, data, importance=0.9, valence=None):
-            """Insert a memory. `data` is the fact string. Used by both
-            the terminal prompter's manual !remember path and the web
-            browser's + Add modal."""
             now_iso = datetime.datetime.now().isoformat(timespec="seconds")
             new_id = str(uuid.uuid4())
             try:
@@ -489,11 +553,15 @@ class Memory(Module):
                     "importance": imp,
                     "valence": val,
                     "session_id": self.outer.session_id,
+                    "user_id": _current_user_id(),
                 }],
             )
             return new_id
 
         def delete_memory(self, mem_id):
+            user_id = _current_user_id()
+            if not self._is_owned_by(mem_id, user_id):
+                return False
             try:
                 self.outer.collection.delete(ids=[mem_id])
                 return True
@@ -502,21 +570,40 @@ class Memory(Module):
                 return False
 
         def wipe(self):
+            """Wipe only the current user's memories."""
+            user_id = _current_user_id()
+            try:
+                res = self.outer.collection.get(
+                    where={"user_id": user_id}
+                )
+                ids = res.get("ids") or []
+                if ids:
+                    self.outer.collection.delete(ids=ids)
+                print(f"MEMORY: Wiped {len(ids)} memories for '{user_id}'.")
+            except Exception as e:
+                print(f"\033[91mMEMORY: wipe failed: {e}\033[0m")
+
+        def wipe_all_users(self):
+            """Full collection wipe. Used by Settings > Advanced."""
             try:
                 self.outer.chroma_client.delete_collection(name="neuro_collection")
             except Exception:
                 pass
-            self.outer.collection = self.outer.chroma_client.get_or_create_collection(
-                name="neuro_collection"
+            self.outer.collection = (
+                self.outer.chroma_client.get_or_create_collection(
+                    name="neuro_collection"
+                )
             )
-            print("MEMORY: Database successfully wiped and reset.")
+            print("MEMORY: Full collection wiped and reset.")
 
         def update_memory(self, mem_id, document=None,
                           importance=None, valence=None):
-            """Update a memory in place. Pass only the fields you want
-            to change; unset fields are preserved. Returns (ok, error)."""
             if not mem_id:
                 return False, "Missing id."
+            user_id = _current_user_id()
+            if not self._is_owned_by(mem_id, user_id):
+                return False, "Memory not found."
+
             try:
                 existing = self.outer.collection.get(ids=[mem_id])
             except Exception as e:
@@ -560,6 +647,16 @@ class Memory(Module):
             except Exception:
                 return 0
 
+        def count_for_user(self, user_id=None):
+            user_id = user_id or _current_user_id()
+            try:
+                res = self.outer.collection.get(
+                    where={"user_id": user_id}
+                )
+                return len(res.get("ids") or [])
+            except Exception:
+                return 0
+
         def _row_from_parts(self, mem_id, doc, meta):
             meta = meta or {}
             return {
@@ -570,25 +667,23 @@ class Memory(Module):
                 "valence": meta.get("valence"),
                 "session_id": meta.get("session_id") or "",
                 "type": meta.get("type") or "short-term",
+                "user_id": meta.get("user_id") or "",
             }
 
         def list_all(self, limit=200, offset=0, sort="recent"):
-            """Return memories sorted by `sort` (recent|oldest|importance).
-            Includes the total count so the UI can show a helpful header."""
-            total = self.count()
-            if total == 0:
-                return {"total": 0, "memories": []}
-
-            fetch_n = min(total, 2000)
+            user_id = _current_user_id()
             try:
-                results = self.outer.collection.get(limit=fetch_n)
+                results = self.outer.collection.get(
+                    where={"user_id": user_id}
+                )
             except Exception as e:
                 print(f"\033[91mMEMORY: list_all failed: {e}\033[0m")
-                return {"total": total, "memories": []}
+                return {"total": 0, "memories": []}
 
             ids = results.get("ids") or []
             docs = results.get("documents") or []
             metas = results.get("metadatas") or []
+            total = len(ids)
 
             rows = [
                 self._row_from_parts(i, d, m)
@@ -599,12 +694,13 @@ class Memory(Module):
                 rows.sort(key=lambda r: r["timestamp"] or "")
             elif sort == "importance":
                 rows.sort(key=lambda r: -(float(r["importance"] or 0.0)))
-            else:  # recent
+            else:
                 rows.sort(key=lambda r: r["timestamp"] or "", reverse=True)
 
             return {"total": total, "memories": rows[offset:offset + limit]}
 
         def get_by_id(self, mem_id):
+            user_id = _current_user_id()
             try:
                 res = self.outer.collection.get(ids=[mem_id])
             except Exception:
@@ -612,17 +708,17 @@ class Memory(Module):
             if not res or not res.get("ids"):
                 return None
             doc = (res.get("documents") or [""])[0]
-            meta = (res.get("metadatas") or [{}])[0]
+            meta = (res.get("metadatas") or [{}])[0] or {}
+            if meta.get("user_id") != user_id:
+                return None
             return self._row_from_parts(res["ids"][0], doc, meta)
 
         def export_all(self):
-            """Full dump of every memory, for the Export JSON button."""
-            total = self.count()
-            if total == 0:
-                return []
-            fetch_n = min(total, 5000)
+            user_id = _current_user_id()
             try:
-                res = self.outer.collection.get(limit=fetch_n)
+                res = self.outer.collection.get(
+                    where={"user_id": user_id}
+                )
             except Exception:
                 return []
             ids = res.get("ids") or []
@@ -638,14 +734,23 @@ class Memory(Module):
             ]
 
         # -----------------------------------------------------------
-        # Semantic + temporal query (existing behaviour)
+        # Semantic + temporal query
         # -----------------------------------------------------------
         def query_temporal(self, query, since=None, limit=10):
+            user_id = _current_user_id()
+
             if not query or not query.strip():
                 if not since:
                     return []
 
-            total = self.outer.collection.count()
+            try:
+                res = self.outer.collection.get(
+                    where={"user_id": user_id}
+                )
+            except Exception as e:
+                print(f"\033[91mMEMORY: query_temporal read failed: {e}\033[0m")
+                return []
+            total = len(res.get("ids") or [])
             if total == 0:
                 return []
 
@@ -656,13 +761,13 @@ class Memory(Module):
                 cutoff = _parse_temporal_hint(query)
 
             fetch_n = min(max(limit * 4, 20), total)
-
             effective_query = query.strip() if query and query.strip() else (since or "memory")
 
             try:
                 results = self.outer.collection.query(
                     query_texts=effective_query,
                     n_results=fetch_n,
+                    where={"user_id": user_id},
                 )
             except Exception as e:
                 print(f"\033[91mMEMORY: query_temporal failed: {e}\033[0m")
@@ -778,6 +883,9 @@ class Memory(Module):
                 sid = meta.get("session_id")
                 if not sid or not isinstance(sid, str):
                     meta["session_id"] = "import"
+
+                if not meta.get("user_id"):
+                    meta["user_id"] = LEGACY_USER_ID
 
                 self.outer.collection.upsert(
                     ids=[str(memory["id"])],

@@ -20,6 +20,7 @@ import re
 import requests
 
 from constants import LLM_ENDPOINT, MODEL_NAME, FAST_MODEL_NAME
+from modules.llm_providers import chat_sync, LLMResponse
 
 SESSION_STATE_PATH = os.path.join("memories", "session_state.json")
 
@@ -90,22 +91,13 @@ class SessionState:
         # Summarization is a structured extraction task. The fast model
         # handles it fine and frees the main model for user-facing turns.
         try:
-            response = requests.post(
-                f"{LLM_ENDPOINT}/api/chat",
-                json={
-                    "model": FAST_MODEL_NAME,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                    "keep_alive": "30s",
-                    "options": {
-                        "temperature": 0.3,
-                        "num_ctx": 8192,
-                    },
-                },
-                timeout=30,
+            resp: LLMResponse = chat_sync(
+                FAST_MODEL_NAME,
+                [{"role": "user", "content": prompt}],
+                keep_alive="30s",
+                options={"temperature": 0.3, "num_ctx": 8192},
             )
-            response.raise_for_status()
-            raw = response.json()["message"]["content"].strip()
+            raw = (resp.content or "").strip()
         except Exception as e:
             print(f"\033[90mSESSION: Summary call failed: {e}\033[0m")
             return None

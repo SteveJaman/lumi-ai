@@ -12,11 +12,15 @@ tool calling** through Ollama's native `/api/chat` tool interface. When she
 calls a tool, it actually runs. When she says she did something, you can check
 the log and see that she did.
 
-Since Phase 10 she also has a **local web client** at `127.0.0.1:5000` — a
-fully offline hub for chat, memory browsing, and dashboards. Backends for
-persona editing, model management, and optional cloud LLM providers are now in
-place; their web pages are next. The terminal remains a first-class developer
-tool; the two surfaces share the same state and history.
+Phase 10 is complete: Lumi now has a full **local web client** at
+`127.0.0.1:5000` — a first-run setup wizard, chat, dashboard, memory browser,
+persona editor, model manager, cloud provider support (OpenAI, Anthropic,
+Gemini, Groq, OpenRouter, and other OpenAI-compatible endpoints), an
+integrations page, a settings page with password change and session
+management, per-user memory and emotional-state isolation, and voice in the
+browser. It's all served locally, so the default setup never leaves your
+machine. The terminal remains a first-class developer tool; the two surfaces
+share the same state and history.
 
 ---
 
@@ -36,6 +40,7 @@ tool; the two surfaces share the same state and history.
   - [Ambient Screen Awareness](#ambient-screen-awareness)
   - [Avatar Control (VTube Studio)](#avatar-control-vtube-studio)
   - [Local Web Client](#local-web-client)
+  - [Per-User Isolation](#per-user-isolation)
   - [Multimodal (Optional)](#multimodal-optional)
   - [Diagnostics Dashboard](#diagnostics-dashboard)
   - [Integrations](#integrations)
@@ -194,45 +199,65 @@ stored. The fix is in `modules/memory.py` and `modules/session_state.py`.
 
 ### Model Providers & Model Manager
 
-Lumi is local-first: everything defaults to Ollama. Since the latest update
-there is also an optional provider layer for cloud models, plus a backend for
-managing local ones. The web pages for both are still to come (Phase 10.12 /
-10.20); the backends and HTTP endpoints are live.
+Lumi is local-first: everything defaults to Ollama. There is also an optional
+provider layer for cloud models and a manager for local ones, both with web UI
+on the **Models** page.
 
 **Provider abstraction** (`modules/llm_providers.py`)
 
 - Three client classes — `OllamaClient`, `OpenAICompatClient`, and
   `AnthropicClient` — normalize request payloads, responses, and tool calls
   into one shape (`LLMResponse`, `ToolCall`).
-- OpenAI-compatible endpoints cover OpenAI, Gemini, Groq, OpenRouter,
-  Together, DeepSeek, and similar.
+- OpenAI-compatible endpoints cover OpenAI, Gemini, Groq, OpenRouter, and
+  any other OpenAI-compatible server (Together, vLLM, LM Studio, DeepSeek)
+  via a base-URL override.
 - `chat_sync(model_spec, messages, ...)` parses provider-prefixed specs such
   as `openai:gpt-4o-mini` or `deepseek:deepseek-chat`. A bare name like
   `lumi-qwen3` still means local Ollama.
-- API keys and base URLs are saved to `.env` (`write_env_var`,
-  `save_provider_config`) and are always masked (`mask_key`) before anything
-  reaches the UI.
+- API keys and base URLs are saved to `.env` by an atomic, comment-preserving
+  writer (0600 permissions on POSIX) and are always masked (`mask_key`)
+  before anything reaches the UI.
+- **Every LLM call site goes through `chat_sync`:** the main conversational
+  path, agent turns, memory reflection, session summary, self-model
+  reflection, and the heartbeat decision. Ollama-only fields (`think`,
+  `num_ctx`, `keep_alive`) are dropped for non-Ollama providers, so a cloud
+  spec works transparently. Setting `FAST_MODEL_NAME` to something like
+  `groq:llama-3.3-70b-versatile` moves all background LLM work to Groq while
+  the main path stays on local `lumi-qwen3`.
 
 **Model manager** (`modules/model_manager.py`)
 
 - Talks to Ollama's HTTP API: `/api/tags` (installed), `/api/ps` (loaded),
   `/api/generate` (load/unload), `/api/pull`, `/api/delete`.
 - Hot-patches routing in `constants.py` (`MODEL_NAME`, `FAST_MODEL_NAME`,
-  `FAST_MODEL_ENABLED`, context lengths, keep-alive) with a line-level regex
-  patcher that preserves surrounding comments and formatting.
+  `FAST_MODEL_ENABLED`, `FAST_MODEL_NUM_CTX`, `MAIN_NUM_CTX`,
+  `FAST_MODEL_KEEP_ALIVE`) with a line-level regex patcher that preserves
+  surrounding comments and formatting. Only top-level `NAME = ...` lines are
+  touched, the result is `compile()`-checked, and a `.bak` is saved before
+  every write.
 - `_rebind_consumers` re-points modules that already imported those values
   (`prompter`, `memory`, `session_state`, …) so a routing change applies
   without restarting the process.
 
-**HTTP endpoints** (in `modules/socketIO.py`)
+**Models page** — a *Loaded now* panel, an *Installed* list (filter,
+Load / Unload / Delete, loaded badge), a *Pull* box with a streaming progress
+bar, a *Routing* form whose dropdowns list Ollama models plus cloud models
+as optgroups once a provider key is saved, and provider cards (masked key,
+Configure modal, Test button, "Get key" link).
+
+**HTTP endpoints** (in `modules/socketIO.py`; login-gated, state-changing
+routes are CSRF- and origin-checked)
 
 | Endpoint | Purpose |
 |---|---|
-| `/api/models/*` | Inspect installed/loaded models, load/unload, update routing, background pull |
-| `/api/providers` | List configured providers |
-| `/api/providers/{pid}` | Save provider config (key + base URL) |
-| `/api/providers/{pid}/test` | Connectivity check |
-| `/api/providers/{pid}/models` | Fetch the provider's available models |
+| `GET /api/models` | Installed and loaded models |
+| `GET/POST /api/models/pull` | Pull progress / start a background pull |
+| `POST /api/models/load`, `/unload`, `/delete` | Manage local models |
+| `PUT /api/models/routing` | Update main / fast routing (hot-patches `constants.py`) |
+| `GET /api/providers` | List providers (keys masked) |
+| `PUT /api/providers/{pid}` | Save provider config (key + base URL) |
+| `POST /api/providers/{pid}/test` | Connectivity check |
+| `GET /api/providers/{pid}/models` | Fetch the provider's available models |
 
 > **Privacy note:** pointing a path at a cloud provider sends that path's
 > prompts — persona, injected memories, screen context — to that provider.
@@ -267,6 +292,7 @@ ChromaDB-backed long-term memory with **timestamped, importance-scored facts**.
   - `importance` (0.0–1.0, model-scored)
   - `valence` (one-word emotion like `frustrated` or `satisfied`, or `null`)
   - `session_id` (per-run, for grouping)
+  - `user_id` (the logged-in web user; every read and write is filtered by it)
 - Retrieval reweights results by a combined score:
   `0.50 * similarity + 0.30 * importance + 0.20 * recency`, with a 30-day
   half-life on the recency term. Old facts naturally fade; important recent
@@ -287,6 +313,8 @@ ChromaDB-backed long-term memory with **timestamped, importance-scored facts**.
 - **Reflection payload passes `think=False`** so Qwen3 writes JSON directly
   to content instead of burning tokens on reasoning. This was a silent
   bug that made reflection appear to succeed while storing zero facts.
+- Reflection runs through `chat_sync(FAST_MODEL_NAME, ...)`, so background
+  extraction can be offloaded to a cloud provider if you choose.
 - **`processed_count` reset uses `>=`** so the counter doesn't stick after
   history hits the 20-message trim cap. Without this, reflection fires twice
   per session and then stops.
@@ -433,32 +461,67 @@ and skip the LLM entirely.
 ### Local Web Client
 
 A fully offline localhost web application served at `http://127.0.0.1:5000/`
-by `modules/socketIO.py`. Replaces the terminal as the primary product
-surface. Target audience is non-technical — every setup step that currently
-requires editing a code file becomes a form (in progress).
+by `modules/socketIO.py`. Plain HTML/CSS/JS — no framework, no build step.
+Every setup step that used to mean editing a code file is now a form.
 
-**Shipped pages:**
+**Pages** (single-page app with `#/chat`, `#/dashboard`, `#/memory`,
+`#/persona`, `#/models`, `#/integrations`, `#/settings`):
 
-- **Auth** — first-run redirects to `/setup` (single-screen register form).
-  Subsequent visits hit `/` and the login card. Argon2id hashes, 30-day
-  sliding session, 5/min/user login rate limit. `SameSite=Lax`, HttpOnly
-  session cookie. CSRF double-submit on every state-changing POST.
-- **Chat** — default landing page. Message bubbles with avatars, Fish Audio
-  tag chips above each reply, agent-mode toggle chip in the status strip.
-  Polls `/api/history` every 1.5s so the log survives tab switches. Enter
-  sends, Shift+Enter newline. Optimistic render of outgoing messages.
-- **Dashboard** — stat cards + live event stream from the log hub
-  (`127.0.0.1:5001`), filterable by category chip. Refresh button.
-- **Memory browser** — full table of every stored fact. Star marker for
-  importance, age, valence chip, Edit / Delete buttons. Semantic search
-  (hits ChromaDB vector index, not substring). Sort by newest/oldest/
-  importance. Expandable rows show full metadata. `+ Add memory` modal.
-  `Export JSON` button.
-- **Persona, Models, Integrations, Settings** — placeholder stubs in the UI.
-  Backends exist for the persona editor (`persona_editor.py`), the model
-  manager (`model_manager.py`, `/api/models/*`), and cloud providers
-  (`llm_providers.py`, `/api/providers/*`); the pages themselves are not
-  built yet. Integrations and Settings are still design-only.
+- **Setup wizard (`/setup`)** — four steps: account → providers →
+  integrations → done, with progress dots, `?step=` routing, and skip
+  buttons on the optional steps. Reuses the same provider and integration
+  modals as the main pages.
+- **Login (`/login`)** — dedicated page; register/login toggle in place.
+  Argon2id hashes, 30-day sliding session, 5/min/user rate limit,
+  `SameSite=Lax` HttpOnly cookie, CSRF double-submit on every state-changing
+  request.
+- **Chat** — message bubbles with avatars and Fish Audio tag chips, an
+  agent-mode toggle chip, a voice playback chip and a hold-to-talk mic chip
+  in the status strip. Polls `/api/history` every 1.5s so the log survives
+  tab switches. Enter sends, Shift+Enter newline.
+- **Dashboard** — stat cards and a live event stream from the log hub
+  (`127.0.0.1:5001`), filterable by category.
+- **Memory browser** — every stored fact for the current user: star marker,
+  age, valence chip, Edit / Delete, semantic search (ChromaDB vector index,
+  not substring), sort by newest / oldest / importance, expandable metadata,
+  `+ Add memory`, `Export JSON`.
+- **Persona editor** — edits `lumi.yaml` with 14 sidebar sections plus a Raw
+  YAML tab. Field editors for text, textarea, string lists, object lists,
+  key-value maps, and trait sliders. Save / Revert / Reload, and *Preview
+  Prompt* renders the system prompt from your draft (with a copy button).
+  Uses `ruamel.yaml` to keep comments, key order, and block-scalar styles;
+  falls back to PyYAML with a yellow banner if it isn't installed. **Saves
+  are live** — the cached system prompt is rebuilt, so the next turn uses the
+  new persona with no restart.
+- **Models** — model manager and cloud providers (see
+  [Model Providers & Model Manager](#model-providers--model-manager)).
+- **Integrations** — five cards: Ollama, VTube Studio (with a module-enable
+  toggle), Discord, Fish Audio, and Browser. Each has a state pill
+  (ok / warn / err / off), a live status message, a Test button, and a
+  Configure modal. Keys are masked and written with the same atomic `.env`
+  writer as the providers.
+- **Settings** — four tabs.
+  - *General:* timezone (validated with `zoneinfo`) and Ollama endpoint
+    (URL-validated), written through the same `constants.py` line patcher.
+  - *Security:* change password, active-sessions table (redacted prefixes,
+    "current" badge), per-session Revoke, and sign out other sessions.
+  - *Advanced:* Danger Zone with five resets — chat history, session state,
+    self-model, events log, and long-term memory (wipes only the current
+    user's memories). Confined to a server-side allowlist.
+  - *About:* version, Python, platform, workspace, endpoints, models,
+    uptime, and loaded modules.
+
+**Voice in the browser.** Two features, both opt-in:
+
+- *TTS playback:* when an utterance starts, `tts.py` hands the audio to
+  `socketIO.py`, which sends it over Socket.io (base64 WAV) to every tab that
+  has turned on the persistent **Voice: ON/OFF** chip (stored in
+  `localStorage`).
+- *Mic capture:* the **Hold to talk** chip records with `MediaRecorder`,
+  POSTs the webm to `/api/voice_message`, which transcribes with
+  `faster-whisper` and injects the text as a user message. It deliberately
+  bypasses browser speech APIs so the transcript matches what the server model
+  would hear. The first transcription is slow while the model loads.
 
 **Terminal and web share state.** Typing in the terminal appends to the same
 `signals.history` the web client polls. Messages sent from the browser go
@@ -467,6 +530,30 @@ the chip flips terminal behavior, and vice versa.
 
 **Persistence.** Users live in `memories/users.db` (SQLite). Sessions survive
 process restarts. Memory facts live in `memories/chroma.db` (ChromaDB).
+Per-user emotional snapshots live in `memories/emotional_state/{user_id}.json`.
+
+**Security posture.** Bound to `127.0.0.1` only; CSRF token on every
+state-changing request; origin check on the Socket.io handshake and HTTP
+POSTs; login rate limiting; the static handler refuses path traversal; the
+frontend renders with `textContent`, never `innerHTML`; provider and
+integration keys are masked before leaving the server. This is a hardening
+pass for a localhost tool, not a full audit — see Known Limitations.
+
+### Per-User Isolation
+
+Logging in as a different web user switches the running `HOST` object and
+rebuilds the persona. Two things are isolated per user:
+
+- **Memory** — every fact carries a `user_id`; every query, edit, delete, and
+  export filters on it via a ChromaDB `where` clause. A migration pass on
+  first run backfills legacy rows.
+- **Emotional state** — `EmotionalStateModule` keeps one `EmotionalState` per
+  user, persisted every 5 minutes and on shutdown. On login switch the
+  outgoing state is saved and the incoming one loaded, and
+  `signals.emotional_state` re-points, so every consumer works unchanged.
+
+Session state, the self-model, and the in-memory chat history are **not** yet
+per-user. See Known Limitations.
 
 ### Multimodal (Optional)
 
@@ -504,6 +591,10 @@ Events also persist to `logs/events.log` for post-mortem review.
   Discord's DAVE end-to-end encryption; see Known Limitations.
 - **Browser** — Playwright (Firefox) with a persistent profile
 - **Document library** — PDF, DOCX, TXT, MD, JSON reading from `library/`
+
+Discord, Fish Audio, VTube Studio, Ollama, and the browser can all be
+configured and tested from the web client's **Integrations** page or during
+first-run setup.
 
 ---
 
@@ -545,28 +636,32 @@ pass through to VTS directly.
 `python main.py` starts both the terminal prompt and the web client. Open
 `http://127.0.0.1:5000/` in a browser.
 
-**First boot:** you'll be redirected to `/setup`. Create an account (username
-+ password + optional display name). Lumi's persona will address you by the
-display name from then on — the running `HOST` object updates on login and
-the system prompt rebuilds.
+**Routing.** `/` sends unauthenticated visitors to `/login`; `/login` sends
+signed-in users back to `/`. `/setup` is the setup wizard.
 
-**Subsequent boots:** login screen → chat.
+**First boot:** with no users yet you land on `/setup`. The wizard walks
+through creating an account (username + password + optional display name),
+adding cloud provider keys (optional), and configuring integrations
+(optional). Lumi's persona addresses you by the display name from then on —
+the running `HOST` object updates on login and the system prompt rebuilds.
 
-**What works:**
-- Chat with tag chips, agent-mode toggle, message persistence across tabs
-- Memory browser with semantic search, edit, delete, add, export
-- Dashboard with live log hub event stream
-- Terminal input from the same page — messages sent from the terminal show
-  up in the web chat within ~1.5s
+**Subsequent boots:** login → chat. Once an account exists, `/setup` opens at
+the providers step so you can revisit the optional parts.
 
-**What doesn't yet:**
-- Persona editor page (10.10) — backend done
-- Model manager page (10.12) — backend done
-- Provider settings page (10.20) — backend done
-- Integrations cards (10.13)
-- Settings page (10.14)
-- Per-user memory/emotional isolation (10.15, 10.16)
-- Full multi-step setup wizard (10.8 — currently single-screen)
+**Making changes without touching code:**
+
+| To change… | Go to… |
+|---|---|
+| Personality, lore, rules, traits | Persona (live on save) |
+| Which model handles chat vs background work | Models → Routing |
+| Cloud provider keys | Models → Providers (or setup wizard) |
+| Discord / Fish Audio / VTS / Ollama / browser | Integrations |
+| Timezone, Ollama endpoint, password, sessions | Settings |
+| Reset chat history, session state, self-model, memory | Settings → Advanced |
+
+All of these write through the same guarded paths (atomic `.env` writer,
+`constants.py` line patcher with `compile()` check and `.bak`, allowlisted
+resets), so the UI can't be used to write arbitrary files.
 
 ---
 
@@ -590,15 +685,19 @@ Prompter run loop picks it up
         │
         ├─── conversational mode (agent mode OFF)
         │     ├─ Routing decision: fast or full path
-        │     ├─ Build system prompt (persona + no-tools directive + memory
+        │     ├─ Build system prompt (live persona via get_system_prompt() +
+        │     │  no-tools directive + this user's memory
         │     │  + mood + emotional state + cognitive frame + ambient context
         │     │  + self-model observations + continuity)
-        │     └─ POST to Ollama /api/chat (no tools; think flag per path)
+        │     └─ chat_sync(model_spec) → Ollama /api/chat or a cloud provider
+        │        (no tools; think flag per path, dropped for non-Ollama)
         │
         ├─── agent mode → run_agent_turn() on main path:
-        │     ├─ Build system prompt (same injection stack + tool directive)
+        │     ├─ Build system prompt (same injection stack + tool directive;
+        │     │  memory and emotional state are the active user's)
         │     ├─ Append history
-        │     ├─ POST to Ollama /api/chat with tool schemas, think=true
+        │     ├─ chat_sync(model_spec) with tool schemas, think=true
+        │     │  (Ollama-only fields dropped for cloud providers)
         │     ├─ If tool_calls returned:
         │     │    ├─ Confirm gates for write_file / run_command / run_in_terminal
         │     │    ├─ Validate args for vtube_set_expression / vtube_move
@@ -721,6 +820,7 @@ flowchart TD
     MODELMGR -.->|/api/tags, /api/ps, /api/pull| OLLAMA
     PROVIDERS -.->|optional| CLOUD[("Cloud LLM APIs")]
     SIO --> PERSONAED[persona_editor.py<br/>ruamel.yaml round-trip]
+    SIO --> INTEG[integrations.py + settings_manager.py<br/>probes, settings, resets]
     PERSONAED -.-> PERSONA
 
     %% ===== BACKGROUND LOOPS =====
@@ -779,7 +879,7 @@ flowchart TD
     class CHROMA storage
     class TTS,OUT_SPEAK,OUT_DISC,SKIP,HIST output
     class LOGHUB,DASH diag
-    class SIO,AUTH,BROWSER,MODELMGR,PROVIDERS,PERSONAED web
+    class SIO,AUTH,BROWSER,MODELMGR,PROVIDERS,PERSONAED,INTEG web
     class CLOUD storage
 ```
 
@@ -808,12 +908,14 @@ flowchart TD
 | `modules/vtubeStudio.py` | VTube Studio controller — expression state tracking, parameter probing, keyboard fallback, organic motion |
 | `modules/memory.py` | ChromaDB long-term memory, reflection loop, temporal queries, browser API |
 | `modules/import_chat_history.py` | Offline backfill from `logs/chat_history.json` |
-| `modules/user_auth.py` | SQLite + argon2id user store, session tokens |
-| `modules/socketIO.py` | Web client host — aiohttp HTTP routes (auth, memories, models, providers) + python-socketio events + static file serving |
+| `modules/user_auth.py` | SQLite + argon2id user store, session tokens, password change, session listing and revocation |
+| `modules/socketIO.py` | Web client host — aiohttp HTTP routes (auth, memories, persona, models, providers, integrations, settings, voice) + python-socketio events + static file serving |
 | `modules/llm_providers.py` | Multi-provider LLM clients (Ollama, OpenAI-compatible, Anthropic), `chat_sync("provider:model")`, masked `.env` key storage |
 | `modules/model_manager.py` | Ollama model management + live hot-patching of `constants.py` routing |
 | `modules/persona_editor.py` | Comment-preserving `lumi.yaml` load/edit/save (ruamel.yaml, PyYAML fallback) |
-| `modules/emotional_state.py` | Traits, state variables, cognitive frame selection |
+| `modules/integrations.py` | Registry of five integrations (Ollama, VTube Studio, Discord, Fish Audio, Browser) with probe, test, and config fields |
+| `modules/settings_manager.py` | General settings (timezone, Ollama endpoint), About info, and the Advanced reset allowlist |
+| `modules/emotional_state.py` | Traits, state variables, cognitive frame selection; one persisted state per user |
 | `modules/self_model.py` | Pattern tracking, periodic reflection, sparse injection |
 | `modules/heartbeat.py` | Autonomous initiation loop |
 | `modules/ambient_perception.py` | Background screen sampler + VLM descriptions |
@@ -821,12 +923,13 @@ flowchart TD
 | `modules/log_hub.py` | Structured diagnostics stream + localhost dashboard |
 | `modules/console_input.py` | Prompt-pinned terminal UI (yields stdin during confirmations) |
 | `modules/tts.py` | Fish Audio HTTP client with per-language reference support |
-| `web/index.html` | SPA shell — auth card + app layout |
+| `web/index.html` | SPA shell — app layout only (auth lives on `/login`) |
 | `web/style.css` | Design system — tokens, components, layout |
-| `web/app.js` | SPA router, auth, chat, dashboard, memory browser |
-| `web/setup.html` / `web/setup.js` | First-run single-screen register form |
+| `web/app.js` | SPA router and seven pages: chat, dashboard, memory, persona, models, integrations, settings; voice controls |
+| `web/login.html` / `web/login.js` | Standalone `/login` page (register/login toggle) |
+| `web/setup.html` / `web/setup.js` | Four-step first-run setup wizard |
 | `signals.py` | Shared state object (history, flags, queues, input_paused) |
-| `constants.py` | Config, workspace path, YAML persona loader, HOST object, model names |
+| `constants.py` | Config, workspace path, YAML persona loader, HOST object, model names, `build_system_prompt()` / `get_system_prompt()` (per-host cache), `LUMI_VERSION` |
 | `lumi.yaml` | Full persona definition — personality, lore, favorites, fears |
 
 ### Background Modules
@@ -852,6 +955,8 @@ Each module runs in its own thread with its own event loop, spawned by
   `user_auth.py`. Falls back to `pbkdf2_hmac` if missing, but argon2id is
   recommended
 - **chromadb** (`pip install chromadb`) — long-term memory
+- **faster-whisper** — speech-to-text for the microphone and the web
+  client's hold-to-talk button (already required by `mic_input.py`)
 - **ruamel.yaml** (`pip install ruamel.yaml`) — comment-preserving edits to
   `lumi.yaml` in `persona_editor.py`. Optional; falls back to PyYAML, which
   drops comments on save
@@ -1017,8 +1122,8 @@ Three ways to interact:
 
 - **Terminal** — type at the prompt, `\` toggles mic mute
 - **Microphone** — just talk, VAD triggers recording
-- **Web client** — open `http://127.0.0.1:5000/`, first visit redirects to
-  setup, subsequent visits go to login → chat
+- **Web client** — open `http://127.0.0.1:5000/`. First visit goes to the
+  setup wizard; after that you'll land on `/login`, then chat
 
 All three share the same `signals.history`. A message typed at the terminal
 shows up in the web chat within 1.5 seconds. A message sent from the browser
@@ -1300,6 +1405,10 @@ trimmed significantly:
   explicitly forbid facts about Lumi herself. Recent backfills produced
   rows like "Lumi Voidwright can see through their code" which pollute
   retrieval. A tightened prompt is on the TODO list.
+- **Signature phrases can be copied verbatim** — Lumi sometimes pastes lines
+  from `signature_phrases` or example dialogue into unrelated contexts. A
+  "phrases are vocabulary, not script" rule for the persona's Rules section
+  is pending; you can add it yourself in the persona editor.
 - **VTS avatar multi-item fabrications** — On requests with more than ~3
   items, Lumi sometimes narrates success in prose instead of firing each
   individual `vtube_set_expression` tool call. Use `!set` terminal commands
@@ -1321,21 +1430,44 @@ trimmed significantly:
   `/api/history` every 1.5 seconds. There is no live push. Socket.io is
   wired but not required. If the socket fails (proxy, extension, antivirus
   HTTPS scanner on localhost), chat still works — just with a small delay.
-- **Cloud providers are backend-only for now** — `llm_providers.py` and the
-  `/api/providers/*` endpoints work, but there is no UI yet and the
-  Ollama-specific payload fields (`think`, `num_ctx`, `keep_alive`) still need
-  provider-aware handling before every background task can run on a cloud
-  spec. Cloud specs also send prompt content off-machine.
-- **Model manager patches `constants.py`** — routing changes rewrite lines in
-  that file (comments preserved). It's on the protected-files list for Lumi's
-  own tools, but the manager writes it directly; keep it under version
-  control.
-- **Single active user** — The web client is one-user-at-a-time. Logging in
-  as a second user switches the shared `HOST` object. Per-user isolation of
-  memory and emotional state is Phase 10.15 / 10.16.
+- **Cloud providers send prompts off-machine** — pointing any path at a cloud
+  spec sends that path's prompts (persona, injected memories, screen context)
+  to that provider. Background tasks are the easiest to move: a cloud
+  `FAST_MODEL_NAME` offloads reflection, session summary, self-model, and
+  heartbeat decisions. Keep sensitive work on local Ollama.
+- **API keys live in `.env` as plaintext** — written with 0600 permissions on
+  POSIX and masked in every UI response, but there is no rotation UI yet and
+  `.env` is not in `.gitignore` by default. Add `.env`, `memories/`, and
+  `logs/` to `.gitignore` before committing, and rotate any key that has
+  ever been committed.
+- **Model manager and settings patch `constants.py`** — routing, timezone,
+  and endpoint changes rewrite top-level assignments in that file (comments
+  preserved, `compile()`-checked, `.bak` saved). It's on the protected-files
+  list for Lumi's own tools, but the web client writes it directly; keep it
+  under version control.
+- **Per-user isolation is partial** — memory and emotional state are
+  per-user. Session state (`memories/session_state.json`), the self-model
+  (`memories/self_model.json`), and the in-memory chat history
+  (`signals.history`) are still shared, and TTS audio goes to every opted-in
+  tab. If more than one person uses the same instance, treat it as
+  single-user for now. The web client is one active user at a time — logging
+  in as someone else switches the shared `HOST` object.
+- **Legacy memory rows are attributed to a fixed user** — the first-run
+  migration backfills pre-isolation memories with a hardcoded `user_id`.
+- **Browser voice** — mic capture records on the client and transcribes with
+  `faster-whisper`, which loads lazily; the first transcription is slow.
 - **Self-modification** — Lumi can edit `prompter.py` and other writable
-  files in the workspace. Always read the `write_file` confirmation blob
-  before confirming; a `.bak` is saved automatically.
+  files in the workspace. `PROTECTED_FILES` only covers `main.py`,
+  `constants.py`, `.env`, and `Modelfile`. Always read the `write_file`
+  confirmation blob before confirming; a `.bak` is saved automatically.
+- **Filesystem sandbox uses string-prefix matching** — the `realpath()` fix
+  is pending (Phase 9.5).
+- **Prompt injection is not defended** — content Lumi reads from files, web
+  pages, or screens is not provenance-tagged (Phase 9.1). Keep agent mode off
+  when reading untrusted material.
+- **`ruamel.yaml` is optional** — without it the persona editor falls back to
+  PyYAML and drops comments from `lumi.yaml` on save (a yellow banner tells
+  you).
 - **Port conflicts** — the log hub listens on `127.0.0.1:5001` and the web
   client on `5000`. Both must be free at boot.
 
@@ -1356,13 +1488,12 @@ internal state, makes her own decisions, and acts without being prompted.
 | 5 | Multi-model orchestration | ✅ Complete |
 | 6 | Self-model / meta-cognition | ✅ Complete |
 | 6.5 | Avatar control (VTube Studio) | ✅ Complete |
-| 7 | Discord voice bridge (C# sidecar) | ⏳ In progress |
+| 7 | Discord voice bridge (C# sidecar) | ⏳ Not started (text works; voice receive parked) |
 | 8 | External SDK (websocket plugin host) | ⏳ Planned |
 | 9 | Security hardening | 🟡 Partial (see below) |
-| 10 | Local web client | 🟡 MVP shipped |
+| 10 | Local web client | ✅ Complete (10.17 security is a partial hardening pass; the rest lives in Phase 9) |
 
-**Phase 10** is at "MVP shipped", with backends now landing ahead of their
-pages:
+**Phase 10** went from "designed" to "shipped":
 
 - ✅ 10.1 Identity refactor — `HOST` mutable, `build_system_prompt(host)`,
   `<host>` templating
@@ -1370,23 +1501,24 @@ pages:
 - ✅ 10.3 User auth — `modules/user_auth.py`, SQLite + argon2id
 - ✅ 10.4 Auth HTTP routes — register / login / logout / me
 - ✅ 10.5 Shell + navigation — sidebar, user chip, status pills
-- ✅ 10.6 Login / Register UI
-- ✅ 10.7 Chat page — polling, tag chips, agent-mode toggle
-- 🟡 10.8 Setup wizard — single-screen form; full multi-step pending
+- ✅ 10.6 Login / Register — dedicated `/login` page
+- ✅ 10.7 Chat page — polling, tag chips, agent-mode / voice / mic chips
+- ✅ 10.8 Setup wizard — four steps with skip buttons
 - ✅ 10.9 Dashboard page — stat cards + log hub event stream
-- 🟡 10.10 Persona editor — backend done (`persona_editor.py`); UI pending
+- ✅ 10.10 Persona editor — backend + UI, live prompt rebuild on save
 - ✅ 10.11 Memory browser — table, search, edit, delete, add, export
-- 🟡 10.12 Model manager — backend + `/api/models/*` done; UI pending
-- ❌ 10.13 Integrations page
-- ❌ 10.14 Settings page
-- ❌ 10.15 Per-user memory isolation
-- ❌ 10.16 Per-user emotional state isolation
+- ✅ 10.12 Model manager — backend + UI
+- ✅ 10.13 Integrations page — five cards with test + configure
+- ✅ 10.14 Settings page — general, security, advanced, about
+- ✅ 10.15 Per-user memory isolation
+- ✅ 10.16 Per-user emotional state isolation
 - 🟡 10.17 Security hardening — CSRF, origin check, SameSite, rate limit,
-  sandbox, textContent rendering all done; full audit pending
+  sandboxed writers, masked keys, textContent rendering done; full audit
+  pending (tracked under Phase 9)
 - ✅ 10.18 Terminal as fallback client — shares `signals.history`
-- ❌ 10.19 Voice in browser (deferred)
-- 🟡 10.20 Multi-provider LLMs — `llm_providers.py` + `/api/providers/*` done;
-  UI and per-call-site wiring pending
+- ✅ 10.19 Voice in browser — TTS playback + hold-to-talk mic
+- ✅ 10.20 Multi-provider LLMs — backend, UI, and all six call sites
+  routed through `chat_sync`
 
 **Phase 9** is partially addressed by what shipped alongside Phase 10:
 
@@ -1396,15 +1528,17 @@ pages:
 - ✅ aiohttp bound strictly to `127.0.0.1`
 - ✅ Static file handler refuses path traversal
 - ✅ Frontend rendering via `textContent`, never `innerHTML`
-- 🟡 API key handling (9.6) — keys live in `.env` and are masked in API
-  responses; rotation UI and log-redaction audit pending
+- 🟡 API key handling (9.6) — keys live in `.env` (0600 on POSIX) and are
+  masked in API responses; rotation UI, `.gitignore` check, and
+  log-redaction audit pending
 - ❌ Prompt injection provenance tagging (9.1)
 - ❌ SDK authentication (9.2)
 - ❌ `realpath()` fix on the file sandbox (9.5)
 - ❌ Self-modification guard (9.10)
 
-Use her for a week before deciding which of the remaining items matter. Real
-use drives the next round of tuning, not a checklist.
+Phases 7, 8, and the rest of 9 are deliberately parked while Phase 10 gets
+real-world use. Use her for a week before deciding which of the remaining
+items matter. Real use drives the next round of tuning, not a checklist.
 
 ---
 
