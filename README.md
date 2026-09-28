@@ -1,5 +1,11 @@
 # Lumi AI Companion
 
+> Lumi now speaks and hears in Discord voice channels with correct DAVE
+> end-to-end encryption — pure Python, no sidecar — and her local web client
+> at `127.0.0.1:5000` is a complete editing surface for persona, models,
+> providers, integrations, and settings. Only the external SDK (Phase 8) and
+> security hardening (Phase 9) remain on the roadmap.
+
 A local-first, agentic AI companion running on consumer hardware. Lumi is a
 persona-driven VTuber-style assistant with real tool use — she can read and
 write files, run commands, search the web, control a browser, query her own
@@ -43,6 +49,7 @@ share the same state and history.
   - [Per-User Isolation](#per-user-isolation)
   - [Multimodal (Optional)](#multimodal-optional)
   - [Diagnostics Dashboard](#diagnostics-dashboard)
+  - [Discord Voice](#discord-voice)
   - [Integrations](#integrations)
 - [Terminal Commands](#terminal-commands)
 - [Web Client](#web-client)
@@ -224,6 +231,23 @@ on the **Models** page.
   spec works transparently. Setting `FAST_MODEL_NAME` to something like
   `groq:llama-3.3-70b-versatile` moves all background LLM work to Groq while
   the main path stays on local `lumi-qwen3`.
+
+**Supported providers out of the box**
+
+| Provider | Model spec prefix | Notes |
+|---|---|---|
+| Ollama | *(bare names)* | Local, no key required |
+| OpenAI | `openai:` | |
+| Anthropic | `anthropic:` | Claude family |
+| Google Gemini | `gemini:` | OpenAI-compatible endpoint |
+| Groq | `groq:` | Very fast inference |
+| OpenRouter | `openrouter:` | Aggregator — hundreds of models |
+| Any OpenAI-compatible | `openai:` + `OPENAI_BASE_URL` | Together, DeepSeek, vLLM, LM Studio, etc. |
+
+Point `FAST_MODEL_NAME` at Groq and background reflection runs on ~300 tok/s
+cloud inference while the main path keeps running on local `lumi-qwen3`. Keys
+can be set from the Models page (Providers section) or by editing `.env`
+directly; see [Installation](#installation) for the variable names.
 
 **Model manager** (`modules/model_manager.py`)
 
@@ -573,11 +597,86 @@ http://127.0.0.1:5001/
 ```
 
 Filterable by category (`ambient`, `heartbeat`, `memory`, `emotional`, `mic`,
-`system`, `self`, `vts`, `tts`), color-coded, auto-refreshing every 2 seconds.
+`discord`, `system`, `self`, `vts`, `tts`), color-coded, auto-refreshing every 2 seconds.
 The terminal is reserved for actual conversation, ambient VLM fires, and
 unprompted speech.
 
 Events also persist to `logs/events.log` for post-mortem review.
+
+### Discord Voice
+
+Lumi joins Discord voice channels, hears every speaker, knows who's in the
+room, and talks back — with Discord's DAVE end-to-end encryption correctly
+decrypted in pure Python.
+
+**Why this was hard.** Discord enforces DAVE E2EE on all non-Stage voice
+channels (rollout complete 2026-03-02). `discord.py` 2.7+ implements DAVE for
+the *send* path only, and `discord-ext-voice-recv` predates enforcement and
+has no receive path. Lumi bridges the gap with a `DaveDecryptor` layer that
+reads the `DaveSession` `discord.py` already negotiated on the connection,
+decrypts each frame with the Python `davey` module (the same Rust
+implementation AIRI uses), and feeds the decoded Opus to a per-SSRC decoder
+pool before VAD and faster-whisper.
+
+**What it does**
+
+- **Joins automatically.** If `DISCORD_VOICE_CHANNEL_ID` is set, the bot
+  joins on boot. Manual `!join` / `!leave` commands are also available.
+- **Multi-speaker attribution.** Every utterance is tagged with the speaker's
+  display name. If two people talk in the same channel, transcripts stay
+  separate and the persona can address them by name.
+- **Group-aware persona.** `signals.voice_context` carries the channel
+  roster, human count, and mode (`solo` for 1:1, `group` for multiple). The
+  prompter injects a `[Discord Voice Context]` block on every turn, and a
+  "GROUP AWARENESS" rule in the persona tells her she's in a room, not on a
+  call.
+- **Roster freshness.** `on_voice_state_update` refreshes the roster whenever
+  anyone joins, leaves, or moves in a guild the bot is connected to, so the
+  roster never goes stale.
+- **RMS VAD with hysteresis.** Speech detection runs at 48 kHz with an RMS
+  start threshold of 0.020 and stop threshold of 0.010, so breath sounds and
+  background noise don't hold the buffer open. `silence_ms = 500` fires
+  transcription half a second after you stop talking, which matches the
+  local mic path's feel; `min_speech_ms = 250` filters out stray syllables.
+- **Barge-in.** When a user starts talking, Lumi stops mid-sentence — same
+  behavior as the local mic path.
+- **Clean terminal.** STT transcripts, Discord text messages, and voice
+  events route to the log hub dashboard under the `mic` and `discord`
+  categories instead of printing to the terminal. The console stays reserved
+  for real conversation.
+- **Server-mute auto-clear.** If an admin ever muted the bot on the server,
+  that state persists across reconnects and silently drops all outgoing
+  audio. The client clears it automatically on connect.
+
+**Receive pipeline**
+
+```
+Opus (transport-decrypted by the extension)
+  → DAVE MLS decrypt (davey.DaveSession.decrypt)
+    → Opus decode (one decoder per SSRC)
+      → Stereo → mono downmix at 48 kHz
+        → RMS VAD with hysteresis
+          → buffer until 500 ms silence
+            → resample to 16 kHz
+              → faster-whisper
+```
+
+**Send path:** Fish Audio WAV → FFmpeg → `discord.VoiceClient`.
+
+**Diagnostics** (Discord bot commands)
+
+| Command | Effect |
+|---|---|
+| `!voice_debug` | Full voice state, roster, DAVE status, and sink counters |
+| `!voice_stats` | One-line snapshot: `frames_in`, `decoded`, `dave_ok`, `dave_dropped`, `opus_failed`, `speaking_now` |
+| `!test_play` | 2-second 440 Hz tone that bypasses Fish Audio |
+| `!test_url` | Streams a known-good MP3 from the internet to verify FFmpeg end to end |
+
+**Operational rule: never disconnect and reconnect the voice client at
+runtime.** A reconnect leaves the DAVE session out of sync with the sink, and
+the sink goes deaf silently with no error. If voice goes quiet, restart the
+process. This is also documented in the module docstring of
+`discordClient.py`.
 
 ### Integrations
 
@@ -586,9 +685,9 @@ Events also persist to `logs/events.log` for post-mortem review.
   head sway and blink, hotkey firing via either the API or keyboard
   simulation (configurable), expression triggers on emotion tags. The model
   is probed at boot to discover its real parameter names.
-- **Discord** — reads chat, joins voice, plays TTS into voice. Voice *receive*
-  (transcription of users in the channel) is currently unstable due to
-  Discord's DAVE end-to-end encryption; see Known Limitations.
+- **Discord** — reads chat, joins voice, plays TTS into voice, and
+  transcribes every speaker in the channel through DAVE-decrypted voice
+  receive. See [Discord Voice](#discord-voice).
 - **Browser** — Playwright (Firefox) with a persistent profile
 - **Document library** — PDF, DOCX, TXT, MD, JSON reading from `library/`
 
@@ -620,8 +719,16 @@ Type `!list` at any time to see the full command card. Summary:
 | `!move <location>` | Move avatar to a preset screen position |
 | `!hotkeys` | List raw VTS hotkeys on the loaded model |
 | `!positions` | List preset VTS model positions |
+| `!join` / `!leave` (Discord) | Manually join or leave the voice channel |
+| `!voice_debug` (Discord) | Full voice state, roster, DAVE status, sink counters |
+| `!voice_stats` (Discord) | One-line sink counters — for diagnosing silent receive |
+| `!test_play` (Discord) | Plays a 2s 440 Hz tone through the voice client |
+| `!test_url` (Discord) | Streams a known-good MP3 from the internet |
 | `set mood <name>` | Switch mood profile (`default`, `bratty`, `brocon`, `soft`) |
 | `wipe memory` | Clear all long-term ChromaDB memories |
+
+The `(Discord)` commands are Discord bot commands, not terminal commands;
+the terminal commands themselves are unchanged.
 
 **Agent mode is OFF by default.** At startup, every message goes through a
 plain chat completion with no tools. Only `!agent_on` or `!agent <task>`
@@ -731,15 +838,24 @@ flowchart TD
         direction LR
         TERM[Terminal]
         MIC[Microphone]
-        DISC[Discord Text / Voice]
+        DISC[Discord Text]
+        DISCV[Discord Voice<br/>DAVE E2EE]
         WEB[Web Chat<br/>127.0.0.1:5000]
     end
 
     STT[faster-whisper STT<br/>GPU float16, VAD barge-in]
     MIC --> STT
 
+    %% ===== DISCORD VOICE RECEIVE =====
+    subgraph VOICERX["Discord Voice Receive"]
+        direction LR
+        DAVE[DAVE MLS decrypt<br/>davey] --> OPUSDEC[Opus decode<br/>1 decoder / SSRC] --> DVAD[RMS VAD<br/>hysteresis, 500 ms] --> DSTT[faster-whisper<br/>16 kHz resample]
+    end
+    DISCV --> DAVE
+
     CR{Command Router}
     TERM --> CR
+    DSTT -->|speaker-tagged text| CR
     STT --> CR
     DISC --> CR
     WEB -->|HTTP /api/chat/send| CR
@@ -831,7 +947,10 @@ flowchart TD
         SELFMODEL[Self-Model<br/>snapshot 60s / reflect 10min]
         EMOSTATE[Emotional State<br/>decay every 30s]
         MEMREFLECT[Memory Reflection<br/>every ~10 messages<br/>think = false]
+        DISCORD[discordClient<br/>DAVE-aware sink<br/>roster + send path]
     end
+    DISCORD -->|hosts sink| DAVE
+    DISCORD -.->|voice_context roster| CONTEXT
 
     HEARTBEAT -->|message or SILENCE| OLLAMA
     AMBIENT_MOD -->|window change or hash delta| VLM[moondream VLM]
@@ -855,6 +974,7 @@ flowchart TD
     SELFMODEL -.-> LOGHUB
     VTS -.-> LOGHUB
     TTS -.-> LOGHUB
+    DISCORD -.-> LOGHUB
     LOGHUB --> DASH
     BROWSER -.->|iframe or fetch| LOGHUB
 
@@ -869,13 +989,15 @@ flowchart TD
     classDef output fill:#e53e3e,stroke:#9b2c2c,color:#fff
     classDef diag fill:#a0aec0,stroke:#4a5568,color:#1a202c
     classDef web fill:#4299e1,stroke:#2b6cb0,color:#fff
+    classDef voicerx fill:#d69e2e,stroke:#975a16,color:#1a202c
 
-    class TERM,MIC,DISC,STT,WEB input
+    class TERM,MIC,DISC,DISCV,STT,WEB input
     class CR,CMDS,CONV,AGENT,ROUTE_DECISION,DISPATCH,CONFIRM router
     class PERSONA,MEM_INJ,MOOD,EMO,FRAME,AMBIENT,SELF_INJ,CONT context
     class FAST_PATH,MAIN_PATH,OLLAMA model
     class FILE_TOOLS,CMD_TOOLS,WEB_TOOLS,MEM_TOOL,AVATAR_TOOLS,EXEC,VTS,GUARDS tools
-    class HEARTBEAT,AMBIENT_MOD,SELFMODEL,EMOSTATE,MEMREFLECT,VLM background
+    class HEARTBEAT,AMBIENT_MOD,SELFMODEL,EMOSTATE,MEMREFLECT,VLM,DISCORD background
+    class DAVE,OPUSDEC,DVAD,DSTT voicerx
     class CHROMA storage
     class TTS,OUT_SPEAK,OUT_DISC,SKIP,HIST output
     class LOGHUB,DASH diag
@@ -887,12 +1009,13 @@ flowchart TD
 
 | Color | Layer |
 |---|---|
-| Blue | Input sources (terminal, mic, Discord, STT, web chat) |
+| Blue | Input sources (terminal, mic, Discord text / voice, STT, web chat) |
 | Purple | Routing / dispatch logic |
 | Green | System prompt context-injection stack |
 | Orange | Ollama model paths (fast / main, shared weights) |
 | Pink | Agent tools + safety guards |
 | Teal | Always-on background modules |
+| Gold | Discord voice-receive path (DAVE decrypt → Opus → VAD → Whisper) |
 | Gray | Persistent storage (ChromaDB) |
 | Red | Output (TTS, speakers, Discord voice, history) |
 | Light blue | Web client stack |
@@ -908,6 +1031,7 @@ flowchart TD
 | `modules/vtubeStudio.py` | VTube Studio controller — expression state tracking, parameter probing, keyboard fallback, organic motion |
 | `modules/memory.py` | ChromaDB long-term memory, reflection loop, temporal queries, browser API |
 | `modules/import_chat_history.py` | Offline backfill from `logs/chat_history.json` |
+| `modules/discordClient.py` | Discord voice — DAVE receive, Opus decode, RMS VAD, roster tracking, send path (see its module docstring for the no-reconnect rule) |
 | `modules/user_auth.py` | SQLite + argon2id user store, session tokens, password change, session listing and revocation |
 | `modules/socketIO.py` | Web client host — aiohttp HTTP routes (auth, memories, persona, models, providers, integrations, settings, voice) + python-socketio events + static file serving |
 | `modules/llm_providers.py` | Multi-provider LLM clients (Ollama, OpenAI-compatible, Anthropic), `chat_sync("provider:model")`, masked `.env` key storage |
@@ -944,7 +1068,15 @@ Each module runs in its own thread with its own event loop, spawned by
 
 - **Python** 3.11+
 - **Ollama** running locally with a tool-capable model (see below)
-- **FFmpeg** on PATH (for Discord voice playback)
+- **FFmpeg** on PATH (for Discord voice playback). A broken FFmpeg on PATH
+  (for example a dead conda shim shadowing a working winget build) makes
+  `discord.FFmpegPCMAudio` silently no-op — no error, no audio, and the
+  `after` callback fires "cleanly". Verify with `ffmpeg -version` before
+  assuming voice send works.
+- **discord.py** 2.7+ (`pip install "discord.py>=2.7"`) — implements DAVE for
+  the send path
+- **davey** (`pip install davey`) — Discord DAVE E2EE for voice receive;
+  install alongside `discord.py>=2.7`
 - **Playwright Firefox** (`playwright install firefox`)
 - **PyYAML** (`pip install pyyaml`)
 - **pyvts** (`pip install pyvts`) — for VTube Studio avatar control
@@ -958,7 +1090,7 @@ Each module runs in its own thread with its own event loop, spawned by
 - **faster-whisper** — speech-to-text for the microphone and the web
   client's hold-to-talk button (already required by `mic_input.py`)
 - **ruamel.yaml** (`pip install ruamel.yaml`) — comment-preserving edits to
-  `lumi.yaml` in `persona_editor.py`. Optional; falls back to PyYAML, which
+  `lumi.yaml` in `persona_editor.py` (`ruamel.yaml>=0.18.0`). Optional; falls back to PyYAML, which
   drops comments on save
 - **Conda** recommended for environment isolation
 
@@ -1061,8 +1193,27 @@ mangling on injected context.
    DISCORD_CHANNEL_ID=000000000000000000
    ```
 
-   Cloud provider keys are optional. If you use the provider endpoints, they
-   write their keys and base URLs into this same `.env`.
+   Cloud provider keys are optional. You can set them from the Models page or
+   the setup wizard, or add them to `.env` yourself:
+
+   ```
+   # ---- Cloud LLM providers ----
+   # OPENAI_API_KEY=
+   # ANTHROPIC_API_KEY=
+   # GEMINI_API_KEY=
+   # GROQ_API_KEY=
+   # OPENROUTER_API_KEY=
+   # Optional base-URL overrides for self-hosted / proxy endpoints:
+   # OPENAI_BASE_URL=
+   # ANTHROPIC_BASE_URL=
+   # GEMINI_BASE_URL=
+   # GROQ_BASE_URL=
+   # OPENROUTER_BASE_URL=
+   ```
+
+   The integration keys (`DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`,
+   `DISCORD_VOICE_CHANNEL_ID`, `FISH_API_KEY`, `FISH_REFERENCE_ID`) are also
+   written by the Integrations page.
 
 5. **Configure `constants.py`** — set `WORKSPACE_ROOT`, `LLM_ENDPOINT`,
    `TIMEZONE`, and `OUTPUT_DEVICE_INDEX` for your machine. Run
@@ -1420,9 +1571,20 @@ trimmed significantly:
 - **VTS focus stealing** — The keyboard fallback path briefly focuses the
   VTS window to send the keypress (~250ms per hotkey). If a batch of hotkeys
   fires, focus returns after the last one.
-- **Discord voice receive** — Discord's DAVE end-to-end encryption requires
-  `discord-ext-voice-recv >= 0.5.2a`. Older versions connect but receive no
-  audio. Voice receive is currently paused in this build; text works.
+- **Discord voice drops ~15-20% of frames on session boundaries.** This is
+  universal to DAVE — every frame that lands during a key rotation or a
+  speaker's join transition gets dropped by the receiving session. The middle
+  of each utterance always decodes cleanly. Not fixable at the application
+  layer.
+- **Never disconnect/reconnect the Discord voice client at runtime.**
+  Reconnects leave the DAVE session out of sync with the sink's SSRC mapping,
+  and the sink goes deaf with no error. If voice receive fails, restart the
+  process. No reconnect helpers exist in the codebase and none should be
+  added.
+- **FFmpeg must be on PATH.** A broken FFmpeg installation causes
+  `discord.FFmpegPCMAudio` to silently no-op — the debug logs show "playback
+  finished cleanly" while nothing reaches Discord. Verify with
+  `ffmpeg -version` before debugging anything else.
 - **Web client /api/memories search** — Semantic search results do not
   carry IDs back from ChromaDB, so the Edit / Delete buttons are hidden on
   search hits. Find the memory in the full list first.
@@ -1488,37 +1650,21 @@ internal state, makes her own decisions, and acts without being prompted.
 | 5 | Multi-model orchestration | ✅ Complete |
 | 6 | Self-model / meta-cognition | ✅ Complete |
 | 6.5 | Avatar control (VTube Studio) | ✅ Complete |
-| 7 | Discord voice bridge (C# sidecar) | ⏳ Not started (text works; voice receive parked) |
+| 7 | Discord voice bridge | ✅ Complete (pure Python, no sidecar) |
 | 8 | External SDK (websocket plugin host) | ⏳ Planned |
 | 9 | Security hardening | 🟡 Partial (see below) |
-| 10 | Local web client | ✅ Complete (10.17 security is a partial hardening pass; the rest lives in Phase 9) |
+| 10 | Local web client | ✅ Complete |
 
-**Phase 10** went from "designed" to "shipped":
+**Phase 7** was completed in pure Python. The C# sidecar originally planned
+turned out to be unnecessary once `davey` shipped a Python binding and
+`discord.py` 2.7 integrated DAVE for the send path. Voice receive, speaker
+attribution, group context, and the diagnostics commands are described under
+[Discord Voice](#discord-voice).
 
-- ✅ 10.1 Identity refactor — `HOST` mutable, `build_system_prompt(host)`,
-  `<host>` templating
-- ✅ 10.2 Design system — `web/style.css` with tokens + components
-- ✅ 10.3 User auth — `modules/user_auth.py`, SQLite + argon2id
-- ✅ 10.4 Auth HTTP routes — register / login / logout / me
-- ✅ 10.5 Shell + navigation — sidebar, user chip, status pills
-- ✅ 10.6 Login / Register — dedicated `/login` page
-- ✅ 10.7 Chat page — polling, tag chips, agent-mode / voice / mic chips
-- ✅ 10.8 Setup wizard — four steps with skip buttons
-- ✅ 10.9 Dashboard page — stat cards + log hub event stream
-- ✅ 10.10 Persona editor — backend + UI, live prompt rebuild on save
-- ✅ 10.11 Memory browser — table, search, edit, delete, add, export
-- ✅ 10.12 Model manager — backend + UI
-- ✅ 10.13 Integrations page — five cards with test + configure
-- ✅ 10.14 Settings page — general, security, advanced, about
-- ✅ 10.15 Per-user memory isolation
-- ✅ 10.16 Per-user emotional state isolation
-- 🟡 10.17 Security hardening — CSRF, origin check, SameSite, rate limit,
-  sandboxed writers, masked keys, textContent rendering done; full audit
-  pending (tracked under Phase 9)
-- ✅ 10.18 Terminal as fallback client — shares `signals.history`
-- ✅ 10.19 Voice in browser — TTS playback + hold-to-talk mic
-- ✅ 10.20 Multi-provider LLMs — backend, UI, and all six call sites
-  routed through `chat_sync`
+**Phase 10** is complete: the local web client, per-user memory and
+emotional-state isolation, browser voice, and multi-provider LLM routing all
+shipped. The remaining security hardening from that pass (10.17) is tracked
+under Phase 9.
 
 **Phase 9** is partially addressed by what shipped alongside Phase 10:
 
@@ -1536,8 +1682,8 @@ internal state, makes her own decisions, and acts without being prompted.
 - ❌ `realpath()` fix on the file sandbox (9.5)
 - ❌ Self-modification guard (9.10)
 
-Phases 7, 8, and the rest of 9 are deliberately parked while Phase 10 gets
-real-world use. Use her for a week before deciding which of the remaining
+Phase 8 and the rest of 9 are deliberately parked while Phase 7 and Phase 10
+get real-world use. Use her for a week before deciding which of the remaining
 items matter. Real use drives the next round of tuning, not a checklist.
 
 ---
@@ -1548,9 +1694,13 @@ Built as a personal project. Architecture inspired by Neuro-sama
 (Vedal987).
 
 * **VTube Model:** [Arii / Ariu (Booth)](https://booth.pm/en/items/5879420)
+* **Discord voice receive** would not be possible without `davey` by the
+  Discord team and the AIRI project's TypeScript implementation, which served
+  as the reference architecture.
 
 Built using Ollama, ChromaDB, Faster-Whisper, Fish Audio, Playwright,
-pyvts, aiohttp, python-socketio, ruamel.yaml, and pyautogui.
+pyvts, aiohttp, python-socketio, ruamel.yaml, discord.py, davey, and
+pyautogui.
 
 ---
 
