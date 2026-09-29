@@ -126,3 +126,6 @@ config/*.yaml.bak
 .claude/
 .cursor/
 .aider*
+
+# --- Directory structure listings ---
+Lumi_tree.txt
