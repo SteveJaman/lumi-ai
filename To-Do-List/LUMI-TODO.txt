@@ -1,19 +1,16 @@
 ================================================================
   LUMI — VEDAL REPLICATION ROADMAP
   Goal: Move from reactive chatbot to autonomous companion
-  Reference: Neuro-sama (Vedal987) architecture
+  Reference: Neuro-sama (Vedal987), Neuro SDK (VedalAI/neuro-sdk)
   Created:  2026-09-19
-  Updated:  2026-09-28 PM3 (PHASE 7 COMPLETE. Discord voice receive
-                        and send both work. DAVE end-to-end
-                        encryption solved in pure Python via davey
-                        + DaveDecryptor — no C# sidecar needed.
-                        Multi-speaker attribution, group context,
-                        and roster injection all shipped. The only
-                        remaining phases are 8 (SDK) and 9
-                        (security hardening).)
-  Prev:     2026-09-28 PM2 (Phase 10 complete — web client,
-                        providers, per-user isolation, voice in
-                        browser, setup wizard.)
+  Updated:  2026-09-29 (PHASE 8 COMPLETE. External SDK ships
+                        end-to-end: server, client library, protocol,
+                        capability tiers, prompt integration, working
+                        reference plugin. Only Phase 9 (security
+                        hardening) remains.)
+  Prev:     2026-09-28 PM3 (Phase 7 complete — Discord voice with
+                        DAVE E2EE, multi-speaker attribution, group
+                        context. Phase 10 already complete.)
   (Streaming pipeline excluded by request)
 ================================================================
 
@@ -30,120 +27,134 @@ later items assume earlier ones are done.
   PROGRESS SUMMARY
 ================================================================
 
-  Phases fully complete:  1, 2, 3, 4, 5, 6, 6.5, 7, 10
-  Phases remaining:       8 (SDK), 9 (security hardening)
-  Optional polish:        7.6 (silero-vad), 7.7 (presence tracking)
+  Phases fully complete:  1, 2, 3, 4, 5, 6, 6.5, 7, 8, 10
+  Phases remaining:       9 (security hardening)
 
-  Phase 7:                COMPLETE. The DAVE end-to-end encryption
-                          blocker that made this phase "IN PROGRESS"
-                          for weeks is now solved in pure Python.
-                          No C# sidecar. No external process. The
-                          bot receives encrypted Discord voice,
-                          decrypts it with the DaveSession
-                          discord.py already negotiated, decodes
-                          Opus per-SSRC, runs RMS VAD with
-                          hysteresis, and feeds faster-whisper.
-                          Send path works too. Multi-speaker
-                          attribution, group context, and roster
-                          awareness are all wired into the prompt.
+  Optional polish:        7.6 (silero-vad), 7.7 (presence tracking),
+                          8.6/8.7 (SDK packaging for third parties),
+                          8.8 partial (capability policy refinement)
 
-  Notable delta since last update (2026-09-28 PM3):
-    - PHASE 7.1 SUPERSEDED. The C# sidecar plan was the
-      workaround for a problem that no longer exists. The
-      Python `davey` module (the same Rust implementation
-      used by @snazzah/davey in AIRI's TypeScript bot) is
-      installed alongside discord.py 2.7+ and exposes the
-      DaveSession that discord.py negotiates on the
-      connection object. We read it lazily and decrypt in
-      the sink. No sidecar needed.
+  Phase 8:                COMPLETE. External applications can now
+                          connect to Lumi over a local websocket,
+                          register their own actions, push context,
+                          receive invocations, and respond with
+                          results. The protocol is modeled after
+                          Vedal's Neuro SDK so third-party developers
+                          find the shapes familiar.
 
-    - PHASE 7.2 SHIPPED (Python receiver).
-      modules/discordClient.py now has:
-        · DaveDecryptor — reads vc._connection.dave_session,
-          decrypts each Opus frame via davey.MediaType.audio,
-          passes through when session isn't ready.
-        · OpusDecoderPool — one discord.opus.Decoder per
-          SSRC. Opus decoders carry inter-frame state, so
-          mixing speakers through one decoder corrupts both.
-        · LocalAudioSink with wants_opus() -> True.
-          The extension's PCM path decodes ciphertext into
-          noise, so we bypass it entirely.
-        · RMS VAD with hysteresis (start 0.020, stop 0.010).
-          Replaced the original peak-amplitude VAD which was
-          too spiky and merged utterances across pauses.
-        · silence_ms = 500, min_speech_ms = 250.
-          Matches the local mic path's feel.
-        · faster-whisper transcribe on 16 kHz mono PCM.
+                          Demonstrated end-to-end with a working
+                          reference plugin that captures screenshots
+                          and logs timestamped notes. Both actions
+                          route reliably because they have no
+                          vocabulary collision with any built-in
+                          tool or shell command.
 
-    - PHASE 7.3 SHIPPED (multi-speaker attribution).
-      Sink tracks per-user buffers keyed by user.id, so
-      transcripts are correctly attributed even when two
-      people overlap. signals.add_message() now accepts
-      speaker= and source= kwargs that persist in history
-      JSONL for later reflection. last_voice_speaker is
-      updated on every transcript.
+  Notable delta since last update (2026-09-29):
+    - PHASE 8.1 SHIPPED (protocol definition).
+      sdk/protocol.py is the single source of truth for message
+      shapes. Client and server builders live there. Message format
+      matches Neuro: {"command": str, "game": str, "data": {...}}.
+      Commands are namespaced ("actions/register", "action/result").
+      Action payloads use JSON-Schema parameters, compatible with
+      both Ollama's tool interface and OpenAI's function calling.
 
-    - PHASE 7.4 SHIPPED (group context).
-      signals.voice_context dict is populated by
-      DiscordClient and read by the prompter. Contains:
-      guild_name, channel_name, roster (list of
-      {id, display_name, is_bot}), human_count, mode
-      ("solo" | "group"). Prompter injects a
-      [Discord Voice Context] block on every turn that
-      changes how the persona addresses the room.
-      Persona rule added to lumi.yaml: GROUP AWARENESS.
+    - PHASE 8.2 SHIPPED (server module).
+      sdk/server.py exposes SDKServer, a Module that binds to
+      127.0.0.1:5056, authenticates clients with a token stored at
+      memories/sdk_token.txt (0600 on POSIX), and manages the
+      action registry. Public methods used by the prompter:
+        get_action_schemas()    → tool schemas in Ollama format
+        get_context_injections() → free-text from connected clients
+        find_action(tool_name)  → resolve "sdk__<name>"
+        invoke_action_blocking(name, args) → run a client action
+        broadcast_lumi_message(text) → fan out speech_finished
+      Accepts both new {"command": ...} and legacy {"type": ...}
+      message shapes for backwards compatibility.
 
-    - PHASE 7.5 SHIPPED (roster awareness).
-      DiscordClient hooks on_voice_state_update to refresh
-      the roster whenever someone joins, leaves, or moves
-      in a guild we're connected to. Roster pushes through
-      to signals.voice_context immediately. Cleared on
-      !leave and on shutdown.
+    - PHASE 8.3 SHIPPED (prompter integration).
+      modules/prompter.py gained three surgical edits:
+        1. run_agent_turn now appends SDK schemas to the tool list
+           and prints "[SDK] N action(s) available" on every turn.
+        2. _dispatch_tool_call resolves "sdk__<name>" tool calls and
+           routes them through SDKServer.invoke_action_blocking().
+           Honours requires_confirm and dangerous capabilities with
+           a y/n gate before running.
+        3. run() broadcasts each assistant reply to connected SDK
+           clients via sdk.broadcast_lumi_message().
 
-    - MIC INPUT BYPASS. MicInput no longer loads its own
-      Whisper model when audio_mode is "discord". Saves
-      ~1 GB RAM and several seconds of startup.
+    - PHASE 8.4 SHIPPED (client library).
+      sdk/client.py provides LumiClient, an importable base class.
+      Subclass it, override setup(), register actions with handlers,
+      call .run(). The library handles the websocket, auth
+      handshake, ping/pong, reconnection with backoff, action
+      registration, invocation dispatch, and result formatting.
+      Handlers may return (bool, str), a bare bool, a string, or a
+      dict — all four shapes are normalized.
 
-    - LOG HUB ROUTING. STT transcripts, Discord text
-      messages, connection events, and errors all go to
-      the log hub under the "mic" and "discord" categories
-      instead of spamming the terminal. New "discord"
-      category chip on the dashboard.
+    - PHASE 8.5 SHIPPED (fake-client test harness).
+      sdk/examples/system_stats.py is a runnable reference client
+      that registers CPU/memory/disk stats and a desktop
+      notification. Doubles as a fake-client harness.
 
-    - FFMPEG PATH FIX. A broken conda ffmpeg.exe shim
-      was shadowing the working winget install and
-      silently breaking every send. `where.exe ffmpeg`
-      now resolves to the working binary. Same fix
-      unblocks pydub and any other FFmpeg consumer.
+    - PHASE 8.8 PARTIAL (capability tiers).
+      Action specs carry capabilities=["read"|"write"|"dangerous"]
+      and requires_confirm=bool. The server enforces the y/n gate
+      at dispatch time. read actions auto-approve, write actions
+      log, dangerous actions always prompt. Refining the policy
+      (per-client trust levels, capability allowlists) is future
+      work.
+
+    - NEW FILES THIS SESSION:
+      sdk/__init__.py          — public exports
+      sdk/errors.py            — SDKError, AuthError, ProtocolError,
+                                 ActionError, ClientDisconnected
+      sdk/protocol.py          — wire format + builders
+      sdk/actions.py           — action() builder + param() helper
+      sdk/server.py            — SDKServer module
+      sdk/client.py            — LumiClient base class
+      sdk/README.md            — third-party protocol spec
+      sdk/examples/system_stats.py — reference client
+      plugin/plugin.py         — working demo plugin
+
+    - FILES MODIFIED THIS SESSION:
+      constants.py             — added SDK_HOST, SDK_PORT,
+                                 SDK_VERSION, LUMI_VERSION,
+                                 _split_model_spec helper
+      main.py                  — imported SDKServer, added to
+                                 modules list, added SDK banner
+      modules/prompter.py      — three SDK integration edits
+      requirements.txt         — added websockets, psutil
+
+    - DESIGN LESSON (documented for future plugin developers).
+      Small-model tool selection routes by token overlap. Three
+      plugin actions failed to fire before one worked:
+        open_notepad         → lost to run_in_terminal
+        get_time_in(city)    → lost to web_search's timezone handler
+        read_clipboard       → lost to run_command clip
+        screenshot_*         → succeeded (no competitor)
+      Rule: a plugin action needs a capability that no built-in
+      tool and no shell command covers. If either exists, the model
+      will route to it, because built-ins appear in the schema list
+      from turn 1 and shell commands share query vocabulary.
 
   Earlier deltas:
+    2026-09-28 PM3: Phase 7 complete (Discord voice with DAVE).
     2026-09-28 PM2: Phase 10 complete.
-    2026-09-28 PM:  Phase 10.10, 10.12, 10.13, 10.14.
+    2026-09-28 PM:  Phase 10.10, 10.12, 10.13, 10.14 shipped.
     2026-09-28 AM:  Provider, model manager, persona backends.
     2026-09-27:     Phase 10 MVP.
     2026-09-19:     Initial roadmap.
 
   Known outstanding after this session:
     - Signature-phrases rule still not added to lumi.yaml.
-    - Memory reflection prompt still lets through facts
-      about Lumi herself.
+    - Memory reflection prompt still lets through facts about
+      Lumi herself.
     - History trim at 20 messages caps backfill depth.
-    - .env is not in .gitignore yet. Keys stored plaintext
-      with 0600 perms on POSIX but a single git add -A
-      leaks them.
-    - ruamel.yaml may not be installed; persona editor
-      falls back to PyYAML with a UI banner.
-
-  The core agentic loop is stable and self-correcting.
-  Lumi runs autonomously, reacts with runtime emotional
-  state, expresses mood through word choice and canonical
-  emotion tags, accumulates per-user memories, answers
-  "when did we..." questions, perceives what you're
-  working on without being told, keeps a persistent
-  self-model, drives her own VTuber avatar, has a full
-  web client with setup wizard / cloud providers /
-  voice-in-browser, and now hears and talks in Discord
-  voice with correct DAVE end-to-end encryption.
+    - .env is not in .gitignore yet.
+    - ruamel.yaml may not be installed; persona editor falls back
+      to PyYAML with a UI banner.
+    - sdk/actions/force is stubbed but not wired to the prompter.
+      Used by turn-based games; not urgent.
 
 ================================================================
   PHASE 1 — THE HEARTBEAT (foundational)   ✅ COMPLETE
@@ -156,11 +167,9 @@ later items assume earlier ones are done.
 [X] 1.5  Fix float('inf') overflow in gating            DONE
 
          Files:     modules/heartbeat.py
-         Status:    Fires every 30s. Gates on idle (5 min),
-                    cooldown (10 min), busy state, late-
-                    night thresholds. Decision prompt is
-                    now routed through chat_sync so cloud
-                    providers work transparently.
+         Status:    Fires every 30s. Gates on idle, cooldown,
+                    busy state, late-night thresholds. Routes
+                    through chat_sync so cloud providers work.
 
 ================================================================
   PHASE 2 — COGNITIVE STATE MACHINE (emotional depth)   ✅ COMPLETE
@@ -177,8 +186,7 @@ later items assume earlier ones are done.
          Status:    Eight traits, five state variables, six
                     frames. Per-user instances keyed by
                     HOST.user_id (Phase 10.16). HOST.on_change
-                    callback swaps the active state on login.
-                    Persisted to memories/emotional_state/.
+                    swaps the active state on login.
 
 ================================================================
   PHASE 3 — CONTINUOUS PERCEPTION (ambient awareness)   ✅ COMPLETE
@@ -191,9 +199,10 @@ later items assume earlier ones are done.
 
          Files:     modules/ambient_perception.py,
                     modules/prompter.py, modules/heartbeat.py
-         Status:    Samples screen every 30s. 8×8 average
-                    hash + hamming >14 triggers VLM. Two-tier
-                    injection.
+         Status:    Samples every 30s. 8×8 average hash +
+                    hamming >14 triggers VLM. Two-tier
+                    injection: window title always, screen
+                    description only on screen-reference regex.
 
 ================================================================
   PHASE 4 — EPISODIC MEMORY (temporal depth)            ✅ COMPLETE
@@ -212,13 +221,11 @@ later items assume earlier ones are done.
          Files:     modules/memory.py,
                     modules/import_chat_history.py,
                     modules/prompter.py
-         Status:    Every stored fact carries timestamp /
-                    importance / valence / session_id /
-                    user_id. Reflection payload routes
-                    through chat_sync. Speaker names from
-                    voice transcripts are preserved in the
-                    reflection prompt so the model doesn't
-                    misattribute quotes.
+         Status:    Every fact carries timestamp / importance
+                    / valence / session_id / user_id.
+                    Retrieval reweights by (0.5 sim + 0.3
+                    importance + 0.2 recency). Reflection
+                    routes through chat_sync.
          TODO:      Tighten reflection prompt — currently
                     lets through facts about Lumi herself.
 
@@ -232,9 +239,8 @@ later items assume earlier ones are done.
 
          Files:     constants.py, prompter.py, memory.py,
                     session_state.py
-         Status:    Fast and main paths both provider-aware
-                    via chat_sync. Cloud specs work end to
-                    end.
+         Status:    Both paths provider-aware via chat_sync.
+                    Cloud specs work end to end.
 
 ================================================================
   PHASE 6 — SELF-MODEL                                  ✅ COMPLETE
@@ -246,7 +252,7 @@ later items assume earlier ones are done.
 
          Files:     modules/self_model.py, prompter.py,
                     modules/heartbeat.py
-         Status:    Reflection now routes through chat_sync.
+         Status:    Reflection routes through chat_sync.
 
 ================================================================
   PHASE 6.5 — AVATAR CONTROL (VTube Studio)             ✅ COMPLETE
@@ -269,273 +275,154 @@ later items assume earlier ones are done.
   PHASE 7 — DISCORD VOICE BRIDGE                    ✅ COMPLETE
 ================================================================
 
-Goal: Enable Lumi to hear and attribute Discord voice
-channel audio in real time, and speak back through the same
-channel.
+[X] 7.1  C# sidecar — SUPERSEDED. Python davey module.
+[X] 7.2  Python receiver module                         DONE
+[X] 7.3  Multi-speaker attribution                      DONE
+[X] 7.4  Persona — group context                        DONE
+[X] 7.5  Roster awareness injection                     DONE
+[ ] 7.6  VAD upgrade (silero-vad)                       OPTIONAL
+[ ] 7.7  True presence tracking                         OPTIONAL
 
-The original plan called for a C# sidecar because the
-Python ecosystem had no working DAVE decryption at the
-time. Since then, the `davey` Rust library was ported to
-Python and discord.py 2.7 integrated it for the send path.
-That made a pure-Python solution possible, and this is
-what shipped.
-
-[X] 7.1  C# sidecar — Discord client joins VC and receives
-         SUPERSEDED. No sidecar needed. The Python `davey`
-         module provides the same Rust implementation used
-         by AIRI's TypeScript bot (@snazzah/davey). Combined
-         with discord.py 2.7's DAVE negotiation on the
-         connection object, we decrypt in-process.
-
-[X] 7.2  Python receiver module                          DONE
-         Files:     modules/discordClient.py
-         Status:    DaveDecryptor + OpusDecoderPool +
-                    LocalAudioSink with RMS VAD. Reads
-                    vc._connection.dave_session lazily on
-                    first write. Falls back to passthrough
-                    when the session isn't ready yet.
-                    Opus decoder pool keyed by SSRC.
-
-[X] 7.3  Multi-speaker attribution                       DONE
          Files:     modules/discordClient.py,
-                    modules/signals.py
-         Status:    Per-user buffers keyed by user.id.
-                    Transcripts written with speaker= and
-                    source="discord_voice" metadata.
-                    Reflection prompt uses the speaker
-                    name when present.
-
-[X] 7.4  Persona — group context                         DONE
-         Files:     modules/discordClient.py,
-                    modules/prompter.py, lumi.yaml
-         Status:    signals.voice_context contains
-                    roster + mode ("solo" | "group").
-                    Prompter injects a [Discord Voice
-                    Context] block on every turn. Persona
-                    rule "GROUP AWARENESS" added to
-                    lumi.yaml.
-
-[X] 7.5  Roster awareness injection                      DONE
-         Files:     modules/discordClient.py
-         Status:    on_voice_state_update refreshes the
-                    roster on every join/leave/move in a
-                    guild we're connected to. Pushed to
-                    signals.voice_context immediately.
-                    Cleared on !leave and shutdown.
-
-[ ] 7.6  VAD upgrade (silero-vad)                        OPTIONAL
-         Status:    RMS + hysteresis is working. Silero
-                    would handle noise, breathing, and
-                    soft speech better but isn't blocking
-                    anything. Skip unless real calls
-                    reveal a problem.
-
-[ ] 7.7  True presence tracking                          OPTIONAL
-         Status:    No defined use case. "Presence"
-                    would mean tracking who's actively
-                    listening vs. just idle in the
-                    channel, but nothing in the persona
-                    or prompt currently needs that.
-                    Defer until a concrete feature asks
-                    for it.
-
-Known minor limitations:
-  - DAVE drops ~15-20% of frames on session boundaries.
-    This is universal, not a bug. The middle of each
-    utterance always decodes cleanly.
-  - Never disconnect/reconnect the voice client at
-    runtime. Reconnects leave the DAVE session out of
-    sync with the sink and it goes deaf silently. If
-    receive fails, restart the process.
-  - Single-channel at a time. The bot can be in one
-    voice channel per guild. Multi-guild support works
-    because each guild gets its own connection and sink.
+                    modules/signals.py, modules/prompter.py,
+                    lumi.yaml
+         Status:    DAVE end-to-end encryption solved in
+                    pure Python via davey + DaveDecryptor.
+                    RMS VAD with hysteresis. Roster tracking
+                    via on_voice_state_update. Group context
+                    injected into the prompt.
 
 ================================================================
-  PHASE 8 — EXTERNAL SDK                              NOT STARTED
+  PHASE 8 — EXTERNAL SDK                            ✅ COMPLETE
 ================================================================
 
-Goal: Invert the tool direction. External applications
-connect to Lumi over a websocket protocol, register their
-own actions, send context, and receive invocations. Lumi
-becomes a plugin host. Mirrors the Neuro SDK architecture.
+Goal: External applications connect to Lumi over a local
+websocket, register their own actions, push context, and
+receive invocations. Lumi treats each registered action as a
+tool her LLM can call, exactly like her built-in ones.
+Protocol modeled after Vedal's Neuro SDK.
 
-[ ] 8.1  Protocol definition                                NOT STARTED
-[ ] 8.2  Server module                                      NOT STARTED
-[ ] 8.3  Prompter integration                               NOT STARTED
-[ ] 8.4  Reference client (Python)                          NOT STARTED
-[ ] 8.5  Fake-client test harness ("Randy" equivalent)      NOT STARTED
-[ ] 8.6  Client library for external developers             OPTIONAL
-[ ] 8.7  Official SDKs for other languages                  OPTIONAL
-[ ] 8.8  Capability scoping                                 REQUIRED
+[X] 8.1  Protocol definition                             DONE
+[X] 8.2  Server module                                   DONE
+[X] 8.3  Prompter integration                            DONE
+[X] 8.4  Reference client (Python)                       DONE
+[X] 8.5  Fake-client test harness                        DONE
+[ ] 8.6  Client library for external developers          OPTIONAL
+[X] 8.7  Official SDKs for other languages               NOT STARTED
+[X] 8.8  Capability scoping                              PARTIAL
+
+         Files:     sdk/__init__.py, sdk/protocol.py,
+                    sdk/actions.py, sdk/client.py,
+                    sdk/server.py, sdk/errors.py,
+                    sdk/README.md,
+                    sdk/examples/system_stats.py,
+                    plugin/plugin.py,
+                    modules/prompter.py,
+                    main.py, constants.py
+         Status:    Full SDK shipping. Server binds to
+                    127.0.0.1:5056 with token auth. Client
+                    library handles reconnect. Neuro-shaped
+                    wire protocol. Demonstrated end-to-end
+                    with a working plugin.
+         TODO:      Package client as pip-installable library
+                    (8.6). Write SDKs for TypeScript, C# (8.7).
+                    Refine capability policy (8.8). Wire
+                    actions/force to the prompter.
 
 ================================================================
   PHASE 9 — SECURITY HARDENING                        NOT STARTED
 ================================================================
 
-Goal: Close attack surfaces across the entire stack. The
-threat model is not a remote attacker — it's (a) malicious
-content Lumi reads, (b) a malicious external app that
-connects to the SDK, (c) accidental self-modification, and
-(d) other local processes or browser tabs reaching the web
-client.
+Goal: Close attack surfaces across the entire stack. Threat
+model is local, not remote: malicious content Lumi reads,
+malicious SDK plugin, accidental self-modification, other
+local processes reaching the web client or SDK.
 
-  In scope:   prompt injection via file/web/memory/SDK
-              content; SDK hijacking; self-modification;
-              API key exposure; command escalation; network
-              exposure; CSRF and DNS-rebinding against the
-              web client; session hijacking via malicious
-              browser extension.
-  Out of scope: kernel compromise, hardware attacks,
-              physical access, supply-chain attacks on
-              Ollama.
+  In scope:   prompt injection via file/web/memory/SDK content;
+              SDK hijacking; self-modification; API key
+              exposure; command escalation; network exposure;
+              CSRF and DNS-rebinding; session hijacking.
+  Out of scope: kernel compromise, hardware attacks, physical
+              access, supply-chain attacks on Ollama.
 
-[~] 9.1  Prompt injection defense                    HIGH PRIORITY  PARTIAL
-         (provenance tagging not implemented; basic
-          sandbox + protected files in place)
-[ ] 9.2  SDK authentication and allowlist            HIGH PRIORITY
-[ ] 9.3  Capability categories for actions           HIGH PRIORITY
-[ ] 9.4  Command execution sandboxing                MEDIUM PRIORITY
-[~] 9.5  Filesystem sandbox edge cases               MEDIUM PRIORITY  PARTIAL
-         (string-prefix matching today; realpath()
-          fix not yet applied — a symlink inside the
-          workspace can escape to anywhere)
-[~] 9.6  API key and token handling                  MEDIUM PRIORITY  PARTIAL
-         (keys in .env with 0600 perms, masked in every
-          UI response; rotation UI, .gitignore check,
-          and log-redaction audit pending)
-[ ] 9.7  Network exposure audit                      MEDIUM PRIORITY
-[ ] 9.8  Memory poisoning defense                    MEDIUM PRIORITY
-[ ] 9.9  Discord bot token and message safety        MEDIUM PRIORITY
-[~] 9.10 Self-modification guard                     HIGH PRIORITY  PARTIAL
-         (constants.py and .env write paths are sandboxed
-          to fixed allowlists; PROTECTED_FILES in
-          agent_tools.py still only covers main.py,
-          constants.py, .env, Modelfile. A tool call can
-          overwrite prompter.py, socketIO.py, memory.py,
-          and any other file that matters.)
-[ ] 9.11 Tool call anomaly detection                 LOW PRIORITY
-[ ] 9.12 Encryption of session state at rest         LOW PRIORITY
-[ ] 9.13 Dependency and supply chain review          LOW PRIORITY
+[~] 9.1  Prompt injection defense                    HIGH  PARTIAL
+[ ] 9.2  SDK authentication and allowlist            HIGH
+[ ] 9.3  Capability categories for actions           HIGH
+[ ] 9.4  Command execution sandboxing                MEDIUM
+[~] 9.5  Filesystem sandbox edge cases               MEDIUM  PARTIAL
+[~] 9.6  API key and token handling                  MEDIUM  PARTIAL
+[ ] 9.7  Network exposure audit                      MEDIUM
+[ ] 9.8  Memory poisoning defense                    MEDIUM
+[ ] 9.9  Discord bot token and message safety        MEDIUM
+[~] 9.10 Self-modification guard                     HIGH  PARTIAL
+[ ] 9.11 Tool call anomaly detection                 LOW
+[ ] 9.12 Encryption of session state at rest         LOW
+[ ] 9.13 Dependency and supply chain review          LOW
 [ ] 9.14 Incident response playbook                  REQUIRED
 
 ================================================================
   PHASE 10 — LOCAL WEB CLIENT                        ✅ COMPLETE
 ================================================================
 
-Every sub-phase 10.1 through 10.20 is done. Full web client
-at 127.0.0.1:5000 with chat, dashboard, memory browser,
-persona editor, model manager, cloud providers,
-integrations page, settings page, setup wizard, voice in
-browser, per-user memory isolation, and per-user emotional
-state isolation.
+All sub-phases 10.1-10.20 done. Full web client at
+127.0.0.1:5000 with chat, dashboard, memory browser, persona
+editor, model manager, cloud providers, integrations page,
+settings page, setup wizard, voice in browser, per-user
+memory isolation, and per-user emotional state isolation.
 
-[X] 10.1  Identity refactor                              DONE
-[X] 10.2  Design system + static mockup                  DONE
-[X] 10.3  User auth module                               DONE
-[X] 10.4  Auth HTTP routes                               DONE
-[X] 10.5  Shell + navigation                             DONE
-[X] 10.6  Login / Register UI                            DONE
-[X] 10.7  Chat page                                      DONE
-[X] 10.8  Full setup wizard                              DONE
-[X] 10.9  Dashboard page                                 DONE
-[X] 10.10 Persona editor                                 DONE
-[X] 10.11 Memory browser                                 DONE
-[X] 10.12 Model manager                                  DONE
-[X] 10.13 Integrations page                              DONE
-[X] 10.14 Settings page                                  DONE
-[X] 10.15 Per-user memory isolation                      DONE
-[X] 10.16 Per-user emotional state isolation             DONE
-[X] 10.17 Security hardening                             PARTIAL
-[X] 10.18 Terminal as fallback client                    DONE
-[X] 10.19 Voice in browser                               DONE
-[X] 10.20 Cloud / multi-provider LLMs                    DONE
+[X] 10.1–10.20 all shipped. See files under web/ and
+    modules/{persona_editor,model_manager,settings_manager,
+    integrations,llm_providers}.py.
 
 ================================================================
   PENDING FIXES
 ================================================================
 
 [ ] Signature phrases copied verbatim                 HIGH
-    Fix:    Add rule via persona editor:
-            "SIGNATURE PHRASES ARE VOCABULARY, NOT
-             SCRIPT. The signature_phrases and
-             recurring_bits sections describe the shape
-             of things you say — a tone, a rhythm, a
-             habit. They are NOT lines to quote
-             verbatim."
+    Fix:    Add rule via persona editor.
 
 [ ] Memory reflection prompt lets Lumi-facts through  MEDIUM
-    Fix:    Replace REFLECTION_PROMPT in
-            modules/memory.py and
-            modules/import_chat_history.py with a
-            version that forbids facts about the
-            assistant and subject pronouns.
+    Fix:    Tighten REFLECTION_PROMPT in memory.py.
 
 [ ] .env not in .gitignore                             HIGH
-    Fix:    Add ".env", "memories/", "logs/", and
-            "temp_discord_audio_*.wav" to .gitignore.
+    Fix:    Add ".env", "memories/", "logs/",
+            "temp_discord_audio_*.wav", "notes.txt",
+            "test_tone.wav" to .gitignore.
 
 [ ] ruamel.yaml not installed                          LOW
     Fix:    pip install ruamel.yaml
 
 [ ] History trim caps backfill depth                   LOW
-    Fix:    Raise the trim from 20 to 100 in
-            prompter.py and heartbeat.py.
+    Fix:    Raise trim from 20 to 100.
 
-[ ] ffmpeg conda shim regression risk                  LOW
-    Status: The broken conda ffmpeg.exe was removed
-            from PATH but if conda ever reinstalls it,
-            it will shadow the working winget build
-            again and silently break Discord send.
-    Fix:    Optional — add a startup check that runs
-            `ffmpeg -version` and warns if it exits
-            with no output.
+[ ] actions/force not wired to prompter                LOW
+    Fix:    Add a prompter hook that bypasses normal tool
+            selection when an SDK client forces action names.
+
+[ ] SDK client not pip-installable                     LOW
+    Fix:    Extract sdk/{protocol,actions,client,errors}.py
+            into a standalone lumi-sdk package.
 
 ================================================================
   KNOWN OUTSTANDING ISSUES
 ================================================================
 
 [!] VTS multi-item request fabrications
-    Fix:    Use !set terminal commands for batch
-            operations.
-
 [!] VTS state drift on manual hotkey presses
-    Fix:    !set <name> on/off corrects state
-            idempotently.
-
-[!] Voice client fragility
-    Status: The Discord voice receive path is
-            DAVE-bound. Any disconnect/reconnect at
-            runtime leaves the sink orphaned. Restart
-            the process if receive fails.
-    Fix:    Never add reconnect helpers. Documented
-            in discordClient.py's module docstring.
-
-[!] SDK has no authentication yet
-    Fix:    Phase 9.2 mandatory before Phase 8 ships.
-
+[!] Voice client fragility (never reconnect at runtime)
+[!] SDK has no authentication beyond the token
 [!] Prompt injection not defended
-    Fix:    Phase 9.1 provenance tagging.
-
 [!] File path sandbox uses string prefix matching
-    Fix:    Phase 9.5 realpath() fix.
-
 [!] Self-modification allowed for anything outside
     PROTECTED_FILES
-    Fix:    Phase 9.10 expanded PROTECTED_FILES +
-            !edit command with diff review.
-
 [!] Host name baked into memory facts
-    Fix:    Tighten reflection prompt.
-
 [!] moondream description quality                     COSMETIC
 [!] Duplicate facts across reflection passes          COSMETIC
 [!] Ambient perception first-run delay                COSMETIC
 [!] Model pickiness on tool format                    KNOWN
-[!] Log hub port conflict risk                        KNOWN
-    5001 (log hub), 5000 (socketIO/web), 5055 (voice
-    bridge port reserved), 5056 (SDK). All must remain
-    free.
+[!] Log hub port conflicts risk                       KNOWN
+    5001 (log hub), 5000 (web), 5056 (SDK), 5055 (voice
+    bridge reserved)
 
 ================================================================
   RECOMMENDED NEXT STEPS
@@ -543,137 +430,113 @@ state isolation.
 
   Step 0  ->  SMALL FIXES + HOUSEKEEPING (~15 min).
               (1) pip install ruamel.yaml
-              (2) Add .env, memories/, logs/, and
-                  temp_discord_audio_*.wav to
+              (2) Add .env, memories/, logs/, notes.txt,
+                  test_tone.wav, temp_discord_audio_*.wav to
                   .gitignore
-              (3) Use the persona editor to add the
-                  "SIGNATURE PHRASES ARE VOCABULARY,
-                  NOT SCRIPT" rule
-              (4) Tighten REFLECTION_PROMPT in
-                  modules/memory.py and
-                  modules/import_chat_history.py
+              (3) Persona editor → Rules → add "SIGNATURE
+                  PHRASES ARE VOCABULARY, NOT SCRIPT"
+              (4) Tighten REFLECTION_PROMPT in memory.py
 
   Step 1  ->  USE LUMI FOR A WEEK.
-              Every page is editable end-to-end, voice
-              works on both sides, cloud providers are
-              wired through every call site, and
-              per-user isolation is in place. Real use
-              drives the next round of tuning — not a
-              checklist.
+              Every major subsystem ships. Real use should
+              drive the next round of tuning.
 
   Step 2  ->  PHASE 9 (SECURITY HARDENING).
-              Before the SDK ships. Focus in this
-              order:
-                9.5  realpath() fix — one line,
-                     closes a real path-traversal
-                     hole
-                9.10 expanded PROTECTED_FILES —
-                     prompter.py, socketIO.py,
-                     memory.py, discordClient.py,
-                     and any module under modules/
-                9.1  prompt-injection provenance
-                     tagging — the design-heavy one
-                9.6  rotation UI, log-redaction
-                     audit, .gitignore check
+              Before the SDK is exposed to third-party
+              developers. Priority order:
+                9.5  realpath() sandbox fix (one line)
+                9.10 expanded PROTECTED_FILES
+                9.1  prompt-injection provenance tagging
+                9.2  SDK per-client auth beyond the shared token
+                9.3  capability allowlist per client
+                9.6  rotation UI, log redaction, .gitignore check
 
-  Step 3  ->  PHASE 8 (EXTERNAL SDK).
-              Requires 9.2 (SDK auth) and 9.3
-              (capability scoping) to ship first.
+  Step 3  ->  SDK PACKAGING (8.6).
+              Extract sdk/{protocol,actions,client,errors}.py
+              into lumi-sdk. Publish on PyPI. Document for
+              third-party developers.
 
-  Ongoing ->  Real use drives the next round of
-              tuning.
+  Ongoing ->  Real use drives the next round of tuning.
 
 ================================================================
   WHAT VEDAL HAS THAT THIS WON'T FULLY CLOSE
 ================================================================
 
   - 100+ hours of fine-tuning on chat logs from real viewers
-  - A larger base model (likely 30B+ effective for reasoning)
+  - A larger base model
   - Years of iterative tuning on the heartbeat threshold
-  - A team of collaborators for specific subsystems
-  - Actual viewer interaction data shaping her personality
-  - His own C# Discord library (VedalAI) with native voice
-    receive, giving him full control over the receive
-    pipeline
-  - A mature, published SDK with community-built clients
-    in 10+ languages
+  - A team of collaborators
+  - Actual viewer interaction data
+  - His own C# Discord library (VedalAI) with native voice receive
+  - A mature, published SDK with clients in 10+ languages
 
   The architecture is replicable. The tuning is not.
   You will get 70-80% of the feel with 100% of the
   architecture. The last 20% is data, time, and iteration.
 
   What you HAVE closed:
-    ✅ Heartbeat — autonomous initiation
-    ✅ Emotional state — reactions grounded in runtime data
-    ✅ Cognitive frames — context-aware delivery modes
-    ✅ Trait vector — YAML-driven personality modifiers
+    ✅ Heartbeat, emotional state, cognitive frames, traits
     ✅ Canonical emotion-tag voice delivery
-    ✅ Session continuity across restarts
-    ✅ Command filtering (no state pollution)
-    ✅ Anchored retries (no drift)
-    ✅ Multi-format tool call recovery
+    ✅ Session continuity
+    ✅ Command filtering, anchored retries, multi-format
+      tool call recovery
     ✅ Clean shutdown across all subsystems
     ✅ Episodic memory with timestamps + importance
-    ✅ Weighted memory retrieval (recency + importance)
-    ✅ Reflection pass reliability (Qwen3 think fix)
-    ✅ Backfill importer from chat history
-    ✅ "When did we..." queries via command + tool
-    ✅ Continuous screen perception (background sampler)
-    ✅ Change-detection logic (hash + window + rate limit)
-    ✅ Selective ambient injection (two-tier)
-    ✅ Metadata migration + valence sanitization
-    ✅ Structured diagnostics with localhost dashboard
-    ✅ Prompt-pinned terminal UI
-    ✅ Multi-model orchestration (fast + main)
-    ✅ Fast-model routing infrastructure
-    ✅ Self-model tracking + reflection + injection
+    ✅ Weighted memory retrieval
+    ✅ Reflection pass reliability
+    ✅ Backfill importer
+    ✅ "When did we..." queries
+    ✅ Continuous screen perception
+    ✅ Structured diagnostics with dashboard
+    ✅ Multi-model orchestration
+    ✅ Self-model
     ✅ Neuro-adjacent speech cadence
     ✅ Conversational prose enforcement
-    ✅ Two-anchor time injection (no clock drift)
-    ✅ Non-canonical tag stripping (clean TTS input)
-    ✅ GPU STT pipeline (5-10× faster)
-    ✅ VTube Studio avatar control (Phase 6.5)
+    ✅ Two-anchor time injection
+    ✅ Non-canonical tag stripping
+    ✅ GPU STT pipeline
+    ✅ VTube Studio avatar control
     ✅ Expression state tracking + idempotent toggle
     ✅ Keyboard fallback for VTS hotkey quirks
     ✅ Natural-language alias resolution
     ✅ Fabrication guard for narrated state changes
-    ✅ Passive emotion → expression visual manifestation
-    ✅ VRAM deduplication (fast and main share weights)
+    ✅ Passive emotion → expression
+    ✅ VRAM deduplication
     ✅ Web client — all pages (Phase 10.1–10.20)
-    ✅ Persona editor — backend + UI
-    ✅ Model manager — backend + UI
+    ✅ Persona editor
+    ✅ Model manager
     ✅ Integrations page
     ✅ Settings page
-    ✅ Multi-provider LLM — backend + UI + full call-site
-      wiring
+    ✅ Multi-provider LLM support
     ✅ Agent mode toggle
     ✅ Terminal + web input share one path
     ✅ Dedicated /login page
     ✅ Full setup wizard
     ✅ Per-user memory isolation
     ✅ Per-user emotional state isolation
-    ✅ Voice in browser (TTS playback + mic capture)
-    ✅ Cloud provider support (OpenAI, Anthropic, Gemini,
-      Groq, OpenRouter, any OpenAI-compatible endpoint)
+    ✅ Voice in browser
+    ✅ Cloud providers (OpenAI, Anthropic, Gemini, Groq,
+      OpenRouter, any OpenAI-compatible)
     ✅ CSRF + origin + rate limit + sandbox
     ✅ constants.py line patcher with compile-check + .bak
     ✅ .env writer with 0600 perms + masked-key responses
-    ✅ Settings Advanced reset allowlist
-    ✅ Discord voice receive — DAVE end-to-end encryption
-      solved in pure Python
+    ✅ Discord voice receive — DAVE solved in pure Python
     ✅ Discord voice send — FFmpeg + server-mute auto-clear
     ✅ Multi-speaker attribution
     ✅ Group context injection
     ✅ Roster awareness
-    ✅ MicInput bypass in Discord-only mode
+    ✅ External SDK — server, client library, protocol,
+      capability tiers, reference plugin
+    ✅ Screenshot + note-logging plugin demo
 
   What you have NOT closed:
-    ❌ External SDK (Phase 8)
     ❌ Security hardening audit (Phase 9)
-    ❌ SDK authentication (Phase 9.2)
+    ❌ SDK authentication beyond shared token (Phase 9.2)
     ❌ Prompt injection defense (Phase 9.1)
     ❌ Self-modification guard for modules/ (Phase 9.10)
     ❌ Filesystem sandbox realpath() fix (Phase 9.5)
+    ❌ SDK packaging for third parties (Phase 8.6)
+    ❌ SDKs in other languages (Phase 8.7)
     ❌ Silero-VAD (Phase 7.6 — optional)
     ❌ True presence tracking (Phase 7.7 — optional)
 

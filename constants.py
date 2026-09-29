@@ -1,7 +1,6 @@
 import os
 import yaml
 import random
-import re as _re
 
 # =======================================================
 # System & Local LLM Endpoint Setup & Workspace Paths
@@ -17,6 +16,11 @@ VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached th
 TIMEZONE = "America/New_York"
 
 # =======================================================
+# Lumi Version
+# =======================================================
+LUMI_VERSION = "0.10.14"
+
+# =======================================================
 # MODEL CONFIGURATION (Phase 5 — multi-model orchestration)
 # =======================================================
 FAST_MODEL_NAME = "lumi-qwen3"          # same weights as main — Ollama deduplicates in VRAM
@@ -24,43 +28,6 @@ FAST_MODEL_ENABLED = True
 FAST_MODEL_NUM_CTX = 8192
 MAIN_NUM_CTX = 16384
 FAST_MODEL_KEEP_ALIVE = "5m"
-
-# =======================================================
-# Cloud provider routing (Phase 10.12b)
-# -------------------------------------------------------
-# MODEL_NAME and FAST_MODEL_NAME accept either a bare model name
-# (treated as Ollama) or a "provider:model" spec. To point the main
-# path at OpenAI: MODEL_NAME = "openai:gpt-4o-mini".
-#
-# Legacy bare-name values keep working — parse_model_spec() defaults
-# to the Ollama provider. Nothing else in the codebase has to know
-# which provider is in play; every LLM call routes through
-# modules.llm_providers.chat_sync(spec, ...).
-# =======================================================
-MODEL_PROVIDER = "ollama"   # informational only; derived from MODEL_NAME
-
-def _split_model_spec(spec):
-    """'openai:gpt-4o-mini' → ('openai', 'gpt-4o-mini')
-    'lumi-qwen3'           → ('ollama', 'lumi-qwen3')"""
-    s = (spec or "").strip()
-    if not s:
-        return ("ollama", "")
-    if ":" in s:
-        head, rest = s.split(":", 1)
-        # Only treat as provider-prefixed if head looks like one of our
-        # known providers — otherwise a model tag like "qwen3:8b"
-        # would be misparsed.
-        try:
-            from modules.llm_providers import PROVIDER_PRESETS
-            if head.lower() in PROVIDER_PRESETS:
-                return (head.lower(), rest)
-        except Exception:
-            if head.lower() in {
-                "ollama", "openai", "anthropic", "gemini",
-                "groq", "openrouter",
-            }:
-                return (head.lower(), rest)
-    return ("ollama", s)
 
 AUDIO_OUTPUT_MODE = "both"
 OUTPUT_DEVICE_INDEX = [24, 20]
@@ -580,19 +547,11 @@ write your own name in a reply, stop and rewrite it as "I".
 
 
 # Seed the module-level SYSTEM_PROMPT with the default host.
-# Code that imports SYSTEM_PROMPT gets this initial snapshot;
-# code that needs the live version calls get_system_prompt() (or
-# build_system_prompt() to force a rebuild).
 SYSTEM_PROMPT = build_system_prompt(HOST.name)
 
 
 # =======================================================
 # Live prompt cache + persona save / reload (Phase 10.10)
-# -------------------------------------------------------
-# get_system_prompt() returns the current prompt for a host,
-# rebuilding when the host changes or the cache is invalidated.
-# save_persona_* helpers write back to lumi.yaml and refresh every
-# cache so the running prompter picks up the change on the next turn.
 # =======================================================
 _PROMPT_CACHE = {"host": None, "prompt": None}
 
@@ -616,11 +575,7 @@ def invalidate_prompt_cache():
 
 def reload_profile(host_name=None):
     """Reload lumi.yaml from disk and rebuild the profile + prompt
-    caches. Called after the persona editor saves.
-
-    Also refreshes the module-level AI_NAME / GREETING /
-    VOICE_EMOTION_PROMPT attributes and rebuilds SYSTEM_PROMPT so
-    anything importing them gets the new values on next read."""
+    caches. Called after the persona editor saves."""
     global profile, _yaml_raw_cache, AI_NAME, GREETING, VOICE_EMOTION_PROMPT, SYSTEM_PROMPT
     _yaml_raw_cache = None
     if host_name is None:
@@ -673,10 +628,6 @@ def save_persona_raw(raw_text):
 
 # =======================================================
 # Module-level character attributes (initial load)
-# -------------------------------------------------------
-# These reflect the default host at import time. If you need them
-# to track HOST changes at runtime, call get_system_prompt() /
-# reload_profile() instead of importing these.
 # =======================================================
 AI_NAME = profile.get("name", "Lumi")
 GREETING = profile.get("greeting", "System online. Hi chat!")
@@ -706,6 +657,54 @@ VTUBE_MODEL_POSITIONS = {
     "center": {"x": 0.0, "y": 0.0, "rotation": 0.0, "size": 1.0}
 }
 
+
+# =======================================================
+# External SDK (Phase 8)
+# -------------------------------------------------------
+# Local websocket server for external applications. Binds strictly
+# to 127.0.0.1 so nothing off-machine can reach it. The token that
+# clients authenticate with lives at memories/sdk_token.txt,
+# generated on first boot with 0600 permissions.
+# =======================================================
+SDK_HOST = "127.0.0.1"
+SDK_PORT = 5056
+SDK_VERSION = "0.10.14"
+
+# =======================================================
+# Model Spec Parser
+# -------------------------------------------------------
+# Model names accept either a bare Ollama name ("lumi-qwen3") or
+# a "provider:model" spec ("openai:gpt-4o-mini"). Bare names default
+# to Ollama. The provider list is checked against known prefixes so
+# that Ollama tags like "qwen3:8b" are NOT misparsed as a provider.
+# =======================================================
+_KNOWN_PROVIDER_PREFIXES = frozenset({
+    "ollama", "openai", "anthropic", "gemini", "groq", "openrouter",
+})
+
+
+def _split_model_spec(spec):
+    """'openai:gpt-4o-mini' → ('openai', 'gpt-4o-mini')
+    'lumi-qwen3'           → ('ollama', 'lumi-qwen3')
+    'qwen3:8b'             → ('ollama', 'qwen3:8b')  # tag, not provider
+    """
+    s = (spec or "").strip()
+    if not s:
+        return ("ollama", "")
+    if ":" in s:
+        head, rest = s.split(":", 1)
+        head_lower = head.lower()
+        # Try to match against the live provider registry first (set up
+        # by modules.llm_providers), then fall back to the static list.
+        try:
+            from modules.llm_providers import PROVIDER_PRESETS
+            if head_lower in PROVIDER_PRESETS:
+                return (head_lower, rest)
+        except Exception:
+            pass
+        if head_lower in _KNOWN_PROVIDER_PREFIXES:
+            return (head_lower, rest)
+    return ("ollama", s)
 
 # ===============================================================
 # RANDOMIZED SESSION SEED

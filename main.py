@@ -26,6 +26,8 @@ from modules.ambient_perception import AmbientPerception
 from modules.log_hub import LogHub
 from modules.self_model import SelfModel
 
+from sdk.server import SDKServer
+
 try:
     from modules.tts import TTS
 except ImportError:
@@ -115,6 +117,9 @@ def main():
 
     _global_signals = signals
 
+    # MicInput spins up its own local Whisper model (~1 GB RAM, several
+    # seconds of startup). Skip it entirely when audio is routed to
+    # Discord only.
     mic_enabled = selected_audio_mode in ("local", "both")
 
     modules = [
@@ -130,6 +135,7 @@ def main():
         EmotionalStateModule(signals, enabled=True),
         AmbientPerception(signals, enabled=False),
         SelfModel(signals, enabled=True),
+        SDKServer(signals, enabled=True),
     ]
 
     tts_module = TTS(signals, enabled=True, modules=modules,
@@ -162,6 +168,7 @@ def main():
     print(f"  Mic: active (press \\ to toggle mute)")
     print(f"  Web client:  http://127.0.0.1:5000/")
     print(f"  Diagnostics: http://127.0.0.1:5001/")
+    print(f"  SDK:         ws://127.0.0.1:5056/ws")
     print("=======================================================\n")
 
     signals.system_ready = True

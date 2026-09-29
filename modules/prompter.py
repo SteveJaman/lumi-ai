@@ -1263,16 +1263,15 @@ class Prompter:
                     title = ambient.current_window
                     if title:
                         injections.append(f"[Active window] {title}")
-                        
-                        # Phase 7.4 — Discord voice context. Only injected when the bot
-                        # is actively in a voice channel; None otherwise.
-                        voice_ctx = getattr(self.signals, "voice_context", None)
-                        if voice_ctx and voice_ctx.get("active"):
-                            try:
-                                injections.append(self._format_voice_context(voice_ctx))
-                            except Exception:
-                                pass
-                        
+            except Exception:
+                pass
+
+        # Phase 7.4 — Discord voice context. Only injected when the bot
+        # is actively in a voice channel; None otherwise.
+        voice_ctx = getattr(self.signals, "voice_context", None)
+        if voice_ctx and voice_ctx.get("active"):
+            try:
+                injections.append(self._format_voice_context(voice_ctx))
             except Exception:
                 pass
 
@@ -1554,6 +1553,37 @@ class Prompter:
     async def _dispatch_tool_call(self, name, arguments):
         loop = asyncio.get_running_loop()
 
+        # ─── SDK action dispatch ───
+        # Registered SDK actions are exposed to the model as
+        # "sdk__<action_name>". Resolve the spec, apply the confirmation
+        # gate if the plugin requested one, then invoke it blocking in
+        # the executor so the event loop stays responsive.
+        sdk = getattr(self.signals, "sdk", None)
+        if sdk is not None:
+            spec = sdk.find_action(name)
+            if spec is not None:
+                action_name = name[len("sdk__"):]
+
+                if spec.requires_confirm or "dangerous" in spec.capabilities:
+                    print(f"\n{GRAY}[SDK] '{action_name}' wants to run{RESET}")
+                    allowed = await self._confirm(
+                        f"{GRAY}  -> Allow this? (y/n): {RESET}"
+                    )
+                    if not allowed:
+                        return "The user declined to allow this SDK action."
+
+                print(f"\n{GRAY}[Lumi is using SDK action: {action_name}"
+                      f"({arguments})]{RESET}")
+                result = await loop.run_in_executor(
+                    None, sdk.invoke_action_blocking, action_name, arguments,
+                )
+                if isinstance(result, dict):
+                    if not result.get("success", True):
+                        return f"SDK action failed: " \
+                               f"{result.get('error', 'unknown')}"
+                    return str(result.get("result", ""))
+                return str(result)
+
         if name == "web_search":
             print(f"\n{GRAY}[Lumi is using tool: web_search({arguments})]{RESET}")
             return await loop.run_in_executor(None, self.web_search, arguments.get("query", ""))
@@ -1683,6 +1713,18 @@ class Prompter:
             messages.append({"role": role, "content": msg.get("content", "")})
 
         all_tools = TOOL_SCHEMAS + EXTRA_TOOL_SCHEMAS
+        sdk = getattr(self.signals, "sdk", None)
+        if sdk is not None:
+            try:
+                sdk_schemas = sdk.get_action_schemas()
+                if sdk_schemas:
+                    all_tools = all_tools + sdk_schemas
+                    print(f"{GRAY}[SDK] {len(sdk_schemas)} action(s) available{RESET}")
+                else:
+                    print(f"{GRAY}[SDK] no actions registered{RESET}")
+            except Exception as e:
+                print(f"{GRAY}[SDK schema fetch failed: {e}]{RESET}")
+
         loop = asyncio.get_running_loop()
 
         executed_this_turn = set()
@@ -2393,6 +2435,14 @@ class Prompter:
                     for sentence in sentences:
                         self._push_to_tts(sentence)
 
+                    if raw_reply:
+                        sdk = getattr(self.signals, "sdk", None)
+                        if sdk is not None:
+                            try:
+                                sdk.broadcast_lumi_message(raw_reply)
+                            except Exception:
+                                pass
+                    
                     if raw_reply:
                         for module in self.modules:
                             if module.__class__.__name__ == "VeadotubeController" and hasattr(module, "inspect_and_trigger"):

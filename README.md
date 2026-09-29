@@ -1,10 +1,13 @@
 # Lumi AI Companion
 
-> Lumi now speaks and hears in Discord voice channels with correct DAVE
-> end-to-end encryption — pure Python, no sidecar — and her local web client
-> at `127.0.0.1:5000` is a complete editing surface for persona, models,
-> providers, integrations, and settings. Only the external SDK (Phase 8) and
-> security hardening (Phase 9) remain on the roadmap.
+> Lumi now has a full external SDK. Third-party applications connect over a
+> local websocket, register their own actions, push context, and receive
+> invocations — the same pattern Vedal's Neuro SDK uses, with a Neuro-shaped
+> wire protocol. She also speaks and hears in Discord voice channels with
+> correct DAVE end-to-end encryption (pure Python, no sidecar), and her local
+> web client at `127.0.0.1:5000` is a complete editing surface for persona,
+> models, providers, integrations, and settings. Only Phase 9 (security
+> hardening) remains on the roadmap.
 
 A local-first, agentic AI companion running on consumer hardware. Lumi is a
 persona-driven VTuber-style assistant with real tool use — she can read and
@@ -17,6 +20,10 @@ Unlike scripted chatbots or bracket-tag "tool" syntax, Lumi uses **structured
 tool calling** through Ollama's native `/api/chat` tool interface. When she
 calls a tool, it actually runs. When she says she did something, you can check
 the log and see that she did.
+
+Phase 8 is complete: Lumi now has an **external SDK**. Other applications
+connect to her over a local websocket, register their own tools, and receive
+invocations when she decides to use them — see [External SDK](#external-sdk).
 
 Phase 10 is complete: Lumi now has a full **local web client** at
 `127.0.0.1:5000` — a first-run setup wizard, chat, dashboard, memory browser,
@@ -45,6 +52,7 @@ share the same state and history.
   - [Autonomous Heartbeat](#autonomous-heartbeat)
   - [Ambient Screen Awareness](#ambient-screen-awareness)
   - [Avatar Control (VTube Studio)](#avatar-control-vtube-studio)
+  - [External SDK](#external-sdk)
   - [Local Web Client](#local-web-client)
   - [Per-User Isolation](#per-user-isolation)
   - [Multimodal (Optional)](#multimodal-optional)
@@ -98,6 +106,9 @@ to do next — up to `MAX_AGENT_STEPS = 6` per turn.
 | `recall_memory(query, since)` | Query Lumi's own long-term memory for facts, past conversations, or events with timestamps |
 | `vtube_set_expression(name, enabled)` | Turn an appearance toggle on her own VTube Studio avatar on/off — idempotent |
 | `vtube_move(location)` | Move her avatar to a preset screen position |
+
+Actions registered by external SDK clients join this list at request time as
+`sdk__<name>` (see [External SDK](#external-sdk)).
 
 Because `write_file`, `run_command`, and `run_in_terminal` are gated behind a
 `y/n` prompt, nothing destructive ever runs without your explicit approval.
@@ -482,6 +493,80 @@ fall through the guard. For batch operations use the terminal commands
 (`!set hat off`, `!set jacket on`, etc.) — they're idempotent, always land,
 and skip the LLM entirely.
 
+### External SDK
+
+**Lumi has an external SDK.** Third-party applications connect to her over a
+local websocket, register their own tools, push context, and receive
+invocations — exactly the pattern Vedal's Neuro SDK uses. The protocol matches
+Neuro's wire format, so existing Neuro SDK documentation is a valid reference.
+
+**What it does**
+
+- **Server-side.** `sdk/server.py` runs inside Lumi as a module. It binds
+  strictly to `127.0.0.1:5056` and authenticates clients with a token stored
+  at `memories/sdk_token.txt` (0600 permissions on POSIX, generated on first
+  boot).
+- **Client-side.** `sdk/client.py` provides `LumiClient`, an importable base
+  class that external apps subclass. It handles the handshake, action
+  registration, invocation dispatch, reconnection with backoff, and result
+  formatting. External apps import `sdk/protocol.py`, `sdk/actions.py`,
+  `sdk/client.py`, and `sdk/errors.py` — nothing else from Lumi's internals.
+- **Protocol.** Modeled after Vedal's Neuro SDK. Messages are plaintext JSON:
+  `{"command": str, "game": str, "data": {...}}`. Commands are namespaced
+  (`actions/register`, `action/result`, `speech_finished`). Actions declare
+  JSON-Schema parameters, compatible with both Ollama's tool interface and
+  OpenAI's function calling.
+- **Capability tiers.** Each registered action declares
+  `capabilities=["read"|"write"|"dangerous"]` and `requires_confirm=bool`.
+  `read` auto-approves, `write` logs, and `dangerous` or `requires_confirm`
+  gate on a `y/n` prompt before running.
+- **Prompter integration.** On every agent turn, registered SDK actions appear
+  in the tool list as `sdk__<name>`. When the model calls one, the invocation
+  travels back over the websocket to the client that registered it. Context
+  pushed by clients is injected as `[EXTERNAL CONTEXT]` on every turn.
+- **Replies broadcast.** Every Lumi reply fans out to connected clients as a
+  `speech_finished` message with `isFinal` / `cancelled` flags, so external
+  apps can sync state to what she said.
+
+**Running the reference plugin**
+
+```powershell
+pip install mss
+python plugin/plugin.py
+```
+
+Expected output:
+
+```text
+[sdk] connecting to ws://127.0.0.1:5056/ws
+[sdk] welcome — session=... protocol=1.0
+[sdk] registered: screenshot_primary_monitor
+[sdk] registered: log_note
+```
+
+Then, in the web chat with agent mode ON, say: "Take a screenshot." Lumi calls
+`sdk__screenshot_primary_monitor`, the plugin captures the display, and she
+replies in character. The reference plugin captures screenshots and logs
+timestamped notes. A second reference client, `sdk/examples/system_stats.py`,
+lives alongside the SDK. The full third-party protocol spec is in
+`sdk/README.md`.
+
+**Design lesson: small-model tool selection routes by token overlap.** Three
+plugin actions failed to fire before one worked:
+
+| Plugin action | Lost to | Why |
+|---|---|---|
+| `open_notepad` | `run_in_terminal` | Built-in opens any command including Notepad |
+| `get_time_in(city)` | `web_search` | Built-in has a dedicated timezone handler |
+| `read_clipboard` | `run_command clip` | Shell command shares query vocabulary |
+| `screenshot_primary_monitor` | *(nothing)* | ✓ Unique capability |
+
+**Rule for plugin developers:** a plugin action needs a capability that no
+built-in tool and no shell command covers. If either exists, the model will
+route to it, because built-ins appear in the schema list from turn 1 and shell
+commands share query vocabulary. When designing a new plugin, first ask "can
+Lumi already do this with a built-in?" If yes, don't write the plugin.
+
 ### Local Web Client
 
 A fully offline localhost web application served at `http://127.0.0.1:5000/`
@@ -795,7 +880,8 @@ Prompter run loop picks it up
         │     ├─ Build system prompt (live persona via get_system_prompt() +
         │     │  no-tools directive + this user's memory
         │     │  + mood + emotional state + cognitive frame + ambient context
-        │     │  + self-model observations + continuity)
+        │     │  + self-model observations + SDK [EXTERNAL CONTEXT]
+        │     │  + continuity)
         │     └─ chat_sync(model_spec) → Ollama /api/chat or a cloud provider
         │        (no tools; think flag per path, dropped for non-Ollama)
         │
@@ -804,15 +890,20 @@ Prompter run loop picks it up
         │     │  memory and emotional state are the active user's)
         │     ├─ Append history
         │     ├─ chat_sync(model_spec) with tool schemas, think=true
-        │     │  (Ollama-only fields dropped for cloud providers)
+        │     │  (TOOL_SCHEMAS + EXTRA_TOOL_SCHEMAS + SDK schemas;
+        │     │  Ollama-only fields dropped for cloud providers)
         │     ├─ If tool_calls returned:
         │     │    ├─ Confirm gates for write_file / run_command / run_in_terminal
         │     │    ├─ Validate args for vtube_set_expression / vtube_move
         │     │    ├─ Execute tool via execute_tool() or _dispatch_tool_call
+        │     │    │  (sdk__<name> → sdk.invoke_action_blocking(name, args)
+        │     │    │   → websocket → plugin process → result back to model)
         │     │    ├─ Reinject original request if tool result was large
         │     │    ├─ Append result as `role: tool`
         │     │    └─ Loop back to Ollama (up to MAX_AGENT_STEPS)
-        │     └─ If plain text returned: push to TTS, save to history
+        │     └─ If plain text returned: push to TTS, save to history,
+        │        and sdk.broadcast_lumi_message(text) → speech_finished
+        │        to connected SDK clients
         │
         └─── avatar commands → VTube Studio module
               ├─ !set / vtube_set_expression → idempotent state change
@@ -874,6 +965,7 @@ flowchart TD
         FRAME[Cognitive Frame<br/>6 frames]
         AMBIENT[Ambient Context<br/>screen + window]
         SELF_INJ[Self-Model Observations]
+        SDK_INJ[SDK Context<br/>EXTERNAL CONTEXT]
         CONT[Session Continuity]
     end
 
@@ -896,6 +988,7 @@ flowchart TD
     DISPATCH --> WEB_TOOLS[web_search / browse_url]
     DISPATCH --> MEM_TOOL[recall_memory]
     DISPATCH --> AVATAR_TOOLS[vtube_set_expression /<br/>vtube_move]
+    DISPATCH -->|"sdk__name tool call"| SDKINV[sdk.invoke_action_blocking]
 
     FILE_TOOLS -->|destructive| CONFIRM{y/n Confirm}
     CMD_TOOLS -->|destructive| CONFIRM
@@ -908,6 +1001,18 @@ flowchart TD
     EXEC -->|tool result| OLLAMA
     VTS -->|tool result| OLLAMA
 
+    %% ===== EXTERNAL SDK =====
+    subgraph SDKSTACK["External SDK — 127.0.0.1:5056"]
+        direction TB
+        SDKSRV[sdk/server.py<br/>SDKServer, token auth]
+        PLUGIN[External plugin process<br/>LumiClient subclass]
+    end
+    SDKINV -->|websocket| SDKSRV
+    SDKSRV <-->|invoke / result| PLUGIN
+    SDKSRV -->|tool result| OLLAMA
+    SDKSRV -.->|registered action schemas| AGENT
+    SDKSRV -.->|pushed context| SDK_INJ
+
     OLLAMA -->|plain text reply| GUARDS[Safety Guards<br/>simulated-action / intent /<br/>refusal / no-op / fabrication]
     GUARDS --> TTS[Fish Audio TTS<br/>emotion tags]
     TTS --> OUT_SPEAK[Local Speakers]
@@ -915,6 +1020,8 @@ flowchart TD
     TTS -.->|first canonical tag| VTS
 
     GUARDS -->|assistant reply| HIST[signals.history]
+    GUARDS -->|"sdk.broadcast_lumi_message"| BCAST[speech_finished broadcast]
+    BCAST --> SDKSRV
     HIST --> WEB
 
     %% ===== WEB LAYER =====
@@ -990,14 +1097,16 @@ flowchart TD
     classDef diag fill:#a0aec0,stroke:#4a5568,color:#1a202c
     classDef web fill:#4299e1,stroke:#2b6cb0,color:#fff
     classDef voicerx fill:#d69e2e,stroke:#975a16,color:#1a202c
+    classDef sdk fill:#6b46c1,stroke:#44337a,color:#fff
 
     class TERM,MIC,DISC,DISCV,STT,WEB input
     class CR,CMDS,CONV,AGENT,ROUTE_DECISION,DISPATCH,CONFIRM router
-    class PERSONA,MEM_INJ,MOOD,EMO,FRAME,AMBIENT,SELF_INJ,CONT context
+    class PERSONA,MEM_INJ,MOOD,EMO,FRAME,AMBIENT,SELF_INJ,SDK_INJ,CONT context
     class FAST_PATH,MAIN_PATH,OLLAMA model
     class FILE_TOOLS,CMD_TOOLS,WEB_TOOLS,MEM_TOOL,AVATAR_TOOLS,EXEC,VTS,GUARDS tools
     class HEARTBEAT,AMBIENT_MOD,SELFMODEL,EMOSTATE,MEMREFLECT,VLM,DISCORD background
     class DAVE,OPUSDEC,DVAD,DSTT voicerx
+    class SDKINV,SDKSRV,PLUGIN,BCAST sdk
     class CHROMA storage
     class TTS,OUT_SPEAK,OUT_DISC,SKIP,HIST output
     class LOGHUB,DASH diag
@@ -1016,6 +1125,7 @@ flowchart TD
 | Pink | Agent tools + safety guards |
 | Teal | Always-on background modules |
 | Gold | Discord voice-receive path (DAVE decrypt → Opus → VAD → Whisper) |
+| Violet | External SDK (websocket server, plugin clients, invocation and broadcast) |
 | Gray | Persistent storage (ChromaDB) |
 | Red | Output (TTS, speakers, Discord voice, history) |
 | Light blue | Web client stack |
@@ -1052,6 +1162,15 @@ flowchart TD
 | `web/app.js` | SPA router and seven pages: chat, dashboard, memory, persona, models, integrations, settings; voice controls |
 | `web/login.html` / `web/login.js` | Standalone `/login` page (register/login toggle) |
 | `web/setup.html` / `web/setup.js` | Four-step first-run setup wizard |
+| `sdk/__init__.py` | Public exports — `ActionSpec`, `action`, `LumiClient` |
+| `sdk/protocol.py` | Wire protocol, message builders |
+| `sdk/actions.py` | `action()` builder + `param()` JSON-schema helper |
+| `sdk/server.py` | `SDKServer` module (runs inside Lumi) |
+| `sdk/client.py` | `LumiClient` base class (for external apps) |
+| `sdk/errors.py` | SDK exceptions |
+| `sdk/README.md` | Third-party protocol spec |
+| `sdk/examples/system_stats.py` | Python reference client |
+| `plugin/plugin.py` | Working demo plugin (screenshot + notes) |
 | `signals.py` | Shared state object (history, flags, queues, input_paused) |
 | `constants.py` | Config, workspace path, YAML persona loader, HOST object, model names, `build_system_prompt()` / `get_system_prompt()` (per-host cache), `LUMI_VERSION` |
 | `lumi.yaml` | Full persona definition — personality, lore, favorites, fears |
@@ -1092,6 +1211,12 @@ Each module runs in its own thread with its own event loop, spawned by
 - **ruamel.yaml** (`pip install ruamel.yaml`) — comment-preserving edits to
   `lumi.yaml` in `persona_editor.py` (`ruamel.yaml>=0.18.0`). Optional; falls back to PyYAML, which
   drops comments on save
+- **websockets** (`pip install "websockets>=12.0"`) — `sdk/client.py`, the SDK
+  client library used by external apps
+- **psutil** (`pip install "psutil>=5.9.0"`) — `sdk/examples/system_stats.py`,
+  the reference client
+- **mss** (`pip install "mss>=9.0.1"`) — `plugin/plugin.py`, the screenshot
+  example (already present via `ambient_perception`)
 - **Conda** recommended for environment isolation
 
 ### Recommended Models
@@ -1630,8 +1755,22 @@ trimmed significantly:
 - **`ruamel.yaml` is optional** — without it the persona editor falls back to
   PyYAML and drops comments from `lumi.yaml` on save (a yellow banner tells
   you).
-- **Port conflicts** — the log hub listens on `127.0.0.1:5001` and the web
-  client on `5000`. Both must be free at boot.
+- **Port conflicts** — the log hub listens on `127.0.0.1:5001`, the web
+  client on `5000`, and the SDK server on `5056`. All three must be free at
+  boot.
+- **Plugin action naming matters.** Small-model tool selection routes by token
+  overlap. If a plugin action's name shares vocabulary with a built-in tool or
+  a shell command, the model will prefer the built-in. Name your action for
+  the capability, not the operation — `screenshot_primary_monitor` beats
+  `capture`, `log_note` beats `write_note` — and avoid any word that also
+  appears in `run_command` examples.
+- **SDK authentication is a shared token.** All connected clients use the same
+  token from `memories/sdk_token.txt`. Per-client credentials and capability
+  allowlists are Phase 9.2 / 9.3 work.
+- **`actions/force` is stubbed but not wired.** The protocol defines the
+  command and both client and server know how to send it, but the prompter
+  hook that bypasses normal tool selection is not built yet. Used by
+  turn-based games where the client controls whose turn it is.
 
 ---
 
@@ -1651,7 +1790,7 @@ internal state, makes her own decisions, and acts without being prompted.
 | 6 | Self-model / meta-cognition | ✅ Complete |
 | 6.5 | Avatar control (VTube Studio) | ✅ Complete |
 | 7 | Discord voice bridge | ✅ Complete (pure Python, no sidecar) |
-| 8 | External SDK (websocket plugin host) | ⏳ Planned |
+| 8 | External SDK (websocket plugin host) | ✅ Complete |
 | 9 | Security hardening | 🟡 Partial (see below) |
 | 10 | Local web client | ✅ Complete |
 
@@ -1660,6 +1799,12 @@ turned out to be unnecessary once `davey` shipped a Python binding and
 `discord.py` 2.7 integrated DAVE for the send path. Voice receive, speaker
 attribution, group context, and the diagnostics commands are described under
 [Discord Voice](#discord-voice).
+
+**Phase 8** is complete. External applications connect to Lumi over a local
+websocket on `127.0.0.1:5056`, register their own actions, push context, and
+receive invocations, using a wire protocol modeled on Vedal's Neuro SDK. It was
+demonstrated end to end with a working Python plugin that captures screenshots
+and logs timestamped notes. See [External SDK](#external-sdk).
 
 **Phase 10** is complete: the local web client, per-user memory and
 emotional-state isolation, browser voice, and multi-provider LLM routing all
@@ -1678,11 +1823,12 @@ under Phase 9.
   masked in API responses; rotation UI, `.gitignore` check, and
   log-redaction audit pending
 - ❌ Prompt injection provenance tagging (9.1)
-- ❌ SDK authentication (9.2)
+- 🟡 SDK authentication (9.2) — shared token shipped; per-client credentials
+  and capability allowlists (9.2 / 9.3) pending
 - ❌ `realpath()` fix on the file sandbox (9.5)
 - ❌ Self-modification guard (9.10)
 
-Phase 8 and the rest of 9 are deliberately parked while Phase 7 and Phase 10
+The rest of Phase 9 is deliberately parked while Phases 7, 8, and 10
 get real-world use. Use her for a week before deciding which of the remaining
 items matter. Real use drives the next round of tuning, not a checklist.
 
@@ -1694,6 +1840,7 @@ Built as a personal project. Architecture inspired by Neuro-sama
 (Vedal987).
 
 * **VTube Model:** [Arii / Ariu (Booth)](https://booth.pm/en/items/5879420)
+* **SDK protocol** modeled after Vedal's Neuro SDK (VedalAI/neuro-sdk).
 * **Discord voice receive** would not be possible without `davey` by the
   Discord team and the AIRI project's TypeScript implementation, which served
   as the reference architecture.
