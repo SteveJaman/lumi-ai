@@ -14,6 +14,9 @@ The server exposes three methods the prompter uses:
 
 The public API surface is intentionally small. Everything else is
 protocol plumbing.
+
+The SDK auth token lives at data/memories/sdk_token.txt after the
+folder reorg — 0600 perms on POSIX, generated on first boot.
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 from aiohttp import web, WSMsgType
 
-from constants import WORKSPACE_ROOT, SDK_HOST, SDK_PORT, SDK_VERSION
+from constants import WORKSPACE_ROOT, SDK_HOST, SDK_PORT, SDK_VERSION, DATA_ROOT
 from modules.module import Module
 from modules.log_hub import emit as hub_emit
 
@@ -52,7 +55,8 @@ HELLO_TIMEOUT_SECONDS = 10
 INVOKE_TIMEOUT_SECONDS = 30
 PING_INTERVAL_SECONDS = 30
 
-_TOKEN_PATH = os.path.join(WORKSPACE_ROOT, "memories", "sdk_token.txt")
+# Token lives under data/memories/ after the folder reorg.
+_TOKEN_PATH = os.path.join(DATA_ROOT, "memories", "sdk_token.txt")
 
 
 def _load_or_create_token() -> str:

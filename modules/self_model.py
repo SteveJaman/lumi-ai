@@ -13,8 +13,9 @@ Three jobs:
      as internal awareness, not something to announce.
 
 Files:
-  modules/self_model.py      — this file
-  memories/self_model.json   — persisted observations across sessions
+  modules/self_model.py                — this file
+  data/memories/self_model.json        — persisted observations
+                                          across sessions
 """
 
 import asyncio
@@ -29,7 +30,9 @@ from collections import Counter, deque
 import requests
 
 from modules.module import Module
-from constants import LLM_ENDPOINT, FAST_MODEL_NAME, MODEL_NAME, AI_NAME
+from constants import (
+    LLM_ENDPOINT, FAST_MODEL_NAME, MODEL_NAME, AI_NAME, DATA_ROOT,
+)
 from modules.llm_providers import chat_sync, LLMResponse
 
 # ===============================================================
@@ -43,7 +46,8 @@ REFLECTION_MIN_TURNS = 5                 # don't reflect on nothing
 OBSERVATION_STALE_AFTER = 3600           # drop observations after 1h
 OBSERVATION_CAP = 4                      # max observations kept
 
-SELF_MODEL_PATH = os.path.join("memories", "self_model.json")
+# Persisted state lives under data/memories/ after the folder reorg.
+SELF_MODEL_PATH = os.path.join(DATA_ROOT, "memories", "self_model.json")
 
 
 # ===============================================================

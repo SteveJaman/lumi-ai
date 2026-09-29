@@ -1,28 +1,30 @@
 """
-One-shot importer: reads logs/chat_history.json, runs the reflection
-prompt over chunks of it, and stores the extracted facts into the same
-ChromaDB collection the runtime Memory module uses.
+One-shot importer: reads data/logs/chat_history.json, runs the
+reflection prompt over chunks of it, and stores the extracted facts
+into the same ChromaDB collection the runtime Memory module uses.
 
-Lives under modules/ but runs as if it were at the workspace root —
+Lives under scripts/ but runs as if it were at the workspace root —
 the bootstrap below adds the workspace root to sys.path and chdir's
-into it, so `from constants import ...` works and every relative path
-(logs/, memories/) resolves correctly.
+into it, so `from constants import ...` works.
 
 Run from anywhere:
 
-    python modules\import_chat_history.py --dry-run
-    python -m modules.import_chat_history --dry-run
+    python scripts\\import_chat_history.py --dry-run
+    python -m scripts.import_chat_history --dry-run
 
 Safe to re-run — it skips facts already stored (exact text match).
 Pass --wipe to start clean.
+
+Note: ChromaDB takes an exclusive lock on data/memories/chroma.db.
+Close Lumi (main.py) before running this script.
 """
 
 import os
 import sys
 
 # ---- Path bootstrap ---------------------------------------------------
-# This file lives in modules/. Everything the rest of the workspace
-# expects (constants.py, logs/, memories/, .env) sits one directory up.
+# This file lives in scripts/. Everything the rest of the workspace
+# expects (constants.py, data/, config/) sits one directory up.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -45,11 +47,13 @@ from constants import (
     MODEL_NAME,
     HOST,
     AI_NAME,
+    DATA_ROOT,
 )
 
 
-HISTORY_PATH = os.path.join("logs", "chat_history.json")
-CHROMA_PATH  = os.path.join("memories", "chroma.db")
+# Runtime storage locations — under data/ after the folder reorg.
+HISTORY_PATH = os.path.join(DATA_ROOT, "logs", "chat_history.json")
+CHROMA_PATH  = os.path.join(DATA_ROOT, "memories", "chroma.db")
 COLLECTION   = "neuro_collection"
 
 CHUNK_SIZE = 12

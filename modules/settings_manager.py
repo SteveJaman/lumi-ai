@@ -9,6 +9,10 @@ Owns three things:
      uptime, Python version).
   3. Reset/wipe actions for the Advanced tab. Each target is confined
      to a fixed allowlist — no arbitrary paths from the client.
+
+Reset targets point at the runtime data folders under data/ after the
+folder reorg. Only the current user's memory is wiped by the memory
+target; the others are global.
 """
 
 from __future__ import annotations
@@ -40,13 +44,13 @@ _PROCESS_START = time.time()
 
 # Files/dirs the Advanced tab is allowed to touch. Anything outside
 # this allowlist is rejected server-side regardless of what the client
-# sends.
+# sends. Paths are relative to WORKSPACE_ROOT.
 _RESET_TARGETS = {
-    "history":     "Chat history (logs/chat_history.json)",
-    "session":     "Saved session continuity (memories/session_state.json)",
-    "self_model":  "Self-model observations (memories/self_model.json)",
-    "logs":        "Diagnostics log (logs/events.log)",
-    "memory":      "Long-term memory (memories/chroma.db collection)",
+    "history":     "Chat history (data/logs/chat_history.json)",
+    "session":     "Saved session continuity (data/memories/session_state.json)",
+    "self_model":  "Self-model observations (data/memories/self_model.json)",
+    "logs":        "Diagnostics log (data/logs/events.log)",
+    "memory":      "Long-term memory (data/memories/chroma.db collection)",
 }
 
 
@@ -236,13 +240,13 @@ def reset_target(target: str, modules, signals) -> Tuple[bool, str]:
         if target == "history":
             return _reset_history(signals)
         if target == "session":
-            return _reset_file("memories/session_state.json",
+            return _reset_file("data/memories/session_state.json",
                                "Session state cleared.")
         if target == "self_model":
-            return _reset_file("memories/self_model.json",
+            return _reset_file("data/memories/self_model.json",
                                "Self-model observations cleared.")
         if target == "logs":
-            return _reset_file("logs/events.log", "Log file cleared.")
+            return _reset_file("data/logs/events.log", "Log file cleared.")
         if target == "memory":
             return _reset_memory(modules)
     except Exception as e:

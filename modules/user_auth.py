@@ -5,6 +5,8 @@ SQLite-backed, argon2id-hashed, offline-only. No network calls, no
 third-party identity providers. Sessions are sliding-TTL, stored in
 the same DB, and persisted across process restarts.
 
+The user DB lives at data/memories/users.db after the folder reorg.
+
 Designed to be used by modules/socketIO.py, but fully usable from a
 terminal for testing:
 
@@ -22,6 +24,8 @@ import secrets
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+from constants import DATA_ROOT
+
 # --- Password hashing ----------------------------------------------------
 # argon2-cffi is the target. If it's not installed we fall back to
 # stdlib pbkdf2_hmac — weaker, but functional and zero-dependency.
@@ -37,7 +41,8 @@ except ImportError:
           "falling back to pbkdf2_hmac. pip install argon2-cffi\033[0m")
 
 
-DB_PATH = os.path.join("memories", "users.db")
+# User DB lives under data/memories/.
+DB_PATH = os.path.join(DATA_ROOT, "memories", "users.db")
 
 # 30-day sliding TTL
 SESSION_TTL_SECONDS = 60 * 60 * 24 * 30

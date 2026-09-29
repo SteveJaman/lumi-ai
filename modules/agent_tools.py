@@ -18,13 +18,24 @@ import subprocess
 
 from constants import WORKSPACE_ROOT
 
-SKIP_DIRS = {"venv", ".venv", ".git", "__pycache__", "node_modules"}
+# Skip these when walking the workspace. "data" and "assets" are skipped
+# because they hold runtime state (ChromaDB, browser profile, screenshots)
+# and binary assets — searching them is slow and unhelpful.
+SKIP_DIRS = {
+    "venv", ".venv", ".git", "__pycache__", "node_modules",
+    "data", "assets",
+}
 
 PROTECTED_FILES = {
     "main.py",
     "constants.py",
+    "signals.py",
     ".env",
     "Modelfile",
+    # Config lives under config/ now — keep the persona file safe.
+    "config/lumi.yaml",
+    "config/lumi.example.yaml",
+    "config/blacklist.txt",
 }
 
 MAX_FILE_READ_CHARS = 12000
@@ -207,8 +218,14 @@ def _find_file_in_workspace(filename):
     filename = filename.strip().strip("'\"").replace("\\", "/")
     target_name = os.path.basename(filename).lower()
 
-    # Pass 1: try common locations first (fast)
-    for candidate_dir in ("library", "documents", "docs", "files", "data", ""):
+    # Pass 1: try common locations first (fast).
+    # "data/library" is where user-supplied documents live after the
+    # folder reorg. Keep the old names as fallbacks for anyone with a
+    # legacy layout.
+    for candidate_dir in (
+        os.path.join("data", "library"),
+        "library", "documents", "docs", "files", "",
+    ):
         candidate = os.path.join(WORKSPACE_ROOT, candidate_dir, target_name)
         if os.path.isfile(candidate):
             return candidate

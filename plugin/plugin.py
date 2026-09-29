@@ -29,9 +29,10 @@ import sys
 # ----------------------------------------------------------------------
 # Path bootstrap
 # ----------------------------------------------------------------------
-# The plugin lives inside Lumi-master/, so we add the workspace root to
-# sys.path so `import sdk` resolves to Lumi's SDK package. If you later
-# vendor a copy of sdk/ into a standalone project, delete this block.
+# The plugin lives inside Lumi-master/plugin/, so we add the workspace
+# root to sys.path so `import sdk` resolves to Lumi's SDK package. If
+# you later vendor a copy of sdk/ into a standalone project, delete
+# this block and import `LumiClient` / `action` from the vendored copy.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
@@ -49,8 +50,11 @@ from sdk import LumiClient, action
 # ----------------------------------------------------------------------
 # Paths and config
 # ----------------------------------------------------------------------
-NOTES_PATH = os.path.join(_ROOT, "notes.txt")
-SCREENSHOT_DIR = os.path.join(_ROOT, "logs", "screenshots")
+# Everything the plugin writes at runtime goes under data/ so the repo
+# root stays clean and the .gitignore rule for data/* covers it.
+DATA_ROOT = os.path.join(_ROOT, "data")
+NOTES_PATH = os.path.join(DATA_ROOT, "notes.txt")
+SCREENSHOT_DIR = os.path.join(DATA_ROOT, "logs", "screenshots")
 
 
 class LumiPlugin(LumiClient):
@@ -123,6 +127,7 @@ class LumiPlugin(LumiClient):
         if not text:
             return False, "no text provided"
         try:
+            os.makedirs(os.path.dirname(NOTES_PATH) or ".", exist_ok=True)
             stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             line = f"[{stamp}] {text}\n"
             with open(NOTES_PATH, "a", encoding="utf-8") as f:
@@ -137,7 +142,7 @@ class LumiPlugin(LumiClient):
 # ----------------------------------------------------------------------
 
 async def _main():
-    token_path = os.path.join(_ROOT, "memories", "sdk_token.txt")
+    token_path = os.path.join(DATA_ROOT, "memories", "sdk_token.txt")
 
     client = LumiPlugin(
         game="Lumi Plugin",

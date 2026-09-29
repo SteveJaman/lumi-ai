@@ -1,5 +1,8 @@
 # ============================================================
 # Lumi AI Companion — .gitignore
+# Restructured for the data/ + config/ folder reorg.
+# Everything the app writes at runtime lives under data/.
+# Everything the user configures lives under config/.
 # ============================================================
 
 # --- Secrets & environment ---
@@ -51,45 +54,75 @@ deepspeed-*.whl
 Thumbs.db
 desktop.ini
 
-# --- Logs ---
-logs/
-*.log
+# ============================================================
+# RUNTIME DATA
+# ------------------------------------------------------------
+# data/ holds everything the app writes at runtime. The
+# top-level data/README.md documents the folder and is kept;
+# everything inside is generated or user-specific.
+# ============================================================
+
+# --- Browser profile (cookies, logins, cache, history) ---
+data/browser_profile/
+
+# --- Diagnostic logs ---
+data/logs/
 realtimesst.log
 realtimesst_*.log
+*.log
 
-# --- Chat history & runtime state ---
-logs/chat_history.json
-logs/visual_memory.json
-logs/images/
+# --- Long-term memory + per-user state ---
+# ChromaDB database, self-model, session continuity,
+# emotional state, user database, SDK token.
+data/memories/
+!data/memories/readme.md
+!data/memories/.gitkeep
 
-# --- Memory (ChromaDB) ---
-memories/
-memories.json
-chroma.db/
-*.chroma
+# --- VTS plugin authentication token ---
+data/vtubeStudio_token.txt
 
-# --- VTube Studio ---
-vtubeStudio_token.txt
+# --- Stored API keys (written by the Integrations page) ---
+data/API/
 
-# --- Playwright / browser ---
-lumi_firefox_profile/
-playwright-report/
-test-results/
+# --- TTS output buffers ---
+data/outputs/
 
-# --- Audio artifacts ---
-songs/
-recordings/
+# --- Local user-supplied documents ---
+data/library/*
+!data/library/.gitkeep
+
+# --- Voice reference clips (also covered by data/voices/.gitignore) ---
+data/voices/*
+!data/voices/.gitignore
+
+# --- User songs (also covered by data/songs/.gitignore) ---
+data/songs/*
+!data/songs/.gitignore
+
+# --- Downloaded / vendored models (XTTS, etc.) ---
+data/models/
+
+# ============================================================
+# AUDIO ARTIFACTS (root-level fallbacks)
+# ============================================================
 *.wav
 *.mp3
 *.pcm
 temp_discord_audio_*.wav
 test_tone.wav
 
-# --- Backups made by write_file ---
+# ============================================================
+# BACKUPS & SCRATCH
+# ============================================================
+# Auto-backups made by write_file and the constants.py patcher.
 *.bak
 *.bak.*
 
-# --- Claude Code / AI assistant scratch ---
+# Persona editor scratch / manual backups.
+config/lumi.yaml.bak
+config/*.yaml.bak
+
+# Claude Code / AI assistant scratch.
 .claude/
 .cursor/
 .aider*

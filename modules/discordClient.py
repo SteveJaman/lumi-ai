@@ -28,6 +28,7 @@ from faster_whisper import WhisperModel
 
 from modules.module import Module
 from modules.log_hub import emit as hub_emit
+from constants import DATA_ROOT
 
 if sys.stdout.encoding.lower() != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
@@ -443,7 +444,7 @@ class DiscordClient(Module):
         self.voice_channel_id = int(os.getenv("DISCORD_VOICE_CHANNEL_ID", 0))
 
         self._sinks = {}
-        
+
         self._roster = {}  # guild_id → list of {id, display_name, is_bot}
 
         self._tts_queue = asyncio.Queue()
@@ -652,7 +653,7 @@ class DiscordClient(Module):
                     self.signals.last_discord_message_id = message.id
                     self.signals.add_message("user", f"{user_name}: {content}")
                     self.signals.new_message = True
-                    
+
         @self.bot.event
         async def on_voice_state_update(member, before, after):
             # Refresh rosters when anyone joins/leaves/moves in a guild
@@ -749,7 +750,9 @@ class DiscordClient(Module):
             if not vc.is_connected():
                 return await ctx.send("Not connected.")
 
-            path = "test_tone.wav"
+            # Write the test tone into data/ so it doesn't clutter the
+            # repo root, and so it's covered by the data/* gitignore.
+            path = os.path.join(DATA_ROOT, "test_tone.wav")
             _generate_tone_wav(path, freq_hz=440.0, duration_s=2.0)
 
             if vc.is_playing():
@@ -882,7 +885,9 @@ class DiscordClient(Module):
                 vc.stop()
 
             idx = next(self._tts_file_counter) % 2
-            filename = f"temp_discord_audio_{idx}.wav"
+            # Temp playback files go under data/ so they're gitignored
+            # along with everything else the app writes at runtime.
+            filename = os.path.join(DATA_ROOT, f"temp_discord_audio_{idx}.wav")
 
             try:
                 with open(filename, "wb") as f:

@@ -18,7 +18,7 @@ persisted and the incoming one is loaded from disk. Every consumer that
 reads signals.emotional_state sees the state belonging to whoever is
 currently logged in.
 
-Persistence lives at memories/emotional_state/{user_id}.json.
+Persistence lives at data/memories/emotional_state/{user_id}.json.
 """
 
 import asyncio
@@ -31,7 +31,7 @@ import datetime
 import yaml
 
 from modules.module import Module
-from constants import WORKSPACE_ROOT, HOST
+from constants import DATA_ROOT, CONFIG_ROOT, HOST
 from modules.log_hub import emit as hub_emit
 
 
@@ -66,7 +66,8 @@ BOREDOM_HIGH = 0.60
 BOREDOM_MID = 0.42
 BOREDOM_LOW = 0.25
 
-_STATE_DIR = os.path.join(WORKSPACE_ROOT, "memories", "emotional_state")
+# Per-user state lives under data/memories/emotional_state/.
+_STATE_DIR = os.path.join(DATA_ROOT, "memories", "emotional_state")
 
 
 # ===============================================================
@@ -95,7 +96,8 @@ _DEFAULT_FRAMES = {
 
 
 def _load_yaml_block(block_name, defaults):
-    yaml_path = os.path.join(WORKSPACE_ROOT, "lumi.yaml")
+    # Persona file lives under config/ after the folder reorg.
+    yaml_path = os.path.join(CONFIG_ROOT, "lumi.yaml")
     if not os.path.exists(yaml_path):
         return dict(defaults)
     try:

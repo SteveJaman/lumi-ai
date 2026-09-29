@@ -4,6 +4,20 @@ Reference SDK client — system statistics and a desktop notification.
     python -m sdk.examples.system_stats
 
 Requires Lumi running and `pip install websockets psutil`.
+
+This file is a reference implementation. It deliberately does not
+import from Lumi's internals — it only uses the standalone SDK
+(sdk/client.py, sdk/protocol.py, sdk/actions.py, sdk/errors.py). If you
+copy those four files into your own project, this file works there too.
+
+Token discovery:
+  1. env var LUMI_SDK_TOKEN (path to the token file)
+  2. env var LUMI_SDK_TOKEN_PATH (alias)
+  3. default: <workspace_root>/data/memories/sdk_token.txt
+
+The default path only applies when this file runs inside the Lumi
+repo. When running standalone, set LUMI_SDK_TOKEN to point at wherever
+Lumi's sdk_token.txt lives.
 """
 
 import asyncio
@@ -16,6 +30,24 @@ except ImportError:
     psutil = None
 
 from sdk import LumiClient, action
+
+
+def _default_token_path():
+    """Best-effort default token location inside the Lumi workspace.
+    Used only when the env var override is not set."""
+    # sdk/examples/system_stats.py → sdk/examples → sdk → workspace root
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(os.path.dirname(here))
+    return os.path.join(root, "data", "memories", "sdk_token.txt")
+
+
+def _resolve_token_path():
+    """Env override first, then the workspace default."""
+    for var in ("LUMI_SDK_TOKEN", "LUMI_SDK_TOKEN_PATH"):
+        val = os.environ.get(var)
+        if val:
+            return val
+    return _default_token_path()
 
 
 class SystemStatsClient(LumiClient):
@@ -66,7 +98,14 @@ class SystemStatsClient(LumiClient):
 
 
 async def _main():
-    token_path = os.path.join("memories", "sdk_token.txt")
+    token_path = _resolve_token_path()
+
+    if not os.path.isfile(token_path):
+        print(f"[sdk] token not found at {token_path}")
+        print(f"[sdk] set LUMI_SDK_TOKEN=/path/to/sdk_token.txt "
+              f"to override.")
+        return
+
     client = SystemStatsClient(
         game="System Stats",
         token_path=token_path,

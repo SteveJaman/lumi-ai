@@ -1,11 +1,24 @@
+"""
+Legacy local audio player.
+
+NOTE: This module is not spawned by main.py and is kept only for
+historical reference. If you want to remove it, delete the file — the
+rest of the project does not import it.
+"""
+
 import os
 from math import ceil
 import asyncio
 import queue
 import pyaudio
 from pydub import AudioSegment
+
 from modules.module import Module
-from constants import OUTPUT_DEVICE_INDEX
+from constants import OUTPUT_DEVICE_INDEX, DATA_ROOT
+
+
+# Songs live under data/songs/ after the folder reorg.
+SONGS_DIR = os.path.join(DATA_ROOT, "songs")
 
 
 class AudioPlayer(Module):
@@ -22,10 +35,10 @@ class AudioPlayer(Module):
 
         # Find all audio files in the songs directory
         self.audio_files = []
-        for dirpath, dirnames, filenames in os.walk("songs"):
+        for dirpath, dirnames, filenames in os.walk(SONGS_DIR):
             for file in filenames:
                 if file.endswith(".mp3") or file.endswith(".wav"):
-                    audio = self.Audio(file, os.path.join(os.getcwd(), "songs", file))
+                    audio = self.Audio(file, os.path.join(dirpath, file))
                     self.audio_files.append(audio)
 
     async def run(self):

@@ -5,7 +5,13 @@ import random
 # =======================================================
 # System & Local LLM Endpoint Setup & Workspace Paths
 # =======================================================
-WORKSPACE_ROOT = r"C:\Users\anguy\OneDrive - Kennesaw State University\Documents\Lumi-master"
+# WORKSPACE_ROOT self-locates from this file, so the repo runs
+# from any clone location without editing a hardcoded path.
+WORKSPACE_ROOT = os.path.dirname(os.path.abspath(__file__))
+DATA_ROOT      = os.path.join(WORKSPACE_ROOT, "data")
+CONFIG_ROOT    = os.path.join(WORKSPACE_ROOT, "config")
+DOCS_ROOT      = os.path.join(WORKSPACE_ROOT, "docs")
+
 LLM_ENDPOINT = "http://localhost:11434"
 MODEL_NAME = "lumi-qwen3"               # main model: custom Modelfile built from qwen3:8b
 VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached this turn
@@ -130,7 +136,7 @@ HOST_NAME = _HostNameProxy()
 # This means the persona file itself is per-user-agnostic — the
 # only per-user thing is the substitution done here.
 # =======================================================
-YAML_PATH = os.path.join(WORKSPACE_ROOT, "lumi.yaml")
+YAML_PATH = os.path.join(CONFIG_ROOT, "lumi.yaml")
 
 _yaml_raw_cache = None
 

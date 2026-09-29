@@ -17,13 +17,17 @@ get_by_id, export_all, update_memory, delete_memory) filters by the
 current user. A migration pass on init backfills legacy rows (created
 before this phase) with user_id="anthony" so the default host keeps
 seeing their existing history.
+
+Storage lives under data/memories/ after the folder reorg:
+  data/memories/chroma.db             — ChromaDB persistence dir
+  data/memories/memoryinit.json       — optional seed file
 """
 
 from modules.module import Module
 from constants import (
     AI_NAME, HOST, MEMORY_PROMPT, LLM_ENDPOINT, MODEL_NAME,
     MEMORY_QUERY_MESSAGE_COUNT, MEMORY_RECALL_COUNT,
-    FAST_MODEL_NAME,
+    FAST_MODEL_NAME, DATA_ROOT,
 )
 from modules.llm_providers import chat_sync, LLMResponse
 from chromadb.config import Settings
@@ -71,6 +75,10 @@ RETRIEVAL_BUFFER = 3
 
 DEFAULT_IMPORTANCE = 0.5
 LEGACY_USER_ID = "anthony"
+
+# Runtime storage locations — resolved under data/memories/.
+_CHROMA_PATH = os.path.join(DATA_ROOT, "memories", "chroma.db")
+_MEMORY_INIT_PATH = os.path.join(DATA_ROOT, "memories", "memoryinit.json")
 
 _BAD_VALENCE_STRINGS = {"", "null", "none", "nil", "undefined", "n/a"}
 
@@ -155,7 +163,7 @@ class Memory(Module):
         self.session_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
         self.chroma_client = chromadb.PersistentClient(
-            path="./memories/chroma.db",
+            path=_CHROMA_PATH,
             settings=Settings(anonymized_telemetry=False),
         )
         self.collection = self.chroma_client.get_or_create_collection(
@@ -165,7 +173,7 @@ class Memory(Module):
         print(f"MEMORY: Loaded {count} memories from database.")
         if count == 0:
             print("MEMORY: Empty database. Importing from memoryinit.json")
-            self.API.import_json(path="./memories/memoryinit.json")
+            self.API.import_json(path=_MEMORY_INIT_PATH)
 
         self._migrate_user_ids()
         self._normalize_all_metadata()
@@ -852,7 +860,11 @@ class Memory(Module):
 
             return "\n".join(lines)
 
-        def import_json(self, path="./memories/memoryinit.json"):
+        def import_json(self, path=None):
+            # Default to the standard location under data/memories/.
+            if path is None:
+                path = _MEMORY_INIT_PATH
+
             if not os.path.exists(path):
                 print(f"MEMORY: No initialization file found at {path}. "
                       f"Starting with empty collection.")

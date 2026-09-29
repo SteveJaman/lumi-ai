@@ -88,6 +88,12 @@ class ConsoleInput(Module):
             if self.signals.terminate:
                 return None
 
+            # Yield stdin during a y/n confirmation so the prompter's
+            # input() call gets the keystroke instead of us.
+            if getattr(self.signals, "input_paused", False):
+                time.sleep(0.05)
+                continue
+
             if not msvcrt.kbhit():
                 time.sleep(TICK_SECONDS)
                 continue
@@ -174,7 +180,10 @@ class ConsoleInput(Module):
                 pass
 
     def init_event_loop(self):
-        super().init_event_loop()
+        # NOTE: Do NOT call super().init_event_loop() here. The base class
+        # does asyncio.run(self.run()) which is an infinite sleep loop —
+        # the reader thread below would never start. ConsoleInput has no
+        # useful async work, so spawn the reader thread and return.
         if not self.enabled:
             return
         t = threading.Thread(

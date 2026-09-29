@@ -1,5 +1,5 @@
 from modules.module import Module
-from constants import MULTIMODAL_STRATEGY
+from constants import MULTIMODAL_STRATEGY, DATA_ROOT
 import base64
 import io
 import re
@@ -17,6 +17,10 @@ try:
 except ImportError:
     HAS_MSS = False
     print("\033[91mMULTIMODAL: 'mss' and/or 'pillow' not installed — screen capture is disabled.\033[0m")
+
+# Runtime screenshot/memory storage — under data/logs/ after the reorg.
+_IMAGES_DIR = os.path.join(DATA_ROOT, "logs", "images")
+_VISUAL_MEMORY_FILE = os.path.join(DATA_ROOT, "logs", "visual_memory.json")
 
 # Screen-reference regex. Requires BOTH a vision verb AND a screen-related
 # noun within a short window. This is what keeps "read STATUS.md" from
@@ -79,9 +83,9 @@ class MultiModal(Module):
         # Default to Monitor 2 (Main display), can be toggled to 1 by voice/text
         self.active_monitor = 2
 
-        # Ensure visual storage directories exist
-        os.makedirs("logs/images", exist_ok=True)
-        self.memory_file = "logs/visual_memory.json"
+        # Ensure visual storage directories exist — under data/logs/.
+        os.makedirs(_IMAGES_DIR, exist_ok=True)
+        self.memory_file = _VISUAL_MEMORY_FILE
 
         self._ensure_ollama_running()
 
@@ -131,9 +135,9 @@ class MultiModal(Module):
             img.save(buffer, format="JPEG", quality=80)
             b64_data = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-            # Save raw snapshot to disk
+            # Save raw snapshot to disk under data/logs/images/.
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            img_path = os.path.join("logs", "images", f"screen_{timestamp}.jpg")
+            img_path = os.path.join(_IMAGES_DIR, f"screen_{timestamp}.jpg")
             with open(img_path, "wb") as f:
                 f.write(buffer.getvalue())
 

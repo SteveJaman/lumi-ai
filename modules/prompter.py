@@ -7,6 +7,8 @@ import threading
 import os
 import datetime
 import random
+import io
+import sys
 from ddgs import DDGS
 import pypdf
 from docx import Document
@@ -41,6 +43,42 @@ SENTENCE_SPLIT_PATTERN = re.compile(r'(?<=[.!?;\n])\s+')
 MAX_AGENT_STEPS = 6
 AGENT_REQUEST_TIMEOUT = 180
 SESSION_CONTINUITY_TURNS = 3
+
+
+# ===============================================================
+# Command output capture
+# ---------------------------------------------------------------
+# Commands print to the terminal via print(). We tee that output into
+# a buffer, strip ANSI, and append to signals.history as a system
+# message tagged source="command" so the web UI can render it. The
+# LLM context builder filters these out so they never pollute her
+# prompt.
+# ===============================================================
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+class _TeeStdout:
+    """Writes to the real stdout AND copies into a buffer."""
+    def __init__(self, terminal, buffer):
+        self.terminal = terminal
+        self.buffer = buffer
+
+    def write(self, data):
+        try:
+            self.terminal.write(data)
+        except Exception:
+            pass
+        try:
+            self.buffer.write(data)
+        except Exception:
+            pass
+
+    def flush(self):
+        try:
+            self.terminal.flush()
+        except Exception:
+            pass
 
 
 def _get_local_now():
@@ -999,7 +1037,42 @@ class Prompter:
     def _agent_mode_banner(self):
         state = f"{GREEN}ON{RESET}" if self.agent_mode_enabled else f"{YELLOW}OFF{RESET}"
         return f"{GRAY}[agent mode: {state}{GRAY}]{RESET}"
-    
+
+    # ---------------------------------------------------------------
+    # Command output capture
+    # ---------------------------------------------------------------
+    def _run_command_and_capture(self, fn):
+        """Run a command handler. Whatever it prints goes to the terminal
+        AND to signals.history tagged source="command", so the web UI
+        shows it. ANSI codes are stripped for the history entry.
+        Command output is filtered out of LLM context in
+        run_conversational / run_agent_turn."""
+        buf = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = _TeeStdout(old_stdout, buf)
+        try:
+            fn()
+        except Exception as e:
+            # Write the error to the real stdout via the tee
+            print(f"\033[91mCOMMAND: handler error — {e}\033[0m")
+        finally:
+            sys.stdout = old_stdout
+
+        text = buf.getvalue()
+        if not text or not text.strip():
+            return
+        clean = _ANSI_RE.sub("", text).strip()
+        if not clean:
+            return
+
+        self.signals.history.append({
+            "role": "system",
+            "content": clean,
+            "source": "command",
+        })
+        if hasattr(self.signals, "save_history"):
+            self.signals.save_history()
+
     def _format_voice_context(self, vc):
         """Render the Discord voice context into a prompt block."""
         lines = ["=== DISCORD VOICE CONTEXT ==="]
@@ -1074,6 +1147,8 @@ class Prompter:
         messages = [{"role": "system", "content": f"{get_system_prompt()}\n\n{context_injections}"}]
 
         for msg in self.signals.history[-10:]:
+            if msg.get("source") == "command":
+                continue
             role = msg.get("role", "user")
             if role not in ("user", "assistant", "system"):
                 role = "user"
@@ -1222,9 +1297,6 @@ class Prompter:
             "=== END TOOL USE ===\n"
         )
         else:
-            # Conversational mode is the default. Lumi just chats — no
-            # tool talk, no refusal phrasing, no "flip agent mode on"
-            # nudges. The persona system prompt is enough.
             agent_note = (
                 "=== CONVERSATIONAL MODE ===\n"
                 "You are chatting casually right now. Do not emit tool "
@@ -1707,6 +1779,8 @@ class Prompter:
         messages = [{"role": "system", "content": f"{get_system_prompt()}\n\n{context_injections}"}]
 
         for msg in self.signals.history[-10:]:
+            if msg.get("source") == "command":
+                continue
             role = msg.get("role", "user")
             if role not in ("user", "assistant", "system", "tool"):
                 role = "user"
@@ -2084,53 +2158,72 @@ class Prompter:
 
                     force_agent = False
 
+                    # ─────────────────────────────────────────────────
+                    # !list / !help
+                    # ─────────────────────────────────────────────────
                     if stripped_lower in ("!list", "!help"):
-                        print(self.render_command_list())
+                        self._run_command_and_capture(
+                            lambda: print(self.render_command_list())
+                        )
                         self.signals.AI_thinking = False
                         continue
 
+                    # ─────────────────────────────────────────────────
+                    # !state
+                    # ─────────────────────────────────────────────────
                     if stripped_lower == "!state":
-                        if hasattr(self.signals, "emotional_state"):
-                            s = self.signals.emotional_state
-                            print(f"\n{BOLD}{MAGENTA}Emotional State{RESET}")
-                            print(f"  valence:     {s.valence:+.2f}")
-                            print(f"  arousal:     {s.arousal:.2f}")
-                            print(f"  frustration: {s.frustration:.2f}")
-                            print(f"  curiosity:   {s.curiosity:.2f}")
-                            print(f"  boredom:     {s.boredom:.2f}")
-                            print(f"\n{BOLD}{MAGENTA}Traits{RESET}")
-                            for k, v in s.traits.items():
-                                print(f"  {k:<14}{v:.2f}")
-                            print(f"\n{BOLD}{MAGENTA}Current Frame{RESET}")
-                            print(f"  {s.current_frame}")
-                            print(f"\n  {s.describe(update=False)}\n")
-                        else:
-                            print(f"{YELLOW}[emotional state module not loaded]{RESET}")
+                        def _show_state():
+                            if hasattr(self.signals, "emotional_state"):
+                                s = self.signals.emotional_state
+                                print(f"\n{BOLD}{MAGENTA}Emotional State{RESET}")
+                                print(f"  valence:     {s.valence:+.2f}")
+                                print(f"  arousal:     {s.arousal:.2f}")
+                                print(f"  frustration: {s.frustration:.2f}")
+                                print(f"  curiosity:   {s.curiosity:.2f}")
+                                print(f"  boredom:     {s.boredom:.2f}")
+                                print(f"\n{BOLD}{MAGENTA}Traits{RESET}")
+                                for k, v in s.traits.items():
+                                    print(f"  {k:<14}{v:.2f}")
+                                print(f"\n{BOLD}{MAGENTA}Current Frame{RESET}")
+                                print(f"  {s.current_frame}")
+                                print(f"\n  {s.describe(update=False)}\n")
+                            else:
+                                print(f"{YELLOW}[emotional state module not loaded]{RESET}")
+                        self._run_command_and_capture(_show_state)
                         self.signals.AI_thinking = False
                         continue
 
+                    # ─────────────────────────────────────────────────
+                    # !model
+                    # ─────────────────────────────────────────────────
                     if stripped_lower == "!model":
-                        fast_ok = _check_fast_model_available()
-                        routing = (FAST_MODEL_ENABLED and fast_ok)
-                        print(f"\n{BOLD}{MAGENTA}Model Routing{RESET}")
-                        print(f"  main:        {MODEL_NAME}")
-                        print(f"  fast:        {FAST_MODEL_NAME} "
-                              f"({'available' if fast_ok else 'NOT PULLED'})")
-                        print(f"  routing:     {'ON' if routing else 'OFF'}")
-                        if routing:
-                            print(f"  agent turns: main")
-                            print(f"  chat:        fast (short/simple) / main (long/complex)")
-                        else:
-                            print(f"  all turns:   main")
-                        print()
+                        def _show_model():
+                            fast_ok = _check_fast_model_available()
+                            routing = (FAST_MODEL_ENABLED and fast_ok)
+                            print(f"\n{BOLD}{MAGENTA}Model Routing{RESET}")
+                            print(f"  main:        {MODEL_NAME}")
+                            print(f"  fast:        {FAST_MODEL_NAME} "
+                                  f"({'available' if fast_ok else 'NOT PULLED'})")
+                            print(f"  routing:     {'ON' if routing else 'OFF'}")
+                            if routing:
+                                print(f"  agent turns: main")
+                                print(f"  chat:        fast (short/simple) / main (long/complex)")
+                            else:
+                                print(f"  all turns:   main")
+                            print()
+                        self._run_command_and_capture(_show_model)
                         self.signals.AI_thinking = False
                         continue
 
+                    # ─────────────────────────────────────────────────
+                    # !self
+                    # ─────────────────────────────────────────────────
                     if stripped_lower == "!self":
-                        sm = getattr(self.signals, "self_model", None)
-                        if not sm:
-                            print(f"{YELLOW}[self-model not loaded]{RESET}")
-                        else:
+                        def _show_self():
+                            sm = getattr(self.signals, "self_model", None)
+                            if not sm:
+                                print(f"{YELLOW}[self-model not loaded]{RESET}")
+                                return
                             print(f"\n{BOLD}{MAGENTA}Self-Model{RESET}")
                             if not sm.observations:
                                 print("  (no observations yet — needs "
@@ -2161,80 +2254,101 @@ class Prompter:
                                 )
                                 print(f"  frames:       {frames}")
                             print()
+                        self._run_command_and_capture(_show_self)
                         self.signals.AI_thinking = False
                         continue
 
+                    # ─────────────────────────────────────────────────
+                    # !expressions
+                    # ─────────────────────────────────────────────────
                     if stripped_lower == "!expressions":
-                        vts = next(
-                            (m for m in self.modules
-                             if m.__class__.__name__ == "VtubeStudio"),
-                            None,
-                        )
-                        if not vts or not getattr(vts, "enabled", False):
-                            print(f"{YELLOW}[VTS module not active]{RESET}")
-                        else:
+                        def _show_expressions():
+                            vts = next(
+                                (m for m in self.modules
+                                 if m.__class__.__name__ == "VtubeStudio"),
+                                None,
+                            )
+                            if not vts or not getattr(vts, "enabled", False):
+                                print(f"{YELLOW}[VTS module not active]{RESET}")
+                                return
                             states = vts.API.list_expression_states()
                             if not states:
                                 print(f"{YELLOW}[no expression states registered]{RESET}")
-                            else:
-                                print(f"\n{BOLD}{MAGENTA}Expression States{RESET}")
-                                for name, on in sorted(states.items()):
-                                    marker = "●" if on else "○"
-                                    print(f"  {marker} {name}")
-                                print()
+                                return
+                            print(f"\n{BOLD}{MAGENTA}Expression States{RESET}")
+                            for name, on in sorted(states.items()):
+                                marker = "●" if on else "○"
+                                print(f"  {marker} {name}")
+                            print()
+                        self._run_command_and_capture(_show_expressions)
                         self.signals.AI_thinking = False
                         continue
 
+                    # ─────────────────────────────────────────────────
+                    # !hotkeys
+                    # ─────────────────────────────────────────────────
                     if stripped_lower == "!hotkeys":
-                        vts = next(
-                            (m for m in self.modules
-                             if m.__class__.__name__ == "VtubeStudio"),
-                            None,
-                        )
-                        if not vts or not getattr(vts, "enabled", False):
-                            print(f"{YELLOW}[VTS module not active]{RESET}")
-                        else:
+                        def _show_hotkeys():
+                            vts = next(
+                                (m for m in self.modules
+                                 if m.__class__.__name__ == "VtubeStudio"),
+                                None,
+                            )
+                            if not vts or not getattr(vts, "enabled", False):
+                                print(f"{YELLOW}[VTS module not active]{RESET}")
+                                return
                             hotkeys = vts.API.list_hotkeys()
                             if not hotkeys:
                                 print(f"{YELLOW}[no hotkeys cached — "
                                       f"model may not define any]{RESET}")
-                            else:
-                                print(f"\n{BOLD}{MAGENTA}Raw VTS Hotkeys{RESET}")
-                                for hk in hotkeys:
-                                    print(f"  · {hk}")
-                                print()
+                                return
+                            print(f"\n{BOLD}{MAGENTA}Raw VTS Hotkeys{RESET}")
+                            for hk in hotkeys:
+                                print(f"  · {hk}")
+                            print()
+                        self._run_command_and_capture(_show_hotkeys)
                         self.signals.AI_thinking = False
                         continue
 
+                    # ─────────────────────────────────────────────────
+                    # !positions
+                    # ─────────────────────────────────────────────────
                     if stripped_lower == "!positions":
-                        vts = next(
-                            (m for m in self.modules
-                             if m.__class__.__name__ == "VtubeStudio"),
-                            None,
-                        )
-                        if not vts or not getattr(vts, "enabled", False):
-                            print(f"{YELLOW}[VTS module not active]{RESET}")
-                        else:
+                        def _show_positions():
+                            vts = next(
+                                (m for m in self.modules
+                                 if m.__class__.__name__ == "VtubeStudio"),
+                                None,
+                            )
+                            if not vts or not getattr(vts, "enabled", False):
+                                print(f"{YELLOW}[VTS module not active]{RESET}")
+                                return
                             positions = vts.API.list_positions()
                             print(f"\n{BOLD}{MAGENTA}VTS Model Positions{RESET}")
                             for p in positions:
                                 print(f"  · {p}")
                             print()
+                        self._run_command_and_capture(_show_positions)
                         self.signals.AI_thinking = False
                         continue
 
+                    # ─────────────────────────────────────────────────
+                    # !set
+                    # ─────────────────────────────────────────────────
                     if stripped_lower == "!set" or stripped_lower.startswith("!set "):
-                        parts = stripped[len("!set"):].strip().split()
-                        vts = next(
-                            (m for m in self.modules
-                             if m.__class__.__name__ == "VtubeStudio"),
-                            None,
-                        )
-                        if not vts or not getattr(vts, "enabled", False):
-                            print(f"{YELLOW}[VTS module not active]{RESET}")
-                        elif len(parts) < 2:
-                            print(f"{YELLOW}[usage: !set <name> on|off]{RESET}")
-                        else:
+                        def _do_set():
+                            parts = stripped[len("!set"):].strip().split()
+                            vts = next(
+                                (m for m in self.modules
+                                 if m.__class__.__name__ == "VtubeStudio"),
+                                None,
+                            )
+                            if not vts or not getattr(vts, "enabled", False):
+                                print(f"{YELLOW}[VTS module not active]{RESET}")
+                                return
+                            if len(parts) < 2:
+                                print(f"{YELLOW}[usage: !set <name> on|off]{RESET}")
+                                return
                             name = parts[0].lower()
                             name = _STATE_NAME_ALIASES.get(name, name)
                             if parts[1].lower() in ("on", "true", "1"):
@@ -2243,8 +2357,7 @@ class Prompter:
                                 enabled = False
                             else:
                                 print(f"{YELLOW}[second arg must be on or off]{RESET}")
-                                self.signals.AI_thinking = False
-                                continue
+                                return
 
                             states = vts.API.list_expression_states()
                             current = states.get(name)
@@ -2259,65 +2372,83 @@ class Prompter:
                                 vts.API.set_expression(name, enabled)
                                 print(f"\n{BOLD}{MAGENTA}[VTS]{RESET} "
                                       f"set '{name}' {'on' if enabled else 'off'}")
+                        self._run_command_and_capture(_do_set)
                         self.signals.AI_thinking = False
                         continue
 
+                    # ─────────────────────────────────────────────────
+                    # !expression
+                    # ─────────────────────────────────────────────────
                     if stripped_lower == "!expression" or stripped_lower.startswith("!expression "):
-                        arg = stripped[len("!expression"):].strip()
-                        vts = next(
-                            (m for m in self.modules
-                             if m.__class__.__name__ == "VtubeStudio"),
-                            None,
-                        )
-                        if not vts or not getattr(vts, "enabled", False):
-                            print(f"{YELLOW}[VTS module not active]{RESET}")
-                        elif not arg:
-                            hotkeys = vts.API.list_hotkeys()
-                            if hotkeys:
-                                print(f"{YELLOW}[usage: !expression <name> — "
-                                      f"RAW hotkeys: {', '.join(hotkeys)}. "
-                                      f"For state-based, use !set instead]{RESET}")
-                            else:
-                                print(f"{YELLOW}[usage: !expression <name>]{RESET}")
-                        else:
+                        def _do_expression():
+                            arg = stripped[len("!expression"):].strip()
+                            vts = next(
+                                (m for m in self.modules
+                                 if m.__class__.__name__ == "VtubeStudio"),
+                                None,
+                            )
+                            if not vts or not getattr(vts, "enabled", False):
+                                print(f"{YELLOW}[VTS module not active]{RESET}")
+                                return
+                            if not arg:
+                                hotkeys = vts.API.list_hotkeys()
+                                if hotkeys:
+                                    print(f"{YELLOW}[usage: !expression <name> — "
+                                          f"RAW hotkeys: {', '.join(hotkeys)}. "
+                                          f"For state-based, use !set instead]{RESET}")
+                                else:
+                                    print(f"{YELLOW}[usage: !expression <name>]{RESET}")
+                                return
                             vts.API.trigger_hotkey(arg)
                             print(f"\n{BOLD}{MAGENTA}[VTS]{RESET} "
                                   f"toggled raw hotkey '{arg}'")
+                        self._run_command_and_capture(_do_expression)
                         self.signals.AI_thinking = False
                         continue
 
+                    # ─────────────────────────────────────────────────
+                    # !move
+                    # ─────────────────────────────────────────────────
                     if stripped_lower == "!move" or stripped_lower.startswith("!move "):
-                        arg = stripped[len("!move"):].strip()
-                        vts = next(
-                            (m for m in self.modules
-                             if m.__class__.__name__ == "VtubeStudio"),
-                            None,
-                        )
-                        if not vts or not getattr(vts, "enabled", False):
-                            print(f"{YELLOW}[VTS module not active]{RESET}")
-                        elif not arg:
-                            positions = vts.API.list_positions()
-                            print(f"{YELLOW}[usage: !move <location> — "
-                                  f"available: {', '.join(positions)}]{RESET}")
-                        else:
+                        def _do_move():
+                            arg = stripped[len("!move"):].strip()
+                            vts = next(
+                                (m for m in self.modules
+                                 if m.__class__.__name__ == "VtubeStudio"),
+                                None,
+                            )
+                            if not vts or not getattr(vts, "enabled", False):
+                                print(f"{YELLOW}[VTS module not active]{RESET}")
+                                return
+                            if not arg:
+                                positions = vts.API.list_positions()
+                                print(f"{YELLOW}[usage: !move <location> — "
+                                      f"available: {', '.join(positions)}]{RESET}")
+                                return
                             vts.API.move_model(arg)
                             print(f"\n{BOLD}{MAGENTA}[VTS]{RESET} "
                                   f"moving avatar to '{arg}'")
+                        self._run_command_and_capture(_do_move)
                         self.signals.AI_thinking = False
                         continue
 
+                    # ─────────────────────────────────────────────────
+                    # !recall
+                    # ─────────────────────────────────────────────────
                     if stripped_lower == "!recall" or stripped_lower.startswith("!recall "):
-                        query_text = stripped[len("!recall"):].strip()
-                        memory_module = next(
-                            (m for m in self.modules
-                             if m.__class__.__name__ == "Memory"),
-                            None,
-                        )
-                        if not memory_module:
-                            print(f"{YELLOW}[memory module not loaded]{RESET}")
-                        elif not query_text:
-                            print(f"{YELLOW}[usage: !recall <query>]{RESET}")
-                        else:
+                        def _do_recall():
+                            query_text = stripped[len("!recall"):].strip()
+                            memory_module = next(
+                                (m for m in self.modules
+                                 if m.__class__.__name__ == "Memory"),
+                                None,
+                            )
+                            if not memory_module:
+                                print(f"{YELLOW}[memory module not loaded]{RESET}")
+                                return
+                            if not query_text:
+                                print(f"{YELLOW}[usage: !recall <query>]{RESET}")
+                                return
                             hits = memory_module.API.query_temporal(
                                 query_text, limit=10,
                             )
@@ -2325,9 +2456,13 @@ class Prompter:
                                   f"'{query_text}'{RESET}")
                             print(memory_module.API.format_recall(hits))
                             print()
+                        self._run_command_and_capture(_do_recall)
                         self.signals.AI_thinking = False
                         continue
 
+                    # ─────────────────────────────────────────────────
+                    # !agent_on / !agent_off / !agent — already history-bound
+                    # ─────────────────────────────────────────────────
                     if stripped_lower == "!agent_on":
                         self.agent_mode_enabled = True
                         ack = f"{self._agent_mode_banner()} [confident] Agent mode engaged. Tools are live, Anthony. Point me at something."
@@ -2364,6 +2499,9 @@ class Prompter:
                             lowered_text = rest.lower()
                             force_agent = True
 
+                    # ─────────────────────────────────────────────────
+                    # wipe memory / set mood / !sleep — already history-bound
+                    # ─────────────────────────────────────────────────
                     if lowered_text in ["wipe memory", "clear memory", "reset memory"]:
                         wipe_result = self.wipe_memory()
                         self.signals.history.append({"role": "system", "content": wipe_result})
@@ -2403,6 +2541,9 @@ class Prompter:
                         self.signals.AI_thinking = False
                         continue
 
+                    # ─────────────────────────────────────────────────
+                    # Normal turn (agent or conversational)
+                    # ─────────────────────────────────────────────────
                     if force_agent or self.agent_mode_enabled:
                         mode_tag = f"{GRAY}[agent{RESET}{GRAY}]{RESET}"
                     else:
@@ -2442,7 +2583,7 @@ class Prompter:
                                 sdk.broadcast_lumi_message(raw_reply)
                             except Exception:
                                 pass
-                    
+
                     if raw_reply:
                         for module in self.modules:
                             if module.__class__.__name__ == "VeadotubeController" and hasattr(module, "inspect_and_trigger"):

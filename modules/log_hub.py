@@ -2,8 +2,9 @@
 Log hub — central diagnostic event stream with a localhost dashboard.
 
 Modules send structured events here instead of spamming print(). Events
-are kept in an in-memory ring buffer, written to logs/events.log for
-persistence, and served at http://127.0.0.1:<port>/ as a live dashboard.
+are kept in an in-memory ring buffer, written to data/logs/events.log
+for persistence, and served at http://127.0.0.1:<port>/ as a live
+dashboard.
 
 Designed to eliminate terminal clutter from high-frequency loops like
 ambient perception (skips every 30s) and heartbeat (ticks every 30s)
@@ -17,9 +18,15 @@ import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from constants import DATA_ROOT
+
 
 DEFAULT_PORT = 5001
 DEFAULT_MAXLEN = 800
+
+# Default log location — under data/logs/ so the repo root stays clean
+# and everything the app writes at runtime lives in one gitignored folder.
+_DEFAULT_LOG_FILE = os.path.join(DATA_ROOT, "logs", "events.log")
 
 
 def emit(signals, category, message, level="info"):
@@ -35,7 +42,7 @@ def emit(signals, category, message, level="info"):
 
 class LogHub:
     def __init__(self, port=DEFAULT_PORT, maxlen=DEFAULT_MAXLEN,
-                 log_file="logs/events.log"):
+                 log_file=_DEFAULT_LOG_FILE):
         self.port = port
         self.events = deque(maxlen=maxlen)
         self._lock = threading.Lock()

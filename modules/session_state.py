@@ -2,9 +2,9 @@
 Session state persistence for Lumi.
 
 At the end of a session, asks the LLM to summarize the recent conversation
-into a small JSON blob and writes it to memories/session_state.json. On the
-next startup, Prompter reads it and injects it into the first few turns so
-Lumi can open with continuity instead of a blank slate.
+into a small JSON blob and writes it to data/memories/session_state.json.
+On the next startup, Prompter reads it and injects it into the first few
+turns so Lumi can open with continuity instead of a blank slate.
 
 Phase 10.1 note: This module is host-agnostic. It uses generic "User" /
 "Lumi" role labels in transcripts and refers to "the user" in injected
@@ -19,10 +19,11 @@ import datetime
 import re
 import requests
 
-from constants import LLM_ENDPOINT, MODEL_NAME, FAST_MODEL_NAME
+from constants import LLM_ENDPOINT, MODEL_NAME, FAST_MODEL_NAME, DATA_ROOT
 from modules.llm_providers import chat_sync, LLMResponse
 
-SESSION_STATE_PATH = os.path.join("memories", "session_state.json")
+# Persisted session continuity lives under data/memories/.
+SESSION_STATE_PATH = os.path.join(DATA_ROOT, "memories", "session_state.json")
 
 SUMMARY_PROMPT = """Summarize the conversation session below as strict JSON with exactly these keys:
 

@@ -1,12 +1,16 @@
 import os
 import pypdf
 from docx import Document
-from constants import WORKSPACE_ROOT
+
+from constants import DATA_ROOT
+
 
 class DocumentManager:
     def __init__(self, library_path=None):
         if library_path is None:
-            library_path = os.path.join(WORKSPACE_ROOT, "library")
+            # User-supplied documents live under data/library/ after
+            # the folder reorg.
+            library_path = os.path.join(DATA_ROOT, "library")
         self.library_path = library_path
         os.makedirs(self.library_path, exist_ok=True)
 

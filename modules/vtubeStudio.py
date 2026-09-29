@@ -35,10 +35,14 @@ Hotkey firing paths
 2. Keyboard path — simulate the bound key combo after focusing VTS.
    Works reliably. Set USE_KEYBOARD_HOTKEYS_ONLY=True to always use
    it.
+
+The VTS plugin authentication token lives at
+data/vtubeStudio_token.txt after the folder reorg.
 """
 
 import asyncio
 import math
+import os
 import queue
 import time
 import random
@@ -47,13 +51,18 @@ import logging
 import ctypes
 
 from modules.module import Module
-from constants import VTUBE_MODEL_POSITIONS, VTUBE_MIC_POSITION
+from constants import VTUBE_MODEL_POSITIONS, VTUBE_MIC_POSITION, DATA_ROOT
 from modules.log_hub import emit as hub_emit
 
 
 logging.getLogger("websockets").setLevel(logging.WARNING)
 logging.getLogger("websockets.legacy").setLevel(logging.WARNING)
 logging.getLogger("websockets.legacy.protocol").setLevel(logging.WARNING)
+
+
+# VTS plugin auth token — kept under data/ so it's gitignored along
+# with the rest of the runtime state.
+_VTS_TOKEN_PATH = os.path.join(DATA_ROOT, "vtubeStudio_token.txt")
 
 
 # ===============================================================
@@ -405,10 +414,11 @@ class VtubeStudio(Module):
         self._mouth_name = None
         self._smile_name = None
 
+        # VTS plugin auth token — under data/ so it's gitignored.
         plugin_info = {
             "plugin_name": "Lumi VTS Plugin",
             "developer": "Lumi AI",
-            "authentication_token_path": "./vtubeStudio_token.txt",
+            "authentication_token_path": _VTS_TOKEN_PATH,
         }
         self.vts = pyvts.vts(plugin_info=plugin_info)
 
