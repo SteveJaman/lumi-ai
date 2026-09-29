@@ -105,8 +105,22 @@ class LogHub:
 
         def serve():
             try:
+                # Phase 9.7 — refuse to widen exposure without an
+                # explicit opt-in. See ALLOW_LAN_EXPOSURE in constants.py.
+                try:
+                    from constants import ALLOW_LAN_EXPOSURE
+                except Exception:
+                    ALLOW_LAN_EXPOSURE = False
+
+                bind_host = "0.0.0.0" if ALLOW_LAN_EXPOSURE else "127.0.0.1"
+                if bind_host != "127.0.0.1":
+                    print(
+                        f"\033[93mLOG HUB: WARNING — binding to "
+                        f"{bind_host} (LAN exposure enabled)\033[0m"
+                    )
+
                 self._server = ThreadingHTTPServer(
-                    ("127.0.0.1", hub.port), Handler
+                    (bind_host, hub.port), Handler
                 )
                 self._server.serve_forever()
             except Exception as e:

@@ -146,7 +146,18 @@ class SDKServer(Module):
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, self.host, self.port)
+        try:
+            from constants import ALLOW_LAN_EXPOSURE
+        except Exception:
+            ALLOW_LAN_EXPOSURE = False
+
+        bind_host = "0.0.0.0" if ALLOW_LAN_EXPOSURE else SDK_HOST
+        if bind_host != "127.0.0.1":
+            hub_emit(self.signals, "sdk",
+                    f"WARNING — binding to {bind_host} (LAN exposure enabled)",
+                    level="warn")
+
+        site = web.TCPSite(self._runner, bind_host, self.port)
         try:
             await site.start()
         except Exception as e:

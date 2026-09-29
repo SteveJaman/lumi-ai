@@ -1782,4 +1782,16 @@ class SocketIOServer:
 
         self.app.on_startup.append(_on_startup)
 
-        web.run_app(self.app, host="127.0.0.1", port=5000, print=None)
+        try:
+            from constants import ALLOW_LAN_EXPOSURE
+        except Exception:
+            ALLOW_LAN_EXPOSURE = False
+
+        bind_host = "0.0.0.0" if ALLOW_LAN_EXPOSURE else "127.0.0.1"
+        if bind_host != "127.0.0.1":
+            print(
+                f"\033[93mSOCKETIO: WARNING — binding to "
+                f"{bind_host} (LAN exposure enabled)\033[0m"
+            )
+
+        web.run_app(self.app, host=bind_host, port=5000, print=None)

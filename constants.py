@@ -677,6 +677,19 @@ SDK_PORT = 5056
 SDK_VERSION = "0.10.14"
 
 # =======================================================
+# Network Binding Policy (Phase 9.7)
+# -------------------------------------------------------
+# Every local service (web client, log hub, SDK server)
+# binds to 127.0.0.1 by default. Set ALLOW_LAN_EXPOSURE
+# to True ONLY if you are on a trusted network and you
+# understand that the SDK server, log hub dashboard, and
+# web client will then be reachable from other machines.
+# No auth token is required for LAN connections — this
+# is a deliberate "do not do this unless you mean it" gate.
+# =======================================================
+ALLOW_LAN_EXPOSURE = False
+
+# =======================================================
 # Model Spec Parser
 # -------------------------------------------------------
 # Model names accept either a bare Ollama name ("lumi-qwen3") or

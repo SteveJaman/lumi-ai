@@ -26,17 +26,45 @@ SKIP_DIRS = {
     "data", "assets",
 }
 
+# Files that write_file refuses to overwrite, matched by exact
+# relative path. Add new entries when you add new critical files.
 PROTECTED_FILES = {
+    # Core runtime
     "main.py",
     "constants.py",
     "signals.py",
-    ".env",
+    "requirements.txt",
+    ".gitignore",
     "Modelfile",
-    # Config lives under config/ now — keep the persona file safe.
+
+    # Secrets
+    ".env",
+    ".env.example",
+
+    # Persona (edit via the web client, not via write_file)
     "config/lumi.yaml",
     "config/lumi.example.yaml",
     "config/blacklist.txt",
+    "config/Modelfile-qwen3",
+
+    # VTS plugin auth token
+    "data/vtubeStudio_token.txt",
+    "data/memories/sdk_token.txt",
 }
+
+# Directories where ANY write is refused. Matched by prefix.
+# modules/  — the prompter, safety guards, tool schemas, all logic
+# sdk/      — the SDK server, protocol, client library
+# web/      — the browser frontend (can reach the API)
+# data/memories/ — user DB, ChromaDB, tokens, session state
+# data/API/      — stored API keys
+PROTECTED_PREFIXES = (
+    "modules/",
+    "sdk/",
+    "web/",
+    "data/memories/",
+    "data/API/",
+)
 
 MAX_FILE_READ_CHARS = 12000
 MAX_COMMAND_OUTPUT_CHARS = 4000
@@ -200,15 +228,34 @@ class ToolError(Exception):
 
 
 def _safe_path(relative_path):
-    """Resolves a relative path against WORKSPACE_ROOT and refuses to leave it."""
+    """Resolves a relative path against WORKSPACE_ROOT and refuses to
+    leave it.
+
+    Uses realpath() instead of abspath() so symlinks and Windows
+    junction points are resolved BEFORE the prefix check. Without
+    this, a symlink inside the workspace can point outside it and
+    slip past a lexical prefix test.
+
+    normcase() makes the comparison case-insensitive on Windows
+    (no-op on POSIX) so a path like `C:\\Users\\...` isn't rejected
+    because root was captured as `c:\\users\\...`.
+    """
     relative_path = (relative_path or "").strip().strip("'\"")
     relative_path = relative_path.lstrip("/\\")
     if not relative_path:
         relative_path = "."
-    target = os.path.abspath(os.path.join(WORKSPACE_ROOT, relative_path))
-    root = os.path.abspath(WORKSPACE_ROOT)
-    if not (target == root or target.startswith(root + os.sep)):
-        raise ToolError(f"Refusing to access '{relative_path}' — it's outside the project workspace.")
+
+    target = os.path.realpath(os.path.join(WORKSPACE_ROOT, relative_path))
+    root = os.path.realpath(WORKSPACE_ROOT)
+
+    t = os.path.normcase(target)
+    r = os.path.normcase(root)
+
+    if t != r and not t.startswith(r + os.sep):
+        raise ToolError(
+            f"Refusing to access '{relative_path}' — it resolves to "
+            f"a path outside the project workspace."
+        )
     return target
 
 
@@ -343,7 +390,19 @@ def write_file(path, content):
     rel = os.path.relpath(target, WORKSPACE_ROOT).replace("\\", "/")
 
     if rel in PROTECTED_FILES:
-        raise ToolError(f"Refusing to overwrite protected file: {rel}")
+        raise ToolError(
+            f"Refusing to overwrite protected file: {rel}. "
+            f"Edit it directly if you mean it."
+        )
+
+    for prefix in PROTECTED_PREFIXES:
+        if rel.startswith(prefix):
+            raise ToolError(
+                f"Refusing to write into '{prefix}' — this directory "
+                f"contains Lumi's own logic, the SDK, the web client, "
+                f"or sensitive runtime state. Edit it directly if you "
+                f"mean it."
+            )
 
     existed = os.path.isfile(target)
 
