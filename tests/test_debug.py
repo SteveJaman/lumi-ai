@@ -252,6 +252,7 @@ LIVE_MODULES = [
     "modules.customPrompt",
     "modules.doc_manager",
     "modules.injection",
+    "modules.library_indexer",
 ]
 
 SDK_MODULES = [
@@ -399,7 +400,7 @@ def check_persona(r, args):
         prompt = constants.build_system_prompt(constants.HOST.name)
         if prompt and len(prompt) > 200:
             r.ok("build_system_prompt produced output",
-                 f"{len(prompt)} chars")
+                   f"{len(prompt)} chars")
         else:
             r.fail("build_system_prompt returned empty or too short",
                    hint="check lumi.yaml required fields")
@@ -534,6 +535,48 @@ def check_agent_tools(r, args):
 
 
 # ========================================================================
+# Section: library indexing & RAG
+# ========================================================================
+def check_library(r, args):
+    r.section("Library Indexer & RAG")
+
+    constants, err = safe_import("constants")
+    if err:
+        r.skip("needs constants")
+        return
+
+    data_root = getattr(constants, "DATA_ROOT", None)
+    if not data_root:
+        r.fail("DATA_ROOT not found")
+        return
+
+    lib_dir = os.path.join(data_root, "library")
+    if os.path.isdir(lib_dir):
+        files = os.listdir(lib_dir)
+        r.ok("data/library/ folder exists", f"{len(files)} files found")
+    else:
+        r.warn("data/library/ folder does not exist",
+               hint="will be created automatically on boot")
+
+    # Check chromadb library_docs collection if chroma.db exists
+    chroma_path = os.path.join(data_root, "memories", "chroma.db")
+    if os.path.isdir(chroma_path):
+        try:
+            import chromadb
+            client = chromadb.PersistentClient(path=chroma_path)
+            collections = [c.name for c in client.list_collections()]
+            if "library_docs" in collections:
+                col = client.get_collection("library_docs")
+                r.ok("library_docs ChromaDB collection found", f"{col.count()} chunks indexed")
+            else:
+                r.skip("library_docs collection not yet initialized (created on first index run)")
+        except Exception as e:
+            r.warn("Could not query ChromaDB collection", str(e))
+    else:
+        r.skip("ChromaDB storage not initialized yet")
+
+
+# ========================================================================
 # Section: LLM connectivity
 # ========================================================================
 def check_llm(r, args):
@@ -621,7 +664,7 @@ def check_storage(r, args):
         r.fail("DATA_ROOT does not exist", data_root)
         return
 
-    for sub in ("logs", "memories"):
+    for sub in ("logs", "memories", "library"):
         p = os.path.join(data_root, sub)
         if os.path.isdir(p):
             r.ok(f"data/{sub}/")
@@ -629,7 +672,7 @@ def check_storage(r, args):
             r.warn(f"data/{sub}/ does not exist", hint="will be created")
 
     # Writable check — write a tiny temp file
-    for sub in ("logs", "memories"):
+    for sub in ("logs", "memories", "library"):
         p = os.path.join(data_root, sub)
         if not os.path.isdir(p):
             continue
@@ -760,23 +803,23 @@ def check_config_files(r, args):
 # Section: optional dependencies
 # ========================================================================
 OPTIONAL_DEPS = [
-    ("mss",            "screen capture"),
-    ("PIL",            "image processing (Pillow)"),
-    ("playwright",     "browser control"),
-    ("pyvts",          "VTube Studio"),
-    ("discord",        "Discord bot"),
-    ("davey",          "Discord voice (DAVE decrypt)"),
-    ("chromadb",       "long-term memory"),
-    ("faster_whisper", "speech-to-text"),
-    ("pyaudio",        "audio output routing"),
-    ("keyboard",       "hotkeys / VTS keyboard sim"),
-    ("pypdf",          "PDF reading"),
-    ("docx",           "DOCX reading (python-docx)"),
-    ("psutil",         "SDK example clients"),
-    ("argon2",         "password hashing (falls back to pbkdf2)"),
-    ("ruamel.yaml",    "persona comment preservation"),
-    ("ddgs",           "web_search tool"),
-    ("pytest",         "running the test suite"),
+    ("mss",              "screen capture"),
+    ("PIL",              "image processing (Pillow)"),
+    ("playwright",       "browser control"),
+    ("pyvts",            "VTube Studio"),
+    ("discord",          "Discord bot"),
+    ("davey",            "Discord voice (DAVE decrypt)"),
+    ("chromadb",         "long-term memory"),
+    ("faster_whisper",   "speech-to-text"),
+    ("pyaudio",          "audio output routing"),
+    ("keyboard",         "hotkeys / VTS keyboard sim"),
+    ("pypdf",            "PDF reading"),
+    ("docx",             "DOCX reading (python-docx)"),
+    ("psutil",           "SDK example clients"),
+    ("argon2",           "password hashing (falls back to pbkdf2)"),
+    ("ruamel.yaml",      "persona comment preservation"),
+    ("ddgs",             "web_search tool"),
+    ("pytest",           "running the test suite"),
 ]
 
 
@@ -797,17 +840,18 @@ def check_optional_deps(r, args):
 # Section: module shape
 # ========================================================================
 MODULE_CLASS_MAP = {
-    "modules.prompter":           "Prompter",
-    "modules.memory":             "Memory",
-    "modules.emotional_state":    "EmotionalStateModule",
-    "modules.heartbeat":          "Heartbeat",
-    "modules.self_model":         "SelfModel",
-    "modules.ambient_perception": "AmbientPerception",
-    "modules.multimodal":         "MultiModal",
-    "modules.tts":                "TTS",
-    "modules.browser_controller": "BrowserController",
-    "modules.log_hub":            "LogHub",
-    "modules.user_auth":          "UserDB",
+    "modules.prompter":             "Prompter",
+    "modules.memory":               "Memory",
+    "modules.emotional_state":      "EmotionalStateModule",
+    "modules.heartbeat":            "Heartbeat",
+    "modules.self_model":           "SelfModel",
+    "modules.ambient_perception":   "AmbientPerception",
+    "modules.multimodal":           "MultiModal",
+    "modules.tts":                  "TTS",
+    "modules.browser_controller":   "BrowserController",
+    "modules.log_hub":              "LogHub",
+    "modules.user_auth":            "UserDB",
+    "modules.library_indexer":      "LibraryIndexer",
 }
 
 
@@ -920,6 +964,7 @@ SECTIONS = [
     ("persona",      check_persona),
     ("signals",      check_signals),
     ("agent_tools",  check_agent_tools),
+    ("library",      check_library),
     ("llm",          check_llm),
     ("storage",      check_storage),
     ("ports",        check_ports),

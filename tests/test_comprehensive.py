@@ -76,6 +76,33 @@ def test_database_locks():
     except ImportError:
         print(f"  {RED}✗{RESET} ChromaDB library missing.")
 
+def test_library_rag_indexing():
+    print_header("RAG: Library Indexer & ChromaDB Collection")
+    from constants import DATA_ROOT
+    lib_dir = os.path.join(DATA_ROOT, "library")
+    
+    if os.path.exists(lib_dir):
+        files = os.listdir(lib_dir)
+        print(f"  {GREEN}✓{RESET} Library directory exists at {lib_dir}. Found files: {files}")
+    else:
+        print(f"  {GRAY}○{RESET} Library directory not found at {lib_dir} (will be created on boot).")
+
+    try:
+        import chromadb
+        chroma_path = os.path.join(DATA_ROOT, "memories", "chroma.db")
+        if os.path.exists(chroma_path):
+            client = chromadb.PersistentClient(path=chroma_path)
+            collections = [c.name for c in client.list_collections()]
+            if "library_docs" in collections:
+                col = client.get_collection("library_docs")
+                print(f"  {GREEN}✓{RESET} 'library_docs' ChromaDB collection found with {col.count()} indexed chunks.")
+            else:
+                print(f"  {GRAY}○{RESET} 'library_docs' collection not yet initialized (will be created on first index run).")
+        else:
+            print(f"  {GRAY}○{RESET} ChromaDB persistence path not found yet.")
+    except Exception as e:
+        print(f"  {RED}✗{RESET} Failed to query ChromaDB for library collection: {e}")
+
 def test_prompt_assembly_stack():
     print_header("Logic: Prompt Assembly & Persona Resolution")
     try:
@@ -134,6 +161,7 @@ if __name__ == "__main__":
     
     test_audio_hardware()
     test_database_locks()
+    test_library_rag_indexing()
     test_prompt_assembly_stack()
     test_tool_dispatch_parity()
     

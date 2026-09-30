@@ -685,6 +685,52 @@ def run_in_terminal(command):
     except Exception as e:
         return f"Failed to open terminal window: {e}"
 
+def handle_search_library(arguments, signals):
+    """Search the pre-indexed reference library.
+
+    Requires `signals.memory_module` to be set. That happens in
+    Memory.__init__ (see main.py, which spawns Memory before any
+    module that could call this). Returns a provenance-wrapped block
+    or a plain error string.
+    """
+    if signals is None:
+        return "Error: search_library called without a signals object."
+
+    mem = getattr(signals, "memory_module", None)
+    if mem is None or not hasattr(mem, "API"):
+        return "Error: memory module is not loaded."
+    if not hasattr(mem.API, "search_library"):
+        return ("Error: memory module does not expose "
+                "search_library. Upgrade memory.py.")
+
+    args = arguments or {}
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return "Error: search_library requires a non-empty query."
+
+    try:
+        top_k = int(args.get("top_k", 5) or 5)
+    except (TypeError, ValueError):
+        top_k = 5
+    top_k = max(1, min(top_k, 10))
+
+    try:
+        hits = mem.API.search_library(query, top_k=top_k)
+    except Exception as e:
+        return f"Error: library search failed: {e}"
+
+    if not hits:
+        return "No matching passages in the library."
+
+    parts = []
+    for h in hits:
+        src = h.get("source", "unknown")
+        chunk = h.get("chunk", "") or ""
+        parts.append(f"[{src}]\n{chunk}")
+    body = "\n\n---\n\n".join(parts)
+
+    return wrap_tool_result("search_library", body)
+
 
 _DISPATCH = {
     "read_file": lambda args: read_file(args.get("path", ".")),
@@ -693,11 +739,29 @@ _DISPATCH = {
     "search_files": lambda args: search_files(args.get("query", ""), args.get("path", ".")),
     "run_command": lambda args: run_command(args.get("command", "")),
     "run_in_terminal": lambda args: run_in_terminal(args.get("command", "")),
+    # search_library needs the signals object, so it is dispatched
+    # via the _SIGNALS_AWARE_TOOLS branch in execute_tool. This entry
+    # documents the mapping and keeps harness checks happy.
+    "search_library": lambda args: handle_search_library(args, None),
 }
 
 
-def execute_tool(name, arguments):
-    """Executes one of the tools above by name."""
+# Names in _DISPATCH take only `arguments`. Names in this set need
+# the `signals` object too, and get special-cased before lookup.
+_SIGNALS_AWARE_TOOLS = {"search_library"}
+
+
+def execute_tool(name, arguments, signals=None):
+    """Executes one of the tools above by name.
+
+    `signals` is optional. Handlers that need runtime module access
+    (search_library) receive it. Filesystem handlers ignore it.
+    """
+    if name in _SIGNALS_AWARE_TOOLS:
+        if name == "search_library":
+            return handle_search_library(arguments or {}, signals)
+        return f"Error: no handler wired for '{name}'."
+
     fn = _DISPATCH.get(name)
     if not fn:
         return f"Unknown tool: {name}"

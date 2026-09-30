@@ -49,6 +49,7 @@ import os
 import math
 import datetime
 import re
+import time
 
 
 REFLECTION_PROMPT = """Analyze the conversation excerpt below and extract key personal facts, preferences, or context about the user that would be useful to remember long-term.
@@ -493,19 +494,42 @@ class Memory(Module):
     # Reflection loop
     # ---------------------------------------------------------------
     async def run(self):
-        while not self.signals.terminate:
-            if self.processed_count >= len(self.signals.history):
-                self.processed_count = 0
+        MIN_NEW_MESSAGES = 10          # reflect only after this many new turns
+        MIN_GAP_BETWEEN_PASSES = 300   # at least 5 min between reflections
 
-            if len(self.signals.history) - self.processed_count >= 10:
+        last_pass_at = 0.0
+
+        while not self.signals.terminate:
+            history_len = len(self.signals.history)
+
+            # If history shrank (the prompter trims to 20), clamp the
+            # cursor forward so we don't reprocess the whole buffer.
+            if self.processed_count > history_len:
+                self.processed_count = max(
+                    0, history_len - MIN_NEW_MESSAGES
+                )
+
+            unprocessed = history_len - self.processed_count
+
+            if unprocessed >= MIN_NEW_MESSAGES:
+                # Don't reflect mid-turn.
                 if getattr(self.signals, 'new_message', False) or \
                    getattr(self.signals, 'AI_thinking', False):
                     await asyncio.sleep(2)
                     continue
 
+                now = time.time()
+                if now - last_pass_at < MIN_GAP_BETWEEN_PASSES:
+                    await asyncio.sleep(5)
+                    continue
+
                 messages = copy.deepcopy(
-                    self.signals.history[-(len(self.signals.history) - self.processed_count):]
+                    self.signals.history[self.processed_count:]
                 )
+                # Cap the reflection window so a long idle stretch
+                # doesn't send a giant prompt.
+                if len(messages) > 30:
+                    messages = messages[-30:]
 
                 chat_section = ""
                 for message in messages:
@@ -515,7 +539,9 @@ class Memory(Module):
                         role = AI_NAME
                     chat_section += f"{role}: {message.get('content', '')}\n"
 
-                prompt = REFLECTION_PROMPT.replace("<<CHAT_SECTION>>", chat_section)
+                prompt = REFLECTION_PROMPT.replace(
+                    "<<CHAT_SECTION>>", chat_section
+                )
 
                 try:
                     resp: LLMResponse = chat_sync(
@@ -534,7 +560,8 @@ class Memory(Module):
                 except Exception as e:
                     print(f"MEMORY: Error during reflection query: {e}")
 
-                self.processed_count = len(self.signals.history)
+                self.processed_count = history_len
+                last_pass_at = now
 
             await asyncio.sleep(5)
 

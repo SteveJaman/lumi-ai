@@ -1,6 +1,6 @@
 # Troubleshooting
 
-**Run `python tests/test_debug.py` first.** It runs in about 2 seconds and localizes most failures to a section.
+**Run `python tests/test_debug.py` first** (or `python tests/test_comperhension.py` for retrieval/comprehension verification). They run quickly and localize failures across Lumi's core systems.
 
 This guide covers common failure modes and diagnostic steps for Lumi's core systems, particularly focusing on Discord voice integration, memory locking, and local dependencies.
 

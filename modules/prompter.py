@@ -1941,7 +1941,9 @@ class Prompter:
             if not allowed:
                 return "The user declined to allow this action."
 
-        return await loop.run_in_executor(None, execute_tool, name, arguments)
+        return await loop.run_in_executor(
+            None, execute_tool, name, arguments, self.signals
+        )
 
     async def run_agent_turn(self, latest_user_text):
         context_injections = self.gather_injections(latest_user_text, agent_context=True)
