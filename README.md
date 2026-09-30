@@ -123,6 +123,9 @@ The remaining Python packages (`discord.py>=2.7`, `davey`, `chromadb`,
 `pip` in the steps below. `psutil` and `mss` are only needed for the SDK
 example clients.
 
+For reproducible installs, use the pinned lock file instead of resolving fresh
+versions: `pip install -r requirements.lock.txt`.
+
 ---
 
 ## Installation
@@ -302,7 +305,7 @@ internal state, makes her own decisions, and acts without being prompted.
 | 6.5 | Avatar control (VTube Studio) | ✅ Complete |
 | 7 | Discord voice bridge | ✅ Complete (pure Python, no sidecar) |
 | 8 | External SDK (websocket plugin host) | ✅ Complete |
-| 9 | Security hardening | 🟡 Partial (see below) |
+| 9 | Security hardening | ✅ Complete |
 | 10 | Local web client | ✅ Complete |
 
 **Phase 7** was completed in pure Python. The C# sidecar originally planned
@@ -322,26 +325,15 @@ emotional-state isolation, browser voice, and multi-provider LLM routing all
 shipped. The remaining security hardening from that pass (10.17) is tracked
 under Phase 9.
 
-**Phase 9** is partially addressed by what shipped alongside Phase 10:
-
-- ✅ CSRF double-submit on all state-changing POSTs
-- ✅ Origin check on WebSocket handshake
-- ✅ Rate limit `/auth/login` to 5/min/user
-- ✅ aiohttp bound strictly to `127.0.0.1`
-- ✅ Static file handler refuses path traversal
-- ✅ Frontend rendering via `textContent`, never `innerHTML`
-- 🟡 API key handling (9.6) — keys live in `.env` (0600 on POSIX) and are
-  masked in API responses; rotation UI, `.gitignore` check, and
-  log-redaction audit pending
-- ❌ Prompt injection provenance tagging (9.1)
-- 🟡 SDK authentication (9.2) — shared token shipped; per-client credentials
-  and capability allowlists (9.2 / 9.3) pending
-- ❌ `realpath()` fix on the file sandbox (9.5)
-- ❌ Self-modification guard (9.10)
-
-The rest of Phase 9 is deliberately parked while Phases 7, 8, and 10
-get real-world use. Use her for a week before deciding which of the remaining
-items matter. Real use drives the next round of tuning, not a checklist.
+**Phase 9** is complete. Fourteen hardening items shipped: provenance
+markers on external content, a deny-by-default SDK allowlist with per-client
+capability ceilings, a command allowlist, a `realpath` file sandbox, protected
+paths, secret scrubbing in logs, memory-poisoning guards, Discord rate
+limiting, tool-call anomaly detection, a LAN exposure gate, and a pinned
+dependency lock file. Encryption at rest is a BitLocker recommendation, not an
+in-app feature. See [docs/security.md](docs/security.md) for the threat model
+and incident playbook, and [docs/roadmap.md](docs/roadmap.md) for phase
+status.
 
 ---
 

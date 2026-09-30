@@ -38,44 +38,36 @@ from modules.llm_providers import chat_sync, LLMResponse
 # ===============================================================
 # CONFIG
 # ===============================================================
-EMOTIONAL_SNAPSHOT_INTERVAL = 60         # seconds between snapshots
-EMOTIONAL_WINDOW = 120                   # snapshots kept (~2h)
-TURN_WINDOW = 100                        # turns kept
-REFLECTION_INTERVAL = 600                # ~10 min
-REFLECTION_MIN_TURNS = 5                 # don't reflect on nothing
-OBSERVATION_STALE_AFTER = 3600           # drop observations after 1h
-OBSERVATION_CAP = 4                      # max observations kept
+EMOTIONAL_SNAPSHOT_INTERVAL = 60
+EMOTIONAL_WINDOW = 120
+TURN_WINDOW = 100
+REFLECTION_INTERVAL = 600
+REFLECTION_MIN_TURNS = 5
+OBSERVATION_STALE_AFTER = 3600
+OBSERVATION_CAP = 4
 
-# Persisted state lives under data/memories/ after the folder reorg.
 SELF_MODEL_PATH = os.path.join(DATA_ROOT, "memories", "self_model.json")
 
+# Phase 9.11 — tool call anomaly detection tuning
+TOOL_CALL_SESSION_THRESHOLD = 20   # warn at this many calls in one session
+WATCHED_TOOLS = ("run_command", "run_in_terminal", "write_file")
 
-# ===============================================================
-# CANONICAL TAG REGEX
-# ---------------------------------------------------------------
-# Only count tags from Fish Audio's S2 documentation. Invented tags
-# are ignored so the delivery stats stay meaningful.
-# ===============================================================
+
 _KNOWN_TAGS = {
-    # Basic emotions
     "happy", "sad", "angry", "excited", "calm", "nervous", "confident",
     "surprised", "satisfied", "delighted", "scared", "worried", "upset",
     "frustrated", "depressed", "empathetic", "embarrassed", "disgusted",
     "moved", "proud", "relaxed", "grateful", "curious", "sarcastic",
-    # Advanced emotions
     "disdainful", "unhappy", "anxious", "hysterical", "indifferent",
     "uncertain", "doubtful", "confused", "disappointed", "regretful",
     "guilty", "ashamed", "jealous", "envious", "hopeful", "optimistic",
     "pessimistic", "nostalgic", "lonely", "bored", "contemptuous",
     "sympathetic", "compassionate", "determined", "resigned",
-    # Tone markers
     "in a hurry tone", "shouting", "screaming", "whispering",
     "soft tone", "emphasis",
-    # Audio effects
     "laughing", "chuckling", "sobbing", "crying loudly", "sighing",
     "groaning", "panting", "gasping", "yawning", "snoring",
     "clear throat",
-    # Pauses / crowd
     "break", "long-break", "audience laughing", "background laughter",
     "crowd laughing",
 }
@@ -86,9 +78,6 @@ _TAG_REGEX = re.compile(
 )
 
 
-# ===============================================================
-# REFLECTION PROMPT
-# ===============================================================
 _REFLECTION_PROMPT = """You are {ai_name}, an AI companion doing a quiet self-check. Look at your own recent behavior and notice 2 to 4 short patterns.
 
 EMOTIONAL HISTORY (last ~{window_min} minutes):
@@ -127,15 +116,11 @@ Output strict JSON: {{"observations": ["...", "..."]}}
 """
 
 
-# ===============================================================
-# MODULE
-# ===============================================================
 class SelfModel(Module):
     def __init__(self, signals, enabled=True):
         super().__init__(signals, enabled)
         self.signals = signals
 
-        # Rolling in-session windows
         self.emotional_history = deque(maxlen=EMOTIONAL_WINDOW)
         self.turn_log = deque(maxlen=TURN_WINDOW)
         self.tag_counts = Counter()
@@ -143,15 +128,52 @@ class SelfModel(Module):
         self.unprompted_count = 0
         self.session_start = time.time()
 
-        # Cross-session persistence
         self.observations = []
         self.observations_ts = 0.0
 
         self._lock = threading.Lock()
         self._load()
 
-        # Register on signals so prompter and heartbeat can find us.
         signals.self_model = self
+
+        # Phase 9.11 — tool call frequency tracking.
+        self.tool_call_counts = Counter()
+        self._tool_alerted = set()
+
+    # ---------------------------------------------------------------
+    # Phase 9.11 — tool call tracking (proper method, called by prompter)
+    # ---------------------------------------------------------------
+    def note_tool_call(self, tool_name):
+        """Called by the prompter after every tool dispatch.
+        Tracks per-session frequency and warns to the hub if a
+        watched tool spikes above the baseline threshold."""
+        if not tool_name:
+            return
+        with self._lock:
+            self.tool_call_counts[tool_name] += 1
+            count = self.tool_call_counts[tool_name]
+
+            if tool_name in WATCHED_TOOLS and \
+                    count >= TOOL_CALL_SESSION_THRESHOLD:
+                if tool_name not in self._tool_alerted:
+                    self._tool_alerted.add(tool_name)
+                    try:
+                        from modules.log_hub import emit as hub_emit
+                        hub_emit(
+                            self.signals, "system",
+                            f"anomaly: '{tool_name}' called {count} "
+                            f"times this session "
+                            f"(threshold {TOOL_CALL_SESSION_THRESHOLD})",
+                            level="warn",
+                        )
+                    except Exception:
+                        pass
+
+    def reset_tool_call_counters(self):
+        """Optional: call at session start or on !reset to clear stats."""
+        with self._lock:
+            self.tool_call_counts.clear()
+            self._tool_alerted.clear()
 
     # ---------------------------------------------------------------
     # Persistence
@@ -183,7 +205,6 @@ class SelfModel(Module):
     # Collection hooks
     # ---------------------------------------------------------------
     def note_turn(self, user_text, assistant_text, frame_name):
-        """Called after each assistant turn completes."""
         with self._lock:
             tags = _TAG_REGEX.findall(assistant_text or "")
             tags_lower = [t.lower() for t in tags]
@@ -202,12 +223,10 @@ class SelfModel(Module):
                 self.frame_counts[frame_name.lower()] += 1
 
     def note_unprompted(self, text):
-        """Called from heartbeat when Lumi speaks without being prompted."""
         with self._lock:
             self.unprompted_count += 1
 
     def _snapshot_emotional(self):
-        """Record a snapshot of the current emotional state."""
         if not hasattr(self.signals, "emotional_state"):
             return
         es = self.signals.emotional_state
@@ -279,7 +298,6 @@ class SelfModel(Module):
     # Reflection
     # ---------------------------------------------------------------
     def _reflect(self):
-        """One reflection pass. Runs in a worker thread."""
         with self._lock:
             emotional_snapshot = list(self.emotional_history)
             turn_count = len(self.turn_log)
@@ -322,7 +340,6 @@ class SelfModel(Module):
             print(f"\033[90mSELF-MODEL: reflection call failed: {e}\033[0m")
             return
 
-        # Strip code fences
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
 
@@ -369,7 +386,6 @@ class SelfModel(Module):
     # Injection
     # ---------------------------------------------------------------
     def get_injection(self):
-        """Return the self-awareness injection, or '' when nothing to say."""
         if not self.observations:
             return ""
 

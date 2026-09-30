@@ -16,8 +16,6 @@ The root `../README.md` is the project overview. Everything deeper lives in this
 | [known-limitations.md](known-limitations.md) | What does not work yet |
 | [troubleshooting.md](troubleshooting.md) | Common failures and fixes |
 
-<!-- VERIFY: this table follows the brief's recommended rows. Add or remove rows to match the actual .md files in docs/ (ls docs/*.md). -->
-
 ## Where to look if you want to...
 
 - **Change the persona.** See the persona editor section in the root README, or `config/lumi.yaml` in [configuration.md](configuration.md).
@@ -26,6 +24,7 @@ The root `../README.md` is the project overview. Everything deeper lives in this
 - **Contribute code.** [development.md](development.md).
 - **Report a security issue.** [security.md](security.md).
 - **Fix something that broke.** [troubleshooting.md](troubleshooting.md), then [known-limitations.md](known-limitations.md) to check whether it is a known gap.
+- **Run the test suite.** [`../tests/README.md`](../tests/README.md).
 
 ## Conventions
 
@@ -42,4 +41,4 @@ New docs go in this folder with a `.md` extension, and each one needs a row in t
 
 - `../README.md`: the project overview
 - `../CONTRIBUTING.md`: for contributors, if present
-- The per-folder READMEs for file-level maps: `../modules/README.md`, `../sdk/README.md`, `../web/README.md`, `../data/README.md`
+- The per-folder READMEs for file-level maps: `../modules/README.md`, `../sdk/README.md`, `../web/README.md`, `../data/README.md`, `../tests/README.md`

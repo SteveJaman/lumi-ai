@@ -12,12 +12,12 @@ Lumi's core reasoning and conversational intelligence run on Qwen3. The custom `
 
 ## Text-to-Speech (TTS)
 
-* **Model:** XTTS v2.0.2
-* **Path:** `models/v2.0.2/` (contains `model.pth`, `speakers_xtts.pth`, `vocab.json`)
+* **Model:** Fish Audio API (Cloud-hosted)
+* **Reference:** Fish Audio API Model Repository
 
 
 * **Voice References:** `voices/` directory (e.g., `delta.wav`, `evilsama.wav`, `Soft_Onee_San.wav`)
-Speech synthesis is handled locally. By providing a short reference audio file in the `voices` folder, XTTS clones the target voice characteristics and generates the output to `outputs/tts_output.wav`.
+Speech synthesis is handled via the Fish Audio API. By providing a short reference audio file from the `voices/` folder, the cloud model clones the target voice characteristics and generates the output to `outputs/tts_output.wav`.
 
 
 

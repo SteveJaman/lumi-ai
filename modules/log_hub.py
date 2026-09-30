@@ -20,6 +20,42 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from constants import DATA_ROOT
 
+import re
+
+# ===============================================================
+# SECRET SCRUBBER (Phase 9.6)
+# ---------------------------------------------------------------
+# Every string written to the hub passes through _scrub_secrets()
+# first. Common API key patterns are replaced with a redacted
+# placeholder before landing in memory or on disk. This is
+# defense-in-depth: even if a key ends up in a log line by
+# mistake, it never reaches events.log in the clear.
+# ===============================================================
+_SECRET_PATTERNS = [
+    # OpenAI / Anthropic / OpenRouter-style
+    (re.compile(r"sk-[A-Za-z0-9_\-]{20,}"), "sk-***REDACTED***"),
+    (re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}"), "sk-ant-***REDACTED***"),
+    # Google API keys
+    (re.compile(r"AIza[0-9A-Za-z_\-]{30,}"), "AIza***REDACTED***"),
+    # Discord bot tokens
+    (re.compile(r"[MN][A-Za-z\d]{23}\.[\w\-]{6}\.[\w\-]{27,}"),
+     "***DISCORD_TOKEN_REDACTED***"),
+    # Bearer tokens
+    (re.compile(r"Bearer\s+[A-Za-z0-9._\-]{20,}"),
+     "Bearer ***REDACTED***"),
+    # Fish Audio keys (36-hex style)
+    (re.compile(r"\b[0-9a-f]{32,}\b"), "***HEX_KEY_REDACTED***"),
+]
+
+
+def _scrub_secrets(text: str) -> str:
+    if not text:
+        return text
+    s = str(text)
+    for pattern, replacement in _SECRET_PATTERNS:
+        s = pattern.sub(replacement, s)
+    return s
+
 
 DEFAULT_PORT = 5001
 DEFAULT_MAXLEN = 800
@@ -52,13 +88,14 @@ class LogHub:
         self._thread = None
 
     def emit(self, category, message, level="info"):
-        """Record an event. Thread-safe. Cheap — call it freely."""
+        """Record an event. Thread-safe. Cheap — call it freely.
+        Every message is secret-scrubbed before storage."""
         event = {
             "ts": time.time(),
             "time": time.strftime("%H:%M:%S"),
             "category": str(category).lower(),
             "level": level,
-            "message": str(message)[:600],
+            "message": _scrub_secrets(str(message))[:600],
         }
         with self._lock:
             self.events.append(event)

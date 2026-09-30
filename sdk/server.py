@@ -5,18 +5,20 @@ Runs inside Lumi's main process. Binds strictly to 127.0.0.1:5056,
 accepts websocket connections from external apps, tracks registered
 actions, pushes context into the prompt, and dispatches invocations.
 
-The server exposes three methods the prompter uses:
+Phase 9.2 / 9.3 — per-client approval and capability policy:
 
-    get_action_schemas()    → tool schemas in Ollama's format
-    get_context_injections() → list[str] to append to the prompt
-    find_action(tool_name)  → resolve "sdk__<name>" to a spec
-    invoke_action_blocking(name, args) → run an action, return result
-
-The public API surface is intentionally small. Everything else is
-protocol plumbing.
-
-The SDK auth token lives at data/memories/sdk_token.txt after the
-folder reorg — 0600 perms on POSIX, generated on first boot.
+  - An allowlist lives at data/memories/sdk_allowlist.json.
+  - On connect, the client's game name is looked up.
+  - If the client is not in the allowlist, or is listed with
+    approved=false, the connection stays open but ALL action
+    registrations are refused. The client still receives
+    speech_finished broadcasts so it can observe.
+  - Each approved client has a capability ceiling. Actions whose
+    declared capabilities exceed the ceiling are refused at
+    registration time.
+  - is_action_allowed(name) is consulted by the prompter before
+    dispatch. client_autoapproves_writes(name) tells the prompter
+    whether a 'write' action needs an interactive y/n.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ import asyncio
 import secrets
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from aiohttp import web, WSMsgType
 
@@ -55,13 +57,15 @@ HELLO_TIMEOUT_SECONDS = 10
 INVOKE_TIMEOUT_SECONDS = 30
 PING_INTERVAL_SECONDS = 30
 
-# Token lives under data/memories/ after the folder reorg.
 _TOKEN_PATH = os.path.join(DATA_ROOT, "memories", "sdk_token.txt")
+_ALLOWLIST_PATH = os.path.join(DATA_ROOT, "memories", "sdk_allowlist.json")
 
+_VALID_CAPABILITIES = {"read", "write", "dangerous"}
+
+
+# ─── Token + allowlist persistence ─────────────────────────────────
 
 def _load_or_create_token() -> str:
-    """Read the SDK token from disk, or generate and persist a fresh
-    one. Written with 0600 permissions on POSIX."""
     if os.path.exists(_TOKEN_PATH):
         try:
             with open(_TOKEN_PATH, "r", encoding="utf-8") as f:
@@ -85,6 +89,46 @@ def _load_or_create_token() -> str:
     return tok
 
 
+def _load_allowlist() -> Dict[str, Any]:
+    """Return {'deny_by_default': bool, 'clients': {name: {...}}}.
+    Creates an empty file on first call."""
+    if not os.path.exists(_ALLOWLIST_PATH):
+        default = {"deny_by_default": True, "clients": {}}
+        try:
+            os.makedirs(os.path.dirname(_ALLOWLIST_PATH), exist_ok=True)
+            with open(_ALLOWLIST_PATH, "w", encoding="utf-8") as f:
+                json.dump(default, f, indent=2)
+        except Exception:
+            pass
+        return default
+    try:
+        with open(_ALLOWLIST_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"deny_by_default": True, "clients": {}}
+        data.setdefault("deny_by_default", True)
+        data.setdefault("clients", {})
+        if not isinstance(data["clients"], dict):
+            data["clients"] = {}
+        return data
+    except Exception:
+        return {"deny_by_default": True, "clients": {}}
+
+
+def _save_allowlist(data: Dict[str, Any]) -> bool:
+    try:
+        os.makedirs(os.path.dirname(_ALLOWLIST_PATH), exist_ok=True)
+        with open(_ALLOWLIST_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        try:
+            os.chmod(_ALLOWLIST_PATH, 0o600)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
 # ─── Internal state ───────────────────────────────────────────────
 
 @dataclass
@@ -102,6 +146,9 @@ class SDKClient:
     game_name: str
     ws: web.WebSocketResponse
     connected_at: float
+    approved: bool = False
+    capability_ceiling: Tuple[str, ...] = ("read",)
+    auto_approve_writes: bool = False
     actions: Dict[str, str] = field(default_factory=dict)
     pending_invocations: Dict[str, asyncio.Future] = field(default_factory=dict)
     context_text: str = ""
@@ -129,8 +176,7 @@ class SDKServer(Module):
         self.actions: Dict[str, RegisteredAction] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._runner: Optional[web.AppRunner] = None
-
-        # Register on signals so the prompter finds us.
+        self._allowlist_lock = threading.Lock()
         signals.sdk = self
 
     # ─── Lifecycle ────────────────────────────────────────────
@@ -194,6 +240,52 @@ class SDKServer(Module):
                 except Exception:
                     self._cleanup_client(cid)
 
+    # ─── Allowlist helpers ────────────────────────────────────
+
+    def _lookup_client_policy(self, game_name: str) -> Dict[str, Any]:
+        """Return the allowlist entry for this client, or a default
+        deny entry if not present."""
+        with self._allowlist_lock:
+            data = _load_allowlist()
+        clients = data.get("clients", {})
+        entry = clients.get(game_name)
+        if entry is None:
+            return {
+                "approved": False,
+                "capability_ceiling": ["read"],
+                "auto_approve_writes": False,
+            }
+        approved = bool(entry.get("approved", False))
+        ceiling = entry.get("capability_ceiling") or ["read"]
+        if not isinstance(ceiling, list):
+            ceiling = ["read"]
+        ceiling = [c for c in ceiling if c in _VALID_CAPABILITIES]
+        if "read" not in ceiling:
+            ceiling.append("read")
+        return {
+            "approved": approved,
+            "capability_ceiling": ceiling,
+            "auto_approve_writes": bool(entry.get("auto_approve_writes", False)),
+        }
+
+    def _record_seen_client(self, game_name: str, client_version: str):
+        """If the client isn't in the allowlist yet, add a denied entry
+        so the user has a template to edit. Never auto-approves."""
+        with self._allowlist_lock:
+            data = _load_allowlist()
+            clients = data.get("clients", {})
+            if game_name in clients:
+                return
+            clients[game_name] = {
+                "approved": False,
+                "client_version_at_first_seen": client_version,
+                "capability_ceiling": ["read"],
+                "auto_approve_writes": False,
+                "note": "Auto-added on first connect. Set approved=true to allow.",
+            }
+            data["clients"] = clients
+            _save_allowlist(data)
+
     # ─── Connection handling ──────────────────────────────────
 
     async def _handle_ws(self, request):
@@ -216,6 +308,11 @@ class SDKServer(Module):
                 await ws.close()
                 return ws
 
+            policy = self._lookup_client_policy(game_name)
+            self._record_seen_client(
+                game_name, str(hello.get("client_version") or "")
+            )
+
             client_id = str(uuid.uuid4())
             client = SDKClient(
                 client_id=client_id,
@@ -224,6 +321,9 @@ class SDKServer(Module):
                 game_name=game_name,
                 ws=ws,
                 connected_at=time.time(),
+                approved=bool(policy["approved"]),
+                capability_ceiling=tuple(policy["capability_ceiling"]),
+                auto_approve_writes=bool(policy["auto_approve_writes"]),
             )
             self.clients[client_id] = client
 
@@ -231,9 +331,23 @@ class SDKServer(Module):
                 Session(session_id=client_id, display_name="Lumi Voidwright"),
                 protocol_version=SDK_PROTOCOL_VERSION,
             ))
-            hub_emit(self.signals, "sdk",
-                     f"client connected: {client.client_name} "
-                     f"({client_id[:8]}) game={game_name!r}")
+
+            if not client.approved:
+                hub_emit(
+                    self.signals, "sdk",
+                    f"client connected UNVERIFIED: {client.client_name} "
+                    f"({client_id[:8]}) game={game_name!r} — action "
+                    f"registrations refused. Edit "
+                    f"data/memories/sdk_allowlist.json to approve.",
+                    level="warn",
+                )
+            else:
+                hub_emit(
+                    self.signals, "sdk",
+                    f"client connected: {client.client_name} "
+                    f"({client_id[:8]}) game={game_name!r} "
+                    f"ceiling={list(client.capability_ceiling)}"
+                )
 
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
@@ -268,8 +382,6 @@ class SDKServer(Module):
             await ws.close()
             return None
 
-        # Accept legacy {"type": "hello"} shape for backwards compat
-        # with the old sdk_example.py and the Minecraft bridge.
         if raw.get("type") == "hello" and "command" not in raw:
             raw["command"] = "hello"
 
@@ -285,7 +397,6 @@ class SDKServer(Module):
     # ─── Message dispatch ─────────────────────────────────────
 
     async def _handle_message(self, client: SDKClient, data: Dict[str, Any]):
-        # Accept both new protocol and legacy shapes.
         cmd = data.get("command") or data.get("type")
 
         if cmd in (ClientCommand.ACTIONS_REGISTER, "register_action"):
@@ -306,8 +417,24 @@ class SDKServer(Module):
             await client.ws.send_json(error_message(f"unknown command: {cmd}"))
 
     async def _handle_register(self, client: SDKClient, data: Dict[str, Any]):
-        # New shape: {"command": "actions/register", "data": {"actions": [...]}}
-        # Legacy shape: {"type": "register_action", "action": {...}}
+        # Phase 9.2 — deny-by-default. Registrations from unapproved
+        # clients are refused, but the client stays connected so it can
+        # still receive speech_finished broadcasts.
+        if not client.approved:
+            await client.ws.send_json(error_message(
+                f"client '{client.game_name}' is not approved — "
+                f"action registration refused. Add an entry to "
+                f"data/memories/sdk_allowlist.json with approved=true "
+                f"and restart Lumi."
+            ))
+            hub_emit(
+                self.signals, "sdk",
+                f"refused registration from unapproved client "
+                f"{client.game_name!r}",
+                level="warn",
+            )
+            return
+
         payload: List[Dict[str, Any]] = []
         if isinstance(data.get("data"), dict) and "actions" in data["data"]:
             payload = list(data["data"]["actions"])
@@ -318,7 +445,27 @@ class SDKServer(Module):
             spec = ActionSpec.from_wire(raw)
             if not spec.name:
                 continue
-            # Replace per Neuro spec.
+
+            # Phase 9.3 — enforce capability ceiling at registration.
+            requested = set(spec.capabilities or ["read"])
+            ceiling = set(client.capability_ceiling) | {"read"}
+            if not requested.issubset(ceiling):
+                excess = sorted(requested - ceiling)
+                await client.ws.send_json(error_message(
+                    f"action '{spec.name}' declares capabilities "
+                    f"{sorted(requested)} but client ceiling is "
+                    f"{sorted(ceiling)} — refused ({excess} exceeds "
+                    f"ceiling)"
+                ))
+                hub_emit(
+                    self.signals, "sdk",
+                    f"refused registration of '{spec.name}' from "
+                    f"{client.game_name!r}: capabilities {excess} "
+                    f"exceed ceiling",
+                    level="warn",
+                )
+                continue
+
             self.actions.pop(spec.name, None)
             self.actions[spec.name] = RegisteredAction(
                 spec=spec, client_id=client.client_id,
@@ -332,7 +479,8 @@ class SDKServer(Module):
             })
             hub_emit(self.signals, "sdk",
                      f"registered: {spec.name} "
-                     f"(client={client.client_name}, caps={spec.capabilities})")
+                     f"(client={client.client_name}, "
+                     f"caps={spec.capabilities})")
 
     def _handle_unregister(self, client: SDKClient, data: Dict[str, Any]):
         if isinstance(data.get("data"), dict) and "action_names" in data["data"]:
@@ -369,9 +517,6 @@ class SDKServer(Module):
         })
 
     async def _handle_force(self, client: SDKClient, data: Dict[str, Any]):
-        """Force action handling is deferred — it needs a prompter
-        hook that bypasses normal tool selection. For now, log it and
-        return an error so clients don't wait forever."""
         hub_emit(self.signals, "sdk",
                  "actions/force received but not yet wired to the prompter",
                  level="warn")
@@ -395,8 +540,6 @@ class SDKServer(Module):
     # ─── Public API used by the prompter ──────────────────────
 
     def get_action_schemas(self) -> List[Dict[str, Any]]:
-        """Tool schemas in Ollama's format, with an 'sdk__' prefix so
-        they can't collide with built-in tools."""
         out = []
         for rec in self.actions.values():
             out.append({
@@ -411,8 +554,6 @@ class SDKServer(Module):
         return out
 
     def get_context_injections(self) -> List[str]:
-        """Free-text context from connected clients, sorted by priority
-        ascending (lower numbers come first)."""
         items = []
         for c in self.clients.values():
             if c.context_text.strip():
@@ -421,11 +562,42 @@ class SDKServer(Module):
         return [text for _, text in items]
 
     def find_action(self, tool_name: str) -> Optional[ActionSpec]:
-        """Resolve 'sdk__<name>' back to the ActionSpec, or None."""
         if not tool_name.startswith("sdk__"):
             return None
         rec = self.actions.get(tool_name[len("sdk__"):])
         return rec.spec if rec else None
+
+    def is_action_allowed(self, action_name: str) -> Tuple[bool, str]:
+        """Phase 9.3 — called by the prompter before dispatch. Returns
+        (True, '') if the action is allowed, or (False, reason)."""
+        rec = self.actions.get(action_name)
+        if rec is None:
+            return False, f"action '{action_name}' is not registered"
+        client = self.clients.get(rec.client_id)
+        if client is None or client.ws.closed:
+            return False, "client disconnected"
+        if not client.approved:
+            return False, f"client '{client.game_name}' is not approved"
+        requested = set(rec.spec.capabilities or ["read"])
+        ceiling = set(client.capability_ceiling) | {"read"}
+        if not requested.issubset(ceiling):
+            excess = sorted(requested - ceiling)
+            return False, (
+                f"action capabilities {excess} exceed client ceiling "
+                f"{sorted(ceiling)}"
+            )
+        return True, ""
+
+    def client_autoapproves_writes(self, action_name: str) -> bool:
+        """Phase 9.3 — whether 'write' actions from this client skip
+        the interactive y/n. Default is False (confirm required)."""
+        rec = self.actions.get(action_name)
+        if rec is None:
+            return False
+        client = self.clients.get(rec.client_id)
+        if client is None:
+            return False
+        return bool(client.auto_approve_writes)
 
     def invoke_action_blocking(
         self,
@@ -433,8 +605,6 @@ class SDKServer(Module):
         arguments: Dict[str, Any],
         timeout: int = INVOKE_TIMEOUT_SECONDS,
     ) -> Dict[str, Any]:
-        """Thread-safe blocking invocation for the prompter's executor.
-        Returns {'success': bool, 'result': str|None, 'error': str|None}."""
         if self._loop is None:
             return {"success": False, "error": "SDK is not running"}
         fut = asyncio.run_coroutine_threadsafe(
@@ -478,8 +648,6 @@ class SDKServer(Module):
             return {"success": False, "error": "action timed out"}
 
     def broadcast_lumi_message(self, content: str, role: str = "assistant"):
-        """Fan out a speech_finished message to every connected client.
-        Called by the prompter on every reply."""
         if not self.clients:
             return
         payload = speech_finished_message(content, role=role,

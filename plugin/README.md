@@ -30,7 +30,7 @@ From the workspace root:
 python plugin/plugin.py
 ```
 
-Expected output:
+Expected output once the plugin is approved (see the next section):
 
 ```text
 [sdk] connecting to ws://127.0.0.1:5056/ws
@@ -42,6 +42,25 @@ Expected output:
 <!-- VERIFY: confirm plugin.py reads the token from data/memories/sdk_token.txt by default. -->
 
 The plugin authenticates with the token Lumi generates at `data/memories/sdk_token.txt`. Leave the process running; Lumi can only call the actions while the plugin is connected.
+
+## Approving the plugin
+
+The SDK is deny-by-default, so the plugin has to be approved before its actions register. Without an allowlist entry, neither `screenshot_primary_monitor` nor `log_note` registers.
+
+1. Start Lumi, then run the plugin as above. It connects but registers nothing.
+2. On this first connect, the SDK server adds a denied entry for the plugin to `data/memories/sdk_allowlist.json`.
+3. Open that file, find the entry, set `approved: true`, and add `capability_ceiling: ["read", "write"]`:
+
+```json
+"approved": true,
+"capability_ceiling": ["read", "write"]
+```
+
+4. Restart Lumi, then run the plugin again. You should now see the `registered:` lines shown above.
+
+<!-- VERIFY: confirm the entry's surrounding structure (key name, nesting) in data/memories/sdk_allowlist.json, and that Lumi must be restarted rather than reloading the file live. -->
+
+The ceiling must cover the highest tier the plugin declares. `screenshot_primary_monitor` is `read` and `log_note` is `write`, so both tiers are listed. An action above the ceiling is refused. If an action is refused or keeps asking for confirmation, see [Troubleshooting](../docs/troubleshooting.md#security-and-refusals). For why the SDK works this way, see [Security](../docs/security.md).
 
 ## Triggering it
 
@@ -96,3 +115,4 @@ Calling `requires_confirm()` on an action forces the `y/n` prompt regardless of 
 - [`../sdk/client.py`](../sdk/client.py) — `LumiClient` source
 - [`../sdk/examples/system_stats.py`](../sdk/examples/system_stats.py) — second Python reference client
 - [`../docs/architecture.md`](../docs/architecture.md) — where the SDK fits in Lumi's turn flow
+- [`../docs/security.md`](../docs/security.md) — the SDK allowlist and capability ceiling

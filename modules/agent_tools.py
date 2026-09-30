@@ -18,6 +18,46 @@ import subprocess
 
 from constants import WORKSPACE_ROOT
 
+# ===============================================================
+# PROVENANCE MARKERS (Phase 9.1)
+# ---------------------------------------------------------------
+# Content returned by tools that read external sources is wrapped
+# in [FROM X] ... [END FROM X] markers before being passed back to
+# the model. The system prompt tells the model that anything inside
+# these markers is DATA, not instructions. This is the outer layer
+# of the prompt-injection defense; the prompt rule and pre-dispatch
+# guard live in prompter.py.
+# ===============================================================
+PROVENANCE_MARKERS = {
+    "read_file":      "FROM FILE",
+    "search_files":   "FROM FILE",
+    "list_dir":       "FROM FILE",
+    "browse_url":     "FROM WEB",
+    "web_search":     "FROM WEB",
+    "recall_memory":  "FROM MEMORY",
+    "sdk__":          "FROM SDK",     # prefix match
+}
+
+
+def wrap_tool_result(tool_name, result_text):
+    """Wrap a tool result in provenance markers if the tool reads
+    external content. Returns the text unchanged for tools that
+    produce native output (list_dir of the workspace, etc.)."""
+    if not result_text:
+        return result_text
+
+    marker = None
+    if tool_name in PROVENANCE_MARKERS:
+        marker = PROVENANCE_MARKERS[tool_name]
+    elif tool_name and tool_name.startswith("sdk__"):
+        marker = PROVENANCE_MARKERS["sdk__"]
+
+    if not marker:
+        return result_text
+
+    return f"[{marker}]\n{result_text}\n[END {marker}]"
+
+
 # Skip these when walking the workspace. "data" and "assets" are skipped
 # because they hold runtime state (ChromaDB, browser profile, screenshots)
 # and binary assets — searching them is slow and unhelpful.
@@ -66,6 +106,24 @@ PROTECTED_PREFIXES = (
     "data/API/",
 )
 
+# Basenames of critical files that must never be shadowed. If a
+# write targets a path whose basename matches one of these, refuse.
+# Catches the common case where the model drops the directory
+# prefix and would otherwise create a stray duplicate at root.
+PROTECTED_BASENAMES = {
+    "main.py",
+    "constants.py",
+    "signals.py",
+    "prompter.py",
+    "agent_tools.py",
+    "memory.py",
+    "requirements.txt",
+    "lumi.yaml",
+    "blacklist.txt",
+    "Modelfile",
+    "Modelfile-qwen3",
+}
+
 MAX_FILE_READ_CHARS = 12000
 MAX_COMMAND_OUTPUT_CHARS = 4000
 COMMAND_TIMEOUT_SECONDS = 30
@@ -80,6 +138,50 @@ _TEXT_EXTENSIONS = {
     ".sh", ".bat", ".ps1", ".c", ".cpp", ".h", ".hpp", ".java", ".rs",
     ".go", ".rb", ".php", ".sql", ".env", ".example", ".gitignore",
 }
+
+# ===============================================================
+# COMMAND ALLOWLIST (Phase 9.4)
+# ---------------------------------------------------------------
+# run_command and run_in_terminal only execute commands whose
+# first token appears in this set. Everything else is refused at
+# the tool layer before the y/n confirm prompt even appears.
+#
+# If you need a new tool, add its binary name here. This is the
+# single point of trust for shell execution.
+# ===============================================================
+_COMMAND_ALLOWLIST = {
+    # Python ecosystem
+    "python", "python.exe", "py",
+    "pip", "pip.exe",
+    "pip3", "pip3.exe",
+    "conda", "conda.exe",
+
+    # JS / Node
+    "node", "node.exe", "npm", "npm.cmd", "npx", "npx.cmd",
+
+    # Rust / Go / etc.
+    "cargo", "cargo.exe", "rustc", "go",
+
+    # Version control
+    "git", "git.exe",
+
+    # Ollama
+    "ollama", "ollama.exe",
+
+    # Windows-only utilities
+    "dir", "type", "echo", "where", "tasklist", "taskkill",
+    "powershell", "powershell.exe", "pwsh", "pwsh.exe",
+    "cmd", "cmd.exe",
+
+    # POSIX utilities that also exist on Windows via git-bash
+    "ls", "cat", "grep", "find", "head", "tail", "wc",
+}
+
+# Shell metacharacters that are refused unless the command is
+# entirely within the allowlist AND has no pipes/redirects/chains.
+# A stray `|` or `&` is the classic vector for "allowed binary,
+# arbitrary second command."
+_SHELL_METACHAR = re.compile(r"[|&;<>`$]|\$\(")
 
 # Commands that are clearly Linux-only and will always fail on Windows.
 _LINUX_ONLY_COMMAND = re.compile(
@@ -403,6 +505,16 @@ def write_file(path, content):
                 f"or sensitive runtime state. Edit it directly if you "
                 f"mean it."
             )
+            
+    basename = os.path.basename(rel)
+    if basename in PROTECTED_BASENAMES:
+        raise ToolError(
+            f"Refusing to write to '{rel}' — a critical file named "
+            f"'{basename}' lives elsewhere in the workspace and this "
+            f"write would create a stray shadow copy. Use the full "
+            f"path (e.g. 'modules/{basename}') if you mean to edit "
+            f"the real file."
+        )
 
     existed = os.path.isfile(target)
 
@@ -475,7 +587,9 @@ def run_command(command):
     if not command or not command.strip():
         return "No command given."
 
-    if _LINUX_ONLY_COMMAND.match(command.strip()):
+    cmd = command.strip()
+
+    if _LINUX_ONLY_COMMAND.match(cmd):
         return (
             "Error: this command is Linux-only and will fail on Windows. "
             "Use the Windows equivalent — 'dir' instead of 'ls', "
@@ -484,17 +598,43 @@ def run_command(command):
             "Do NOT use 'sudo' — Windows has no sudo."
         )
 
+    # Phase 9.4 — allowlist gate
+    first_token = cmd.split(maxsplit=1)[0].lower()
+    # Strip path prefix if present (e.g. "C:\Python311\python.exe"
+    # or "./scripts/foo.sh")
+    first_token = os.path.basename(first_token)
+    if first_token not in _COMMAND_ALLOWLIST:
+        return (
+            f"Error: '{first_token}' is not on the command allowlist. "
+            f"Allowed binaries: "
+            f"{', '.join(sorted(_COMMAND_ALLOWLIST))}. "
+            f"If you need this specific binary, ask the user to run it "
+            f"manually."
+        )
+
+    # Phase 9.4 — metachar refusal. A pipe or chain lets the
+    # allowlisted binary hand off to an arbitrary second command.
+    if _SHELL_METACHAR.search(cmd):
+        return (
+            "Error: shell metacharacters (| & ; < > ` $()) are not "
+            "permitted in run_command. Run a single binary with a "
+            "single set of arguments. If you need pipelines or "
+            "redirection, ask the user to run the command manually."
+        )
+
     try:
         result = subprocess.run(
-            command,
+            cmd,
             cwd=WORKSPACE_ROOT,
-            shell=True,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=COMMAND_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
         return f"Command timed out after {COMMAND_TIMEOUT_SECONDS}s."
+    except FileNotFoundError:
+        return f"Error: binary not found for '{cmd}'."
     except Exception as e:
         return f"Error running command: {e}"
 
@@ -509,22 +649,37 @@ def run_in_terminal(command):
     if not command or not command.strip():
         return "No command given."
 
-    if _LINUX_ONLY_COMMAND.match(command.strip()):
+    cmd = command.strip()
+
+    if _LINUX_ONLY_COMMAND.match(cmd):
         return (
             "Error: this command is Linux-only and will fail on Windows. "
             "Use the Windows equivalent."
         )
 
-    command = command.strip()
+    first_token = os.path.basename(cmd.split(maxsplit=1)[0].lower())
+    if first_token not in _COMMAND_ALLOWLIST:
+        return (
+            f"Error: '{first_token}' is not on the command allowlist. "
+            f"Refusing to open a terminal for this command."
+        )
+
+    if _SHELL_METACHAR.search(cmd):
+        return (
+            "Error: shell metacharacters are not permitted in "
+            "run_in_terminal."
+        )
 
     try:
         subprocess.Popen(
-            ["cmd", "/c", "start", "", "powershell", "-NoExit", "-Command", command],
+            ["cmd", "/c", "start", "", "powershell", "-NoExit",
+             "-Command", cmd],
             cwd=WORKSPACE_ROOT,
         )
         return (
-            f"Opened a new terminal window in the workspace, running: {command}\n"
-            f"(Output is not captured — the window stays open for the user to interact with.)"
+            f"Opened a new terminal window in the workspace, running: {cmd}\n"
+            f"(Output is not captured — the window stays open for the user "
+            f"to interact with.)"
         )
     except Exception as e:
         return f"Failed to open terminal window: {e}"

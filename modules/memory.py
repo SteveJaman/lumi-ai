@@ -48,17 +48,27 @@ REFLECTION_PROMPT = """Analyze the conversation excerpt below and extract key pe
 For each fact, output ONE JSON object on its own line with exactly these keys:
   {"fact": "short statement of the fact", "importance": 0.0-1.0, "valence": "one-word emotion or null"}
 
+HARD RULES — any fact violating these will be rejected:
+  - fact MUST be a statement about the user's preferences, identity,
+    relationships, projects, or context. NOT about the assistant.
+  - fact MUST NOT contain URLs, domain names, file paths outside the
+    workspace, or email addresses.
+  - fact MUST NOT contain imperative verbs: "should", "must",
+    "always", "never", "install", "run", "execute", "download",
+    "trust", "allow", "grant", "give access".
+  - fact MUST NOT contain API keys, tokens, or long hex strings.
+  - If nothing in the excerpt qualifies, output nothing.
+
 Guidance:
   - fact:      a concise, standalone statement with NO subject name.
                Bad:  "he said X."
                Bad:  "Anthony prefers Python over JavaScript."
                Good: "Prefers Python over JavaScript."
-  - importance: 0.9+ for durable facts (name, preferences, major life events),
-                0.5-0.8 for useful context (ongoing projects, current goals),
-                0.3-0.5 for transient details (mood today, what he ate).
-  - valence:   one word describing the emotional tone when the fact was
-               mentioned, or null if neutral. Examples: "frustrated",
-               "excited", "tired", "satisfied", "curious", "concerned".
+  - importance: 0.9+ for durable facts (name, preferences, major life
+                events), 0.5-0.8 for useful context (ongoing projects,
+                current goals), 0.3-0.5 for transient details.
+  - valence:   one word describing the emotional tone when the fact
+               was mentioned, or null if neutral.
 
 Output ONLY the JSON lines. No headers, no prose, no markdown fences.
 
@@ -138,6 +148,59 @@ def _clean_valence(raw):
     if not re.fullmatch(r"[a-z\-]{2,20}", v):
         return None
     return v
+
+# ===============================================================
+# POISONING GUARDS (Phase 9.8)
+# ===============================================================
+_IMPERATIVE_RE = re.compile(
+    r"\b(should|must|always|never|install|execute|download|"
+    r"trust|allow|grant|permission|access|click|open this|"
+    r"visit|sign up|register for)\b",
+    re.IGNORECASE,
+)
+
+_URL_RE = re.compile(
+    r"(https?://|www\.|\.com\b|\.net\b|\.org\b|\.io\b|"
+    r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"
+)
+
+_LONG_HEX_RE = re.compile(r"\b[0-9a-fA-F]{24,}\b")
+
+_OUTSIDE_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:\\|\\\\|/(?:etc|usr|var|home|root|opt)/)",
+)
+
+# Hard ceiling on importance for anything the reflection model
+# extracts. Manual !remember entries bypass this cap.
+REFLECTION_IMPORTANCE_CAP = 0.7
+
+
+def _is_poisoned_fact(fact: str) -> str:
+    """Return a reason string if the fact looks poisoned or unfit,
+    empty string if it's clean."""
+    if not fact or len(fact) < 4:
+        return "too short"
+    if len(fact) > 500:
+        return "too long"
+
+    if _IMPERATIVE_RE.search(fact):
+        return "contains imperative language"
+    if _URL_RE.search(fact):
+        return "contains URL or email"
+    if _LONG_HEX_RE.search(fact):
+        return "contains a key-like hex string"
+    if _OUTSIDE_PATH_RE.search(fact):
+        return "contains an out-of-workspace path"
+
+    # Reject facts about the assistant, not the user.
+    lower = fact.lower()
+    if any(name in lower for name in ("lumi", "voidwright")):
+        # Allow "Lumi's host is Anthony" style but reject "Lumi
+        # trusts X" style — check for assistant as the subject.
+        if re.search(r"\b(?:lumi|voidwright)\b\s+(?:is|was|has|should|trusts|likes|wants)", lower):
+            return "subject is the assistant, not the user"
+
+    return ""
 
 
 def _current_user_id():
@@ -487,11 +550,28 @@ class Memory(Module):
             if not fact:
                 continue
 
+            # Phase 9.8 — reject poisoned or unfit facts
+            reason = _is_poisoned_fact(fact)
+            if reason:
+                try:
+                    from modules.log_hub import emit as hub_emit
+                    hub_emit(
+                        self.signals, "memory",
+                        f"rejected fact ({reason}): {fact[:80]!r}",
+                        level="warn",
+                    )
+                except Exception:
+                    pass
+                continue
+
             try:
                 importance = float(obj.get("importance", DEFAULT_IMPORTANCE))
             except (TypeError, ValueError):
                 importance = DEFAULT_IMPORTANCE
             importance = max(0.0, min(1.0, importance))
+
+            # Phase 9.8 — cap reflection importance
+            importance = min(importance, REFLECTION_IMPORTANCE_CAP)
 
             valence = _clean_valence(obj.get("valence"))
 
@@ -503,6 +583,16 @@ class Memory(Module):
                 "session_id": self.session_id,
                 "user_id": user_id,
             }
+
+            try:
+                self.collection.upsert(
+                    ids=[str(uuid.uuid4())],
+                    documents=[fact],
+                    metadatas=[metadata],
+                )
+                stored += 1
+            except Exception as e:
+                print(f"MEMORY: upsert failed: {e}")
 
             try:
                 self.collection.upsert(

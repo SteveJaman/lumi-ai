@@ -10,6 +10,37 @@ import os
 import json
 from datetime import datetime
 
+# ===============================================================
+# VLM OUTPUT FILTER (Phase 9.6d)
+# ---------------------------------------------------------------
+# The VLM occasionally hallucinates a string that looks like an API
+# key, token, or long encoded blob. Anything that matches a
+# key-shaped pattern is dropped before it reaches the prompt or the
+# visual-memory log.
+# ===============================================================
+import re as _re
+
+_VLM_SECRET_PATTERNS = [
+    _re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
+    _re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}"),
+    _re.compile(r"AIza[0-9A-Za-z_\-]{30,}"),
+    _re.compile(r"[MN][A-Za-z\d]{23}\.[\w\-]{6}\.[\w\-]{27,}"),
+    _re.compile(r"\b[0-9a-fA-F]{32,}\b"),
+    _re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}\b"),  # long base64-ish
+]
+
+
+def _vlm_output_safe(text: str) -> bool:
+    """Return True if the VLM output looks like an ordinary
+    description and not a leaked secret. False means drop it."""
+    if not text:
+        return False
+    for pat in _VLM_SECRET_PATTERNS:
+        if pat.search(text):
+            return False
+    return True
+
+
 try:
     import mss
     from PIL import Image
@@ -204,8 +235,12 @@ class MultiModal(Module):
                         summary = resp2.json().get("response", "").strip()
 
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                if summary:
+                if summary and _vlm_output_safe(summary):
                     self._save_visual_memory(timestamp, img_path, summary)
+                elif summary:
+                    print(f"\033[93m[MULTIMODAL: VLM output rejected by "
+                          f"secret filter]\033[0m")
+                    summary = ""
 
                 print(f"\033[92m[MULTIMODAL VLM Summary Saved]: {summary}\033[0m")
                 return summary

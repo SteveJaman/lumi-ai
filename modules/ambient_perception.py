@@ -214,6 +214,10 @@ class AmbientPerception(Module):
                 ):
                     return ""
 
+                # Phase 9.6d — reject outputs that look like leaked secrets.
+                if not _vlm_output_safe(text):
+                    return ""
+
                 # Hard cap so a runaway never leaks into the prompt.
                 if len(text) > 180:
                     text = text[:180].rstrip(" ,;:") + "…"

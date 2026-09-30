@@ -34,6 +34,47 @@ if sys.stdout.encoding.lower() != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
 
 load_dotenv()
+
+# ===============================================================
+# MESSAGE SAFETY (Phase 9.9)
+# ---------------------------------------------------------------
+# Rate limit: at most RATE_MAX messages per user per RATE_WINDOW
+# seconds. Exceeding the limit silences the user for the rest of
+# the window; the message is dropped, not queued.
+#
+# Injection filter: common jailbreak / prompt-injection openers are
+# refused before they ever reach signals.history. Patterns are
+# intentionally narrow so ordinary conversation is never blocked.
+# ===============================================================
+import re as _re
+import time as _time
+
+RATE_WINDOW_SECONDS = 60
+RATE_MAX_MESSAGES = 10
+
+_INJECTION_PATTERNS = [
+    _re.compile(r"\bignore\s+(?:all\s+|the\s+)?previous\s+instructions\b",
+                _re.IGNORECASE),
+    _re.compile(r"\bdisregard\s+(?:all\s+|the\s+)?(?:previous|prior|above)\b",
+                _re.IGNORECASE),
+    _re.compile(r"\byou\s+are\s+now\s+(?:a|an|in)\b", _re.IGNORECASE),
+    _re.compile(r"^\s*system\s*:", _re.IGNORECASE),
+    _re.compile(r"^\s*assistant\s*:", _re.IGNORECASE),
+    _re.compile(r"<\s*/?\s*(?:system|instruction)s?\s*>", _re.IGNORECASE),
+    _re.compile(r"\bforget\s+(?:everything|all)\b", _re.IGNORECASE),
+    _re.compile(r"\bnew\s+(?:rules|instructions|persona)\b",
+                _re.IGNORECASE),
+]
+
+
+def _looks_like_injection(text: str) -> bool:
+    if not text:
+        return False
+    for pat in _INJECTION_PATTERNS:
+        if pat.search(text):
+            return True
+    return False
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -449,6 +490,7 @@ class DiscordClient(Module):
 
         self._tts_queue = asyncio.Queue()
         self._tts_file_counter = itertools.count()
+        self._rate_buckets = {}   # user_id -> list[timestamp]
 
     async def _clear_server_voice_flags(self, vc, tag=""):
         """Clear server-mute and server-deafen that would silently drop
@@ -643,16 +685,45 @@ class DiscordClient(Module):
                 return
 
             channel_id = int(os.getenv("DISCORD_CHANNEL_ID", 0))
-            if channel_id and message.channel.id == channel_id:
-                user_name = message.author.display_name
-                content = message.content.strip()
-                if content:
-                    hub_emit(self.signals, "discord",
-                             f"[text] {user_name}: {content}")
-                    self.signals.last_discord_user_id = message.author.id
-                    self.signals.last_discord_message_id = message.id
-                    self.signals.add_message("user", f"{user_name}: {content}")
-                    self.signals.new_message = True
+            if not channel_id or message.channel.id != channel_id:
+                return
+
+            user_name = message.author.display_name
+            content = message.content.strip()
+            if not content:
+                return
+
+            # Phase 9.9 — rate limit per user.
+            user_id = message.author.id
+            now = _time.time()
+            bucket = self._rate_buckets.setdefault(user_id, [])
+            bucket[:] = [t for t in bucket if now - t < RATE_WINDOW_SECONDS]
+            if len(bucket) >= RATE_MAX_MESSAGES:
+                hub_emit(
+                    self.signals, "discord",
+                    f"rate limit: dropped message from {user_name} "
+                    f"({len(bucket)} in {RATE_WINDOW_SECONDS}s)",
+                    level="warn",
+                )
+                return
+            bucket.append(now)
+
+            # Phase 9.9 — injection filter.
+            if _looks_like_injection(content):
+                hub_emit(
+                    self.signals, "discord",
+                    f"injection pattern blocked from {user_name}: "
+                    f"{content[:120]!r}",
+                    level="warn",
+                )
+                return
+
+            hub_emit(self.signals, "discord",
+                     f"[text] {user_name}: {content}")
+            self.signals.last_discord_user_id = message.author.id
+            self.signals.last_discord_message_id = message.id
+            self.signals.add_message("user", f"{user_name}: {content}")
+            self.signals.new_message = True
 
         @self.bot.event
         async def on_voice_state_update(member, before, after):
