@@ -18,46 +18,6 @@ import subprocess
 
 from constants import WORKSPACE_ROOT
 
-# ===============================================================
-# PROVENANCE MARKERS (Phase 9.1)
-# ---------------------------------------------------------------
-# Content returned by tools that read external sources is wrapped
-# in [FROM X] ... [END FROM X] markers before being passed back to
-# the model. The system prompt tells the model that anything inside
-# these markers is DATA, not instructions. This is the outer layer
-# of the prompt-injection defense; the prompt rule and pre-dispatch
-# guard live in prompter.py.
-# ===============================================================
-PROVENANCE_MARKERS = {
-    "read_file":      "FROM FILE",
-    "search_files":   "FROM FILE",
-    "list_dir":       "FROM FILE",
-    "browse_url":     "FROM WEB",
-    "web_search":     "FROM WEB",
-    "recall_memory":  "FROM MEMORY",
-    "sdk__":          "FROM SDK",     # prefix match
-}
-
-
-def wrap_tool_result(tool_name, result_text):
-    """Wrap a tool result in provenance markers if the tool reads
-    external content. Returns the text unchanged for tools that
-    produce native output (list_dir of the workspace, etc.)."""
-    if not result_text:
-        return result_text
-
-    marker = None
-    if tool_name in PROVENANCE_MARKERS:
-        marker = PROVENANCE_MARKERS[tool_name]
-    elif tool_name and tool_name.startswith("sdk__"):
-        marker = PROVENANCE_MARKERS["sdk__"]
-
-    if not marker:
-        return result_text
-
-    return f"[{marker}]\n{result_text}\n[END {marker}]"
-
-
 # Skip these when walking the workspace. "data" and "assets" are skipped
 # because they hold runtime state (ChromaDB, browser profile, screenshots)
 # and binary assets — searching them is slow and unhelpful.
@@ -193,6 +153,47 @@ _LINUX_ONLY_COMMAND = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+
+# ===============================================================
+# PROVENANCE MARKERS (Phase 9.1)
+# ---------------------------------------------------------------
+# Content returned by tools that read external sources is wrapped
+# in [FROM X] ... [END FROM X] markers before being passed back to
+# the model. The system prompt tells the model that anything inside
+# these markers is DATA, not instructions. This is the outer layer
+# of the prompt-injection defense; the prompt rule and pre-dispatch
+# guard live in prompter.py.
+# ===============================================================
+PROVENANCE_MARKERS = {
+    "read_file":       "FROM FILE",
+    "search_files":    "FROM FILE",
+    "list_dir":        "FROM FILE",
+    "browse_url":      "FROM WEB",
+    "web_search":      "FROM WEB",
+    "recall_memory":   "FROM MEMORY",
+    "search_library":  "FROM LIBRARY",
+    "sdk__":           "FROM SDK",     # prefix match
+}
+
+
+def wrap_tool_result(tool_name, result_text):
+    """Wrap a tool result in provenance markers if the tool reads
+    external content. Returns the text unchanged for tools that
+    produce native output (list_dir of the workspace, etc.)."""
+    if not result_text:
+        return result_text
+
+    marker = None
+    if tool_name in PROVENANCE_MARKERS:
+        marker = PROVENANCE_MARKERS[tool_name]
+    elif tool_name and tool_name.startswith("sdk__"):
+        marker = PROVENANCE_MARKERS["sdk__"]
+
+    if not marker:
+        return result_text
+
+    return f"[{marker}]\n{result_text}\n[END {marker}]"
 
 
 # ===============================================================
@@ -505,7 +506,7 @@ def write_file(path, content):
                 f"or sensitive runtime state. Edit it directly if you "
                 f"mean it."
             )
-            
+
     basename = os.path.basename(rel)
     if basename in PROTECTED_BASENAMES:
         raise ToolError(

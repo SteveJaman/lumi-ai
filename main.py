@@ -11,6 +11,7 @@ from signals import Signals
 from constants import WORKSPACE_ROOT
 
 from modules.memory import Memory
+from modules.library_indexer import LibraryIndexer
 from modules.multimodal import MultiModal
 from modules.local_input import LocalInput
 from modules.console_input import ConsoleInput
@@ -124,6 +125,7 @@ def main():
 
     modules = [
         Memory(signals, enabled=True),
+        LibraryIndexer(signals, enabled=True),
         MultiModal(signals, enabled=True),
         LocalInput(signals, enabled=True),
         ConsoleInput(signals, enabled=True),

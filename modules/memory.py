@@ -18,6 +18,14 @@ current user. A migration pass on init backfills legacy rows (created
 before this phase) with user_id="anthony" so the default host keeps
 seeing their existing history.
 
+Library RAG
+-----------
+A second ChromaDB collection, `library_docs`, holds chunks of
+user-supplied reference documents (PDF, TXT, MD, DOCX, JSON) that have
+been dropped into data/library/. The LibraryIndexer module walks that
+folder and calls into this class to store chunks. The prompter pulls
+matching chunks on every turn.
+
 Storage lives under data/memories/ after the folder reorg:
   data/memories/chroma.db             — ChromaDB persistence dir
   data/memories/memoryinit.json       — optional seed file
@@ -89,6 +97,10 @@ LEGACY_USER_ID = "anthony"
 # Runtime storage locations — resolved under data/memories/.
 _CHROMA_PATH = os.path.join(DATA_ROOT, "memories", "chroma.db")
 _MEMORY_INIT_PATH = os.path.join(DATA_ROOT, "memories", "memoryinit.json")
+
+# Library RAG collection name (separate from the personal-memory
+# collection, which is hardcoded as "neuro_collection" in __init__).
+_LIBRARY_COLLECTION = "library_docs"
 
 _BAD_VALENCE_STRINGS = {"", "null", "none", "nil", "undefined", "n/a"}
 
@@ -232,6 +244,11 @@ class Memory(Module):
         self.collection = self.chroma_client.get_or_create_collection(
             name="neuro_collection"
         )
+
+        # Lazy handle for the library collection. Populated by the
+        # first call to API._get_library_collection().
+        self._library_collection = None
+
         count = self.collection.count()
         print(f"MEMORY: Loaded {count} memories from database.")
         if count == 0:
@@ -594,16 +611,6 @@ class Memory(Module):
             except Exception as e:
                 print(f"MEMORY: upsert failed: {e}")
 
-            try:
-                self.collection.upsert(
-                    ids=[str(uuid.uuid4())],
-                    documents=[fact],
-                    metadatas=[metadata],
-                )
-                stored += 1
-            except Exception as e:
-                print(f"MEMORY: upsert failed: {e}")
-
         if stored:
             try:
                 from modules.log_hub import emit as hub_emit
@@ -916,6 +923,152 @@ class Memory(Module):
             )
 
             return hits[:limit]
+
+        # -----------------------------------------------------------
+        # Library RAG (reference document retrieval)
+        # -----------------------------------------------------------
+        def _get_library_collection(self):
+            if getattr(self.outer, "_library_collection", None) is None:
+                self.outer._library_collection = (
+                    self.outer.chroma_client.get_or_create_collection(
+                        name=_LIBRARY_COLLECTION
+                    )
+                )
+            return self.outer._library_collection
+
+        def index_library_file(self, filename, file_path,
+                               fingerprint, chunks):
+            """Upsert every chunk for a file. Removes prior chunks from
+            the same file/user first so re-indexing doesn't leave stale
+            data behind."""
+            collection = self._get_library_collection()
+            user_id = _current_user_id()
+
+            try:
+                existing = collection.get(
+                    where={"source": filename, "user_id": user_id}
+                )
+                old_ids = existing.get("ids") or []
+                if old_ids:
+                    collection.delete(ids=old_ids)
+            except Exception:
+                pass
+
+            now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+            ids = []
+            docs = []
+            metas = []
+            for i, chunk in enumerate(chunks):
+                ids.append(f"{user_id}::{filename}::{i}")
+                docs.append(chunk)
+                metas.append({
+                    "type": "library_chunk",
+                    "source": filename,
+                    "file_path": file_path,
+                    "fingerprint": fingerprint,
+                    "chunk_index": i,
+                    "chunk_total": len(chunks),
+                    "timestamp": now_iso,
+                    "user_id": user_id,
+                })
+
+            collection.upsert(ids=ids, documents=docs, metadatas=metas)
+
+        def is_file_indexed(self, filename):
+            collection = self._get_library_collection()
+            try:
+                res = collection.get(
+                    where={"source": filename,
+                           "user_id": _current_user_id()},
+                    limit=1,
+                )
+                return bool(res.get("ids"))
+            except Exception:
+                return False
+
+        def search_library(self, query, top_k=3):
+            """Semantic search over the library collection. Returns a
+            list of {chunk, source, distance}."""
+            if not query or not query.strip():
+                return []
+            collection = self._get_library_collection()
+
+            try:
+                total = collection.count()
+            except Exception:
+                total = 0
+            if total == 0:
+                return []
+
+            try:
+                res = collection.query(
+                    query_texts=query,
+                    n_results=min(top_k, total),
+                    where={"user_id": _current_user_id()},
+                )
+            except Exception as e:
+                print(f"\033[91mMEMORY: library query failed: "
+                      f"{e}\033[0m")
+                return []
+
+            if not res or not res.get("ids") or not res["ids"][0]:
+                return []
+
+            docs = res.get("documents", [[]])[0]
+            metas = res.get("metadatas", [[]])[0] or [{} for _ in docs]
+            dists = res.get("distances", [[]])[0] or [None for _ in docs]
+
+            out = []
+            for doc, meta, dist in zip(docs, metas, dists):
+                out.append({
+                    "chunk": doc or "",
+                    "source": (meta or {}).get("source", ""),
+                    "distance": float(dist) if dist is not None else 1.0,
+                })
+            return out
+
+        def list_library_files(self):
+            """Return a list of {source, chunk_count, timestamp},
+            deduplicated by source."""
+            collection = self._get_library_collection()
+            user_id = _current_user_id()
+            try:
+                res = collection.get(where={"user_id": user_id})
+            except Exception:
+                return []
+
+            by_source = {}
+            ids = res.get("ids") or []
+            metas = res.get("metadatas") or []
+            for _, meta in zip(ids, metas):
+                meta = meta or {}
+                src = meta.get("source", "")
+                if not src:
+                    continue
+                if src not in by_source:
+                    by_source[src] = {
+                        "source": src,
+                        "chunk_count": 0,
+                        "timestamp": meta.get("timestamp", ""),
+                    }
+                by_source[src]["chunk_count"] += 1
+            return sorted(by_source.values(), key=lambda x: x["source"])
+
+        def delete_library_file(self, source):
+            """Remove all chunks for a source filename under the current
+            user."""
+            collection = self._get_library_collection()
+            user_id = _current_user_id()
+            try:
+                res = collection.get(
+                    where={"source": source, "user_id": user_id}
+                )
+                ids = res.get("ids") or []
+                if ids:
+                    collection.delete(ids=ids)
+                return True, None
+            except Exception as e:
+                return False, str(e)
 
         def format_recall(self, hits):
             if not hits:
