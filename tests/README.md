@@ -26,6 +26,7 @@ VTube Studio are all mocked or bypassed.
 |---|---|
 | `test_phase9.py` | Every Phase 9 security guard in isolation: command allowlist (9.4), filesystem sandbox (9.5), log scrubber and VLM filter (9.6), LAN gate (9.7), memory poisoning (9.8), Discord safety (9.9), self-modification guard (9.10), tool anomaly detection (9.11), provenance markers (9.1), SDK allowlist and capability policy (9.2/9.3), playbook presence (9.14) |
 | `test_debug.py` | Whole-project health check: workspace layout, Python syntax, imports, constants, persona YAML, signals, agent tool schemas, Ollama connectivity, storage writability, ports, config files, module shape, smoke tests, optional deps |
+| `test_edge.py` | Verifies `lumi-edge` hardware detection, execution provider resolution (CPU vs DirectML), and edge adapter initialization for ARM/Surface Pro 11 deployment |
 
 ## Run
 

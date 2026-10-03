@@ -27,6 +27,8 @@ from modules.ambient_perception import AmbientPerception
 from modules.log_hub import LogHub
 from modules.self_model import SelfModel
 
+from modules.edge.manager import edge_runtime
+
 from sdk.server import SDKServer
 
 try:
@@ -109,6 +111,14 @@ def _build_module_map(modules_list):
 
 def main():
     global _global_signals, _global_prompter
+    
+    if edge_runtime.is_edge:
+        print("\033[96m[Lumi] Running in Edge Mode (Surface Pro 11 Optimized)\033[0m")
+        max_tokens = edge_runtime.config.get("max_context_tokens", 2048)
+        print(f"[Lumi] Applied edge context limit: {max_tokens} tokens")
+    else:
+        print("\033[95m[Lumi] Running in Standard Desktop Mode\033[0m")
+    
     selected_audio_mode = choose_audio_mode()
 
     signals = Signals()

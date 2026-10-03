@@ -1,13 +1,16 @@
 # Lumi AI Companion
 
-> Lumi now has a full external SDK. Third-party applications connect over a
-> local websocket, register their own actions, push context, and receive
-> invocations — the same pattern Vedal's Neuro SDK uses, with a Neuro-shaped
-> wire protocol. She also speaks and hears in Discord voice channels with
-> correct DAVE end-to-end encryption (pure Python, no sidecar), and her local
-> web client at `127.0.0.1:5000` is a complete editing surface for persona,
-> models, providers, integrations, and settings. Only Phase 9 (security
-> hardening) remains on the roadmap.
+> Lumi now supports an **edge-optimized runtime mode** for ARM64 hardware (such
+> as the Surface Pro 11), offloading vector embeddings and speech-to-text
+> directly to the NPU/GPU via ONNX Runtime and DirectML. She also has a full
+> external SDK. Third-party applications connect over a local websocket,
+> register their own actions, push context, and receive invocations — the same
+> pattern Vedal's Neuro SDK uses, with a Neuro-shaped wire protocol. She also
+> speaks and hears in Discord voice channels with correct DAVE end-to-end
+> encryption (pure Python, no sidecar), and her local web client at
+> `127.0.0.1:5000` is a complete editing surface for persona, models,
+> providers, integrations, and settings. Only Phase 9 (security hardening)
+> remains on the roadmap.
 
 A local-first, agentic AI companion running on consumer hardware. Lumi is a
 persona-driven VTuber-style assistant with real tool use — she can read and
@@ -84,6 +87,9 @@ share the same state and history.
   [web/README.md](web/README.md).
 - **External SDK.** Third-party apps connect over a local websocket, register
   their own actions, and push context. See [sdk/README.md](sdk/README.md).
+- **ARM Edge Optimization.** Lightweight ONNX-backed adapters for STT and
+  vector embeddings, utilizing DirectML and NPU acceleration on devices like
+  the Surface Pro 11. See [modules/README.md](modules/README.md#edge-optimization).
 
 ### Architecture
 
@@ -111,7 +117,10 @@ points:
 
 ## Requirements
 
-- **Python** 3.11+ (Conda recommended for environment isolation)
+- **Python** 3.11+ (Conda recommended for environment isolation; native ARM64
+  builds supported for edge deployment)
+- **ONNX Runtime** (`onnxruntime` or `onnxruntime-directml` for ARM/NPU
+  hardware acceleration)
 - **Ollama** running locally with a tool-capable model
 - **FFmpeg** on PATH, for Discord voice playback. If voice send is silent, see
   [docs/troubleshooting.md](docs/troubleshooting.md)

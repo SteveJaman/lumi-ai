@@ -20,6 +20,7 @@ This README is a map of the folder: which file does what, and where it sits in a
 | [Background loops](#background-loops) | `heartbeat.py`, `ambient_perception.py` | Behavior that runs without a user message |
 | [Web client backend](#web-client-backend) | `socketIO.py`, `user_auth.py`, `persona_editor.py`, `settings_manager.py`, `model_manager.py`, `integrations.py`, `llm_providers.py` | Everything the browser UI talks to |
 | [Discord](#discord) | `discordClient.py`, `streamingSink.py`, `discord_audio_bot.js` | Discord text and voice |
+| [Edge optimization](#edge-optimization) | `edge/manager.py`, `edge/core/hardware_detector.py`, `edge/adapters/...` | Hardware abstraction layer for ARM/NPU edge deployment (Surface Pro 11) |
 | [Utilities](#utilities) | `log_hub.py`, `moods.py`, `stt.py`, `customPrompt.py` | Logging, mood profiles, shared helpers |
 
 ### Core loop
@@ -109,6 +110,18 @@ Discord text and voice. Read the module docstring in `discordClient.py` before t
 | `discordClient.py` | Bot, voice receive with DAVE decrypt, Opus decode, RMS VAD, roster tracking, send path | spawned |
 | `streamingSink.py` | Earlier voice-receive sink | legacy |
 | `discord_audio_bot.js` | Earlier Node.js audio sidecar | legacy |
+
+### Edge optimization
+
+Hardware abstraction layer (HAL) and ONNX-backed adapters for running on ARM edge devices (such as the Surface Pro 11) without heavy x86 dependencies or excessive battery drain.
+
+| File | Role | Status |
+|---|---|---|
+| `edge/manager.py` | Coordinates ARM detection, configuration loading, and edge adapter routing | imported |
+| `edge/core/hardware_detector.py` | Checks system architecture (`arm64`/`aarch64`) and resolves optimal DirectML/CPU execution providers | imported |
+| `edge/adapters/onnx_embeddings.py` | ONNX-backed vector embeddings optimized for NPU/GPU offloading via DirectML | imported |
+| `edge/adapters/light_whisper.py` | ONNX-backed Whisper STT adapter replacing heavy CTranslate2 dependencies on Windows ARM64 | imported |
+| `edge/configs/edge_overrides.json` | Resource thresholds, context limits (2048 tokens), and background throttle profiles | data |
 
 ### Utilities
 

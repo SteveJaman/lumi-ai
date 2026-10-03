@@ -1,0 +1,7 @@
+{
+  "target_device": "snapdragon_x_elite_npu",
+  "execution_provider": "DmlExecutionProvider",
+  "max_context_tokens": 2048,
+  "embedding_batch_size": 4,
+  "background_loop_throttle_seconds": 600
+}
