@@ -129,3 +129,4 @@ config/*.yaml.bak
 
 # --- Directory structure listings ---
 Lumi_tree.txt
+results/
