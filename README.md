@@ -1,4 +1,24 @@
-# Lumi AI Companion
+<div align="center">
+
+  <img src="assets/Lumi_Banner.jpg" alt="Lumi AI Banner" width="100%" style="border-radius: 8px; margin-bottom: 20px;" />
+
+  # Lumi AI Companion
+
+  <img src="assets/Lumi.jpg" alt="Lumi Avatar" width="120" height="120" style="border-radius: 50%; border: 2px solid #57F287; margin-top: 10px;" />
+
+  <p><em>A local-first, agentic AI companion running on consumer hardware.</em></p>
+
+  <p>
+    <a href="#what-she-does">Features</a> •
+    <a href="docs/README.md">Documentation</a> •
+    <a href="#installation">Installation</a> •
+    <a href="#running">Running</a> •
+    <a href="sdk/README.md">SDK</a>
+  </p>
+
+</div>
+
+---
 
 > Lumi now has a full external SDK. Third-party applications connect over a
 > local websocket, register their own actions, push context, and receive
