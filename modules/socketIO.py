@@ -107,6 +107,7 @@ class SocketIOServer:
 
         # Phase 10.19 — voice in browser.
         self._tts_clients = set()
+        self._loop = None 
         self.signals.broadcast_tts_audio = self._broadcast_tts_audio
 
         self._register_http_routes()
@@ -1309,9 +1310,18 @@ class SocketIOServer:
     # Voice in browser (Phase 10.19)
     # ------------------------------------------------------------------
     def _broadcast_tts_audio(self, audio_bytes):
-        """Called by tts.py when an utterance starts playing."""
+        """Called by tts.py when an utterance starts playing.
+
+        Runs on the TTS playback thread, not the aiohttp event loop.
+        The coroutine must be scheduled onto the socket.io loop with
+        run_coroutine_threadsafe; start_background_task() does not
+        work cross-thread.
+        """
         if not self._tts_clients:
             return
+        if self._loop is None or self._loop.is_closed():
+            return
+
         try:
             b64 = base64.b64encode(audio_bytes).decode("ascii")
         except Exception:
@@ -1327,9 +1337,9 @@ class SocketIOServer:
                 pass
 
         try:
-            self.sio.start_background_task(_send)
-        except Exception:
-            pass
+            asyncio.run_coroutine_threadsafe(_send(), self._loop)
+        except Exception as e:
+            print(f"\033[90mSOCKETIO: tts broadcast failed — {e}\033[0m")
 
     async def _handle_voice_message(self, request):
         if not self._origin_ok(request):
@@ -1778,6 +1788,7 @@ class SocketIOServer:
             pass
 
         async def _on_startup(app):
+            self._loop = asyncio.get_running_loop()
             self.sio.start_background_task(self._broadcast_history)
 
         self.app.on_startup.append(_on_startup)

@@ -263,6 +263,13 @@ class TTS:
         """Physically plays the bytes and routes to Discord."""
         self.signals.sio_queue.put(("current_message", message))
 
+        try:
+            broadcast = getattr(self.signals, "broadcast_tts_audio", None)
+            if broadcast is not None:
+                broadcast(audio_bytes)
+        except Exception as e:
+            print(f"\033[90mTTS: browser broadcast failed — {e}\033[0m")
+        
         # Discord Routing
         if self.audio_mode in ["discord", "both"]:
             for module in self.modules:
