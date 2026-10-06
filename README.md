@@ -161,7 +161,7 @@ versions: `pip install -r requirements.lock.txt`.
 1. **Clone and enter the workspace.**
 
    ```bash
-   git clone <your-repo> Lumi-master
+   git clone https://github.com/SteveJaman/lumi-ai.git Lumi-master
    cd Lumi-master
    ```
 
