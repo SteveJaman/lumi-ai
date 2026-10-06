@@ -165,12 +165,14 @@ versions: `pip install -r requirements.lock.txt`.
    cd Lumi-master
    ```
 
-2. **Create and activate a Conda environment.**
+
+2. **Create and activate a Conda environment.** 
+   *(If you don't have Conda installed, grab <a href="https://docs.conda.io/en/latest/miniconda.html" target="_blank">Miniconda</a> first).*
 
    ```bash
    conda create -n lumi python=3.11
    conda activate lumi
-   ```
+
 
 3. **Install dependencies.**
 
