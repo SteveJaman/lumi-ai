@@ -172,7 +172,7 @@ versions: `pip install -r requirements.lock.txt`.
    ```bash
    conda create -n lumi python=3.11
    conda activate lumi
-
+   ```
 
 3. **Install dependencies.**
 
