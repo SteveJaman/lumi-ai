@@ -1,10 +1,10 @@
 <div align="center">
 
-  <img src="assets/Lumi_Banner.jpg" alt="Lumi AI Banner" width="100%" style="border-radius: 8px; margin-bottom: 20px;" />
+  <img src="assets/branding/lumi_png_samples/Lumi_Banner.jpg" alt="Lumi AI Banner" width="100%" style="border-radius: 8px; margin-bottom: 20px;" />
 
   # Lumi AI Companion
 
-  <img src="assets/Lumi.jpg" alt="Lumi Avatar" width="120" height="120" style="border-radius: 50%; border: 2px solid #57F287; margin-top: 10px;" />
+  <img src="assets/branding/lumi_png_samples/Lumi.png" alt="Lumi Avatar" width="120" height="120" style="border-radius: 50%; border: 2px solid #57F287; margin-top: 10px;" />
 
   <p><em>A local-first, agentic AI companion running on consumer hardware.</em></p>
 
@@ -54,6 +54,14 @@ management, per-user memory and emotional-state isolation, and voice in the
 browser. It's all served locally, so the default setup never leaves your
 machine. The terminal remains a first-class developer tool; the two surfaces
 share the same state and history.
+
+---
+
+## Character Design
+
+<div align="center">
+  <img src="assets/branding/lumi_png_samples/Lumi_Character_Sheet.png" alt="Lumi Character Sheet" width="85%" style="border-radius: 8px;" />
+</div>
 
 ---
 
