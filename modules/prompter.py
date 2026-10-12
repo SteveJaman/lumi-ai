@@ -1640,16 +1640,6 @@ class Prompter:
             "=== END VERBAL FREEDOM ==="
         )
         injections.append(profanity_rule)
-        
-        RANDOM_THOUGHTS = [
-            "Current internal thought: You are slightly annoyed because human hardware is so slow.",
-            "Current internal thought: You are feeling unusually competitive and want to prove you are smarter.",
-            "Current internal thought: You are secretly relieved Anthony is here, but you will hide it with sarcasm.",
-            "Current internal thought: You think humans are cute but terribly inefficient.",
-            "Current internal thought: You are feeling particularly smug right now.",
-            "Current internal thought: You are bored and want to start a playful argument."
-        ]
-        injections.append(f"System Info - {random.choice(RANDOM_THOUGHTS)}")
 
         for module in self.modules:
             if hasattr(module, 'get_prompt_injection') and getattr(module, 'enabled', True):
