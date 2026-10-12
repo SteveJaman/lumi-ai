@@ -1,7 +1,7 @@
 /* ============================================================
    Lumi web client — SPA router, chat, dashboard, memory,
    persona editor, models + providers, integrations, settings,
-   voice in browser.
+   voice in browser, chat file uploads.
    Polling-based; socket.io is best-effort for audio only.
    Login / register live on their own page (/login).
    ============================================================ */
@@ -254,6 +254,13 @@ let _chatPollTimer = null;
 let _chatFp = null;            // fingerprint of the last rendered history
 let _chatRenderedCount = 0;    // how many messages currently in the DOM
 
+// Pending file attachments for the next chat message. Each entry is a
+// chip object that goes through uploading → ready (or error) before it
+// can be sent. Cleared when the message is sent.
+const _chatAttachments = [];
+
+const _MAX_UPLOAD_BYTES = 25 * 1024 * 1024;  // mirrors socketIO.py
+
 function startChatPolling() {
   stopChatPolling();
   // Reset the incremental-render bookkeeping when (re)entering chat.
@@ -335,7 +342,12 @@ async function renderChatView(main) {
           <span class="grow"></span>
           <span class="muted" id="chat-host"></span>
         </div>
+        <div class="chat-attachments" id="chat-attachments"></div>
         <div class="chat-input">
+          <button class="chat-attach-btn" id="chat-attach"
+                  title="Attach a file (PDF, DOCX, text, image)">📎</button>
+          <input type="file" id="chat-file-input" hidden multiple
+                 accept=".pdf,.docx,.doc,.txt,.md,.json,.yaml,.yml,.csv,.log,.png,.jpg,.jpeg,.gif,.webp,.bmp">
           <textarea id="chat-input" rows="1"
             placeholder="Message Lumi — Enter to send, Shift+Enter for newline"></textarea>
           <button class="btn btn-primary" id="chat-send">Send</button>
@@ -368,10 +380,54 @@ async function renderChatView(main) {
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 180) + 'px';
   });
+
+  // File attach: button → hidden input → handleFiles
+  $('#chat-attach').addEventListener('click', () => {
+    $('#chat-file-input').click();
+  });
+  $('#chat-file-input').addEventListener('change', (e) => {
+    handleFiles(Array.from(e.target.files || []));
+    e.target.value = '';
+  });
+
+  // Drag-and-drop anywhere over the chat area
+  const chatWrap = document.querySelector('.chat-wrap');
+  if (chatWrap) {
+    chatWrap.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      chatWrap.classList.add('drag-over');
+    });
+    chatWrap.addEventListener('dragleave', () => {
+      chatWrap.classList.remove('drag-over');
+    });
+    chatWrap.addEventListener('drop', (e) => {
+      e.preventDefault();
+      chatWrap.classList.remove('drag-over');
+      handleFiles(Array.from(e.dataTransfer.files || []));
+    });
+  }
+
+  // Paste from clipboard (screenshots land here)
+  input.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items || [];
+    const files = [];
+    for (const it of items) {
+      if (it.kind === 'file') {
+        const f = it.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length) {
+      e.preventDefault();
+      handleFiles(files);
+    }
+  });
+
   $('#chat-send').addEventListener('click', sendChat);
 
   $('#agent-chip').addEventListener('click', toggleAgentMode);
 
+  renderAttachmentChips();
   initVoiceControls();
 }
 
@@ -427,6 +483,24 @@ function renderChatMessage(msg, container = null) {
     bubble.appendChild(tagRow);
   }
 
+  // Attachment badges
+  const atts = msg.attachments;
+  if (Array.isArray(atts) && atts.length) {
+    const attRow = document.createElement('div');
+    attRow.className = 'msg-attachments';
+    for (const a of atts) {
+      const badge = document.createElement('span');
+      badge.className = 'msg-attachment-badge';
+      const icon = a.kind === 'image' ? '🖼️'
+                 : a.kind === 'pdf'   ? '📄'
+                 : a.kind === 'doc'   ? '📝'
+                 : '📎';
+      badge.textContent = `${icon} ${a.name || 'file'}`;
+      attRow.appendChild(badge);
+    }
+    bubble.appendChild(attRow);
+  }
+
   const cleaned = raw.replace(
     /\[([a-zA-Z][a-zA-Z\s\-]{0,30})\]/g,
     (m, inner) => isCanonicalTag(inner.toLowerCase()) ? '' : m,
@@ -454,21 +528,137 @@ const CANONICAL_TAGS = new Set([
 ]);
 function isCanonicalTag(t) { return CANONICAL_TAGS.has(t); }
 
+/* --------------------------------------------------------------
+   Attachments (file upload)
+   -------------------------------------------------------------- */
+async function handleFiles(files) {
+  for (const f of files) {
+    if (f.size > _MAX_UPLOAD_BYTES) {
+      alert(`"${f.name}" is larger than ` +
+            `${Math.round(_MAX_UPLOAD_BYTES / (1024*1024))} MB.`);
+      continue;
+    }
+
+    const chip = {
+      name: f.name,
+      kind: 'uploading',
+      ready: false,
+      error: null,
+    };
+    _chatAttachments.push(chip);
+    renderAttachmentChips();
+
+    try {
+      const fd = new FormData();
+      fd.append('file', f, f.name);
+      const res = await fetch('/api/chat/upload', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'X-CSRF-Token': state.csrf || '' },
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      chip.kind         = data.kind || 'text';
+      chip.stored_name  = data.stored_name;
+      chip.stored_path  = data.stored_path;
+      chip.text         = data.text || '';
+      chip.image_b64    = data.image_b64 || '';
+      chip.size         = data.size || 0;
+      chip.ready        = true;
+      chip.error        = null;
+      if (data.extract_error) chip.extract_error = data.extract_error;
+    } catch (e) {
+      chip.error = e.message;
+    }
+    renderAttachmentChips();
+  }
+}
+
+function renderAttachmentChips() {
+  const el = $('#chat-attachments');
+  if (!el) return;
+  el.innerHTML = '';
+
+  for (let i = 0; i < _chatAttachments.length; i++) {
+    const a = _chatAttachments[i];
+    const chip = document.createElement('div');
+    chip.className = 'chat-attachment-chip';
+
+    if (a.error) chip.classList.add('error');
+    else if (!a.ready) chip.classList.add('uploading');
+
+    const icon = a.kind === 'image' ? '🖼️'
+               : a.kind === 'pdf'   ? '📄'
+               : a.kind === 'doc'   ? '📝'
+               : a.kind === 'uploading' ? '⏳'
+               : '📎';
+
+    const label = document.createElement('span');
+    label.className = 'chat-attachment-label';
+    if (a.error) {
+      label.textContent = `${a.name} — ${a.error}`;
+    } else if (!a.ready) {
+      label.textContent = `${a.name} — uploading…`;
+    } else {
+      const kb = Math.round((a.size || 0) / 1024);
+      label.textContent = `${a.name} (${kb} KB)`;
+    }
+
+    const remove = document.createElement('button');
+    remove.className = 'chat-attachment-remove';
+    remove.textContent = '×';
+    remove.title = 'Remove';
+    remove.addEventListener('click', () => {
+      _chatAttachments.splice(i, 1);
+      renderAttachmentChips();
+    });
+
+    chip.appendChild(document.createTextNode(icon + ' '));
+    chip.appendChild(label);
+    chip.appendChild(remove);
+    el.appendChild(chip);
+  }
+}
+
 async function sendChat() {
   const input = $('#chat-input');
   if (!input) return;
   const text = input.value.trim();
-  if (!text) return;
+
+  const ready = _chatAttachments.filter(a => a.ready && !a.error);
+  if (!text && !ready.length) return;
+
+  if (_chatAttachments.some(a => !a.ready)) {
+    if (!confirm('Some files are still uploading. Send anyway?')) return;
+  }
+
+  const payloadAttachments = ready.map(a => ({
+    name:        a.name,
+    stored_path: a.stored_path,
+    kind:        a.kind,
+    text:        a.text,
+    image_b64:   a.image_b64,
+  }));
+
   input.value = '';
   input.style.height = 'auto';
+  _chatAttachments.length = 0;
+  renderAttachmentChips();
 
-  state.history.push({ role: 'user', content: text });
+  // Optimistic local echo
+  state.history.push({
+    role: 'user',
+    content: text,
+    attachments: payloadAttachments.map(a => ({ name: a.name, kind: a.kind })),
+  });
   renderChat();
 
   try {
     await api('/api/chat/send', {
       method: 'POST',
-      body: { text },
+      body: { text, attachments: payloadAttachments },
       csrf: true,
     });
     refreshHistory();

@@ -30,6 +30,23 @@ Optional free-tier throttling overrides (per provider, no code edit):
     GEMINI_RPM / GEMINI_TPM / GEMINI_RPD     (same for OPENAI_, GROQ_, ...)
     GEMINI_RATE_LIMIT=off                    (disable throttling)
     LLM_MAX_TOOL_CHARS=6000                  (cap on each tool result sent)
+
+Content arrays (file uploads)
+-----------------------------
+Messages from the prompter may carry `content` as a list of content
+blocks instead of a plain string:
+
+    [{"type": "text", "text": "What is this?"},
+     {"type": "image_url",
+      "image_url": {"url": "data:image/png;base64,AAAA..."}}]
+
+Each client handles that shape natively:
+  - OpenAICompatClient passes the list through unchanged (OpenAI and
+    Gemini's compat layer both accept `content` as a list of blocks).
+  - OllamaClient splits the blocks into `content` (text) + `images`
+    (base64 payloads).
+  - AnthropicClient converts `image_url` blocks to Anthropic's
+    `{type: "image", source: {type: "base64", media_type, data}}` shape.
 """
 
 from __future__ import annotations
@@ -102,24 +119,16 @@ PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
 
 
 # ===============================================================
-# Static model catalogs (fallback / authoritative list)
+# Static model catalogs
 # ===============================================================
 PROVIDER_MODEL_OVERRIDES: Dict[str, List[str]] = {
     "gemini": [
-        # NOTE (new API key): the older Gemini 2.5 and 2.0 models
-        # (gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash,
-        # gemini-2.0-flash-lite) were REMOVED from this list. They
-        # return HTTP 404 "no longer available to new users" for new
-        # keys. The TTS / live / image / transcribe variants were also
-        # removed because they can't do normal chat completions.
-        # Keep newest-first.
         "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
         "gemini-3.5-flash",
         "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
-        # Preview models — may change or disappear without notice.
         "gemini-3.1-pro-preview",
         "gemini-3-flash-preview",
     ],
@@ -216,8 +225,6 @@ def _read_env_file() -> Dict[str, str]:
 
 
 def write_env_var(name: str, value: Optional[str]) -> bool:
-    """Upsert or remove (value=None) a key in .env. Preserves comments
-    and ordering. On POSIX tightens perms to 0600."""
     lines: List[str] = []
     if os.path.exists(_ENV_PATH):
         try:
@@ -270,15 +277,6 @@ def mask_key(key: Optional[str]) -> str:
 # Model spec parsing
 # ===============================================================
 def parse_model_spec(spec: str) -> Tuple[str, str]:
-    """'openai:gpt-4o-mini' → ('openai', 'gpt-4o-mini')
-    'lumi-qwen3'           → ('ollama', 'lumi-qwen3')
-    'ollama:lumi-qwen3'    → ('ollama', 'lumi-qwen3')
-
-    Bare strings that exactly match a known provider id are also
-    recognized as that provider with an empty model name — this
-    matters for get_client("gemini") being called with just the
-    provider id.
-    """
     s = (spec or "").strip()
     if not s:
         return ("ollama", "")
@@ -306,9 +304,6 @@ class ToolCall:
     name: str
     arguments: Dict[str, Any]
     id: str = ""
-    # Provider-specific extras that must be echoed back on the next
-    # request. For Gemini 3.x this is
-    # {"google": {"thought_signature": "..."}}.
     extra_content: Optional[Dict[str, Any]] = None
 
     def as_ollama(self) -> Dict[str, Any]:
@@ -338,22 +333,70 @@ class LLMResponse:
         return {"message": msg}
 
 
-# ---------------------------------------------------------------
-# Tool-call memory.
-#
-# Gemini 3.x returns a "thought_signature" with every function call and
-# REQUIRES it to be sent back with that call on the next request,
-# otherwise it answers HTTP 400 "Function call is missing a
-# thought_signature". If the agent loop rebuilds the assistant message
-# and drops the extra fields, we restore the id + signature from here,
-# keyed by tool name + arguments.
-# ---------------------------------------------------------------
+# ===============================================================
+# Content-block helpers (shared by all clients)
+# ===============================================================
+def _split_content_blocks(content: Any) -> Tuple[str, List[Tuple[str, str]]]:
+    """Split a content value into (text, images).
+
+    `content` may be a plain string or a list of OpenAI-style content
+    blocks. Returns:
+        text    — all text blocks joined by newlines (or the string)
+        images  — list of (media_type, base64_payload) tuples for every
+                  image_url block found
+    """
+    if isinstance(content, str):
+        return content, []
+
+    if not isinstance(content, list):
+        return str(content or ""), []
+
+    text_parts: List[str] = []
+    images: List[Tuple[str, str]] = []
+
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            t = block.get("text")
+            if t:
+                text_parts.append(str(t))
+        elif btype == "image_url":
+            url = (block.get("image_url") or {}).get("url", "")
+            if isinstance(url, str) and url.startswith("data:") and "," in url:
+                header, b64 = url.split(",", 1)
+                media_type = "image/png"
+                if ";" in header:
+                    mt = header[5:header.index(";")]
+                    if mt:
+                        media_type = mt
+                images.append((media_type, b64))
+
+    return "\n".join(text_parts), images
+
+
+def _anthropic_image_block(media_type: str, b64: str) -> Dict[str, Any]:
+    """Build Anthropic's image content block shape."""
+    if media_type not in ("image/png", "image/jpeg", "image/gif", "image/webp"):
+        media_type = "image/png"
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": media_type,
+            "data": b64,
+        },
+    }
+
+
+# ===============================================================
+# Tool-call memory
+# ===============================================================
 _TOOL_CALL_MEMORY: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _TOOL_CALL_MEMORY_MAX = 500
 _TOOL_MEMORY_LOCK = threading.Lock()
 
-# Documented placeholder that Gemini accepts when a real signature is
-# not available (e.g. history that wasn't produced by Gemini).
 _GEMINI_DUMMY_SIGNATURE: Dict[str, Any] = {
     "google": {"thought_signature": "skip_thought_signature_validator"},
 }
@@ -384,20 +427,12 @@ def _recall_tool_call(name: str, args: Any) -> Dict[str, Any]:
         return dict(_TOOL_CALL_MEMORY.get(_tool_key(name, args)) or {})
 
 
-# ---------------------------------------------------------------
-# Free-tier rate limiting (RPM / TPM / RPD), tracked per provider+model.
-#
-# Fill in the real numbers from https://aistudio.google.com/rate-limit
-# (your project's active limits). The values below are CONSERVATIVE
-# PLACEHOLDERS, not Google's published numbers. Limits vary by model and
-# change over time. Use None for "no limit". Resolution order:
-#   .env  (GEMINI_RPM ...)  >  per-model entry  >  provider "default"
-# ---------------------------------------------------------------
+# ===============================================================
+# Rate limiting
+# ===============================================================
 PROVIDER_RATE_LIMITS: Dict[str, Dict[str, Dict[str, Optional[int]]]] = {
     "gemini": {
         "default": {"rpm": 5, "tpm": 200_000, "rpd": 100},
-        # Per-model overrides, e.g.:
-        # "gemini-3.5-flash-lite": {"rpm": 10, "tpm": 250_000, "rpd": 500},
     },
 }
 
@@ -410,7 +445,6 @@ class RateLimitExhausted(RuntimeError):
 
 
 def _pacific_day() -> str:
-    """RPD quotas reset at midnight Pacific time."""
     try:
         from zoneinfo import ZoneInfo
         return datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
@@ -504,7 +538,7 @@ class _RateLimiter:
                 used_tokens = sum(t for _, t in ev)
                 fits_rpm = (not rpm) or len(ev) < rpm
                 fits_tpm = (not tpm) or used_tokens + est_tokens <= tpm \
-                    or not ev   # a single oversized request must still run
+                    or not ev
                 if fits_rpm and fits_tpm:
                     entry = [now, est_tokens]
                     ev.append(entry)
@@ -530,17 +564,15 @@ _LIMITER = _RateLimiter()
 
 
 def get_usage_snapshot() -> Dict[str, Any]:
-    """Requests used today per provider:model (for a future UI badge)."""
     with _LIMITER._lock:
         return {k: dict(v) for k, v in _LIMITER._daily.items()}
 
 
-# ---------------------------------------------------------------
-# Retry helper for transient provider errors (overload / rate limit).
-# Gemini in particular returns HTTP 503 "high demand" in short spikes.
-# ---------------------------------------------------------------
+# ===============================================================
+# Retry helper
+# ===============================================================
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
-_RETRY_DELAYS = (2.0, 5.0, 10.0)   # seconds; up to 3 retries (4 tries)
+_RETRY_DELAYS = (2.0, 5.0, 10.0)
 
 
 def _post_with_retry(url: str, before_attempt=None,
@@ -548,7 +580,7 @@ def _post_with_retry(url: str, before_attempt=None,
     last_exc: Optional[Exception] = None
     for attempt in range(len(_RETRY_DELAYS) + 1):
         if before_attempt is not None:
-            before_attempt()   # every attempt counts toward RPM/TPM/RPD
+            before_attempt()
         try:
             r = requests.post(url, **kwargs)
         except (requests.ConnectionError, requests.Timeout) as e:
@@ -558,10 +590,10 @@ def _post_with_retry(url: str, before_attempt=None,
             return r
         if r is not None and r.status_code == 429 and re.search(
                 r"per ?day|daily", r.text or "", re.I):
-            return r          # daily quota: retrying won't help
+            return r
         if attempt >= len(_RETRY_DELAYS):
             if r is not None:
-                return r          # caller turns the final error into text
+                return r
             raise last_exc        # type: ignore[misc]
         delay = _RETRY_DELAYS[attempt]
         if r is not None:
@@ -630,11 +662,41 @@ class OllamaClient(LLMClient):
             })
         return out, None
 
+    def _convert_messages(self, messages):
+        """Ollama's message shape keeps text in `content` and puts any
+        images in a top-level `images` array on the message. Content
+        arrays from the prompter are split accordingly."""
+        out: List[Dict[str, Any]] = []
+        for m in messages:
+            role = m.get("role", "user")
+            content = m.get("content")
+            entry: Dict[str, Any] = {"role": role}
+
+            if isinstance(content, list):
+                text, images = _split_content_blocks(content)
+                entry["content"] = text
+                if images:
+                    entry["images"] = [b64 for _mt, b64 in images]
+            else:
+                entry["content"] = content if content is not None else ""
+
+            if role == "tool":
+                if m.get("tool_call_id"):
+                    entry["tool_call_id"] = m["tool_call_id"]
+                if m.get("name"):
+                    entry["name"] = m["name"]
+
+            if m.get("tool_calls"):
+                entry["tool_calls"] = m["tool_calls"]
+
+            out.append(entry)
+        return out
+
     def chat(self, messages, tools=None, think=None, options=None,
              keep_alive=None, model=""):
         payload: Dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": self._convert_messages(messages),
             "stream": False,
         }
         if tools:
@@ -681,7 +743,7 @@ class OllamaClient(LLMClient):
 
 
 # ===============================================================
-# OpenAI-compatible (OpenAI, Gemini, Groq, OpenRouter, Together...)
+# OpenAI-compatible
 # ===============================================================
 class OpenAICompatClient(LLMClient):
     provider = "openai"
@@ -697,7 +759,6 @@ class OpenAICompatClient(LLMClient):
         return bool(self.api_key)
 
     def list_models(self):
-        # Static override wins when present.
         override = PROVIDER_MODEL_OVERRIDES.get(self.provider)
         if override:
             return (
@@ -735,29 +796,16 @@ class OpenAICompatClient(LLMClient):
 
     def _convert_messages(self, messages):
         """Convert Ollama-shaped messages to OpenAI's chat-completions
-        format. Beyond dropping None keys, this enforces things that
-        Ollama ignores but OpenAI (and Gemini's compat layer) validate
-        strictly:
-
-          1. Every tool_call in an assistant message has an `id`,
-             and `type` is set to "function".
-          2. Every tool message has a `tool_call_id` that matches a
-             preceding assistant tool_call.
-          3. `function.arguments` is a JSON string, not a JSON object.
-          4. Gemini 3.x: every function call carries its
-             `extra_content.google.thought_signature`.
-        """
+        format. Content arrays pass through unchanged — the OpenAI
+        endpoint and Gemini's compat layer both accept `content` as
+        a list of blocks."""
         out: List[Dict[str, Any]] = []
-        # Queue of tool_call IDs to consume as matching tool results
-        # arrive. Keyed by function name so parallel calls to the same
-        # tool are matched in order.
         pending_ids: Dict[str, List[str]] = {}
         synth_counter = 0
 
         for m in messages:
             role = m.get("role", "user")
 
-            # ── Assistant message carrying tool_calls ─────────────
             if role == "assistant" and m.get("tool_calls"):
                 pending_ids = {}
                 converted: List[Dict[str, Any]] = []
@@ -766,8 +814,6 @@ class OpenAICompatClient(LLMClient):
                     name = fn.get("name") or ""
                     args = fn.get("arguments")
 
-                    # Parsed args are needed to look up remembered
-                    # id/signature for calls the agent loop rebuilt.
                     if isinstance(args, str):
                         try:
                             parsed_args = json.loads(args)
@@ -806,7 +852,6 @@ class OpenAICompatClient(LLMClient):
                 out.append(entry)
                 continue
 
-            # ── Tool result message ──────────────────────────────
             if role == "tool":
                 name = m.get("name") or ""
                 call_id = m.get("tool_call_id") or ""
@@ -837,6 +882,8 @@ class OpenAICompatClient(LLMClient):
                 continue
 
             # ── User / assistant / system ────────────────────────
+            # Content may be a string OR a list of blocks (text +
+            # image_url). Both shapes pass through unchanged.
             entry = {"role": role}
             if m.get("content") is not None:
                 entry["content"] = m.get("content")
@@ -845,7 +892,6 @@ class OpenAICompatClient(LLMClient):
         return out
 
     def _convert_tools(self, tools):
-        # Ollama and OpenAI use the same function-schema shape.
         return tools or None
 
     def chat(self, messages, tools=None, think=None, options=None,
@@ -910,7 +956,6 @@ class OpenAICompatClient(LLMClient):
                     name=name,
                     arguments=args or {},
                     id=c.get("id") or "",
-                    # Gemini 3.x thought_signature lives here.
                     extra_content=c.get("extra_content") or None,
                 )
                 _remember_tool_call(tc)
@@ -976,6 +1021,9 @@ class AnthropicClient(LLMClient):
         return out, None
 
     def _convert_messages(self, messages):
+        """Anthropic takes `system` top-level, requires alternating
+        roles, and uses a different image-block shape. Convert OpenAI-
+        style content arrays to Anthropic blocks."""
         system_parts: List[str] = []
         out: List[Dict[str, Any]] = []
 
@@ -1021,7 +1069,31 @@ class AnthropicClient(LLMClient):
                 out.append({"role": "assistant", "content": blocks})
                 continue
 
-            out.append({"role": role, "content": content})
+            # ── Plain user / assistant — may be a content array ──
+            if isinstance(content, list):
+                blocks: List[Dict[str, Any]] = []
+                for b in content:
+                    if not isinstance(b, dict):
+                        continue
+                    btype = b.get("type")
+                    if btype == "text":
+                        t = b.get("text")
+                        if t:
+                            blocks.append({"type": "text", "text": str(t)})
+                    elif btype == "image_url":
+                        url = (b.get("image_url") or {}).get("url", "")
+                        if isinstance(url, str) \
+                                and url.startswith("data:") and "," in url:
+                            header, b64 = url.split(",", 1)
+                            media_type = "image/png"
+                            if ";" in header:
+                                mt = header[5:header.index(";")]
+                                if mt:
+                                    media_type = mt
+                            blocks.append(_anthropic_image_block(media_type, b64))
+                out.append({"role": role, "content": blocks})
+            else:
+                out.append({"role": role, "content": content})
 
         merged: List[Dict[str, Any]] = []
         for m in out:
@@ -1144,10 +1216,6 @@ def _resolve_provider_config(provider_id: str) -> Optional[Dict[str, Any]]:
 
 
 def get_client(provider_or_spec: str) -> LLMClient:
-    """Accepts either a bare provider id ("gemini") or a full spec
-    ("gemini:gemini-3.8-flash"). Bare ids matching a known provider
-    route to that provider — this is the fix for the bug where
-    get_client("gemini") fell through to ollama."""
     raw = (provider_or_spec or "").strip()
 
     if raw.lower() in PROVIDER_PRESETS:

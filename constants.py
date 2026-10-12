@@ -23,7 +23,7 @@ LLM_ENDPOINT = "http://localhost:11434"
 # 3.1 8B tracks persona facts better than Gemma and has broader world
 # knowledge than Qwen3 at the same size. If you swap this, keep it in the
 # 7B-8B range and verify it reads the QUICK REFERENCE block correctly.
-MODEL_NAME = "gemini:gemini-3.8-flash"
+MODEL_NAME = "qwen3:8b"
 FAST_MODEL_NAME = "qwen3:8b"
 VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached this turn
 

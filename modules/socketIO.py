@@ -5,7 +5,7 @@ Serves:
   1. Socket.io events on the default namespace
   2. HTTP routes: /auth/*, /api/*, /api/memories/*, /api/persona/*,
      /api/models/*, /api/providers/*, /api/integrations/*,
-     /api/settings/*, /api/voice_message
+     /api/settings/*, /api/voice_message, /api/chat/upload
   3. Static files from web/
   4. Auth pages: /login (login/register), /setup (first-run wizard)
 
@@ -20,15 +20,26 @@ Phase 10.19 — voice in browser:
   - POST /api/voice_message accepts a webm/ogg/wav blob, transcribes
     with faster-whisper, injects the transcript as a user message.
 
+File upload (new):
+  - POST /api/chat/upload accepts a multipart file, saves it under
+    data/library/, extracts text (PDF/DOCX/text) or base64-encodes
+    images, and returns the extraction so the browser can attach it
+    to the next chat message.
+  - POST /api/chat/send now accepts an `attachments` array. The
+    prompter expands those into either content blocks (for images
+    on models that support vision) or inlined text.
+
 Security posture (Phase 10.17):
   - Bound strictly to 127.0.0.1
   - HttpOnly, SameSite=Lax session cookie
   - CSRF on every state-changing POST/PATCH/PUT/DELETE
   - Origin validated on socket.io handshake and HTTP POSTs
   - Static handler refuses path traversal
+  - Uploads capped at 25 MB; filenames sanitized; extension allowlist
 """
 
 import os
+import re
 import io
 import time
 import base64
@@ -56,6 +67,25 @@ _SESSION_COOKIE = "lumi_session"
 _CSRF_COOKIE = "lumi_csrf"
 
 
+# ===============================================================
+# Upload limits and allowlists
+# ===============================================================
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024   # 25 MB hard cap on the raw upload
+_MAX_IMAGE_BYTES  = 5  * 1024 * 1024   # 5 MB cap before downscaling kicks in
+_MAX_INJECT_CHARS = 15000              # cap on text injected into a turn
+
+_ALLOWED_UPLOAD_EXTS = {
+    # Documents
+    ".pdf", ".docx", ".doc",
+    # Text-like
+    ".txt", ".md", ".json", ".yaml", ".yml", ".csv", ".log",
+    # Images
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+}
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
 def _json_error(status, message):
     return web.json_response({"error": message}, status=status)
 
@@ -70,6 +100,78 @@ def _parse_cookies(cookie_header):
         k, v = part.split("=", 1)
         out[k.strip()] = v.strip()
     return out
+
+
+# ---------------------------------------------------------------
+# Upload helpers
+# ---------------------------------------------------------------
+def _sanitize_upload_name(name):
+    """Strip path components and dangerous characters from a client-
+    supplied filename. Keeps the extension."""
+    name = os.path.basename(name or "upload")
+    name = re.sub(r"[^A-Za-z0-9._\- ]", "_", name)
+    name = name.strip(". ") or "upload"
+    return name[:120]
+
+
+def _classify_upload(path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".pdf":
+        return "pdf"
+    if ext in (".docx", ".doc"):
+        return "doc"
+    if ext in _IMAGE_EXTS:
+        return "image"
+    return "text"
+
+
+def _prepare_image_b64(path, max_bytes=_MAX_IMAGE_BYTES):
+    """Return base64 for an image, downscaling if needed. Uses Pillow
+    when available; falls back to raw bytes otherwise."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except Exception:
+        return ""
+
+    if len(raw) <= max_bytes:
+        return base64.b64encode(raw).decode("ascii")
+
+    try:
+        from PIL import Image
+    except ImportError:
+        # No Pillow — send raw anyway; the provider may reject it.
+        return base64.b64encode(raw).decode("ascii")
+
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.thumbnail((1600, 1600), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=82)
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return base64.b64encode(raw).decode("ascii")
+
+
+def _extract_upload_text(path, kind):
+    """Return (text, error) for a stored upload."""
+    try:
+        if kind == "pdf":
+            from modules.agent_tools import _read_pdf
+            return _read_pdf(path), None
+        if kind == "doc":
+            from modules.agent_tools import _read_docx
+            return _read_docx(path), None
+        if kind == "image":
+            # No text extraction — the model gets pixels directly, or
+            # the prompter describes via VLM at turn time.
+            return "", None
+        if kind == "text":
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read(), None
+    except Exception as e:
+        return "", f"{type(e).__name__}: {e}"
+    return "", "unknown file type"
 
 
 # Lazy faster-whisper loader for the voice-in-browser path.
@@ -107,7 +209,7 @@ class SocketIOServer:
 
         # Phase 10.19 — voice in browser.
         self._tts_clients = set()
-        self._loop = None 
+        self._loop = None
         self.signals.broadcast_tts_audio = self._broadcast_tts_audio
 
         self._register_http_routes()
@@ -151,6 +253,7 @@ class SocketIOServer:
         r.add_get("/api/status",        self._handle_status)
         r.add_get("/api/history",       self._handle_history)
         r.add_post("/api/chat/send",    self._handle_chat_send)
+        r.add_post("/api/chat/upload",  self._handle_chat_upload)
         r.add_post("/api/agent/toggle", self._handle_agent_toggle)
 
         # Memory browser — export route MUST register before the
@@ -212,6 +315,18 @@ class SocketIOServer:
         cookies = _parse_cookies(request.headers.get("Cookie", ""))
         cookie_token = cookies.get(_CSRF_COOKIE)
         header_token = request.headers.get("X-CSRF-Token") or body.get("csrf")
+        if not cookie_token or not header_token:
+            return False, "Missing CSRF token."
+        if not secrets.compare_digest(cookie_token, header_token):
+            return False, "CSRF token mismatch."
+        return True, None
+
+    def _require_csrf_header(self, request):
+        """Header-only CSRF check for multipart uploads where the body
+        can't be parsed as JSON."""
+        cookies = _parse_cookies(request.headers.get("Cookie", ""))
+        cookie_token = cookies.get(_CSRF_COOKIE)
+        header_token = request.headers.get("X-CSRF-Token")
         if not cookie_token or not header_token:
             return False, "Missing CSRF token."
         if not secrets.compare_digest(cookie_token, header_token):
@@ -373,10 +488,30 @@ class SocketIOServer:
             return _json_error(403, err)
 
         text = (body.get("text") or "").strip()
-        if not text:
+        attachments = body.get("attachments") or []
+
+        if not text and not attachments:
             return _json_error(400, "Empty message.")
 
-        self.signals.history.append({"role": "user", "content": text})
+        # Normalize attachments — only keep the fields we need, cap
+        # the count, cap the injected text length.
+        clean_atts = []
+        for att in attachments[:6]:
+            if not isinstance(att, dict):
+                continue
+            clean_atts.append({
+                "name": str(att.get("name") or "file")[:200],
+                "stored_path": str(att.get("stored_path") or ""),
+                "kind": str(att.get("kind") or "text"),
+                "text": str(att.get("text") or "")[:_MAX_INJECT_CHARS],
+                "image_b64": str(att.get("image_b64") or ""),
+            })
+
+        history_msg = {"role": "user", "content": text}
+        if clean_atts:
+            history_msg["attachments"] = clean_atts
+
+        self.signals.history.append(history_msg)
         self.signals.new_message = True
         self.signals.last_message_time = time.time()
         if hasattr(self.signals, "save_history"):
@@ -386,9 +521,125 @@ class SocketIOServer:
             "role": "user",
             "content": text,
             "ts": time.time(),
+            "attachments": [
+                {"name": a["name"], "kind": a["kind"]}
+                for a in clean_atts
+            ],
         })
 
         return web.json_response({"ok": True})
+
+    async def _handle_chat_upload(self, request):
+        """Accept a multipart upload, save it to data/library/, extract
+        text or encode an image, and return the result to the client so
+        it can be attached to the next chat message."""
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        ok, err = self._require_csrf_header(request)
+        if not ok:
+            return _json_error(403, err)
+
+        # ── Read multipart ────────────────────────────────────────
+        try:
+            reader = await request.multipart()
+            field = await reader.next()
+            if field is None or field.name != "file":
+                return _json_error(400, "Expected multipart field 'file'.")
+
+            chunks = []
+            total = 0
+            while True:
+                chunk = await field.read_chunk(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MAX_UPLOAD_BYTES:
+                    return _json_error(
+                        413,
+                        f"File too large "
+                        f"(limit {_MAX_UPLOAD_BYTES // (1024*1024)} MB).",
+                    )
+                chunks.append(chunk)
+
+            raw = b"".join(chunks)
+            if not raw:
+                return _json_error(400, "Empty file.")
+            original_name = field.filename or "upload"
+        except Exception as e:
+            return _json_error(400, f"Could not read upload: {e}")
+
+        # ── Validate ──────────────────────────────────────────────
+        safe_name = _sanitize_upload_name(original_name)
+        ext = os.path.splitext(safe_name)[1].lower()
+        if ext not in _ALLOWED_UPLOAD_EXTS:
+            return _json_error(
+                400,
+                f"Unsupported file type: {ext or '(none)'}. "
+                f"Allowed: {', '.join(sorted(_ALLOWED_UPLOAD_EXTS))}",
+            )
+
+        # ── Save to data/library/ ─────────────────────────────────
+        from constants import DATA_ROOT, WORKSPACE_ROOT
+        library_dir = os.path.join(DATA_ROOT, "library")
+        os.makedirs(library_dir, exist_ok=True)
+
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        stored_name = f"{stamp}_{safe_name}"
+        stored_path = os.path.join(library_dir, stored_name)
+
+        # Collision safety (two uploads in the same second)
+        counter = 1
+        while os.path.exists(stored_path):
+            stem, suffix = os.path.splitext(stored_name)
+            stored_name = f"{stem}_{counter}{suffix}"
+            stored_path = os.path.join(library_dir, stored_name)
+            counter += 1
+
+        try:
+            with open(stored_path, "wb") as f:
+                f.write(raw)
+        except Exception as e:
+            return _json_error(500, f"Could not save file: {e}")
+
+        # ── Classify + extract ────────────────────────────────────
+        kind = _classify_upload(stored_path)
+        text, extract_err = _extract_upload_text(stored_path, kind)
+
+        image_b64 = ""
+        if kind == "image":
+            image_b64 = _prepare_image_b64(stored_path)
+
+        rel_path = os.path.relpath(
+            stored_path, WORKSPACE_ROOT
+        ).replace("\\", "/")
+
+        # ── Log so the hub and terminal show the upload ──────────
+        try:
+            from modules.log_hub import emit as hub_emit
+            hub_emit(
+                self.signals, "memory",
+                f"upload received: {stored_name} ({kind}, "
+                f"{len(raw)} bytes, {len(text)} chars extracted)",
+            )
+        except Exception:
+            pass
+
+        return web.json_response({
+            "ok": True,
+            "name": original_name,
+            "stored_name": stored_name,
+            "stored_path": rel_path,
+            "kind": kind,
+            "size": len(raw),
+            "text": (text or "")[:_MAX_INJECT_CHARS],
+            "text_truncated": bool(text and len(text) > _MAX_INJECT_CHARS),
+            "text_chars": len(text or ""),
+            "extract_error": extract_err,
+            "image_b64": image_b64,
+        })
 
     async def _handle_agent_toggle(self, request):
         if not self._origin_ok(request):
@@ -718,8 +969,11 @@ class SocketIOServer:
 
         loop = asyncio.get_event_loop()
         try:
-            installed = await loop.run_in_executor(None, mm.list_installed)
-            loaded    = await loop.run_in_executor(None, mm.list_loaded)
+            installed_task = loop.run_in_executor(None, mm.list_installed)
+            loaded_task    = loop.run_in_executor(None, mm.list_loaded)
+            installed, loaded = await asyncio.gather(
+                installed_task, loaded_task,
+            )
         except Exception as e:
             return _json_error(500, f"Ollama query failed: {e}")
 
@@ -764,18 +1018,15 @@ class SocketIOServer:
         if not name:
             return _json_error(400, "Missing 'model'.")
 
-        # NEW: optional flag — when True, also set routing
         set_routing = bool(body.get("set_routing", True))
-        target = (body.get("target") or "main").lower()  # "main" | "fast" | "both"
+        target = (body.get("target") or "main").lower()
 
         loop = asyncio.get_event_loop()
 
-        # 1. Load into VRAM first
         ok, err = await loop.run_in_executor(None, mm.preload, name)
         if not ok:
             return _json_error(400, f"Load failed: {err}")
 
-        # 2. Optionally patch routing
         if set_routing:
             routing_patch = {}
             if target in ("main", "both"):
@@ -933,8 +1184,11 @@ class SocketIOServer:
             try:
                 client = get_client(p["id"])
                 models, err = client.list_models()
-                if err or not models:
-                    errors[p["id"]] = err or "no models returned"
+                if err:
+                    errors[p["id"]] = err
+                    continue
+                if not models:
+                    errors[p["id"]] = "no models returned"
                     continue
                 for m in models:
                     catalog.append({
@@ -944,11 +1198,15 @@ class SocketIOServer:
                         "spec": f"{p['id']}:{m['name']}",
                     })
             except Exception as e:
-                errors[p["id"]] = str(e)
+                errors[p["id"]] = f"{type(e).__name__}: {e}"
+                continue
 
         catalog.sort(key=lambda x: (x["provider"], x["name"]))
-        return {"providers": providers, "catalog": catalog,
-                "errors": errors}, None
+        return {
+            "providers": providers,
+            "catalog": catalog,
+            "errors": errors,
+        }, None
 
     async def _handle_providers_list(self, request):
         user = self._current_user(request)

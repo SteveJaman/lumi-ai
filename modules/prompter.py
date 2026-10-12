@@ -1115,6 +1115,74 @@ class Prompter:
         if hasattr(self.signals, "save_history"):
             self.signals.save_history()
 
+    # ---------------------------------------------------------------
+    # Message expansion (chat attachments)
+    # ---------------------------------------------------------------
+    def _expand_message(self, msg):
+        """Turn a history entry into a provider-ready message.
+
+        If the entry has attachments, build either:
+          - a content array (for models that accept image blocks), or
+          - a text blob that concatenates every extracted file's text
+            with the user's own message underneath (for text-only paths).
+        """
+        atts = msg.get("attachments")
+        if not atts:
+            return dict(msg)
+
+        # Prefer native image blocks when the message contains any
+        # image and the provider supports them.
+        image_atts = [a for a in atts if a.get("kind") == "image"
+                      and a.get("image_b64")]
+        text_atts = [a for a in atts if a.get("kind") != "image"]
+
+        if image_atts:
+            parts = []
+            for a in atts:
+                if a.get("kind") == "image" and a.get("image_b64"):
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{a['image_b64']}"
+                        },
+                    })
+                elif a.get("text"):
+                    parts.append({
+                        "type": "text",
+                        "text": f"[Attached: {a['name']}]\n{a['text']}",
+                    })
+                else:
+                    parts.append({
+                        "type": "text",
+                        "text": f"[Attached file: {a['name']}]",
+                    })
+            if msg.get("content"):
+                parts.append({"type": "text", "text": msg["content"]})
+
+            return {
+                "role": msg.get("role", "user"),
+                "content": parts,
+            }
+
+        # Text-only path — concatenate extracted text above the user's
+        # own message.
+        blocks = []
+        for a in text_atts:
+            if not a.get("text"):
+                continue
+            blocks.append(
+                f"[Attached: {a['name']}]\n{a['text']}\n[End of {a['name']}]"
+            )
+
+        merged = "\n\n".join(blocks)
+        if msg.get("content"):
+            merged = (merged + "\n\n" + msg["content"]) if merged else msg["content"]
+
+        return {
+            "role": msg.get("role", "user"),
+            "content": merged,
+        }
+
     def _format_voice_context(self, vc):
         """Render the Discord voice context into a prompt block."""
         lines = ["=== DISCORD VOICE CONTEXT ==="]
@@ -1180,21 +1248,50 @@ class Prompter:
         return "\n".join(lines)
 
     async def run_conversational(self, latest_user_text):
-        use_fast = _should_use_fast_model(latest_user_text, self.agent_mode_enabled)
-        model = FAST_MODEL_NAME if use_fast else MODEL_NAME
-        keep_alive = FAST_MODEL_KEEP_ALIVE if use_fast else "30s"
-        label = "fast" if use_fast else "full"
+        # Routing priority, most specific first:
+        #   1. Image attachment  → VISION_MODEL_NAME (qwen2.5vl locally)
+        #   2. Other attachment  → MODEL_NAME (main model reads the text)
+        #   3. Plain text turn   → fast model if short & simple, else main
+        last_msg = self.signals.history[-1] if self.signals.history else {}
+        attachments = last_msg.get("attachments") or []
+        has_attachment = bool(attachments)
+        has_image = any(a.get("kind") == "image" for a in attachments)
 
+        if has_image:
+            use_fast = False
+            model = VISION_MODEL_NAME
+            label = "vision"
+            # qwen2.5vl is not a reasoning model. Passing think=True to
+            # Ollama for it raises an error on some versions.
+            think_flag = False
+        elif has_attachment:
+            use_fast = False
+            model = MODEL_NAME
+            label = "full"
+            think_flag = True
+        else:
+            use_fast = _should_use_fast_model(
+                latest_user_text, self.agent_mode_enabled,
+            )
+            model = FAST_MODEL_NAME if use_fast else MODEL_NAME
+            label = "fast" if use_fast else "full"
+            think_flag = not use_fast
+
+        keep_alive = FAST_MODEL_KEEP_ALIVE if use_fast else "30s"
+    
+    
         context_injections = self.gather_injections(latest_user_text, agent_context=False)
         messages = [{"role": "system", "content": f"{get_system_prompt()}\n\n{context_injections}"}]
 
         for msg in self.signals.history[-10:]:
             if msg.get("source") == "command":
                 continue
-            role = msg.get("role", "user")
+            expanded = self._expand_message(msg)
+            role = expanded.get("role", "user")
             if role not in ("user", "assistant", "system"):
                 role = "user"
-            messages.append({"role": role, "content": msg.get("content", "")})
+            expanded["role"] = role
+            messages.append(expanded)
 
         options = {
             "temperature": 0.8,
@@ -1216,7 +1313,7 @@ class Prompter:
                 lambda: chat_sync(
                     model,
                     messages,
-                    think=not use_fast,
+                    think=think_flag,
                     keep_alive=keep_alive,
                     options=options,
                 ),
@@ -1952,10 +2049,15 @@ class Prompter:
         for msg in self.signals.history[-10:]:
             if msg.get("source") == "command":
                 continue
-            role = msg.get("role", "user")
-            if role not in ("user", "assistant", "system", "tool"):
+            if msg.get("role") == "tool":
+                messages.append({"role": "tool", "content": msg.get("content", "")})
+                continue
+            expanded = self._expand_message(msg)
+            role = expanded.get("role", "user")
+            if role not in ("user", "assistant", "system"):
                 role = "user"
-            messages.append({"role": role, "content": msg.get("content", "")})
+            expanded["role"] = role
+            messages.append(expanded)
 
         all_tools = TOOL_SCHEMAS + EXTRA_TOOL_SCHEMAS
         sdk = getattr(self.signals, "sdk", None)
