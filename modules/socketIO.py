@@ -924,6 +924,7 @@ class SocketIOServer:
         providers = list_providers()
 
         catalog = []
+        errors = {}
         for p in providers:
             if p["id"] == "ollama":
                 continue
@@ -933,6 +934,7 @@ class SocketIOServer:
                 client = get_client(p["id"])
                 models, err = client.list_models()
                 if err or not models:
+                    errors[p["id"]] = err or "no models returned"
                     continue
                 for m in models:
                     catalog.append({
@@ -941,11 +943,12 @@ class SocketIOServer:
                         "name": m["name"],
                         "spec": f"{p['id']}:{m['name']}",
                     })
-            except Exception:
-                continue
+            except Exception as e:
+                errors[p["id"]] = str(e)
 
         catalog.sort(key=lambda x: (x["provider"], x["name"]))
-        return {"providers": providers, "catalog": catalog}, None
+        return {"providers": providers, "catalog": catalog,
+                "errors": errors}, None
 
     async def _handle_providers_list(self, request):
         user = self._current_user(request)

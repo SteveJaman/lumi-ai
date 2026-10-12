@@ -2106,6 +2106,7 @@ const _modelsState = {
   lastError: null,
   providers: [],
   providerCatalog: [],
+  providerErrors: {},
   routingDirty: false,  // FIX: tracks whether the Routing form has unsaved edits
 };
 
@@ -2186,9 +2187,14 @@ async function loadModelsPage() {
     const prov = await api('/api/providers');
     _modelsState.providers       = prov.providers || [];
     _modelsState.providerCatalog = prov.catalog   || [];
-  } catch {
+    _modelsState.providerErrors  = prov.errors    || {};
+    console.debug('[models] catalog size', _modelsState.providerCatalog.length,
+                  'errors', _modelsState.providerErrors);
+  } catch (e) {
+    console.error('[models] /api/providers failed', e);
     _modelsState.providers       = [];
     _modelsState.providerCatalog = [];
+    _modelsState.providerErrors  = {};
   }
 
   const errs = [];
@@ -2829,12 +2835,19 @@ function routingSelect(id, current, names) {
   sel.className = 'routing-input';
   sel.id = id;
 
+  // A cloud spec looks like "gemini:gemini-2.5-flash". Ollama tags such as
+  // "qwen3:8b" also contain ":", so check the prefix against real providers.
+  const cloudIds = new Set((_modelsState.providers || [])
+    .filter(p => p.id !== 'ollama').map(p => p.id));
+  const isCloudSpec = (v) => !!v && v.includes(':')
+    && cloudIds.has(v.split(':')[0].toLowerCase());
+
   const localGroup = document.createElement('optgroup');
   localGroup.label = 'Ollama (local)';
 
   const localNames = names.slice();
   if (current && !localNames.includes(current)
-      && !current.includes(':')) {
+      && !isCloudSpec(current)) {
     localNames.unshift(current);
   }
   if (!localNames.length) {
@@ -2872,7 +2885,21 @@ function routingSelect(id, current, names) {
     sel.appendChild(grp);
   }
 
-  if (current && current.includes(':')
+  // Configured providers that returned nothing: show why
+  for (const p of _modelsState.providers) {
+    if (p.id === 'ollama' || !p.configured) continue;
+    if (byProvider[p.label]) continue;
+    const grp = document.createElement('optgroup');
+    grp.label = p.label;
+    const opt = document.createElement('option');
+    opt.disabled = true;
+    opt.textContent = '(failed to load: ' +
+      ((_modelsState.providerErrors || {})[p.id] || 'no models') + ')';
+    grp.appendChild(opt);
+    sel.appendChild(grp);
+  }
+
+  if (isCloudSpec(current)
       && !_modelsState.providerCatalog.some(c => c.spec === current)) {
     const grp = document.createElement('optgroup');
     grp.label = 'Currently configured';

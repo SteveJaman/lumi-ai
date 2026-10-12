@@ -76,7 +76,7 @@ _CONSUMERS = {
     "FAST_MODEL_KEEP_ALIVE": ["modules.prompter"],
 }
 
-_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._\-/]+(?::[A-Za-z0-9._\-]+)?$")
+_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._\-/]+(?::[A-Za-z0-9._\-/]+)?$")
 _KEEP_ALIVE_RE = re.compile(r"^(-1|\d+(s|m|h))$")
 
 
@@ -408,12 +408,23 @@ class ModelManager:
         return patch, errors
 
     def _model_is_installed(self, name):
+        # Cloud specs (e.g. "gemini:gemini-2.5-flash") are remote — they
+        # can't be pulled into Ollama. Skip the local check for anything
+        # that parses to a non-ollama provider.
+        try:
+            from modules.llm_providers import parse_model_spec
+            provider, _model = parse_model_spec(name)
+        except Exception:
+            provider = "ollama"
+        if provider != "ollama":
+            return True, None
+
         try:
             data = self._get("/api/tags", timeout=3)
         except Exception as e:
             return False, f"cannot reach Ollama ({e})"
         names = {(m.get("name") or m.get("model") or "")
-                 for m in data.get("models", []) or []}
+                for m in data.get("models", []) or []}
         if name not in names:
             return False, f"'{name}' is not installed — pull it first."
         return True, None
