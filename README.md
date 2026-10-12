@@ -20,14 +20,12 @@
 
 ---
 
-> Lumi now has a full external SDK. Third-party applications connect over a
-> local websocket, register their own actions, push context, and receive
-> invocations — the same pattern Vedal's Neuro SDK uses, with a Neuro-shaped
-> wire protocol. She also speaks and hears in Discord voice channels with
-> correct DAVE end-to-end encryption (pure Python, no sidecar), and her local
-> web client at `127.0.0.1:5000` is a complete editing surface for persona,
-> models, providers, integrations, and settings. Only Phase 9 (security
-> hardening) remains on the roadmap.
+> All ten architectural phases are complete. Lumi has a full external SDK,
+> Discord voice with DAVE end-to-end encryption handled in pure Python, a
+> complete local web client at `127.0.0.1:5000`, file uploads that persist
+> into searchable long-term memory, and a full security pass with provenance
+> markers, an SDK allowlist, a command allowlist, and a `realpath` file
+> sandbox. What's left is tuning against real use.
 
 A local-first, agentic AI companion running on consumer hardware. Lumi is a
 persona-driven VTuber-style assistant with real tool use — she can read and
@@ -41,11 +39,11 @@ tool calling** through Ollama's native `/api/chat` tool interface. When she
 calls a tool, it actually runs. When she says she did something, you can check
 the log and see that she did.
 
-Phase 8 is complete: Lumi now has an **external SDK**. Other applications
-connect to her over a local websocket, register their own tools, and receive
+Phase 8 is complete: Lumi has an **external SDK**. Other applications connect
+to her over a local websocket, register their own tools, and receive
 invocations when she decides to use them — see [`sdk/README.md`](sdk/README.md).
 
-Phase 10 is complete: Lumi now has a full **local web client** at
+Phase 10 is complete: Lumi has a full **local web client** at
 `127.0.0.1:5000` — a first-run setup wizard, chat, dashboard, memory browser,
 persona editor, model manager, cloud provider support (OpenAI, Anthropic,
 Gemini, Groq, OpenRouter, and other OpenAI-compatible endpoints), an
@@ -54,6 +52,14 @@ management, per-user memory and emotional-state isolation, and voice in the
 browser. It's all served locally, so the default setup never leaves your
 machine. The terminal remains a first-class developer tool; the two surfaces
 share the same state and history.
+
+Uploads to the web chat — screenshots, PDFs, documents, text files — are
+analyzed at upload time (VLM for images, direct parse for documents), saved
+into `data/library/` with a searchable sidecar, and indexed into ChromaDB so
+Lumi can reference them in future conversations. Duplicate uploads are
+detected by content hash and can be replaced or cancelled from a modal. See
+[data/README.md](data/README.md) and [docs/architecture.md](docs/architecture.md)
+for the pipeline.
 
 ---
 
@@ -81,12 +87,12 @@ share the same state and history.
 ## What She Does
 
 - **Real agentic tool use.** Eleven built-in tools (file read/write, shell
-  commands, web search, browser control, memory recall, avatar control) plus
-  any actions registered by SDK plugins. She picks tools herself, chains up to
-  six steps per turn, and reads each result before deciding what to do next.
-  File writes and shell commands need your `y/n` approval. Agent mode is a
-  plain on/off toggle (`!agent_on` / `!agent_off`). See
-  [docs/architecture.md](docs/architecture.md) and
+  commands, web search, browser control, memory recall, library search, avatar
+  control) plus any actions registered by SDK plugins. She picks tools
+  herself, chains up to six steps per turn, and reads each result before
+  deciding what to do next. File writes and shell commands need your `y/n`
+  approval. Agent mode is a plain on/off toggle (`!agent_on` / `!agent_off`).
+  See [docs/architecture.md](docs/architecture.md) and
   [docs/security.md](docs/security.md).
 - **Persona and voice.** Personality, lore, and rules live in `lumi.yaml` and
   can be edited live from the web client. Speech uses Fish Audio with inline
@@ -96,6 +102,10 @@ share the same state and history.
   own patterns, and an autonomous heartbeat that lets her speak unprompted.
   See [docs/architecture.md](docs/architecture.md) and
   [modules/README.md](modules/README.md).
+- **File uploads.** Screenshots, PDFs, and documents dropped into the web
+  chat are analyzed at upload time and indexed into ChromaDB. Lumi can quote
+  them, answer questions about them, and reference them days later by content.
+  See [data/README.md](data/README.md).
 - **Screen awareness.** An ambient sampler and an on-demand multimodal path use
   a local vision model to describe what is on screen.
 - **Local models, optional cloud.** Runs on local Ollama by default, with an
@@ -147,9 +157,9 @@ points:
 
 The remaining Python packages (`discord.py>=2.7`, `davey`, `chromadb`,
 `aiohttp`, `python-socketio`, `argon2-cffi`, `pyvts`, `keyboard`, `pyyaml`,
-`ruamel.yaml` (optional), `faster-whisper`, `websockets>=12.0`) install through
-`pip` in the steps below. `psutil` and `mss` are only needed for the SDK
-example clients.
+`faster-whisper`, `websockets>=12.0`) install through `pip` in the steps below.
+`ruamel.yaml` is optional — install it for comment preservation when editing
+the persona. `psutil` and `mss` are only needed for the SDK example clients.
 
 For reproducible installs, use the pinned lock file instead of resolving fresh
 versions: `pip install -r requirements.lock.txt`.
@@ -216,20 +226,24 @@ versions: `pip install -r requirements.lock.txt`.
    her voice, upload a 10-30 second reference clip to Fish Audio and set
    `FISH_REFERENCE_ID` to the new `reference_id`.
 
-5. **Configure `constants.py`.** Set `WORKSPACE_ROOT`, `LLM_ENDPOINT`,
+5. **Configure `constants.py`.** `WORKSPACE_ROOT` self-locates from the
+   file's own path, so you don't need to edit it. Set `LLM_ENDPOINT`,
    `TIMEZONE`, and `OUTPUT_DEVICE_INDEX` for your machine. Run
-   `python modules/check_mics.py` to list audio device indices.
+   `python scripts/check_outputs.py` for output device indices, or
+   `python scripts/check_mics.py` for input devices. A full pre-flight is
+   available via `python scripts/check_system.py`.
 
 6. **Edit `lumi.yaml`.** This is where Lumi's persona lives: name, host,
    personality, lore, appearance, and dialogue.
 
-7. **Pull and build the model.** The recommended base is Qwen3 8B.
+7. **Pull the model.** The recommended base is Qwen3 8B via Ollama.
 
    ```bash
    ollama pull qwen3:8b
-   ollama create lumi-qwen3 -f Modelfile-qwen3
    ```
 
+   `MODEL_NAME` and `FAST_MODEL_NAME` in `constants.py` both point at
+   `qwen3:8b` — the fast path uses the same weights with thinking disabled.
    Any tool-calling model works. For routing options, cloud providers, and
    lower-end hardware settings, see [docs/models.md](docs/models.md).
 
@@ -350,10 +364,12 @@ receive invocations, using a wire protocol modeled on Vedal's Neuro SDK. It was
 demonstrated end to end with a working Python plugin that captures screenshots
 and logs timestamped notes. See [sdk/README.md](sdk/README.md).
 
-**Phase 10** is complete: the local web client, per-user memory and
-emotional-state isolation, browser voice, and multi-provider LLM routing all
-shipped. The remaining security hardening from that pass (10.17) is tracked
-under Phase 9.
+**Phase 10** is complete: the local web client, file upload pipeline, per-user
+memory and emotional-state isolation, browser voice, and multi-provider LLM
+routing all shipped. Uploads are analyzed at intake, saved into
+`data/library/` with searchable sidecars, and indexed into ChromaDB for
+retrieval on future turns. The remaining security hardening from that pass
+(10.17) is tracked under Phase 9.
 
 **Phase 9** is complete. Fourteen hardening items shipped: provenance
 markers on external content, a deny-by-default SDK allowlist with per-client
@@ -361,9 +377,12 @@ capability ceilings, a command allowlist, a `realpath` file sandbox, protected
 paths, secret scrubbing in logs, memory-poisoning guards, Discord rate
 limiting, tool-call anomaly detection, a LAN exposure gate, and a pinned
 dependency lock file. Encryption at rest is a BitLocker recommendation, not an
-in-app feature. See [docs/security.md](docs/security.md) for the threat model
-and incident playbook, and [docs/roadmap.md](docs/roadmap.md) for phase
-status.
+in-app feature. Live diagnostics, machine checks, and guard verification are
+available as offline harnesses: `scripts/check_system.py` for the environment,
+`tests/test_debug.py` for a whole-project health pass, and
+`tests/test_phase9.py` for the security guards. See
+[docs/security.md](docs/security.md) for the threat model and incident
+playbook, and [docs/roadmap.md](docs/roadmap.md) for phase status.
 
 ---
 
@@ -377,6 +396,9 @@ Built as a personal project. Architecture inspired by Neuro-sama
 * **Discord voice receive** would not be possible without `davey` by the
   Discord team and the AIRI project's TypeScript implementation, which served
   as the reference architecture.
+* **Reference plugin** under [`plugin/plugin.py`](plugin/plugin.py) demonstrates
+  the SDK protocol with two actions: a screenshot capture and a timestamped
+  note logger.
 
 Built using Ollama, ChromaDB, Faster-Whisper, Fish Audio, Playwright,
 pyvts, aiohttp, python-socketio, ruamel.yaml, discord.py, davey, and

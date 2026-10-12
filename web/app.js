@@ -45,7 +45,6 @@ async function api(path, { method = 'GET', body, csrf = false } = {}) {
    Used to skip DOM work when polled state is identical.
    -------------------------------------------------------------- */
 function fingerprint(value) {
-  // Stable stringify: sort object keys so {a,b} and {b,a} hash alike.
   const str = (function stable(v) {
     if (v === null) return 'null';
     if (v === undefined) return 'undefined';
@@ -55,7 +54,6 @@ function fingerprint(value) {
       .map(k => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}';
   })(value);
 
-  // FNV-1a 32-bit — fast, good enough for change detection.
   let h = 0x811c9dc5;
   for (let i = 0; i < str.length; i++) {
     h ^= str.charCodeAt(i);
@@ -137,8 +135,6 @@ function navigate(view, replace = false) {
   if (view !== 'chat') stopChatPolling();
   if (view !== 'models') {
     stopModelsTimers();
-    // FIX: clear the routing-dirty flag when leaving the Models page
-    // so the form refreshes normally next time we come back.
     _modelsState.routingDirty = false;
   }
   if (!replace) location.hash = `#/${view}`;
@@ -164,8 +160,6 @@ async function startStatusPolling() {
       const s = await api('/api/status');
       state.status = s;
 
-      // Fingerprint: only re-render chips/indicators when values
-      // that matter for the UI have actually changed.
       const uiSlice = {
         agent_mode:  !!s.agent_mode,
         ai_thinking: !!s.ai_thinking,
@@ -213,8 +207,6 @@ async function toggleAgentMode() {
       method: 'POST', body: {}, csrf: true,
     });
     state.status.agent_mode = res.enabled;
-    // Force chip refresh even though fingerprint may now match an
-    // older value.
     _statusFp.value = null;
     updateAgentChip();
   } catch (e) {
@@ -251,19 +243,15 @@ function render() {
    CHAT
    ============================================================== */
 let _chatPollTimer = null;
-let _chatFp = null;            // fingerprint of the last rendered history
-let _chatRenderedCount = 0;    // how many messages currently in the DOM
+let _chatFp = null;
+let _chatRenderedCount = 0;
 
-// Pending file attachments for the next chat message. Each entry is a
-// chip object that goes through uploading → ready (or error) before it
-// can be sent. Cleared when the message is sent.
 const _chatAttachments = [];
 
-const _MAX_UPLOAD_BYTES = 25 * 1024 * 1024;  // mirrors socketIO.py
+const _MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 function startChatPolling() {
   stopChatPolling();
-  // Reset the incremental-render bookkeeping when (re)entering chat.
   _chatFp = null;
   _chatRenderedCount = 0;
   refreshHistory();
@@ -283,14 +271,12 @@ async function refreshHistory() {
     const res = await api('/api/history?limit=100');
     const next = res.history || [];
 
-    // Cheap "did anything change" gate.
     const nextFp = fingerprint(next);
     if (nextFp === _chatFp) return;
 
     const prev = state.history;
     const prevLen = prev.length;
 
-    // Fast path: existing head unchanged and only new messages appended.
     const canAppend =
       prevLen <= next.length &&
       _chatRenderedCount === prevLen &&
@@ -302,8 +288,6 @@ async function refreshHistory() {
     if (canAppend) {
       appendNewMessages(next, prevLen);
     } else {
-      // History was edited/replaced somewhere in the middle — fall
-      // back to a full repaint of the scroll area only.
       renderChat();
     }
   } catch {
@@ -364,7 +348,7 @@ async function renderChatView(main) {
     const res = await api('/api/history?limit=100');
     state.history = res.history || [];
   } catch {}
-  renderChat();   // seeds _chatFp and _chatRenderedCount
+  renderChat();
 
   startChatPolling();
 
@@ -381,7 +365,6 @@ async function renderChatView(main) {
     input.style.height = Math.min(input.scrollHeight, 180) + 'px';
   });
 
-  // File attach: button → hidden input → handleFiles
   $('#chat-attach').addEventListener('click', () => {
     $('#chat-file-input').click();
   });
@@ -390,7 +373,6 @@ async function renderChatView(main) {
     e.target.value = '';
   });
 
-  // Drag-and-drop anywhere over the chat area
   const chatWrap = document.querySelector('.chat-wrap');
   if (chatWrap) {
     chatWrap.addEventListener('dragover', (e) => {
@@ -407,7 +389,6 @@ async function renderChatView(main) {
     });
   }
 
-  // Paste from clipboard (screenshots land here)
   input.addEventListener('paste', (e) => {
     const items = e.clipboardData?.items || [];
     const files = [];
@@ -424,7 +405,6 @@ async function renderChatView(main) {
   });
 
   $('#chat-send').addEventListener('click', sendChat);
-
   $('#agent-chip').addEventListener('click', toggleAgentMode);
 
   renderAttachmentChips();
@@ -483,7 +463,6 @@ function renderChatMessage(msg, container = null) {
     bubble.appendChild(tagRow);
   }
 
-  // Attachment badges
   const atts = msg.attachments;
   if (Array.isArray(atts) && atts.length) {
     const attRow = document.createElement('div');
@@ -531,6 +510,7 @@ function isCanonicalTag(t) { return CANONICAL_TAGS.has(t); }
 /* --------------------------------------------------------------
    Attachments (file upload)
    -------------------------------------------------------------- */
+
 async function handleFiles(files) {
   for (const f of files) {
     if (f.size > _MAX_UPLOAD_BYTES) {
@@ -544,36 +524,136 @@ async function handleFiles(files) {
       kind: 'uploading',
       ready: false,
       error: null,
+      replaced: false,
     };
     _chatAttachments.push(chip);
     renderAttachmentChips();
 
+    let replaced = false;
+
     try {
-      const fd = new FormData();
-      fd.append('file', f, f.name);
-      const res = await fetch('/api/chat/upload', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'X-CSRF-Token': state.csrf || '' },
-        body: fd,
-      });
-      const data = await res.json().catch(() => ({}));
+      let res = await uploadOne(f, /* replace */ false);
+      let data = await res.json().catch(() => ({}));
+
+      // Duplicate → prompt the user, then either replace or cancel.
+      if (res.status === 409 && data.error === 'duplicate') {
+        const choice = await confirmDuplicate(data);
+        if (choice !== 'replace') {
+          // Cancelled — drop the chip entirely.
+          const idx = _chatAttachments.indexOf(chip);
+          if (idx !== -1) _chatAttachments.splice(idx, 1);
+          renderAttachmentChips();
+          continue;
+        }
+        res = await uploadOne(f, /* replace */ true);
+        data = await res.json().catch(() => ({}));
+        replaced = true;
+      }
+
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
       chip.kind         = data.kind || 'text';
       chip.stored_name  = data.stored_name;
       chip.stored_path  = data.stored_path;
+      chip.source       = data.source;
+      chip.subfolder    = data.subfolder;
       chip.text         = data.text || '';
       chip.image_b64    = data.image_b64 || '';
       chip.size         = data.size || 0;
       chip.ready        = true;
       chip.error        = null;
+      chip.replaced     = replaced;
       if (data.extract_error) chip.extract_error = data.extract_error;
+      if (data.text_truncated) chip.truncated = true;
     } catch (e) {
       chip.error = e.message;
     }
     renderAttachmentChips();
   }
+}
+
+async function uploadOne(file, replace) {
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  const url = replace
+    ? '/api/chat/upload?replace=1'
+    : '/api/chat/upload';
+  return fetch(url, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'X-CSRF-Token': state.csrf || '' },
+    body: fd,
+  });
+}
+
+function confirmDuplicate(info) {
+  return new Promise((resolve) => {
+    document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+
+    const existing = info.existing || {};
+    const existingSize = formatBytesLocal(existing.size || 0);
+    const existingWhen = existing.modified_at
+      ? new Date(existing.modified_at * 1000).toLocaleString()
+      : 'unknown';
+
+    overlay.innerHTML = `
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title">File already exists</div>
+          <button class="modal-close">×</button>
+        </div>
+        <div style="font-size:13px;line-height:1.6;color:var(--text)">
+          A file with <strong>identical contents</strong> is already in
+          your library:
+          <div style="margin:12px 0;padding:12px 14px;
+                      background:var(--bg-inset);
+                      border:1px solid var(--border);
+                      border-radius:var(--r-md);
+                      font-family:var(--font-mono);font-size:12px">
+            <div style="color:var(--text)">${escapeHtml(existing.original_name || 'unknown')}</div>
+            <div style="color:var(--text-mute);margin-top:4px">
+              ${escapeHtml(existing.subfolder || '')}/ &middot; ${existingSize}
+            </div>
+            <div style="color:var(--text-mute);margin-top:2px">
+              uploaded ${escapeHtml(existingWhen)}
+            </div>
+          </div>
+          Replace the existing copy with this one, or cancel and keep
+          the original?
+        </div>
+        <div class="modal-actions">
+          <button class="btn" id="dup-cancel">Cancel</button>
+          <button class="btn btn-primary" id="dup-replace">Replace</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const close = (result) => {
+      overlay.remove();
+      resolve(result);
+    };
+    overlay.querySelector('.modal-close').addEventListener('click',
+      () => close('cancel'));
+    overlay.querySelector('#dup-cancel').addEventListener('click',
+      () => close('cancel'));
+    overlay.querySelector('#dup-replace').addEventListener('click',
+      () => close('replace'));
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) close('cancel');
+    });
+  });
+}
+
+function formatBytesLocal(n) {
+  if (!n || n < 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0, v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v < 10 ? 2 : 1)} ${units[i]}`;
 }
 
 function renderAttachmentChips() {
@@ -603,7 +683,12 @@ function renderAttachmentChips() {
       label.textContent = `${a.name} — uploading…`;
     } else {
       const kb = Math.round((a.size || 0) / 1024);
-      label.textContent = `${a.name} (${kb} KB)`;
+      const parts = [a.name];
+      if (a.subfolder) parts.push(`→ ${a.subfolder}/`);
+      parts.push(`(${kb} KB)`);
+      if (a.replaced) parts.push('· replaced');
+      if (a.truncated) parts.push('· truncated');
+      label.textContent = parts.join(' ');
     }
 
     const remove = document.createElement('button');
@@ -647,7 +732,6 @@ async function sendChat() {
   _chatAttachments.length = 0;
   renderAttachmentChips();
 
-  // Optimistic local echo
   state.history.push({
     role: 'user',
     content: text,
@@ -2297,7 +2381,7 @@ const _modelsState = {
   providers: [],
   providerCatalog: [],
   providerErrors: {},
-  routingDirty: false,  // FIX: tracks whether the Routing form has unsaved edits
+  routingDirty: false,
 };
 
 function stopModelsTimers() {
@@ -2970,9 +3054,6 @@ function renderRoutingSection() {
 
   host.appendChild(grid);
 
-  // FIX: mark the form dirty on any edit so polling doesn't wipe it.
-  // The next poll tick will see routingDirty=true and skip the
-  // re-render until the user saves (or navigates away).
   const markDirty = () => {
     if (_modelsState.routingDirty) return;
     _modelsState.routingDirty = true;
@@ -3000,7 +3081,6 @@ function renderRoutingSection() {
   saveBtn.addEventListener('click', onSaveRouting);
   actions.appendChild(saveBtn);
 
-  // FIX: hidden hint that becomes visible when the form is dirty.
   const dirtyHint = document.createElement('span');
   dirtyHint.id = 'routing-dirty-hint';
   dirtyHint.className = 'muted';
@@ -3025,8 +3105,6 @@ function routingSelect(id, current, names) {
   sel.className = 'routing-input';
   sel.id = id;
 
-  // A cloud spec looks like "gemini:gemini-2.5-flash". Ollama tags such as
-  // "qwen3:8b" also contain ":", so check the prefix against real providers.
   const cloudIds = new Set((_modelsState.providers || [])
     .filter(p => p.id !== 'ollama').map(p => p.id));
   const isCloudSpec = (v) => !!v && v.includes(':')
@@ -3075,7 +3153,6 @@ function routingSelect(id, current, names) {
     sel.appendChild(grp);
   }
 
-  // Configured providers that returned nothing: show why
   for (const p of _modelsState.providers) {
     if (p.id === 'ollama' || !p.configured) continue;
     if (byProvider[p.label]) continue;
@@ -3211,9 +3288,6 @@ async function onSaveRouting() {
       method: 'PUT', body: { routing: payload }, csrf: true,
     });
     _modelsState.routing = res.routing || _modelsState.routing;
-
-    // FIX: save succeeded — clear the dirty flag so the next poll
-    // refresh runs normally with the new values.
     _modelsState.routingDirty = false;
     const hint = document.getElementById('routing-dirty-hint');
     if (hint) hint.style.display = 'none';

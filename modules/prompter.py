@@ -1121,68 +1121,66 @@ class Prompter:
     def _expand_message(self, msg):
         """Turn a history entry into a provider-ready message.
 
-        If the entry has attachments, build either:
-          - a content array (for models that accept image blocks), or
-          - a text blob that concatenates every extracted file's text
-            with the user's own message underneath (for text-only paths).
+        Attachments are inlined as plain text. For images, the
+        `text` field already contains a full transcription +
+        description + key details from the VLM (produced at upload
+        time). The main LLM reads that as if the user had pasted the
+        report directly into the chat.
+
+        We deliberately do NOT emit OpenAI-style image_url content
+        blocks here. The main reasoning model (qwen3:8b) is
+        text-only; the VLM has already done the seeing.
         """
         atts = msg.get("attachments")
         if not atts:
             return dict(msg)
 
-        # Prefer native image blocks when the message contains any
-        # image and the provider supports them.
-        image_atts = [a for a in atts if a.get("kind") == "image"
-                      and a.get("image_b64")]
-        text_atts = [a for a in atts if a.get("kind") != "image"]
-
-        if image_atts:
-            parts = []
-            for a in atts:
-                if a.get("kind") == "image" and a.get("image_b64"):
-                    parts.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{a['image_b64']}"
-                        },
-                    })
-                elif a.get("text"):
-                    parts.append({
-                        "type": "text",
-                        "text": f"[Attached: {a['name']}]\n{a['text']}",
-                    })
-                else:
-                    parts.append({
-                        "type": "text",
-                        "text": f"[Attached file: {a['name']}]",
-                    })
-            if msg.get("content"):
-                parts.append({"type": "text", "text": msg["content"]})
-
-            return {
-                "role": msg.get("role", "user"),
-                "content": parts,
-            }
-
-        # Text-only path — concatenate extracted text above the user's
-        # own message.
         blocks = []
-        for a in text_atts:
-            if not a.get("text"):
-                continue
-            blocks.append(
-                f"[Attached: {a['name']}]\n{a['text']}\n[End of {a['name']}]"
-            )
+        for a in atts:
+            name = a.get("name", "file")
+            kind = a.get("kind", "text")
+            text = (a.get("text") or "").strip()
+
+            if kind == "image":
+                if text:
+                    blocks.append(
+                        f"[Image attached: {name}]\n"
+                        f"Below is a complete text report of the image: "
+                        f"all visible text transcribed verbatim, a "
+                        f"structural description, and a list of key "
+                        f"details. Read it, then answer the user's "
+                        f"question using what it contains.\n"
+                        f"\n"
+                        f"{text}\n"
+                        f"\n"
+                        f"[End of image report: {name}]"
+                    )
+                else:
+                    blocks.append(
+                        f"[Image attached: {name} — the vision model "
+                        f"could not analyze this image]"
+                    )
+            elif text:
+                blocks.append(
+                    f"[Attached document: {name}]\n"
+                    f"{text}\n"
+                    f"[End of {name}]"
+                )
+            else:
+                blocks.append(f"[Attached file: {name}]")
 
         merged = "\n\n".join(blocks)
         if msg.get("content"):
-            merged = (merged + "\n\n" + msg["content"]) if merged else msg["content"]
+            merged = (
+                (merged + "\n\n" + msg["content"])
+                if merged else msg["content"]
+            )
 
         return {
             "role": msg.get("role", "user"),
             "content": merged,
         }
-
+        
     def _format_voice_context(self, vc):
         """Render the Discord voice context into a prompt block."""
         lines = ["=== DISCORD VOICE CONTEXT ==="]
@@ -1248,23 +1246,18 @@ class Prompter:
         return "\n".join(lines)
 
     async def run_conversational(self, latest_user_text):
-        # Routing priority, most specific first:
-        #   1. Image attachment  → VISION_MODEL_NAME (qwen2.5vl locally)
-        #   2. Other attachment  → MODEL_NAME (main model reads the text)
-        #   3. Plain text turn   → fast model if short & simple, else main
+        # Routing:
+        #   - Any attachment → main model. The VLM already produced a
+        #     text report for images at upload time; the main model
+        #     reads that report like ordinary user text. Persona,
+        #     reasoning, and memory injection all stay intact.
+        #   - Plain text turn → fast model if short and simple,
+        #     otherwise main model.
         last_msg = self.signals.history[-1] if self.signals.history else {}
         attachments = last_msg.get("attachments") or []
         has_attachment = bool(attachments)
-        has_image = any(a.get("kind") == "image" for a in attachments)
 
-        if has_image:
-            use_fast = False
-            model = VISION_MODEL_NAME
-            label = "vision"
-            # qwen2.5vl is not a reasoning model. Passing think=True to
-            # Ollama for it raises an error on some versions.
-            think_flag = False
-        elif has_attachment:
+        if has_attachment:
             use_fast = False
             model = MODEL_NAME
             label = "full"

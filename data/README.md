@@ -10,7 +10,7 @@ The last column separates disposable files from destructive deletes. "Yes" means
 
 | Path | Contents | Safe to delete? |
 |---|---|---|
-| `data/logs/chat_history.json` | Active conversation history | Yes (loses backfill) |
+| `data/logs/chat_history.json` | Active conversation history. The prompter trims it to the last ~20 turns and collapses older turns into a summary block. | Yes (loses the backfill material used by `scripts/import_chat_history.py`) |
 | `data/logs/events.log` | Diagnostics event stream | Yes |
 | `data/logs/visual_memory.json` | Recent screen descriptions | Yes |
 | `data/logs/images/` | Timestamped screen captures (JPEG) | Yes |
@@ -20,23 +20,39 @@ The last column separates disposable files from destructive deletes. "Yes" means
 
 | Path | Contents | Safe to delete? |
 |---|---|---|
-| `data/memories/chroma.db/` | ChromaDB vector store (long-term memory). A directory, not a file. | Loses memory |
+| `data/memories/chroma.db/` | ChromaDB vector store. A directory, not a file. Holds two collections: `neuro_collection` (personal memories) and `library_docs` (uploaded files and their sidecars). | Loses both |
 | `data/memories/users.db` | SQLite user accounts and sessions | Loses accounts |
 | `data/memories/emotional_state/` | Per-user emotional state JSON | Yes |
 | `data/memories/self_model.json` | Self-model observations | Yes |
 | `data/memories/session_state.json` | Session continuity summary | Yes |
 | `data/memories/sdk_token.txt` | Auth token for the SDK server | Regenerated on boot |
+| `data/memories/sdk_allowlist.json` | Per-client SDK approval list and capability ceilings | Yes (all clients revert to denied-by-default) |
+| `data/memories/memoryinit.json` | Optional seed file, imported on first boot when the collection is empty | Yes |
 | `data/vtubeStudio_token.txt` | VTube Studio plugin auth token | Requires re-authorizing VTS |
 
-### Models and assets
+### Library and uploads
+
+Uploads move through this pipeline: web chat → `data/library/` → ChromaDB `library_docs` collection.
+
+| Path | Purpose |
+|---|---|
+| `data/library/documents/` | Uploaded PDFs and DOCX |
+| `data/library/images/` | Uploaded images (PNG, JPG, GIF, WebP, BMP) |
+| `data/library/text/` | Uploaded text-like files (TXT, MD, JSON, YAML, CSV, LOG) |
+| `data/library/**/*.meta.md` | Auto-generated sidecar per upload: upload metadata plus extracted content (VLM report for images, preview for documents, full text for text-like files). This is what makes uploads retrievable by semantic query on later turns. |
+
+- Filenames follow `<YYYYMMDD>_<HHMMSS>_<original_name>`. Collisions get a `_1`, `_2` suffix.
+- Byte-identical uploads return HTTP 409. The user can choose Replace, which removes the old file, its sidecar, and its ChromaDB chunks first.
+- The `LibraryIndexer` rescans every 60 seconds, indexes new files, and prunes chunks for files no longer on disk.
+
+Deleting `data/library/` loses your uploaded documents.
+
+### Browser and audio
 
 | Path | Contents | Safe to delete? |
 |---|---|---|
-| `data/models/` | XTTS model weights | Re-downloadable |
-| `data/voices/` | Fish Audio reference clips | Re-upload |
-| `data/songs/` | Local audio for the legacy player | Yes |
-| `data/library/` | User documents for `doc_manager` | Yes (loses your documents) |
-| `data/browser_profile/` | Playwright Firefox profile | Yes |
+| `data/browser_profile/` | Playwright Firefox profile (cookies, logins, bookmarks) | Yes (loses browser state) |
+| `data/songs/` | Local audio for the legacy `audioPlayer` module, which `main.py` does not spawn | Yes |
 
 ### Miscellaneous
 
@@ -47,13 +63,19 @@ The last column separates disposable files from destructive deletes. "Yes" means
 | `data/test_tone.wav` | Diagnostics tone | Yes |
 | `data/temp_discord_audio_*.wav` | Temporary Discord playback audio | Yes |
 
-<!-- VERIFY: confirm the "loses your documents/notes" qualifiers on library/ and notes.txt; the brief lists both as plain "Yes". -->
-
 ## Resetting
 
-Prefer the web UI when it has a button for the job. Go to **Settings, then Advanced** to wipe long-term memory or chat history without touching files.
+Prefer the web UI when it has a button for the job. Settings → Advanced exposes five reset targets:
 
-<!-- VERIFY: confirm Settings -> Advanced exposes both memory and history resets, not just memory. -->
+| Goal | UI action |
+|---|---|
+| Wipe chat history | Settings → Advanced → Reset `history` |
+| Wipe session continuity | Settings → Advanced → Reset `session` |
+| Wipe self-model observations | Settings → Advanced → Reset `self_model` |
+| Wipe the diagnostics log | Settings → Advanced → Reset `logs` |
+| Wipe long-term memory | Settings → Advanced → Reset `memory` |
+
+The UI `memory` reset wipes only the currently logged-in user's memories. A full cross-user wipe requires the full reset below.
 
 **Full reset.** With Lumi stopped, run from the repo root:
 
@@ -67,10 +89,11 @@ On the next boot Lumi recreates the folders it needs, generates a fresh SDK toke
 
 | Goal | How |
 |---|---|
-| Wipe chat history | Settings, then Advanced |
-| Wipe long-term memory | Settings, then Advanced |
 | Force VTube Studio re-auth | Delete `data/vtubeStudio_token.txt` |
 | Reset Playwright state | Delete `data/browser_profile/` |
+| Clear the uploaded library | Delete `data/library/`. Chunks are pruned on the next `LibraryIndexer` scan. |
+| Force memory re-import from seed | Delete `data/memories/chroma.db/`, place `memoryinit.json` at `data/memories/memoryinit.json`, and restart |
+| Reset all SDK client approvals | Delete `data/memories/sdk_allowlist.json` |
 
 ## Gitignore
 
@@ -78,7 +101,9 @@ On the next boot Lumi recreates the folders it needs, generates a fresh SDK toke
 
 ## Backup
 
-Two things are worth backing up: `data/memories/chroma.db/` (long-term memory) and `data/memories/users.db` (accounts). Everything else is regenerable or disposable.
+Two things are worth backing up: `data/memories/chroma.db/` (now holds both personal memory and the library RAG index) and `data/memories/users.db` (accounts). Everything else is regenerable or disposable.
+
+Optionally, back up `data/library/` if you want to keep the raw uploads. ChromaDB chunks regenerate from the files as long as they are present on startup.
 
 ## See also
 

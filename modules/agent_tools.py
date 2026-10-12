@@ -13,6 +13,8 @@ they're ever actually called.
 
 import os
 import re
+import io
+import base64
 import shutil
 import subprocess
 
@@ -325,6 +327,166 @@ TOOL_SCHEMAS = [
 
 CONFIRM_REQUIRED_TOOLS = {"write_file", "run_command", "run_in_terminal"}
 
+# ===============================================================
+# VLM IMAGE ANALYSIS (frontier-model pattern)
+# ---------------------------------------------------------------
+# When the user uploads an image (screenshot, photo, chart, doc
+# scan), the VLM's only job is to produce a complete text report:
+# every visible piece of text transcribed verbatim, plus a
+# structural description, plus key details. That report is then
+# injected into the main LLM's turn as if the user had typed it.
+#
+# This is deliberately NOT "send the image to the vision model and
+# let it answer." Qwen2.5-VL is a fine transcriber, but its
+# persona tracking and reasoning are weaker than qwen3:8b. Two
+# passes gets the best of both: strong vision for seeing, strong
+# reasoner for thinking.
+# ===============================================================
+
+_VLM_EXTRACTION_PROMPT = (
+    "You are an image analyst. Examine the image and produce a "
+    "complete, self-contained report that another AI (which cannot "
+    "see the image) will use to answer the user's follow-up "
+    "questions.\n"
+    "\n"
+    "Structure your output EXACTLY like this, with these three "
+    "section headers on their own lines:\n"
+    "\n"
+    "TEXT IN IMAGE:\n"
+    "Transcribe every visible piece of text verbatim. Preserve "
+    "line breaks for code, tables, forms, and lists. Preserve "
+    "punctuation, capitalization, and casing exactly. If the "
+    "image has no text, write 'none'.\n"
+    "\n"
+    "DESCRIPTION:\n"
+    "Describe what the image shows in 3 to 6 sentences. What kind "
+    "of content is it — screenshot, photograph, diagram, chart, "
+    "document, meme? What is the subject? What are the key visual "
+    "elements? If it is a screenshot, what application or page is "
+    "shown? If a chart, what does the data appear to represent? "
+    "If UI, what buttons, fields, or state are visible?\n"
+    "\n"
+    "KEY DETAILS:\n"
+    "Bullet list of specific facts the other AI should know: names, "
+    "numbers, colors, error messages, version strings, filenames, "
+    "URLs, dates, timestamps, model identifiers. Skip this section "
+    "if there is nothing notable.\n"
+    "\n"
+    "Be specific and literal. Do not speculate about intent. Do not "
+    "invent details that are not present. If something is unclear "
+    "or cut off, say so explicitly rather than guessing."
+)
+
+
+def _pick_vision_model():
+    """Return the name of the best available vision model on Ollama,
+    or None if there isn't one. Preference order:
+
+      1. VISION_MODEL_NAME from constants (usually qwen2.5vl)
+      2. moondream — small, general, already used by ambient_perception
+    """
+    try:
+        from constants import LLM_ENDPOINT, VISION_MODEL_NAME
+    except Exception:
+        return None
+
+    try:
+        import requests
+        r = requests.get(f"{LLM_ENDPOINT}/api/tags", timeout=5)
+        if r.status_code != 200:
+            return None
+        names = [m.get("name", "") for m in r.json().get("models", [])]
+    except Exception:
+        return None
+
+    preferred = (VISION_MODEL_NAME or "").strip()
+    if preferred:
+        base = preferred.split(":")[0].lower()
+        for n in names:
+            if base in n.lower():
+                return n
+
+    for n in names:
+        if "moondream" in n.lower():
+            return n
+
+    return None
+
+
+def read_image_vlm(path, timeout=120, signals=None):
+    """Send an image file through the VLM and return a full text
+    report (transcription + description + key details).
+
+    Returns (text, error). On success error is None.
+    """
+    def _log(msg, level="info"):
+        if signals is None:
+            return
+        try:
+            from modules.log_hub import emit as hub_emit
+            hub_emit(signals, "system", msg, level=level)
+        except Exception:
+            pass
+
+    try:
+        from constants import LLM_ENDPOINT
+    except Exception as e:
+        return "", f"constants unavailable: {e}"
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return "", "Pillow is not installed (pip install pillow)"
+
+    model_name = _pick_vision_model()
+    if not model_name:
+        return "", (
+            "no vision model installed on Ollama. Run one of:\n"
+            "  ollama pull qwen2.5vl:latest\n"
+            "  ollama pull moondream"
+        )
+
+    try:
+        img = Image.open(path).convert("RGB")
+    except Exception as e:
+        return "", f"could not open image: {e}"
+
+    try:
+        img.thumbnail((1600, 1600), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=88)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception as e:
+        return "", f"could not encode image: {e}"
+
+    _log(f"VLM: extracting from {os.path.basename(path)} with {model_name}")
+
+    try:
+        import requests
+        r = requests.post(
+            f"{LLM_ENDPOINT}/api/generate",
+            json={
+                "model": model_name,
+                "prompt": _VLM_EXTRACTION_PROMPT,
+                "images": [b64],
+                "stream": False,
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": 1500,
+                },
+            },
+            timeout=timeout,
+        )
+        if r.status_code == 404:
+            return "", f"{model_name} is not pulled on Ollama"
+        r.raise_for_status()
+        text = (r.json().get("response") or "").strip()
+        if not text:
+            return "", f"{model_name} returned empty response"
+        _log(f"VLM: {model_name} extracted {len(text)} chars")
+        return text, None
+    except Exception as e:
+        return "", f"{model_name} call failed: {type(e).__name__}: {e}"
 
 class ToolError(Exception):
     pass
@@ -373,6 +535,9 @@ def _find_file_in_workspace(filename):
     # folder reorg. Keep the old names as fallbacks for anyone with a
     # legacy layout.
     for candidate_dir in (
+        os.path.join("data", "library", "documents"),
+        os.path.join("data", "library", "text"),
+        os.path.join("data", "library", "images"),
         os.path.join("data", "library"),
         "library", "documents", "docs", "files", "",
     ):

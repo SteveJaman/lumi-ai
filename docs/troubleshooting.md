@@ -1,20 +1,27 @@
 # Troubleshooting
 
-**Run `python tests/test_debug.py` first** (or `python tests/test_comperhension.py` for retrieval/comprehension verification). They run quickly and localize failures across Lumi's core systems.
+**Run `python tests\test_debug.py` first.** It's a 14-section whole-project
+health check that localizes failures in about two seconds. For security
+guard verification, run `python tests\test_phase9.py`. For integration
+and hardware checks, run `python tests\test_comprehensive.py`. For a
+machine pre-flight before the app's own imports resolve, run
+`python scripts\check_system.py`.
 
-This guide covers common failure modes and diagnostic steps for Lumi's core systems, particularly focusing on Discord voice integration, memory locking, and local dependencies.
+This guide covers common failure modes and diagnostic steps for Lumi's
+core systems, particularly focusing on Discord voice integration, memory
+locking, file uploads, and local dependencies.
 
 ## Security and refusals
 
 Phase 9 added guards that stop Lumi from doing things on purpose. When one
 fires, it looks like a refusal or a silent drop, not a crash. Each entry
-below gives the symptom, the cause, the fix, and where to look in the Log Hub
-at `http://127.0.0.1:5001/`. For the design behind these guards, see
+below gives the symptom, the cause, the fix, and where to look in the Log
+Hub at `http://127.0.0.1:5001/`. For the design behind these guards, see
 [security.md](security.md).
 
-<!-- VERIFY: Log Hub category names other than `discord` are guesses
-(`system`, `memory`, `sdk`). Replace them with the categories the modules
-actually log under. -->
+The Log Hub categorizes events under `ambient`, `heartbeat`, `memory`,
+`emotional`, `mic`, `vts`, `discord`, `system`, `sdk`, `self`, and `tts`.
+Filter by the category a given guard logs under.
 
 ### Lumi refuses to write a file
 
@@ -43,7 +50,7 @@ actually log under. -->
 ### Lumi acts on the contents of a file or page
 
 **Symptom:** After reading a file, web page, or screen, Lumi tries a tool call you never asked for.
-**Cause:** Prompt injection. The content contained instructions and the model followed them. Provenance markers (`[FROM FILE]`, `[FROM WEB]`, `[FROM MEMORY]`, `[FROM SDK]`) reduce this risk but do not remove it.
+**Cause:** Prompt injection. The content contained instructions and the model followed them. Provenance markers (`[FROM FILE]`, `[FROM WEB]`, `[FROM MEMORY]`, `[FROM LIBRARY]`, `[FROM SDK]`) reduce this risk but do not remove it.
 **Resolution:**
 
 1. Answer `n` at the confirmation prompt.
@@ -71,10 +78,10 @@ actually log under. -->
 ### A screen description was discarded
 
 **Symptom:** Lumi ignores what is on screen, or the ambient sampler seems to skip frames.
-**Cause:** The vision model's output failed `_vlm_output_safe()` in `modules/multimodal.py`, so the description was never injected into the prompt.
+**Cause:** The vision model's output failed `_vlm_output_safe()` in `modules/multimodal.py` or `modules/ambient_perception.py`, so the description was never injected into the prompt.
 **Resolution:** Change what is on screen (for example close a window showing keys or instruction-like text) and ask again.
 
-**Where to check:** the `system` category for a discarded-description line.
+**Where to check:** the `ambient` or `system` category for a discarded-description line.
 
 ### An SDK action will not run
 
@@ -86,10 +93,9 @@ actually log under. -->
 2. Lower the action's declared tier, or raise the client's ceiling if you trust it.
 3. Restart Lumi so the server picks up the change.
 
-**Where to check:** the `sdk` category for the allowlist or capability refusal.
+The allowlist is read at connection time — editing the JSON while Lumi is running has no effect until the next boot.
 
-<!-- VERIFY: confirm whether the allowlist is reloaded live or needs a
-restart, and the exact JSON keys for client and ceiling. -->
+**Where to check:** the `sdk` category for the allowlist or capability refusal.
 
 ### An SDK action keeps asking for y/n
 
@@ -98,6 +104,26 @@ restart, and the exact JSON keys for client and ceiling. -->
 **Resolution:** Answer the prompts, or set `auto_approve_writes` to `true` for a client you trust. Leave it `false` for anything you have not reviewed.
 
 **Where to check:** the `sdk` category for the pending confirmation.
+
+### An uploaded file was not indexed
+
+**Symptom:** A file upload succeeded, but Lumi cannot reference it on later turns.
+**Cause:** Either the sidecar write or `index_single_file()` failed, or the passive library injection filtered the match out on distance (the passive path uses a threshold of `< 1.0` on Chroma distance).
+**Resolution:**
+
+1. Check the Log Hub `memory` category for `upload:` and `library: indexed` lines. If they are missing, extraction or sidecar writing failed.
+2. If the file is indexed but never retrieved, ask using words that appear in the file itself.
+3. In agent mode, ask Lumi to call `search_library` explicitly — that tool returns the top matches regardless of distance.
+
+**Where to check:** the `memory` category in the Log Hub.
+
+### A duplicate upload is refused
+
+**Symptom:** Uploading a file returns HTTP 409 with "File already exists."
+**Cause:** A byte-identical file already exists in `data/library/`. The server compares SHA-256 hashes.
+**Resolution:** On the web client, use the Replace button in the modal. The old file, its sidecar, and its ChromaDB chunks are removed before the new one lands.
+
+**Where to check:** the `memory` category for `upload: duplicate detected`.
 
 ## Discord Voice Sending (Audio Output)
 
@@ -130,7 +156,7 @@ winget install Gyan.FFmpeg
 ## Memory Database (ChromaDB)
 
 **Symptom:** The console throws a `sqlite3.OperationalError: database is locked` on boot or when saving a memory.
-**Cause:** ChromaDB uses a single-process lock for its persistent local database at `data/memories/chroma.db`. Another process is currently holding the lock.
+**Cause:** ChromaDB uses a single-process lock for its persistent local database at `data/memories/chroma.db`. Both the `neuro_collection` (personal memory) and `library_docs` (uploaded files) share that lock. Another process is currently holding it.
 **Resolution:**
 
 1. Ensure you do not have multiple instances of `main.py` running simultaneously.
@@ -151,7 +177,7 @@ winget install Gyan.FFmpeg
 
 If the terminal output is too sparse (due to the clean terminal design), all internal state transitions, Discord text messages, and STT transcripts are routed to the local Log Hub.
 
-* **Access:** Open `[http://127.0.0.1:5001/](http://127.0.0.1:5001/)` in your browser.
+* **Access:** Open `http://127.0.0.1:5001/` in your browser.
 * **Filter:** Use categories like `mic`, `discord`, or `system` to isolate the data stream. Background errors not printed to standard out will appear here.
 
 ## Related docs

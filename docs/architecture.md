@@ -11,10 +11,10 @@ involves the LLM.
 
 ## Turn flow
 
-Every input — terminal, microphone, Discord, web chat — lands in the same
-place: `signals.history` as a user message, with `signals.new_message`
-flipped to `True`. The prompter's run loop picks it up on its next tick
-(50ms).
+Every input — terminal, microphone, Discord, web chat — lands in the
+same place: `signals.history` as a user message, with
+`signals.new_message` flipped to `True`. The prompter's run loop picks
+it up on its next tick (50ms).
 
 ```
 User input (terminal / mic / Discord / web chat)
@@ -32,6 +32,7 @@ Prompter run loop (tick every 50ms)
     │     ├─ !list / !help / !state / !self / !model
     │     ├─ !recall / wipe memory / clear memory / reset memory
     │     ├─ !set / !expressions / !expression / !move / !hotkeys / !positions
+    │     ├─ !library
     │     ├─ set mood <name> / switch mood <name>
     │     └─ !sleep
     │     │
@@ -43,7 +44,8 @@ Prompter run loop (tick every 50ms)
     │     │
     │     ├─ Routing decision: fast or main path
     │     │    - fast: 8K ctx, think=false
-    │     │    - main: 16K ctx, think=true
+    │     │    - main: 8K ctx, think=true
+    │     │    - attachments present: main path with think=true
     │     │
     │     ├─ Build system prompt:
     │     │    persona (live from config/lumi.yaml via get_system_prompt())
@@ -54,7 +56,7 @@ Prompter run loop (tick every 50ms)
     │     │    + ambient context (window title; screen desc on match)
     │     │    + self-model observations (if fresh < 1h)
     │     │    + Discord voice context (if in voice)
-    │     │    + SDK [EXTERNAL CONTEXT] (if clients connected)
+    │     │    + library RAG reference (if a matching file exists)
     │     │    + session continuity (first 3 turns)
     │     │    + Fish Audio tag rules
     │     │    + output format rules
@@ -80,9 +82,11 @@ Prompter run loop (tick every 50ms)
           │     ├─ Dispatch via _dispatch_tool_call()
           │     │    → execute_tool() for built-ins
           │     │    → sdk.invoke_action_blocking() for sdk__<name>
-          │     │    → web_search / browse_url / recall_memory special-cased
+          │     │    → web_search / browse_url / recall_memory /
+          │     │      search_library special-cased
           │     │
           │     ├─ Append tool result as role: "tool"
+          │     ├─ Wrap external-content results in provenance markers
           │     ├─ Reinject original request if result > 800 chars
           │     └─ Loop back to chat_sync (up to MAX_AGENT_STEPS = 6)
           │
@@ -112,6 +116,7 @@ The system prompt is built fresh every turn. The layers, in order:
 | Screen description | `ambient.get_context_line()` | Only on screen-reference regex match |
 | Voice context | `signals.voice_context` | Only when in Discord voice |
 | Self-model observations | `self_model.get_injection()` | Only when observations are fresh (< 1h) |
+| Library RAG reference | `memory_module.API.search_library()` | Only when query > 8 chars and top hits are within distance threshold |
 | Session continuity | `session_state.format_injection()` | First 3 turns of a session |
 | Fish Audio rules | Hardcoded | Every turn |
 | Output format rules | Hardcoded | Every turn |
@@ -123,6 +128,10 @@ The `HOST` object (`constants.py`) holds the active user's name and
 `user_id`. On web login the host switches and `get_system_prompt()`
 rebuilds with the new name. Modules can register listeners with
 `HOST.on_change(callback)` to react to the switch.
+
+The persona is injected with `<host>` placeholders already substituted
+for the current user's name. Persona saves through the web client call
+`invalidate_prompt_cache()` so the next turn rebuilds it.
 
 ## Module topology
 
@@ -144,38 +153,39 @@ rebuilds with the new name. Modules can register listeners with
                                     │
        ┌────────────────────────────┼───────────────────────────┐
        │                            │                           │
-┌──────▼──────┐         ┌───────────▼────────────┐   ┌──────────▼────────┐
-│ Command     │         │ Prompter               │   │ Avatar commands   │
-│ router      │         │ (conversational or     │   │ (VTS via          │
-│             │         │  agent turn)           │   │  vtubeStudio.py)  │
-└─────────────┘         └───────────────┬────────┘   └───────────────────┘
-                                        │
-                            ┌───────────▼────────────┐
-                            │  chat_sync()           │
-                            │  → Ollama (local)      │
-                            │  → cloud providers     │
-                            └───────────┬────────────┘
-                                        │
-       ┌────────────────┬───────────────┼────────────┬───────────────┐
-       │                │               │            │               │
-   ┌───▼───┐     ┌──────▼──────┐  ┌─────▼─────┐ ┌────▼────┐ ┌────────▼─────┐
-   │ Tools │     │ Memory      │  │ TTS       │ │ SDK     │ │ Self-model   │
-   │ FS +  │     │ injection   │  │ Fish      │ │ fan-out │ │ note_turn    │
-   │ shell │     │ + recall    │  │ Audio     │ │         │ │              │
-   └───────┘     └─────────────┘  └───────────┘ └─────────┘ └──────────────┘
-                                        │
-                          ┌─────────────┴─────────────┐
-                          │  output routing           │
-                          │  → local speakers         │
-                          │  → Discord voice          │
-                          │  → browser (TTS playback) │
-                          └───────────────────────────┘
+┌──────▼──────┐         ┌───────────▼───────────┐   ┌───────────▼────────┐
+│ Command     │         │ Prompter               │   │ Avatar commands    │
+│ router      │         │ (conversational or     │   │ (VTS via           │
+│             │         │  agent turn)           │   │  vtubeStudio.py)   │
+└─────────────┘         └───────────┬───────────┘   └────────────────────┘
+                                    │
+                            ┌───────▼────────┐
+                            │  chat_sync()   │
+                            │  → Ollama      │
+                            │  → cloud       │
+                            └───────┬────────┘
+                                    │
+       ┌────────────────┬───────────┼───────────┬───────────────┐
+       │                │           │           │               │
+   ┌───▼───┐        ┌───▼────┐  ┌───▼───┐  ┌────▼────┐  ┌───────▼──────┐
+   │ Tools │        │ Memory │  │ TTS   │  │ SDK     │  │ Self-model   │
+   │ FS +  │        │ inject │  │ Fish  │  │ fan-out │  │ note_turn    │
+   │ shell │        │ + recall│  │ Audio │  │         │  │              │
+   └───────┘        └────────┘  └───┬───┘  └─────────┘  └──────────────┘
+                                    │
+                          ┌─────────▼─────────┐
+                          │  output routing   │
+                          │  → local speakers │
+                          │  → Discord voice  │
+                          │  → browser tabs   │
+                          └───────────────────┘
 
 Background loops (independent threads):
   heartbeat (30s)      · emotional_state decay (30s)
   ambient_perception   · self_model (60s/600s)
   memory reflection    · discord client
   log hub              · SDK server
+  library_indexer (60s)
 ```
 
 ## Background modules
@@ -189,7 +199,8 @@ Each runs in its own thread with its own event loop, spawned by
 | `ambient_perception.py` | 30s sample | Screen hash comparison. VLM call only on window change or hash delta > 14 bits, rate-limited to once per 90s. |
 | `emotional_state.py` | 30s decay | Exponential decay toward baselines. Boredom ticks up during idle. |
 | `self_model.py` | 60s snapshot / 600s reflect | Records turn stats and emotional snapshots. Reflects every 10 min if ≥5 turns. |
-| `memory.py` | every 10 messages | Reflection pass extracts facts from recent history. Routes through `chat_sync(FAST_MODEL_NAME)`. |
+| `memory.py` | every 10 messages | Reflection pass extracts facts from recent history. Routes through `chat_sync(FAST_MODEL_NAME, think=False)`. |
+| `library_indexer.py` | 60s rescan | Walks `data/library/`, indexes new files into the `library_docs` collection, and prunes chunks for files that no longer exist. |
 | `discordClient.py` | continuous | Voice receive (DAVE decrypt + Opus decode + VAD) and send (Fish Audio → FFmpeg). |
 | `log_hub.py` | continuous | Structured diagnostics stream at `127.0.0.1:5001`. |
 | `sdk/server.py` | continuous | Websocket server at `127.0.0.1:5056` for external plugins. |
@@ -203,6 +214,7 @@ Chat turns → reflection pass → extracted facts
                                     │
                                     ▼
                           ChromaDB (data/memories/chroma.db/)
+                          collection: neuro_collection
                                     │
                           Retrieval scoring:
                             0.5 * similarity
@@ -215,7 +227,46 @@ Chat turns → reflection pass → extracted facts
 
 Every fact carries `timestamp`, `importance`, `valence`, `session_id`,
 and `user_id`. Every read path filters by `user_id` — memory is
-per-user.
+per-user. The reflection pass routes through `chat_sync` with
+`think=False` and `FAST_MODEL_NAME`, so cloud providers work for
+background tasks transparently.
+
+### Library RAG
+
+```
+Upload arrives via POST /api/chat/upload
+    │
+    ▼
+Saved to data/library/{documents,images,text}/
+    │
+    ▼
+Extraction:
+  images      → read_image_vlm() → text report
+  pdf / docx  → _read_pdf / _read_docx
+  text-like   → read directly
+    │
+    ▼
+Auto-generated sidecar: <timestamp>_<name>.meta.md
+    │
+    ▼
+Indexed into ChromaDB collection library_docs
+    │
+    ▼
+Passive injection (chat mode)   OR   search_library tool (agent mode)
+    │
+    ▼
+Injected as [FACTUAL LIBRARY REFERENCE] or tool result
+```
+
+The sidecar is what makes uploads retrievable on future turns — the raw
+PNG can't be embedded, but the report describing it can. The passive
+injector applies a distance threshold (`< 1.0`). The agent-mode
+`search_library` tool does not; it always returns the top hits.
+
+Duplicate detection uses SHA-256 of the file contents. The first request
+returns 409 with metadata about the existing file; on `?replace=1` the
+old file, sidecar, and ChromaDB chunks are removed before the new one
+lands.
 
 ### TTS output
 
@@ -234,9 +285,9 @@ signals.tts_queue → TTS worker
     ▼
 Fish Audio HTTP → WAV bytes
     │
-    ├─► Local speakers (PyAudio, device indices from constants)
-    ├─► Discord voice (FFmpeg → VoiceClient)
-    └─► Browser (base64 → socket.io → opted-in tabs)
+    ├─→ Local speakers (PyAudio, device indices from constants)
+    ├─→ Discord voice (FFmpeg → VoiceClient)
+    └─→ Browser (base64 → socket.io → opted-in tabs)
 ```
 
 The first canonical Fish Audio tag in each reply is also forwarded to
@@ -262,19 +313,35 @@ Confirmation gate (write_file, run_command, run_in_terminal)
     ▼
 _dispatch_tool_call(name, args)
     │
-    ├─ "sdk__" prefix  → sdk.invoke_action_blocking()
-    ├─ "web_search"    → web_search()
-    ├─ "browse_url"    → browser_module.browse_url()
-    ├─ "recall_memory" → memory_module.API.query_temporal()
-    ├─ "vtube_*"       → vts.API.*  (with validation and aliases)
-    └─ everything else → execute_tool(name, args)
+    ├─ "sdk__" prefix   → sdk.invoke_action_blocking()
+    ├─ "web_search"     → web_search()
+    ├─ "browse_url"     → browser_module.browse_url()
+    ├─ "recall_memory"  → memory_module.API.query_temporal()
+    ├─ "search_library" → memory_module.API.search_library()
+    ├─ "vtube_*"        → vts.API.*  (with validation and aliases)
+    └─ everything else  → execute_tool(name, args, signals)
 ```
 
 Safety guards that fire before dispatch: read-only query gate, no-op
-write guard, duplicate-call guard, protected files, path sandbox.
+write guard, duplicate-call guard, protected files, path sandbox,
+command allowlist, shell metacharacter refusal.
 
 After dispatch, guards that can force a retry: simulated-action
 detection, intent-announcement guard, refusal guard, no-tool-call retry.
+
+Every tool result from external content is wrapped in a provenance
+marker before it's appended to the message list:
+
+| Tool | Marker |
+|---|---|
+| `read_file`, `search_files`, `list_dir` | `[FROM FILE]` |
+| `browse_url`, `web_search` | `[FROM WEB]` |
+| `recall_memory` | `[FROM MEMORY]` |
+| `search_library` | `[FROM LIBRARY]` |
+| `sdk__<name>` | `[FROM SDK]` |
+
+The prompt rule that accompanies the markers tells the model that
+anything inside them is data, not instructions.
 
 ### SDK bridge
 
@@ -284,25 +351,28 @@ external apps, external apps provide tools to Lumi.
 ```
 External app                 sdk/server.py                prompter
      │                             │                          │
-     │ ── hello (auth) ──────────► │                          │
+     │ ── hello (auth) ───────────► │                          │
      │ ◄─ startup ──────────────── │                          │
      │                             │                          │
      │ ── actions/register ──────► │                          │
      │                             │  register in             │
      │                             │  self.actions{}          │
-     │                             │ ── schemas as ─────────► │
+     │                             │ ── schemas as ──────────► │
      │                             │   sdk__<name>            │
      │                             │                          │
-     │                             │ ◄─ tool call ──────────  │
+     │                             │ ◄─ tool call ───────────  │
      │ ◄─ action (invoke) ──────── │   sdk__<name>            │
      │ ── action/result ─────────► │ ── tool result ────────► │
      │                             │                          │
-     │ ◄─ speech_finished ──────── │ ◄─ broadcast ──────────  │
+     │ ◄─ speech_finished ──────── │ ◄─ broadcast ───────────  │
 ```
 
-The server binds strictly to `127.0.0.1:5056`. Auth is a shared token
-at `data/memories/sdk_token.txt`. Capability tiers (`read` / `write` /
-`dangerous`) determine the confirmation gate.
+The server binds strictly to `127.0.0.1:5056` unless
+`ALLOW_LAN_EXPOSURE` is `True`. Auth is a shared token at
+`data/memories/sdk_token.txt`. Per-client approval and capability
+ceilings live at `data/memories/sdk_allowlist.json`. Capability tiers
+(`read` / `write` / `dangerous`) determine the confirmation gate. The
+allowlist is read at connect time — edits require a restart.
 
 ## Key files (top level)
 
@@ -317,8 +387,9 @@ at `data/memories/sdk_token.txt`. Capability tiers (`read` / `write` /
 | File | Role |
 |---|---|
 | `prompter.py` | Agent loop, command router, safety guards, model routing |
-| `agent_tools.py` | Tool schemas + filesystem/command execution |
-| `memory.py` | ChromaDB long-term memory, reflection, browser API |
+| `agent_tools.py` | Tool schemas + filesystem/command execution + VLM image analyzer |
+| `memory.py` | ChromaDB long-term memory, reflection, browser API, library RAG |
+| `library_indexer.py` | Walks `data/library/`, indexes into `library_docs` |
 | `llm_providers.py` | Multi-provider LLM clients, `chat_sync()` |
 | `model_manager.py` | Ollama management + live `constants.py` patching |
 | `socketIO.py` | aiohttp HTTP routes + python-socketio + static serving |
@@ -362,6 +433,13 @@ wouldn't parse, the write is refused.
 state are filtered by `HOST.user_id` on every read and write. Other
 state (session, self-model, in-memory history) is deliberately shared —
 making those per-user is future work.
+
+**Two retrieval paths for uploaded files.** The passive library injector
+in chat mode applies a distance threshold to keep irrelevant chunks out
+of the prompt. The explicit `search_library` tool in agent mode does not
+— if the user asks about a document, Lumi returns the closest matches
+regardless of distance. This is intentional: conversational turns should
+stay clean, agent turns should be thorough.
 
 ## Related docs
 

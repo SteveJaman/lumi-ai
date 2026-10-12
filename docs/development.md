@@ -15,7 +15,7 @@ How to set up a working environment, run tests, and extend Lumi.
 ### Clone and install
 
 ```powershell
-git clone <repo-url> Lumi-master
+git clone https://github.com/SteveJaman/lumi-ai.git Lumi-master
 cd Lumi-master
 
 conda create -n lumi python=3.11
@@ -38,27 +38,39 @@ Edit both. Minimum for a working instance:
 - `FISH_API_KEY` and `FISH_REFERENCE_ID` in `.env` for voice
 - `TIMEZONE` and `OUTPUT_DEVICE_INDEX` in `constants.py`
 
+`WORKSPACE_ROOT` self-locates from `constants.py`, so you don't edit it.
+
 Find your audio device indices:
 
 ```powershell
-python scripts/check_outputs.py
+python scripts\check_outputs.py    # output devices
+python scripts\check_mics.py       # input devices
 ```
 
-### Build the model
+### Pull the model
 
 ```powershell
 ollama pull qwen3:8b
-ollama create lumi-qwen3 -f config\Modelfile-qwen3
 ```
+
+`MODEL_NAME` and `FAST_MODEL_NAME` in `constants.py` both point at
+`qwen3:8b`. The fast path uses the same weights with a smaller context
+window and thinking disabled. Any tool-calling model works.
+
+For cloud providers (OpenAI, Anthropic, Gemini, Groq, OpenRouter), set
+the key in `.env` or use the Models → Providers page. See
+[models.md](models.md).
 
 ### Verify
 
 ```powershell
-python scripts/check_system.py
+python scripts\check_system.py
 ```
 
 This prints Python version, key package versions, GPU info, and whether
-ports 5000/5001/5056 are free.
+ports 5000/5001/5056 are free. It does not import `constants.py`, so it
+runs before the app's own imports resolve — the first thing to run on a
+new machine.
 
 ## Running
 
@@ -67,14 +79,15 @@ python main.py
 ```
 
 Pick an audio mode (1 for local, 2 for Discord, 3 for both). Once the
-banner appears, three surfaces are live:
+banner appears, four surfaces are live:
 
 - **Terminal** — type directly, `\` toggles mic mute
 - **Web client** — `http://127.0.0.1:5000/`
 - **Diagnostics** — `http://127.0.0.1:5001/`
+- **SDK server** — `ws://127.0.0.1:5056/ws`
 
-All three share `signals.history`. A message typed at the terminal shows
-up in the web chat within 1.5 seconds.
+All of them share `signals.history`. A message typed at the terminal
+shows up in the web chat within 1.5 seconds.
 
 ## Project layout
 
@@ -90,7 +103,7 @@ Lumi-master/
 ├── config/                  Editable config (.example files tracked)
 ├── docs/                    Deep documentation
 ├── scripts/                 Standalone utilities
-├── tests/                   Pytest suite
+├── tests/                   Pytest suite + standalone harnesses
 ├── assets/                  Branding, screenshots
 └── data/                    Runtime state (gitignored except README)
 ```
@@ -99,18 +112,41 @@ See [architecture.md](architecture.md) for how the modules fit together.
 
 ## Test suite
 
+Two kinds of tests. Run them differently.
+
+### Pytest suite
+
 ```powershell
-pytest tests/ -v
+pytest tests\ -v
 ```
 
-The suite runs on a fresh clone with no external services. No Ollama, no
-ChromaDB, no Discord, no VTS. Currently covers:
+Runs offline, no external services. Covers pure logic only.
 
 | File | What it tests |
 |---|---|
 | `tests/test_sdk_protocol.py` | Wire format builders, `ActionSpec` roundtrip |
 | `tests/test_llm_providers.py` | `parse_model_spec`, `make_model_spec`, `mask_key` |
 | `tests/test_agent_tools.py` | `_safe_path` sandbox — refuses escapes from `WORKSPACE_ROOT` |
+
+### Standalone harnesses
+
+Not pytest tests. Run them directly with `python`.
+
+```powershell
+python scripts\check_system.py       # machine pre-flight
+python tests\test_debug.py           # whole-project health
+python tests\test_phase9.py          # security guard verification
+python tests\test_comprehensive.py   # integration & hardware
+```
+
+| Harness | Sections | Runs offline? |
+|---|---|---|
+| `scripts/check_system.py` | Python, folders, packages, ports, Ollama, FFmpeg, Playwright, GPU, `.env`, `lumi.yaml` | Yes (skips live services gracefully) |
+| `tests/test_debug.py` | 14 sections — workspace, syntax, imports, constants, persona YAML, signals, agent tools, Ollama, storage, ports, config files, module shape, smoke tests, optional deps | Yes (Ollama check is a 2s ping) |
+| `tests/test_phase9.py` | 47 checks covering every Phase 9 guard as a function AND as a source pattern | Yes |
+| `tests/test_comprehensive.py` | Audio routing, database locks, library RAG, prompt assembly, tool dispatch parity | Partially — needs PyAudio, ChromaDB, Ollama for full coverage |
+
+`tests/README.md` documents all four plus the pytest suite.
 
 ### What belongs in a test
 
@@ -338,7 +374,9 @@ patchable.
    modules.
 3. If it's destructive, add it to `CONFIRM_REQUIRED_TOOLS`.
 4. Update the tool description in the agent directive inside
-   `prompter.gather_injections()` — the model reads that list.
+   `prompter.gather_injections()`. The model reads that list.
+5. If the tool reads external content, add it to `PROVENANCE_MARKERS` in
+   `agent_tools.py` so its result is wrapped in `[FROM X]` markers.
 
 ### Adding a cloud provider
 
@@ -359,6 +397,9 @@ patchable.
    dropdown lists its models as an optgroup once a key is saved.
 
 3. Add the key name to `.env.example` as a commented line.
+
+4. If the provider needs a custom model list, add an entry to
+   `PROVIDER_MODEL_OVERRIDES`.
 
 ### Adding a web page
 
@@ -391,8 +432,9 @@ The log hub receives high-frequency events. Live view:
 http://127.0.0.1:5001/
 ```
 
-Filter by category. `data/logs/events.log` persists the same events for
-post-mortem.
+Filter by category. Categories in use: `ambient`, `heartbeat`, `memory`,
+`emotional`, `mic`, `vts`, `discord`, `system`, `sdk`, `self`, `tts`.
+`data/logs/events.log` persists the same events for post-mortem.
 
 ### A module isn't running
 
@@ -413,6 +455,15 @@ If it never prints, the model isn't calling it. See
 [`../sdk/README.md#design-notes-for-plugin-authors`](../sdk/README.md#design-notes-for-plugin-authors)
 for why — small-model tool selection routes by token overlap.
 
+### Uploads are not searchable
+
+If a file is uploaded but Lumi can't reference it later, check the
+`memory` category in the log hub for `upload:` and `library: indexed`
+lines. If they're missing, `read_image_vlm()` or the sidecar write
+failed. If they're present but retrieval fails, the passive library
+injection's distance threshold (1.0) filtered the match — use agent
+mode and the `search_library` tool instead.
+
 ### Tests pass locally, fail in CI
 
 Rare but possible. CI runs on Linux, where path separators differ and
@@ -424,8 +475,10 @@ with `/` or `\`.
 Before pushing a version bump:
 
 - [ ] `pytest tests/ -v` passes
+- [ ] `python tests\test_phase9.py` passes
+- [ ] `python tests\test_debug.py` passes with no errors
 - [ ] `ruff check .` clean
-- [ ] `python scripts/check_system.py` shows a healthy environment
+- [ ] `python scripts\check_system.py` shows a healthy environment
 - [ ] Boot Lumi and send one message end-to-end
 - [ ] `LUMI_VERSION` in `constants.py` bumped
 - [ ] `CHANGELOG.md` entry added

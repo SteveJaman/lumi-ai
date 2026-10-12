@@ -8,8 +8,8 @@ Three files control Lumi's behavior. Everything else is code.
 | `config/lumi.yaml` | Persona, traits, rules, dialogue | No (ship `.example`) | Persona page |
 | `constants.py` | Paths, model names, runtime constants | Yes | Settings page, Models → Routing, or by hand |
 
-`constants.py` also holds `DATA_ROOT`, `CONFIG_ROOT`, and `YAML_PATH`, so
-every path in the codebase resolves through it. If a path ever looks
+`constants.py` also holds `DATA_ROOT`, `CONFIG_ROOT`, and `YAML_PATH`,
+so every path in the codebase resolves through it. If a path ever looks
 wrong, that's the first file to check.
 
 ## `.env`
@@ -52,7 +52,7 @@ Everything else is optional.
 
 ### Writing rules
 
-`.env` is written by an atomic, comment-preserving writer:
+`.env` is written by an atomic, comment-preserving editor:
 
 - Existing comments and key order survive every write
 - On POSIX, the file is chmod'd to `0600` after every save
@@ -81,7 +81,7 @@ with `<host>` substituted for the current user's name at load time.
 
 | Section | What it controls |
 |---|---|
-| `name` | Character name shown in the terminal prompt |
+| `name` | Character name |
 | `greeting` | Fallback greeting |
 | `personality` | Long-form personality description, values list |
 | `traits` | Eight numeric traits — playfulness, intelligence, chaos, empathy, sarcasm, warmth, curiosity, patience |
@@ -157,22 +157,25 @@ DOCS_ROOT      = os.path.join(WORKSPACE_ROOT, "docs")
 YAML_PATH      = os.path.join(CONFIG_ROOT, "lumi.yaml")
 ```
 
-`WORKSPACE_ROOT` self-locates from the file's own path, so the repo runs
-from any clone location without editing.
+`WORKSPACE_ROOT` self-locates from the file's own path, so the repo
+runs from any clone location without editing.
 
 ### Model configuration
 
 ```python
-MODEL_NAME      = "lumi-qwen3"   # main path  — 16K ctx, think=true
-FAST_MODEL_NAME = "lumi-qwen3"   # fast path  — same weights, 8K ctx, think=false
+MODEL_NAME        = "qwen3:8b"   # main path — think=true
+FAST_MODEL_NAME   = "qwen3:8b"   # fast path — same weights, think=false
+VISION_MODEL_NAME = "qwen2.5vl:latest"
+
 FAST_MODEL_ENABLED    = True
 FAST_MODEL_NUM_CTX    = 8192
-MAIN_NUM_CTX          = 16384
+MAIN_NUM_CTX          = 8192
 FAST_MODEL_KEEP_ALIVE = "5m"
 ```
 
 Both paths point at the same weights, so Ollama keeps one copy in VRAM.
-Changing `FAST_MODEL_NAME` to a cloud spec (e.g.
+The fast path is differentiated by the `think` flag, not by the context
+window. Changing `FAST_MODEL_NAME` to a cloud spec (e.g.
 `groq:llama-3.3-70b-versatile`) moves all background work off-machine.
 
 See [models.md](models.md) for the full routing story.
@@ -197,14 +200,14 @@ and memory timestamps. Validated with `zoneinfo` before saving.
 ### Audio routing
 
 ```python
-AUDIO_OUTPUT_MODE  = "both"        # "local" | "discord" | "both"
-OUTPUT_DEVICE_INDEX = [24, 20]     # single int or list
+AUDIO_OUTPUT_MODE   = "both"        # "local" | "discord" | "both"
+OUTPUT_DEVICE_INDEX = [24, 20]      # single int or list
 ```
 
 Find device indices with:
 
 ```powershell
-python scripts/check_outputs.py
+python scripts\check_outputs.py
 ```
 
 The script prints every PyAudio output device with its index. Copy the
@@ -222,7 +225,21 @@ For multiple (e.g. VB-Cable for VTube Studio + headset for your ears):
 OUTPUT_DEVICE_INDEX = [24, 20]
 ```
 
-`check_mics.py` does the same for input devices.
+`scripts/check_mics.py` does the same for input devices.
+
+### Network binding
+
+```python
+ALLOW_LAN_EXPOSURE = False
+```
+
+One gate for all three local services: the log hub (`:5001`), the web
+client (`:5000`), and the SDK server (`:5056`). When `False`, each binds
+strictly to `127.0.0.1`. When `True`, each binds to `0.0.0.0`.
+
+Changing this value has no effect on already-running services. Restart
+after toggling. Nothing warns you if you flip it — the exposure is
+intentional and silent on the assumption that you meant it.
 
 ### SDK server
 
@@ -232,8 +249,11 @@ SDK_PORT    = 5056
 SDK_VERSION = "0.10.14"
 ```
 
-The server binds strictly to `127.0.0.1`. Token lives at
-`data/memories/sdk_token.txt`, generated on first boot.
+The server binds strictly to `127.0.0.1` unless `ALLOW_LAN_EXPOSURE` is
+`True`. Token lives at `data/memories/sdk_token.txt`, generated on first
+boot. Per-client approval and capability ceilings live at
+`data/memories/sdk_allowlist.json`. Edits to the allowlist require a
+restart — it's read at connect time, not reloaded live.
 
 ### Version
 
@@ -303,7 +323,8 @@ The web client's **Settings → Advanced** page has buttons for:
 - Long-term memory (current user's facts in `data/memories/chroma.db/`)
 
 Each is confined to a server-side allowlist. The client cannot request
-an arbitrary path.
+an arbitrary path. The memory reset wipes only the currently-logged-in
+user's facts; a cross-user wipe needs the full reset above.
 
 ### Manual resets
 
@@ -312,6 +333,9 @@ an arbitrary path.
 | Force VTS re-auth | `Remove-Item data\vtubeStudio_token.txt` |
 | Reset Playwright state | `Remove-Item data\browser_profile -Recurse` |
 | Rotate SDK token | `Remove-Item data\memories\sdk_token.txt` |
+| Reset SDK approvals | `Remove-Item data\memories\sdk_allowlist.json` |
+| Clear the uploaded library | `Remove-Item data\library -Recurse` |
+| Force memory re-import from seed | Delete `data\memories\chroma.db\`, place `memoryinit.json` at `data\memories\memoryinit.json`, restart |
 | Wipe user accounts | `Remove-Item data\memories\users.db` |
 
 After any of those, restart Lumi — the affected module regenerates its

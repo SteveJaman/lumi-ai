@@ -85,6 +85,101 @@ _ALLOWED_UPLOAD_EXTS = {
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
+# Subfolder routing — every upload goes into one of these under
+# data/library/. Keeps the top level scannable even after hundreds
+# of files.
+_SUBFOLDER_IMAGES    = "images"
+_SUBFOLDER_DOCUMENTS = "documents"
+_SUBFOLDER_TEXT      = "text"
+
+
+def _classify_ext(ext):
+    """Ext-based kind classifier. Mirrors _classify_upload(path) but
+    works before the file lands on disk, which we need to pick the
+    target subfolder."""
+    ext = (ext or "").lower()
+    if ext in _IMAGE_EXTS:
+        return "image"
+    if ext == ".pdf":
+        return "pdf"
+    if ext in (".docx", ".doc"):
+        return "doc"
+    return "text"
+
+
+def _subfolder_for_kind(kind):
+    if kind == "image":
+        return _SUBFOLDER_IMAGES
+    if kind in ("pdf", "doc"):
+        return _SUBFOLDER_DOCUMENTS
+    return _SUBFOLDER_TEXT
+
+
+def _sha256_of_bytes(raw):
+    import hashlib
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _sha256_of_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _find_library_duplicate(library_root, new_hash):
+    """Walk data/library/{images,documents,text}/ and return metadata
+    for the first file whose contents hash matches `new_hash`. Returns
+    None if nothing matches.
+
+    Returned dict:
+      stored_name   e.g. "20261010_143022_report.pdf"
+      stored_path   e.g. "data/library/documents/20261010_143022_report.pdf"
+                    (relative to WORKSPACE_ROOT)
+      source        e.g. "documents/20261010_143022_report.pdf"
+                    (relative to library root — this is the ChromaDB key)
+      original_name e.g. "report.pdf"
+      subfolder     e.g. "documents"
+      size          bytes
+      modified_at   epoch seconds
+    """
+    from constants import WORKSPACE_ROOT
+    if not new_hash or not os.path.isdir(library_root):
+        return None
+    for sub in sorted(os.listdir(library_root)):
+        sub_dir = os.path.join(library_root, sub)
+        if not os.path.isdir(sub_dir) or sub.startswith("."):
+            continue
+        for fname in sorted(os.listdir(sub_dir)):
+            fpath = os.path.join(sub_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                if _sha256_of_file(fpath) != new_hash:
+                    continue
+            except Exception:
+                continue
+
+            # Stored name convention is "<timestamp>_<original>".
+            # Recover the original name for the UI.
+            parts = fname.split("_", 2)
+            original = parts[2] if len(parts) >= 3 else fname
+
+            return {
+                "stored_name": fname,
+                "stored_path": os.path.relpath(
+                    fpath, WORKSPACE_ROOT
+                ).replace("\\", "/"),
+                "source": f"{sub}/{fname}",
+                "original_name": original,
+                "subfolder": sub,
+                "size": os.path.getsize(fpath),
+                "modified_at": os.path.getmtime(fpath),
+            }
+    return None
+
 
 def _json_error(status, message):
     return web.json_response({"error": message}, status=status)
@@ -173,6 +268,66 @@ def _extract_upload_text(path, kind):
         return "", f"{type(e).__name__}: {e}"
     return "", "unknown file type"
 
+def _write_upload_sidecar(target_dir, stored_name, original_name,
+                          subfolder, kind, size, file_hash, text):
+    """Write a .meta.md sidecar next to the uploaded file.
+
+    The sidecar contains upload metadata plus the extracted content
+    (full VLM report for images, preview for documents). The library
+    indexer picks it up and stores its chunks in ChromaDB, so future
+    turns can retrieve the upload by semantic query — 'the screenshot
+    I showed you', 'that PDF about X', 'what did I send you yesterday'.
+
+    Without this step, image analyses vanish the moment the
+    conversation scrolls past them: the .png itself is not text and
+    cannot be indexed.
+
+    Returns the absolute path to the sidecar, or None on failure.
+    """
+    stem = os.path.splitext(stored_name)[0]
+    sidecar_name = f"{stem}.meta.md"
+    sidecar_path = os.path.join(target_dir, sidecar_name)
+
+    uploaded_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    hash_short = (file_hash or "")[:16]
+
+    header = (
+        f"# Uploaded file: {original_name}\n\n"
+        f"- **Uploaded:** {uploaded_at}\n"
+        f"- **Stored as:** {subfolder}/{stored_name}\n"
+        f"- **Type:** {kind}\n"
+        f"- **Size:** {size} bytes\n"
+        f"- **Content hash (sha256):** {hash_short}\n\n"
+    )
+
+    if kind == "image":
+        body = (
+            "## Visual analysis\n\n"
+            f"{text}\n"
+        )
+    elif kind in ("pdf", "doc"):
+        preview = (text or "")[:800].strip()
+        body = (
+            "## Preview (first 800 chars)\n\n"
+            f"{preview}\n\n"
+            f"_Full text of this document is indexed directly from "
+            f"`{subfolder}/{stored_name}`._\n"
+        )
+    else:
+        # Text-like uploads (txt, md, json) — store the full content
+        body = (
+            "## Content\n\n"
+            f"{text}\n"
+        )
+
+    content = header + body
+    try:
+        with open(sidecar_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return sidecar_path
+    except Exception as e:
+        print(f"\033[91mUPLOAD: sidecar write failed — {e}\033[0m")
+        return None
 
 # Lazy faster-whisper loader for the voice-in-browser path.
 _voice_whisper = None
@@ -530,9 +685,22 @@ class SocketIOServer:
         return web.json_response({"ok": True})
 
     async def _handle_chat_upload(self, request):
-        """Accept a multipart upload, save it to data/library/, extract
-        text or encode an image, and return the result to the client so
-        it can be attached to the next chat message."""
+        """Accept a multipart upload, save it into a categorized
+        subfolder under data/library/, run VLM extraction for images
+        or text extraction for documents, and return the result to
+        the client.
+
+        Persistence: every upload gets a .meta.md sidecar containing
+        metadata plus the extracted content. The sidecar is indexed
+        into the library RAG immediately so the upload is searchable
+        from the very next turn. Non-image uploads also kick off
+        full-document indexing in the background.
+
+        Duplicate handling: if a file with identical content already
+        exists, the first request returns HTTP 409 with details; on
+        ?replace=1 the old file (and its sidecar) are removed and
+        the new one lands.
+        """
         if not self._origin_ok(request):
             return _json_error(403, "Bad origin.")
         user = self._current_user(request)
@@ -549,7 +717,7 @@ class SocketIOServer:
             if field is None or field.name != "file":
                 return _json_error(400, "Expected multipart field 'file'.")
 
-            chunks = []
+            chunks_in = []
             total = 0
             while True:
                 chunk = await field.read_chunk(64 * 1024)
@@ -562,16 +730,16 @@ class SocketIOServer:
                         f"File too large "
                         f"(limit {_MAX_UPLOAD_BYTES // (1024*1024)} MB).",
                     )
-                chunks.append(chunk)
+                chunks_in.append(chunk)
 
-            raw = b"".join(chunks)
+            raw = b"".join(chunks_in)
             if not raw:
                 return _json_error(400, "Empty file.")
             original_name = field.filename or "upload"
         except Exception as e:
             return _json_error(400, f"Could not read upload: {e}")
 
-        # ── Validate ──────────────────────────────────────────────
+        # ── Validate extension + pick target folder ──────────────
         safe_name = _sanitize_upload_name(original_name)
         ext = os.path.splitext(safe_name)[1].lower()
         if ext not in _ALLOWED_UPLOAD_EXTS:
@@ -581,21 +749,103 @@ class SocketIOServer:
                 f"Allowed: {', '.join(sorted(_ALLOWED_UPLOAD_EXTS))}",
             )
 
-        # ── Save to data/library/ ─────────────────────────────────
-        from constants import DATA_ROOT, WORKSPACE_ROOT
-        library_dir = os.path.join(DATA_ROOT, "library")
-        os.makedirs(library_dir, exist_ok=True)
+        kind = _classify_ext(ext)
+        subfolder = _subfolder_for_kind(kind)
 
+        from constants import DATA_ROOT, WORKSPACE_ROOT
+
+        library_root = os.path.join(DATA_ROOT, "library")
+        target_dir = os.path.join(library_root, subfolder)
+        os.makedirs(target_dir, exist_ok=True)
+
+        # ── Duplicate check ───────────────────────────────────────
+        new_hash = _sha256_of_bytes(raw)
+        replace_flag = (
+            (request.query.get("replace", "") or "").lower()
+            in ("1", "true", "yes")
+        )
+
+        existing_dup = _find_library_duplicate(library_root, new_hash)
+
+        if existing_dup and not replace_flag:
+            try:
+                from modules.log_hub import emit as hub_emit
+                hub_emit(
+                    self.signals, "memory",
+                    f"upload: duplicate detected for '{original_name}' — "
+                    f"matches {existing_dup['source']}",
+                    level="warn",
+                )
+            except Exception:
+                pass
+
+            return web.json_response({
+                "error": "duplicate",
+                "message": (
+                    f"A file with identical contents already exists "
+                    f"in the library as '{existing_dup['original_name']}'."
+                ),
+                "existing": existing_dup,
+                "incoming": {
+                    "name": original_name,
+                    "size": len(raw),
+                    "kind": kind,
+                    "hash": new_hash,
+                },
+                "can_replace": True,
+            }, status=409)
+
+        # ── Replace path: remove old file + old sidecar + RAG rows ─
+        if existing_dup and replace_flag:
+            old_path = os.path.join(
+                WORKSPACE_ROOT, existing_dup["stored_path"],
+            )
+            old_source = existing_dup["source"]
+            try:
+                os.remove(old_path)
+            except Exception:
+                pass
+
+            # Remove the old sidecar if it exists.
+            old_stem = os.path.splitext(old_path)[0]
+            for suffix in (".meta.md", ".analysis.md"):
+                try:
+                    os.remove(old_stem + suffix)
+                except Exception:
+                    pass
+
+            try:
+                mem = self.modules.get("memory")
+                if mem and hasattr(mem.API, "delete_library_file"):
+                    mem.API.delete_library_file(old_source)
+                    # Also try the sidecar source if it existed.
+                    old_rel = os.path.splitext(old_source)[0]
+                    mem.API.delete_library_file(
+                        f"{old_rel}.meta.md"
+                    )
+            except Exception:
+                pass
+
+            try:
+                from modules.log_hub import emit as hub_emit
+                hub_emit(
+                    self.signals, "memory",
+                    f"upload: replacing {old_source} with "
+                    f"'{original_name}'",
+                )
+            except Exception:
+                pass
+
+        # ── Save ──────────────────────────────────────────────────
         stamp = time.strftime("%Y%m%d_%H%M%S")
         stored_name = f"{stamp}_{safe_name}"
-        stored_path = os.path.join(library_dir, stored_name)
+        stored_path = os.path.join(target_dir, stored_name)
 
-        # Collision safety (two uploads in the same second)
         counter = 1
         while os.path.exists(stored_path):
             stem, suffix = os.path.splitext(stored_name)
             stored_name = f"{stem}_{counter}{suffix}"
-            stored_path = os.path.join(library_dir, stored_name)
+            stored_path = os.path.join(target_dir, stored_name)
             counter += 1
 
         try:
@@ -604,25 +854,115 @@ class SocketIOServer:
         except Exception as e:
             return _json_error(500, f"Could not save file: {e}")
 
-        # ── Classify + extract ────────────────────────────────────
-        kind = _classify_upload(stored_path)
-        text, extract_err = _extract_upload_text(stored_path, kind)
-
+        # ── Extract (VLM for images, direct parse for docs) ──────
+        text = ""
+        extract_err = None
         image_b64 = ""
+
         if kind == "image":
             image_b64 = _prepare_image_b64(stored_path)
+            try:
+                from modules.agent_tools import read_image_vlm
+            except Exception as e:
+                extract_err = f"image analyzer unavailable: {e}"
+            else:
+                loop = asyncio.get_event_loop()
+                vlm_text, vlm_err = await loop.run_in_executor(
+                    None,
+                    lambda: read_image_vlm(
+                        stored_path, signals=self.signals,
+                    ),
+                )
+                if vlm_text:
+                    text = vlm_text
+                else:
+                    extract_err = vlm_err or "VLM extraction failed"
+        else:
+            text, extract_err = _extract_upload_text(stored_path, kind)
 
         rel_path = os.path.relpath(
             stored_path, WORKSPACE_ROOT
         ).replace("\\", "/")
+        source = f"{subfolder}/{stored_name}"
 
-        # ── Log so the hub and terminal show the upload ──────────
+        # ── Persist + index a searchable sidecar ─────────────────
+        # This is what makes the upload retrievable on future turns.
+        # The sidecar carries metadata plus the extracted content;
+        # the library indexer picks it up and stores its chunks in
+        # the same ChromaDB collection used for regular library
+        # files. The passive library injection in prompter.py then
+        # surfaces matching chunks whenever the user's message
+        # resembles the sidecar's content.
+        sidecar_rel = None
+        if text:
+            sidecar_path = _write_upload_sidecar(
+                target_dir, stored_name, original_name, subfolder,
+                kind, len(raw), new_hash, text,
+            )
+            if sidecar_path:
+                sidecar_rel = os.path.relpath(
+                    sidecar_path, WORKSPACE_ROOT,
+                ).replace("\\", "/")
+
+                # Index the sidecar right now — it's small and fast.
+                try:
+                    from modules.library_indexer import index_single_file
+                    index_single_file(self.signals, sidecar_path)
+                except Exception as e:
+                    try:
+                        from modules.log_hub import emit as hub_emit
+                        hub_emit(
+                            self.signals, "memory",
+                            f"upload: sidecar index failed — {e}",
+                            level="warn",
+                        )
+                    except Exception:
+                        pass
+
+                # For non-image uploads, queue the raw document for
+                # background indexing. The sidecar has a preview, but
+                # "what does the PDF say about X" needs the full
+                # text. Runs on the default executor so the HTTP
+                # response isn't blocked on PDF parsing.
+                if kind != "image":
+                    try:
+                        from modules.library_indexer import index_single_file
+                        loop = asyncio.get_event_loop()
+                        loop.run_in_executor(
+                            None,
+                            index_single_file,
+                            self.signals,
+                            stored_path,
+                        )
+                    except Exception:
+                        pass
+
+            # Short personal-memory fact so `recall_memory` also
+            # surfaces the upload. Kept brief — the full content
+            # lives in the library collection, this is just a
+            # breadcrumb for "do you remember when I sent you...".
+            try:
+                mem = self.modules.get("memory")
+                if mem and hasattr(mem.API, "create_memory"):
+                    first_line = text.strip().split("\n", 1)[0][:120]
+                    fact = (
+                        f"On {time.strftime('%Y-%m-%d')}, user "
+                        f"uploaded a {kind} named '{original_name}'."
+                    )
+                    if first_line:
+                        fact += f" Content started with: {first_line}"
+                    mem.API.create_memory(fact, importance=0.55)
+            except Exception:
+                pass
+
         try:
             from modules.log_hub import emit as hub_emit
             hub_emit(
                 self.signals, "memory",
-                f"upload received: {stored_name} ({kind}, "
-                f"{len(raw)} bytes, {len(text)} chars extracted)",
+                f"upload: {source} ({kind}, {len(raw)} bytes, "
+                f"{len(text or '')} chars extracted)"
+                + (f" — ERROR: {extract_err}" if extract_err else ""),
+                level="warn" if extract_err else "info",
             )
         except Exception:
             pass
@@ -632,6 +972,8 @@ class SocketIOServer:
             "name": original_name,
             "stored_name": stored_name,
             "stored_path": rel_path,
+            "source": source,
+            "subfolder": subfolder,
             "kind": kind,
             "size": len(raw),
             "text": (text or "")[:_MAX_INJECT_CHARS],
@@ -639,8 +981,10 @@ class SocketIOServer:
             "text_chars": len(text or ""),
             "extract_error": extract_err,
             "image_b64": image_b64,
-        })
-
+            "replaced": bool(existing_dup and replace_flag),
+            "sidecar": sidecar_rel,
+        }) 
+            
     async def _handle_agent_toggle(self, request):
         if not self._origin_ok(request):
             return _json_error(403, "Bad origin.")

@@ -4,8 +4,6 @@
 
 This README is a map of the folder: which file does what, and where it sits in a turn. The SDK server (`sdk/server.py`) and the web client's static files (`web/`) are siblings of this folder, not modules, and are documented in their own READMEs.
 
-<!-- VERIFY: the Status column throughout this file (spawned / imported / legacy) was inferred, not read from main.py. Confirm each row against main.py before publishing. -->
-
 **Status column.** `spawned` means `main.py` starts it as a thread. `imported` means another module imports it and it has no thread of its own. `legacy` means nothing spawns or imports it; see [Dead or legacy files](#dead-or-legacy-files).
 
 ## Groupings
@@ -13,9 +11,9 @@ This README is a map of the folder: which file does what, and where it sits in a
 | Group | Files | Purpose |
 |---|---|---|
 | [Core loop](#core-loop) | `prompter.py`, `agent_tools.py`, `module.py`, `injection.py` | Turn handling, tools, and shared module plumbing |
-| [Memory and state](#memory-and-state) | `memory.py`, `session_state.py`, `self_model.py`, `emotional_state.py` | What Lumi remembers and how she feels |
+| [Memory and state](#memory-and-state) | `memory.py`, `library_indexer.py`, `session_state.py`, `self_model.py`, `emotional_state.py` | What Lumi remembers, what she can retrieve from uploads, and how she feels |
 | [Input](#input) | `console_input.py`, `mic_input.py`, `local_input.py` | Terminal and microphone |
-| [Output](#output) | `tts.py`, `audioPlayer.py`, `multimodal.py`, `doc_manager.py` | Speech, screen description, document reading |
+| [Output](#output) | `tts.py`, `audioPlayer.py`, `multimodal.py`, `browser_controller.py`, `doc_manager.py` | Speech, screen description, web browsing, document reading |
 | [Avatar](#avatar) | `vtubeStudio.py`, `vts_manager.py`, `params.json` | VTube Studio control |
 | [Background loops](#background-loops) | `heartbeat.py`, `ambient_perception.py` | Behavior that runs without a user message |
 | [Web client backend](#web-client-backend) | `socketIO.py`, `user_auth.py`, `persona_editor.py`, `settings_manager.py`, `model_manager.py`, `integrations.py`, `llm_providers.py` | Everything the browser UI talks to |
@@ -29,26 +27,25 @@ The agent loop, the tools it can call, and the shared plumbing every module buil
 | File | Role | Status |
 |---|---|---|
 | `prompter.py` | Agent loop, command router, model routing, safety guards, avatar and SDK tool dispatch | spawned |
-| `agent_tools.py` | Tool schemas plus filesystem and command execution, including the path sandbox and confirmation gates | imported |
+| `agent_tools.py` | Tool schemas (`TOOL_SCHEMAS`), dispatch (`_DISPATCH`, `execute_tool`), confirmation gates (`CONFIRM_REQUIRED_TOOLS`), the filesystem path sandbox, the command allowlist, the shell metacharacter guard, provenance markers (`wrap_tool_result`), and the VLM image analyzer (`read_image_vlm`) | imported |
 | `module.py` | Base class for spawned modules (thread, event loop, `run()` contract) | imported |
 | `injection.py` | Assembles per-module prompt injections into the system prompt | imported |
 
-<!-- VERIFY: roles of module.py and injection.py were inferred from the run()/init_event_loop()/get_prompt_injection() contract. -->
-
 ### Memory and state
 
-Long-term memory and the running internal state that shape each reply. Each of these contributes to the system prompt on every turn.
+Long-term memory, the upload index, and the running internal state that shape each reply. Most of these contribute to the system prompt on every turn.
 
 | File | Role | Status |
 |---|---|---|
-| `memory.py` | Long-term memory: ChromaDB-backed facts with importance and recency scoring, reflection loop, per-user filtering | spawned |
+| `memory.py` | Long-term memory: ChromaDB-backed facts with importance and recency scoring, reflection loop, per-user filtering. Owns both ChromaDB collections, `neuro_collection` and `library_docs` | spawned |
+| `library_indexer.py` | Background walker that indexes `data/library/` into the `library_docs` collection and prunes chunks for files no longer on disk | spawned |
 | `session_state.py` | Cross-session continuity: focus, unresolved items, session summary on `!sleep` | imported |
 | `self_model.py` | Tracks Lumi's own behavioral patterns and reflects on them periodically | spawned |
 | `emotional_state.py` | Five state variables, personality traits, cognitive frame selection; one persisted state per user | spawned |
 
 ### Input
 
-How text and speech reach the prompter. Both feed the same `signals.history`.
+How text and speech reach the prompter. All of them feed the same `signals.history`.
 
 | File | Role | Status |
 |---|---|---|
@@ -56,15 +53,18 @@ How text and speech reach the prompter. Both feed the same `signals.history`.
 | `mic_input.py` | Microphone capture with VAD and barge-in, feeds faster-whisper | spawned |
 | `local_input.py` | Earlier local input path | legacy |
 
+Web chat and Discord text also reach `signals.history`, through `socketIO.py` and `discordClient.py`.
+
 ### Output
 
-Everything Lumi uses to speak, look, and read.
+Everything Lumi uses to speak, look, browse, and read.
 
 | File | Role | Status |
 |---|---|---|
 | `tts.py` | Fish Audio client with emotion-tag handling; routes audio to speakers, Discord, and browser tabs | spawned |
 | `audioPlayer.py` | Earlier audio playback helper | legacy |
 | `multimodal.py` | On-demand screen capture and VLM description for "look at my screen" questions | spawned |
+| `browser_controller.py` | Playwright Firefox navigation; powers the `browse_url` tool | spawned |
 | `doc_manager.py` | Reads PDF, DOCX, TXT, MD, and JSON from the document library | imported |
 
 ### Avatar
@@ -73,9 +73,9 @@ VTube Studio control. Expression toggles are state-tracked so requests are idemp
 
 | File | Role | Status |
 |---|---|---|
-| `vtubeStudio.py` | Controller: expression state tracking, parameter probing, keyboard fallback, organic motion | spawned |
+| `vtubeStudio.py` | Controller: expression state tracking, parameter probing at boot, keyboard fallback, organic motion | spawned |
 | `vts_manager.py` | Earlier VTS manager, superseded by `vtubeStudio.py` | legacy |
-| `params.json` | Avatar parameter data used by the controller | data |
+| `params.json` | Avatar parameter data | data |
 
 ### Background loops
 
@@ -92,13 +92,13 @@ The Python side of the browser UI. The frontend lives in `web/`.
 
 | File | Role | Status |
 |---|---|---|
-| `socketIO.py` | aiohttp and python-socketio server: auth, chat, memory, persona, models, providers, integrations, settings, and voice routes | spawned |
+| `socketIO.py` | aiohttp and python-socketio server, and the largest backend file. Routes cover auth, chat, chat upload, agent toggle, memories, persona, models, providers, integrations, settings, voice, and static and SPA serving | spawned |
 | `user_auth.py` | SQLite user store, argon2id hashing, session tokens, session listing and revocation | imported |
-| `persona_editor.py` | Comment-preserving load, edit, and save of `config/lumi.yaml` | imported |
-| `settings_manager.py` | Timezone, Ollama endpoint, About info, and the Advanced reset allowlist | imported |
-| `model_manager.py` | Ollama model management and hot-patching of routing constants in `constants.py` | imported |
-| `integrations.py` | Registry of the five integrations with probe, test, and config fields | imported |
-| `llm_providers.py` | Provider clients (Ollama, OpenAI-compatible, Anthropic) and `chat_sync("provider:model")` | imported |
+| `persona_editor.py` | ruamel round-trip load, edit, and save of `config/lumi.yaml`, preserving comments | imported |
+| `settings_manager.py` | General settings (timezone, Ollama endpoint), About info, and the Advanced reset allowlist | imported |
+| `model_manager.py` | Ollama model management and line-patching of routing constants in `constants.py` | imported |
+| `integrations.py` | Registry of the five integrations (Ollama, VTube Studio, Discord, Fish Audio, Browser) with probe, test, and config fields | imported |
+| `llm_providers.py` | Three provider client classes (Ollama, OpenAI-compatible, Anthropic) and `chat_sync("provider:model")` | imported |
 
 ### Discord
 
@@ -121,14 +121,12 @@ Small shared pieces.
 | `stt.py` | Earlier speech-to-text helper | legacy |
 | `customPrompt.py` | Earlier prompt customization helper | legacy |
 
-<!-- VERIFY: the browser controller (Playwright, used by browse_url) is spawned by main.py but is not in the file list I was given. Add its file to the Output or Core loop group. -->
-
 ## Turn flow
 
 How a user message moves through this folder. The full diagram, with the tool and background layers, is in [`../docs/architecture.md`](../docs/architecture.md).
 
 ```text
-Input: console_input / mic_input / discordClient / socketIO
+Input: console_input / mic_input / discordClient / socketIO (web chat)
    |
    v
 signals.history   (shared state, signals.py)
@@ -137,20 +135,27 @@ signals.history   (shared state, signals.py)
 prompter.py
    |-- command router      (!agent_on, !recall, !set, !model, ...)
    |-- model routing       (fast path or main path)
-   |-- system prompt       persona + memory.py + moods.py + emotional_state.py
-   |                       + ambient_perception.py + self_model.py
-   |                       + session_state.py + Discord roster
+   |-- system prompt       gather_injections() order:
+   |                       persona (get_system_prompt()) + mood
+   |                       + emotional_state.py
+   |                       + ambient window title / screen context
+   |                       + Discord voice context
+   |                       + self_model.py observations
+   |                       + library RAG reference block
    |-- llm_providers.chat_sync -> Ollama or a cloud provider
-   |-- tool calls          agent_tools.py, vtubeStudio.py, SDK actions
+   |-- tool calls          agent_tools.py (including search_library),
+   |                       vtubeStudio.py, sdk__<action> via signals.sdk
    |-- safety guards       (simulated-action, refusal, fabrication)
    v
-tts.py -> speakers / Discord / browser tabs;  vtubeStudio.py -> avatar
+tts.py -> speakers / Discord / browser tabs
+          (also fans out to opted-in web clients via signals.broadcast_tts_audio)
+vtubeStudio.py -> avatar
    |
    v
 self_model.note_turn(), signals.history -> web clients poll /api/history
 ```
 
-Background loops (`heartbeat.py`, `ambient_perception.py`, `self_model.py`, `emotional_state.py`, `memory.py` reflection) run independently of this path and feed it through their prompt injections or by appending unprompted messages.
+Background loops (`heartbeat.py`, `ambient_perception.py`, `self_model.py`, `emotional_state.py`, `memory.py` reflection, `library_indexer.py`) run independently of this path and feed it through their prompt injections, through the stores they maintain, or by appending unprompted messages.
 
 ## Key entry points
 
@@ -159,6 +164,8 @@ Background loops (`heartbeat.py`, `ambient_perception.py`, `self_model.py`, `emo
 | `prompter.py` | You are changing the agent loop, a command, a guard, or model routing |
 | `agent_tools.py` | You are adding or changing a tool schema or how a tool executes |
 | `memory.py` | You are changing how memories are stored, retrieved, or scored |
+| `library_indexer.py` | You are changing how uploaded files become retrievable |
+| `self_model.py` | You are changing how Lumi tracks her own patterns |
 | `llm_providers.py` | You are adding a provider or changing how model specs are parsed |
 | `socketIO.py` | You are adding or changing an HTTP or WebSocket route for the web UI |
 
@@ -166,6 +173,7 @@ Background loops (`heartbeat.py`, `ambient_perception.py`, `self_model.py`, `emo
 
 - `socketIO.py` — the `/api/memories/*` routes that list, search, edit, add, and export facts
 - `prompter.py` — the memory injection and the `recall_memory` tool path
+- `library_indexer.py` — the `library_docs` collection uses the same metadata conventions (timestamp, source, `user_id`), so a schema change to `index_library_file` in `memory.py` needs a matching change in the indexer's caller
 - `scripts/import_chat_history.py` — writes facts in the current schema
 - `web/app.js` — the Memory page that renders the fields
 
@@ -173,11 +181,9 @@ Background loops (`heartbeat.py`, `ambient_perception.py`, `self_model.py`, `emo
 
 Modules read shared settings from `constants.py` and the persona from `config/lumi.yaml`. Two paths anchor everything else:
 
-<!-- VERIFY: DATA_ROOT and CONFIG_ROOT semantics, and the constants list, against constants.py. -->
-
 | Constant | Meaning |
 |---|---|
-| `DATA_ROOT` | Runtime data: `data/memories/`, `data/logs/`, `data/notes.txt` |
+| `DATA_ROOT` | Runtime data: `data/memories/`, `data/logs/`, `data/library/`, `data/notes.txt` |
 | `CONFIG_ROOT` | Configuration: `config/lumi.yaml` |
 
 Constants modules most often touch:
@@ -194,16 +200,23 @@ Constants modules most often touch:
 | `TIMEZONE` | Timestamps and time questions |
 | `OUTPUT_DEVICE_INDEX` | Audio output device for local playback |
 | `HOST` | The active user object; the persona rebuilds when it changes |
+| `ALLOW_LAN_EXPOSURE` | Whether the web server is exposed beyond the local machine |
+| `LUMI_VERSION` | Version string reported by the About page and other modules |
 
 Persistent files the modules read and write:
 
 | Path | Owner |
 |---|---|
-| `data/memories/chroma.db` | `memory.py` |
+| `data/memories/chroma.db` | `memory.py`. Holds two collections: `neuro_collection` (personal memories) and `library_docs` (uploaded files) |
+| `data/memories/chroma.db`, collection `library_docs` | `memory.py` API, populated by `library_indexer.py` |
 | `data/memories/users.db` | `user_auth.py` |
 | `data/memories/session_state.json` | `session_state.py` |
 | `data/memories/self_model.json` | `self_model.py` |
 | `data/memories/emotional_state/{user_id}.json` | `emotional_state.py` |
+| `data/memories/sdk_allowlist.json` | `sdk/server.py` (external, but the file lives under `data/memories/`) |
+| `data/memories/sdk_token.txt` | `sdk/server.py` |
+| `data/memories/memoryinit.json` | `memory.py` (optional seed) |
+| `data/library/{documents,images,text}/` | `socketIO.py` writes, `library_indexer.py` indexes |
 | `data/logs/chat_history.json` | `prompter.py` |
 | `data/logs/events.log` | `log_hub.py` |
 
@@ -212,8 +225,6 @@ API keys and Discord IDs are read from `.env`, not `constants.py`.
 ## Dead or legacy files
 
 Nothing in `main.py` spawns or imports these. They are kept for historical reference and are safe to ignore. If you find yourself tracing a bug into one, you are in the wrong file.
-
-<!-- VERIFY: each one-line description below was inferred from the filename. -->
 
 | File | Note |
 |---|---|
@@ -224,6 +235,7 @@ Nothing in `main.py` spawns or imports these. They are kept for historical refer
 | `local_input.py` | Not spawned. Kept for historical reference. |
 | `vts_manager.py` | Not spawned. Kept for historical reference. `vtubeStudio.py` is the live controller. |
 | `discord_audio_bot.js` | Not spawned. Kept for historical reference. The Node.js sidecar was replaced by pure-Python voice receive. |
+| `upload_analyzer.py` | Not spawned. Kept for historical reference. Superseded by inline VLM extraction in `socketIO.py`. |
 | `sdk.py` (repo root) | Not spawned. Superseded by the `sdk/` package. |
 
 ## See also
