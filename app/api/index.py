@@ -7,11 +7,9 @@ class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             content_length = int(self.headers.get('Content-Length', 0))
-            body = self.read_json(content_length)
+            body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length > 0 else {}
             user_message = body.get('message', '')
 
-            # Call a free cloud provider (e.g., Groq or Google Gemini API)
-            # using an environment variable set in your Vercel project settings
             api_key = os.environ.get('GROQ_API_KEY')
             
             req_data = json.dumps({
@@ -50,9 +48,3 @@ class handler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({"reply": f"[groaning] Backend error: {str(e)}"}).encode('utf-8'))
-
-    def read_json(self, length):
-        if length == 0:
-            return {}
-        raw = self.rfile.read(length)
-        return json.loads(raw.decode('utf-8'))
