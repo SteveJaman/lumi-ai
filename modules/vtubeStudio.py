@@ -6,11 +6,61 @@ Drives the Live2D model via the VTS plugin API using pyvts.
 Responsibilities:
   - Connect + authenticate on startup
   - Probe the loaded model to discover its real parameter names
-  - Drive continuous organic motion (head sway, body lean, blink, breath)
+  - Drive continuous organic motion (head, blink, breath, brows, gaze)
   - Drive mouth-open from TTS volume envelope (via tts.py)
   - Fire hotkey-based expressions on emotion tags from prompter.py
   - Expose a state-aware expression API so Lumi can request
     "put on hat" / "take off jacket" and get deterministic results
+
+CRITICAL — VTS Input names vs Live2D param names
+------------------------------------------------
+VTS accepts InjectParameterDataRequest payloads addressed to Live2D
+parameter names (like ParamAngleX) and returns a clean success
+response — then silently drops the value on the floor. No APIError,
+no readback, no warning. Only injections into VTS *Input* names
+(the "tracking parameters" in the model's ParameterSettings block,
+field "Input" in ariu.vtube.json) actually reach the model.
+
+Consequence: every candidate list below puts VTS Input names FIRST
+and Live2D parameter names second. The probe walks each list and
+takes the first name VTS accepts; if a Live2D param name sits at
+the front, the probe stops there and the whole channel silently
+does nothing.
+
+The VTS Inputs on ariu (from ariu.vtube.json) are:
+    FaceAngleX/Y/Z    → head angles + body angles (shared)
+    EyeOpenLeft       → ParamEyeLOpen
+    EyeOpenRight      → ParamEyeROpen
+    EyeRightX         → ParamEyeBallX   (X is inverted in the model mapping)
+    EyeRightY         → ParamEyeBallY
+    MouthOpen         → ParamMouthOpenY
+    MouthSmile        → ParamMouthForm
+    Brows             → all four brow params (shared)
+
+The body candidate slots (bx/by/bz) resolve to FaceAngleX/Y/Z, which
+are the SAME inputs as head.x/y/z. At startup we detect this and
+drop the body slots — otherwise every frame would inject two different
+values to the same input and the last write would win. The body still
+moves: VTS's own FaceAngleX → ParamBodyAngleX transform runs underneath
+and produces a ~1/3-scale body lean from every head movement.
+
+Motion architecture (v6)
+------------------------
+  Head      : 3-octave sine sway, dampened slightly during speech
+  Speech bob: fast Y-axis bob keyed to the mouth envelope (4.5 Hz)
+  Body      : via head (shared VTS Input, see above)
+  Eyes      : discrete saccades, biased to center when speaking
+  Brows     : sticky emotion baseline + idle noise + speech emphasis,
+              deduped to a single "Brows" write per frame
+  Arms      : disabled (no VTS Input exists for arm params on ariu)
+  Blink     : scheduled, occasionally double-blinks
+
+Mode dispatch
+-------------
+Each verified param stores its working mode ("set" or "add") in
+self._param_modes. inject_parameters() looks up the mode per param,
+so a single batch can mix modes. A "_mode" key on a param dict
+overrides the lookup.
 
 Expression state tracking
 -------------------------
@@ -24,20 +74,13 @@ EXPRESSION_STATE_MAP normalizes that. Keys are the user-facing state
 names Lumi sees; values are (hotkey_name, sense) where sense = +1 if
 the hotkey's on-state matches the state name, -1 if inverted.
 
-set_expression_state() consults the map, checks the current toggle
-state, and fires the key only if a change is needed. Idempotent.
-
 Hotkey firing paths
 -------------------
 1. API path — HotkeyTriggerRequest over the websocket. Broken on
    ariu for ToggleExpression hotkeys (VTS silently accepts, does
    nothing). Kept for models where it works.
 2. Keyboard path — simulate the bound key combo after focusing VTS.
-   Works reliably. Set USE_KEYBOARD_HOTKEYS_ONLY=True to always use
-   it.
-
-The VTS plugin authentication token lives at
-data/vtubeStudio_token.txt after the folder reorg.
+   Works reliably. Set USE_KEYBOARD_HOTKEYS_ONLY=True to always use it.
 """
 
 import asyncio
@@ -60,8 +103,6 @@ logging.getLogger("websockets.legacy").setLevel(logging.WARNING)
 logging.getLogger("websockets.legacy.protocol").setLevel(logging.WARNING)
 
 
-# VTS plugin auth token — kept under data/ so it's gitignored along
-# with the rest of the runtime state.
 _VTS_TOKEN_PATH = os.path.join(DATA_ROOT, "vtubeStudio_token.txt")
 
 
@@ -73,9 +114,6 @@ HOTKEY_ALIASES = {}
 
 # ===============================================================
 # KEYBOARD FALLBACK HOTKEYS
-# ---------------------------------------------------------------
-# Matches the "Triggers" block for each hotkey in ariu.vtube.json.
-# If you swap models, update this map.
 # ===============================================================
 HOTKEY_KEYBINDINGS = {
     "jk_bag":           "ctrl+1",
@@ -90,28 +128,19 @@ HOTKEY_KEYBINDINGS = {
     "darkened":         "ctrl+q",
 }
 
-# If True, skip the VTS API hotkey call entirely and always use
-# keyboard simulation.
 USE_KEYBOARD_HOTKEYS_ONLY = True
-
-# Window title substring to focus before sending keys.
 VTS_WINDOW_TITLE = "VTube Studio"
 
 
 # ===============================================================
 # EXPRESSION STATE MAP
-# ---------------------------------------------------------------
-# Maps the STATE name Lumi uses to the underlying toggle hotkey.
-# sense = +1 means "hotkey on" == "state on"
-# sense = -1 means "hotkey on" == "state OFF" (inverted naming)
 # ===============================================================
 EXPRESSION_STATE_MAP = {
-    # STATE NAME       →  (hotkey_name,        sense)
-    "hat":             ("hat",                +1),  # on = hat is worn
-    "jacket":          ("remove_jacket",      -1),  # on = jacket is OFF
+    "hat":             ("hat",                +1),
+    "jacket":          ("remove_jacket",      -1),
     "bag":             ("jk_bag",             +1),
     "skirt":           ("skirt",              +1),
-    "ponytail_l":      ("hide_ponytail_l",    -1),  # on = ponytail hidden
+    "ponytail_l":      ("hide_ponytail_l",    -1),
     "ponytail_r":      ("hide_ponytail_r",    -1),
     "controller":      ("controller",         +1),
     "heart_eyes":      ("heart_eyes",         +1),
@@ -124,15 +153,11 @@ EXPRESSION_STATE_MAP = {
 # WINDOW FOCUS HELPER
 # ===============================================================
 def _focus_window_by_title(title_substring):
-    """Bring a window whose title contains `title_substring` to the
-    foreground. Uses AttachThreadInput to bypass the Windows foreground
-    lock. Verifies the focus actually moved before returning."""
     try:
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
 
         target_hwnd = [None]
-
         EnumWindowsProc = ctypes.WINFUNCTYPE(
             ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p
         )
@@ -168,7 +193,6 @@ def _focus_window_by_title(title_substring):
         user32.BringWindowToTop(hwnd)
         user32.AttachThreadInput(fg_thread, this_thread, False)
 
-        # Verify — sometimes even AttachThreadInput silently fails.
         import time as _t
         _t.sleep(0.05)
         return user32.GetForegroundWindow() == hwnd
@@ -184,13 +208,11 @@ EMOTION_HOTKEY_MAP = {
     "uncertain":    "spiral_eyes",
     "doubtful":     "spiral_eyes",
     "surprised":    "spiral_eyes",
-
     "moved":        "heart_eyes",
     "empathetic":   "heart_eyes",
     "grateful":     "heart_eyes",
     "hopeful":      "heart_eyes",
     "optimistic":   "heart_eyes",
-
     "angry":        "darkened",
     "frustrated":   "darkened",
     "disdainful":   "darkened",
@@ -214,7 +236,6 @@ PARAMETER_EXPRESSION_MAP = {
     "relaxed":      [("smile",  0.3)],
     "soft tone":    [("smile",  0.3)],
     "embarrassed":  [("smile",  0.2)],
-
     "sad":          [("smile", -0.4)],
     "unhappy":      [("smile", -0.3)],
     "disappointed": [("smile", -0.4)],
@@ -224,31 +245,135 @@ PARAMETER_EXPRESSION_MAP = {
     "guilty":       [("smile", -0.2)],
     "indifferent":  [("smile", -0.1)],
     "bored":        [("smile", -0.2)],
-
     "sarcastic":    [("smile", -0.6)],
     "whispering":   [("smile", -0.3)],
 }
 
 
 # ===============================================================
+# EMOTION → EYEBROW BASELINE
+# ===============================================================
+BROW_EXPRESSION_MAP = {
+    "happy":        ( 0.15,  0.15,  0.10,  0.10),
+    "delighted":    ( 0.35,  0.35,  0.20,  0.20),
+    "excited":      ( 0.45,  0.45,  0.10,  0.10),
+    "amused":       ( 0.20,  0.15,  0.15,  0.05),
+    "laughing":     ( 0.40,  0.40,  0.15,  0.15),
+    "chuckling":    ( 0.25,  0.25,  0.10,  0.10),
+    "satisfied":    ( 0.10,  0.10,  0.05,  0.05),
+    "proud":        ( 0.10,  0.10,  0.15,  0.15),
+    "confident":    ( 0.05,  0.05,  0.10,  0.10),
+    "relaxed":      ( 0.00,  0.00,  0.00,  0.00),
+    "soft tone":    ( 0.05,  0.05,  0.05,  0.05),
+    "embarrassed":  ( 0.30,  0.25,  0.20,  0.15),
+    "hopeful":      ( 0.25,  0.25,  0.15,  0.15),
+    "optimistic":   ( 0.25,  0.25,  0.15,  0.15),
+    "grateful":     ( 0.15,  0.15,  0.10,  0.10),
+    "surprised":    ( 0.75,  0.75,  0.25,  0.25),
+    "confused":     (-0.15,  0.35, -0.20,  0.10),
+    "uncertain":    (-0.05,  0.30, -0.10,  0.05),
+    "doubtful":     (-0.20,  0.30, -0.25,  0.05),
+    "sad":          (-0.40, -0.40,  0.35,  0.35),
+    "unhappy":      (-0.35, -0.35,  0.25,  0.25),
+    "disappointed": (-0.30, -0.30,  0.20,  0.20),
+    "upset":        (-0.50, -0.50,  0.40,  0.40),
+    "depressed":    (-0.45, -0.45,  0.30,  0.30),
+    "regretful":    (-0.30, -0.30,  0.20,  0.20),
+    "guilty":       (-0.25, -0.25,  0.15,  0.15),
+    "angry":        (-0.55, -0.55, -0.65, -0.65),
+    "frustrated":   (-0.40, -0.40, -0.55, -0.55),
+    "disdainful":   ( 0.10, -0.10, -0.20, -0.05),
+    "contemptuous": ( 0.05, -0.15, -0.15, -0.05),
+    "sarcastic":    ( 0.10, -0.05, -0.10,  0.00),
+    "indifferent":  ( 0.00,  0.00,  0.00,  0.00),
+    "bored":        (-0.15, -0.15, -0.10, -0.10),
+    "empathetic":   (-0.10, -0.10,  0.20,  0.20),
+    "moved":        (-0.05, -0.05,  0.15,  0.15),
+    "concerned":    (-0.20, -0.20,  0.25,  0.25),
+    "whispering":   (-0.05, -0.05,  0.05,  0.05),
+}
+
+
+# ===============================================================
 # PARAMETER NAME CANDIDATES
+# ---------------------------------------------------------------
+# ORDER IS LOAD-BEARING. VTS Input names FIRST, Live2D param names
+# as fallback for models that expose injectable params directly.
+# See module docstring for the full explanation.
 # ===============================================================
 HEAD_NAME_CANDIDATES = {
-    "x":   ["FaceAngleX",    "ParamAngleX", "AngleX"],
-    "y":   ["FaceAngleY",    "ParamAngleY", "AngleY"],
-    "z":   ["FaceAngleZ",    "ParamAngleZ", "AngleZ"],
-    "el":  ["EyeOpenLeft",   "ParamEyeLOpen", "EyeLOpen"],
-    "er":  ["EyeOpenRight",  "ParamEyeROpen", "EyeROpen"],
+    "x":   ["FaceAngleX",   "ParamAngleX",   "AngleX"],
+    "y":   ["FaceAngleY",   "ParamAngleY",   "AngleY"],
+    "z":   ["FaceAngleZ",   "ParamAngleZ",   "AngleZ"],
+    "el":  ["EyeOpenLeft",  "ParamEyeLOpen"],
+    "er":  ["EyeOpenRight", "ParamEyeROpen"],
 }
 
 EXTRA_NAME_CANDIDATES = {
-    "ex":  ["EyeRightX", "EyeLeftX", "ParamEyeBallX", "EyeBallX"],
-    "ey":  ["EyeRightY", "EyeLeftY", "ParamEyeBallY", "EyeBallY"],
-    # "br" removed — VTS auto-drives ParamBreath when UseBreathing:true.
+    # Gaze — EyeRightX/Y are VTS Inputs. Note that the model's own
+    # mapping inverts EyeRightX → ParamEyeBallX, but we just send
+    # -1..1 and let the model handle the direction.
+    "ex":  ["EyeRightX", "EyeLeftX", "ParamEyeBallX"],
+    "ey":  ["EyeRightY", "EyeLeftY", "ParamEyeBallY"],
+
+    # Body — same VTS Inputs as the head. The startup "body shares
+    # head's input" check drops these slots so we don't stomp head
+    # motion every frame.
+    "bx":  ["FaceAngleX", "ParamBodyAngleX", "BodyAngleX"],
+    "by":  ["FaceAngleY", "ParamBodyAngleY", "BodyAngleY"],
+    "bz":  ["FaceAngleZ", "ParamBodyAngleZ", "BodyAngleZ"],
+    "bw":  ["ParamBodyAngleZ2"],
+
+    # Brows — all four route through the single "Brows" VTS Input.
+    # _compute_brows dedupes them into one write per frame.
+    "bly": ["Brows", "ParamBrowLY"],
+    "bry": ["Brows", "ParamBrowRY"],
+    "blf": ["Brows", "ParamBrowLForm"],
+    "brf": ["Brows", "ParamBrowRForm"],
+
+    # Arms — pure physics outputs on ariu. No VTS Input exists for
+    # them, so verification will reject these on that model. Kept in
+    # the candidate list for other models that might expose them.
+    "la1": ["Param"],    "la2": ["Param3"],
+    "la3": ["Param2"],   "la4": ["Param4"],
+    "ra1": ["Param5"],   "ra2": ["Param7"],
+    "ra3": ["Param6"],   "ra4": ["Param8"],
 }
 
 MOUTH_NAME_CANDIDATES = ["MouthOpen", "ParamMouthOpenY"]
 SMILE_NAME_CANDIDATES = ["MouthSmile", "ParamMouthForm", "MouthForm"]
+
+
+# ===============================================================
+# VTS INPUT FALLBACKS
+# ---------------------------------------------------------------
+# Historically this let the controller retry with a VTS Input name
+# after a direct Live2D param was rejected. With the candidate
+# reorder above, the VTS Input names are now tried FIRST, so this
+# path only fires on models that expose some params as direct
+# injectables and others only through shared inputs.
+#
+# Kept as a defensive layer — harmless if unused.
+# ===============================================================
+VTS_INPUT_FALLBACK = {
+    "bx":  "FaceAngleX",
+    "by":  "FaceAngleY",
+    "bz":  "FaceAngleZ",
+    "bly": "Brows",
+    "bry": "Brows",
+    "blf": "Brows",
+    "brf": "Brows",
+}
+
+# Range lookup for VTS Input names whose expected range differs from
+# the Live2D param they drive. _clamp checks this first, then falls
+# back to PARAM_RANGES.
+VTS_INPUT_RANGES = {
+    "FaceAngleX": (-30.0, 30.0),
+    "FaceAngleY": (-30.0, 30.0),
+    "FaceAngleZ": (-30.0, 30.0),
+    "Brows":      (0.0, 1.0),
+}
 
 
 # ===============================================================
@@ -259,32 +384,61 @@ MOTION_HZ = 30
 
 
 PARAM_RANGES = {
+    # Mouth — both VTS Input names and Live2D params
     "MouthOpen":       (0.0, 1.0),
     "ParamMouthOpenY": (0.0, 2.1),
     "MouthSmile":      (-1.0, 1.0),
     "MouthForm":       (-1.0, 1.0),
     "ParamMouthForm":  (-1.0, 1.0),
 
+    # Head — VTS Input names
     "FaceAngleX":      (-30.0, 30.0),
     "FaceAngleY":      (-30.0, 30.0),
     "FaceAngleZ":      (-30.0, 30.0),
+    # Head — Live2D param fallbacks
     "ParamAngleX":     (-30.0, 30.0),
     "ParamAngleY":     (-30.0, 30.0),
     "ParamAngleZ":     (-30.0, 30.0),
 
+    # Eyes — VTS Input names
     "EyeOpenLeft":     (0.0, 1.0),
     "EyeOpenRight":    (0.0, 1.0),
-    "ParamEyeLOpen":   (0.0, 1.0),
-    "ParamEyeROpen":   (0.0, 1.0),
-    "EyeLeftX":        (-1.0, 1.0),
-    "EyeLeftY":        (-1.0, 1.0),
     "EyeRightX":       (-1.0, 1.0),
     "EyeRightY":       (-1.0, 1.0),
+    "EyeLeftX":        (-1.0, 1.0),
+    "EyeLeftY":        (-1.0, 1.0),
+    # Eyes — Live2D param fallbacks
+    "ParamEyeLOpen":   (0.0, 1.0),
+    "ParamEyeROpen":   (0.0, 1.0),
+    "EyeOpenLeft":     (0.0, 1.0),
+    "EyeOpenRight":    (0.0, 1.0),
     "EyeBallX":        (-1.0, 1.0),
     "EyeBallY":        (-1.0, 1.0),
     "ParamEyeBallX":   (-1.0, 1.0),
     "ParamEyeBallY":   (-1.0, 1.0),
 
+    # Body — fallback names only (VTS Input names already listed above)
+    "ParamBodyAngleX":  (-10.0, 10.0),
+    "ParamBodyAngleY":  (-10.0, 10.0),
+    "ParamBodyAngleZ":  (-10.0, 10.0),
+    "ParamBodyAngleZ2": (-10.0, 10.0),
+    "BodyAngleX":       (-10.0, 10.0),
+    "BodyAngleY":       (-10.0, 10.0),
+    "BodyAngleZ":       (-10.0, 10.0),
+
+    # Brows — fallback names
+    "ParamBrowLY":      (-1.0, 1.0),
+    "ParamBrowRY":      (-1.0, 1.0),
+    "ParamBrowLForm":   (-1.0, 1.0),
+    "ParamBrowRForm":   (-1.0, 1.0),
+
+    # Arms
+    "Param":  (-3.0, 3.0), "Param2": (-3.0, 3.0),
+    "Param3": (-3.0, 3.0), "Param4": (-3.0, 3.0),
+    "Param5": (-3.0, 3.0), "Param6": (-3.0, 3.0),
+    "Param7": (-3.0, 3.0), "Param8": (-3.0, 3.0),
+
+    # Breath
     "Breath":          (0.0, 1.0),
     "ParamBreath":     (0.0, 1.0),
 }
@@ -295,42 +449,191 @@ PARAM_RANGES = {
 # ===============================================================
 class _OrganicMotion:
     def __init__(self):
-        self._phases = {
-            "hx": [random.uniform(0, math.tau) for _ in range(3)],
-            "hy": [random.uniform(0, math.tau) for _ in range(3)],
-            "hz": [random.uniform(0, math.tau) for _ in range(3)],
-            "ex": [random.uniform(0, math.tau) for _ in range(2)],
-            "ey": [random.uniform(0, math.tau) for _ in range(2)],
-        }
-        self._freqs = {
-            "hx": [0.05, 0.11, 0.19],
-            "hy": [0.04, 0.09, 0.23],
-            "hz": [0.06, 0.13, 0.27],
-            "ex": [0.17, 0.31],
-            "ey": [0.13, 0.29],
-        }
+        rnd = random.uniform
+        tau = math.tau
+        self._hx = [(rnd(0, tau), 0.05), (rnd(0, tau), 0.11), (rnd(0, tau), 0.19)]
+        self._hy = [(rnd(0, tau), 0.04), (rnd(0, tau), 0.09), (rnd(0, tau), 0.23)]
+        self._hz = [(rnd(0, tau), 0.06), (rnd(0, tau), 0.13), (rnd(0, tau), 0.27)]
+        self._bx = [(rnd(0, tau), 0.021), (rnd(0, tau), 0.037)]
+        self._by = [(rnd(0, tau), 0.018), (rnd(0, tau), 0.033)]
+        self._bz = [(rnd(0, tau), 0.024), (rnd(0, tau), 0.041)]
+        self._bw = [(rnd(0, tau), 0.016), (rnd(0, tau), 0.029)]
+        self._head_hist = []
+        self._LAG_S = 0.18
+        self._bob_env = 0.0
 
-    def _combine(self, axis, t):
-        phases = self._phases[axis]
-        freqs = self._freqs[axis]
-        s = sum(
-            math.sin(t * f * math.tau + p)
-            for f, p in zip(freqs, phases)
-        )
-        return s / len(freqs)
+    @staticmethod
+    def _sum(terms, t):
+        return sum(math.sin(t * f * math.tau + p) for p, f in terms) / len(terms)
 
     def head(self, t):
-        return (
-            self._combine("hx", t) * 6.0,
-            self._combine("hy", t) * 5.0,
-            self._combine("hz", t) * 3.0,
-        )
+        hx = self._sum(self._hx, t) * 6.5
+        hy = self._sum(self._hy, t) * 5.5
+        hz = self._sum(self._hz, t) * 3.5
+        return hx, hy, hz
 
-    def eyes(self, t):
-        return (
-            self._combine("ex", t) * 0.5,
-            self._combine("ey", t) * 0.5,
-        )
+    def tick(self, t, hx, hy, hz):
+        self._head_hist.append((t, hx, hy, hz))
+        if len(self._head_hist) > 90:
+            self._head_hist.pop(0)
+
+    def _lagged_head(self, t):
+        cutoff = t - self._LAG_S
+        while len(self._head_hist) > 1 and self._head_hist[0][0] < cutoff - 0.5:
+            self._head_hist.pop(0)
+        for entry in self._head_hist:
+            if entry[0] >= cutoff:
+                return entry[1], entry[2], entry[3]
+        if self._head_hist:
+            return self._head_hist[0][1:]
+        return 0.0, 0.0, 0.0
+
+    def body(self, t):
+        lhx, lhy, lhz = self._lagged_head(t)
+        bx = self._sum(self._bx, t) * 3.0 + lhx * 0.22
+        by = self._sum(self._by, t) * 2.5 + lhy * 0.15
+        bz = self._sum(self._bz, t) * 2.5 + lhz * 0.25
+        bw = self._sum(self._bw, t) * 2.0
+        return bx, by, bz, bw
+
+    def speech_bob(self, t, speaking, mouth_level):
+        if not speaking:
+            self._bob_env *= 0.85
+            return 0.0
+        target = mouth_level
+        if target > self._bob_env:
+            self._bob_env += (target - self._bob_env) * 0.55
+        else:
+            self._bob_env += (target - self._bob_env) * 0.25
+        return math.sin(t * 4.5 * math.tau) * self._bob_env * 2.5
+
+
+# ===============================================================
+# SACCADE SCHEDULER
+# ===============================================================
+class _SaccadeScheduler:
+    SNAP_S = 0.08
+    SOFT_S = 0.45
+
+    def __init__(self):
+        self._cur_x = 0.0
+        self._cur_y = 0.0
+        self._tgt_x = 0.0
+        self._tgt_y = 0.0
+        self._start_x = 0.0
+        self._start_y = 0.0
+        self._start_at = 0.0
+        self._dur = self.SNAP_S
+        self._next_at = 0.0
+
+    def _pick_new_target(self, t, gaze_bias_x, gaze_bias_y, lively):
+        self._start_x = self._cur_x
+        self._start_y = self._cur_y
+        self._start_at = t
+        r = random.random()
+        if r < 0.45:
+            mag_x, mag_y = 0.12, 0.10
+            self._dur = self.SNAP_S
+            hold = random.uniform(0.35, 1.40)
+        elif r < 0.85:
+            mag_x, mag_y = 0.45, 0.35
+            self._dur = self.SNAP_S
+            hold = random.uniform(0.45, 1.60)
+        else:
+            mag_x, mag_y = 0.85, 0.60
+            self._dur = self.SOFT_S
+            hold = random.uniform(0.60, 2.20)
+        self._tgt_x = max(-1.0, min(1.0, random.uniform(-mag_x, mag_x) + gaze_bias_x))
+        self._tgt_y = max(-1.0, min(1.0, random.uniform(-mag_y, mag_y) + gaze_bias_y))
+        if lively:
+            hold *= 0.7
+        self._next_at = t + hold
+
+    def value(self, t, gaze_bias_x=0.0, gaze_bias_y=0.0, lively=False):
+        if self._next_at == 0.0 or t >= self._next_at:
+            self._pick_new_target(t, gaze_bias_x, gaze_bias_y, lively)
+        elapsed = t - self._start_at
+        k = min(1.0, elapsed / self._dur) if self._dur > 0 else 1.0
+        e = 1.0 - (1.0 - k) ** 3
+        self._cur_x = self._start_x + (self._tgt_x - self._start_x) * e
+        self._cur_y = self._start_y + (self._tgt_y - self._start_y) * e
+        return self._cur_x, self._cur_y
+
+
+# ===============================================================
+# ARM CHOREOGRAPHER
+# ===============================================================
+class _ArmChoreographer:
+    def __init__(self):
+        rnd = random.uniform
+        tau = math.tau
+        self._l_phase = rnd(0, tau)
+        self._r_phase = rnd(0, tau) + 0.4
+        self._speech_env = 0.0
+        self._lean = 0.0
+        self._lean_current = 0.0
+        self._wobble_phase = rnd(0, tau)
+
+    def set_emotion_lean(self, value):
+        self._lean = max(-1.0, min(1.0, float(value)))
+
+    def apply_emotion(self, tag):
+        self._lean = self._emotion_lean_for_tag(tag)
+
+    @staticmethod
+    def _emotion_lean_for_tag(tag):
+        pos = {
+            "happy": 0.35, "delighted": 0.55, "excited": 0.75,
+            "amused": 0.30, "laughing": 0.80, "chuckling": 0.50,
+            "satisfied": 0.15, "proud": 0.30, "confident": 0.15,
+            "hopeful": 0.30, "optimistic": 0.30, "grateful": 0.20,
+            "surprised": 0.40, "moved": 0.15, "empathetic": 0.10,
+        }
+        neg = {
+            "sad": -0.50, "unhappy": -0.40, "disappointed": -0.45,
+            "upset": -0.40, "depressed": -0.60, "regretful": -0.35,
+            "guilty": -0.30, "bored": -0.30, "embarrassed": -0.30,
+            "shy": -0.40, "indifferent": -0.15,
+            "angry": -0.20, "frustrated": -0.25,
+        }
+        if tag in pos:
+            return pos[tag]
+        if tag in neg:
+            return neg[tag]
+        return 0.0
+
+    def deltas(self, t, speaking, mouth_level, head_x, head_z):
+        self._lean_current += (self._lean - self._lean_current) * 0.05
+        l_sway = math.sin(t * 0.13 * math.tau + self._l_phase)
+        r_sway = math.sin(t * 0.13 * math.tau + self._r_phase)
+        if speaking:
+            target = mouth_level * 0.8
+            if target > self._speech_env:
+                self._speech_env += (target - self._speech_env) * 0.55
+            else:
+                self._speech_env += (target - self._speech_env) * 0.20
+        else:
+            self._speech_env *= 0.85
+        wobble = math.sin(t * 3.7 * math.tau + self._wobble_phase) * self._speech_env
+        l_weight = 1.0 - max(0.0, head_z / 20.0) * 0.3
+        r_weight = 1.0 - max(0.0, -head_z / 20.0) * 0.3
+        sway_scale = [1.0, 0.7, 0.5, 0.35]
+        lean_scale = [0.5, 0.6, 0.8, 1.0]
+        base_l = self._lean_current * 0.9
+        base_r = self._lean_current * 0.9
+        d_l, d_r = [], []
+        for i in range(4):
+            s_l = (l_sway * 0.12 * l_weight * sway_scale[i]
+                   + base_l * lean_scale[i]
+                   + wobble * 0.06 * sway_scale[i])
+            s_r = (r_sway * 0.12 * r_weight * sway_scale[i]
+                   + base_r * lean_scale[i]
+                   + wobble * 0.06 * sway_scale[i])
+            s_l += max(0.0, -head_x / 30.0) * 0.06
+            s_r += max(0.0,  head_x / 30.0) * 0.06
+            d_l.append(s_l)
+            d_r.append(s_r)
+        return d_l, d_r
 
 
 # ===============================================================
@@ -350,7 +653,6 @@ class _BlinkScheduler:
     def value(self, t):
         if self._next_at == 0.0:
             self._next_at = t + random.uniform(2.5, 5.5)
-
         if t >= self._next_at:
             self._started_at = t
             if self._double_pending:
@@ -360,11 +662,9 @@ class _BlinkScheduler:
                 self._next_at = t + random.uniform(2.5, 6.5)
                 if random.random() < 0.18:
                     self._double_pending = True
-
         elapsed = t - self._started_at
         if elapsed < 0 or elapsed > self.TOTAL:
             return 1.0
-
         if elapsed < self.CLOSE_S:
             return 1.0 - (elapsed / self.CLOSE_S)
         elif elapsed < self.CLOSE_S + self.HOLD_S:
@@ -384,37 +684,37 @@ class VtubeStudio(Module):
 
         self.item_list = []
         self.prop_instance_ids = {}
-
         self._hotkey_cache = {}
-
-        # Expression toggle state — keyed by raw hotkey name, value
-        # is True when that hotkey's toggle is currently ON. Populated
-        # by set_expression_state(); can go stale if the user presses
-        # the key manually in VTS.
         self._toggle_state = {}
 
-        # Motion + blink
         self._motion = _OrganicMotion()
         self._blink = _BlinkScheduler()
+        self._saccades = _SaccadeScheduler()
+        self._arms = _ArmChoreographer()
+
         self._session_start = time.time()
         self._last_motion_tick = 0.0
         self._last_head_tick = 0.0
         self._last_extra_tick = 0.0
 
-        # Sticky expressions (parameter-driven, not hotkey-driven)
         self._sticky_params = {}
-
-        # Mouth
         self._current_mouth_open = 0.0
         self._target_mouth_open = 0.0
 
-        # Detected parameter names
         self._head_names = None
         self._extra_names = None
         self._mouth_name = None
         self._smile_name = None
 
-        # VTS plugin auth token — under data/ so it's gitignored.
+        # Per-param mode lookup, populated by verification at startup.
+        # Maps param_id → "set" | "add".
+        self._param_modes = {}
+
+        self._brow_baseline = [0.0, 0.0, 0.0, 0.0]
+        self._brow_baseline_expires = 0.0
+        self._brow_current = [0.0, 0.0, 0.0, 0.0]
+        self._is_lively = False
+
         plugin_info = {
             "plugin_name": "Lumi VTS Plugin",
             "developer": "Lumi AI",
@@ -433,20 +733,17 @@ class VtubeStudio(Module):
             hub_emit(self.signals, "vts",
                      f"connection failed: {e}", level="error")
             return False
-
         try:
             await self.vts.request_authenticate_token()
             await self.vts.request_authenticate()
         except Exception as e:
             print(f"\033[91mVTube Studio: auth failed — {e}\033[0m")
-            hub_emit(self.signals, "vts",
-                     f"auth failed: {e}", level="error")
+            hub_emit(self.signals, "vts", f"auth failed: {e}", level="error")
             try:
                 await self.vts.close()
             except Exception:
                 pass
             return False
-
         hub_emit(self.signals, "vts", "connected and authenticated")
         return True
 
@@ -465,7 +762,6 @@ class VtubeStudio(Module):
             names = sorted(self._hotkey_cache.keys())
             hub_emit(self.signals, "vts",
                      f"cached {len(names)} hotkeys: {names}")
-
             unmapped = []
             for tag, hotkey in EMOTION_HOTKEY_MAP.items():
                 resolved = self._resolve_hotkey(hotkey)
@@ -480,7 +776,7 @@ class VtubeStudio(Module):
                      f"hotkey cache failed: {e}", level="warn")
 
     # ---------------------------------------------------------------
-    # Parameter name detection
+    # Parameter discovery + verification
     # ---------------------------------------------------------------
     async def _fetch_live2d_params(self):
         try:
@@ -496,10 +792,8 @@ class VtubeStudio(Module):
                      f"Live2DParameterListRequest failed: {e}",
                      level="warn")
             return set()
-
         if not resp or resp.get("messageType") == "APIError":
             return set()
-
         names = set()
         for p in resp.get("data", {}).get("parameters", []):
             n = p.get("name")
@@ -507,97 +801,189 @@ class VtubeStudio(Module):
                 names.add(n)
         return names
 
-    async def _try_inject_raw(self, parameters):
+    async def _test_injection(self, param_id, value, mode):
+        """Return (ok, error_message_or_None)."""
         try:
             request = self.vts.vts_request.BaseRequest(
                 "InjectParameterDataRequest",
                 {
                     "faceFound": False,
-                    "mode": "set",
+                    "mode": mode,
                     "parameterValues": [
                         {
-                            "id": p["id"],
-                            "value": self._clamp(p["id"], p["value"]),
+                            "id": param_id,
+                            "value": self._clamp(param_id, value),
                             "weight": 1.0,
                         }
-                        for p in parameters
                     ],
                 },
             )
             response = await self.vts.request(request)
             if not response:
-                return False
+                return False, "no response"
             if response.get("messageType") == "APIError":
-                return False
-            return True
-        except Exception:
-            return False
+                msg = response.get("data", {}).get("message", "unknown")
+                return False, f"APIError: {msg}"
+            return True, None
+        except Exception as e:
+            return False, f"exception: {e}"
 
-    async def _probe_names(self, candidates_dict, available_names=None,
-                           required_slots=None):
+    async def _verify_param(self, param_id):
+        """Return (mode_or_None, error_string_or_None)."""
+        ok, err_set = await self._test_injection(param_id, 0.0, "set")
+        if ok:
+            return "set", None
+        ok, err_add = await self._test_injection(param_id, 0.05, "add")
+        if ok:
+            return "add", None
+        return None, f"set→[{err_set}] add→[{err_add}]"
+
+    async def _resolve_from_list(self, candidates_dict, available_names):
+        """Resolve each slot by looking for candidate names in the
+        model's exposed param list, in candidate order."""
         result = {}
-        if required_slots is None:
-            required_slots = set(candidates_dict.keys())
-
         for slot, names in candidates_dict.items():
-            ordered = names
-            if available_names:
-                preferred = [n for n in names if n in available_names]
-                rest = [n for n in names if n not in available_names]
-                ordered = preferred + rest if preferred else rest
-
-            for name in ordered:
-                if await self._try_inject_raw([{"id": name, "value": 0.0}]):
+            for name in names:
+                if available_names and name in available_names:
                     result[slot] = name
                     break
-
-            if slot not in result and slot in required_slots:
-                hub_emit(
-                    self.signals, "vts",
-                    f"no working name for slot '{slot}' "
-                    f"(tried: {names})",
-                    level="warn"
-                )
         return result
 
     async def detect_parameter_names(self):
         hub_emit(self.signals, "vts", "probing parameter names…")
-
         available = await self._fetch_live2d_params()
         if available:
-            related = sorted(
-                n for n in available
-                if "Body" in n or "Angle" in n or "Breath" in n
-                or "Eye" in n or "Mouth" in n
-            )
             hub_emit(
                 self.signals, "vts",
-                f"model exposes {len(available)} Live2D params — "
-                f"relevant: {related[:20]}"
+                f"model exposes {len(available)} Live2D params"
             )
         else:
             hub_emit(self.signals, "vts",
                      "could not read model param list — probing blind",
                      level="warn")
 
-        self._head_names  = await self._probe_names(
-            HEAD_NAME_CANDIDATES, available,
-            required_slots={"x", "y", "z", "el", "er"},
+        # ---- Head ----
+        self._head_names = await self._resolve_from_list(
+            HEAD_NAME_CANDIDATES, available
         )
-        self._extra_names = await self._probe_names(
-            EXTRA_NAME_CANDIDATES, available,
-            required_slots={"ex", "ey"},
-        )
+        # Blind probe for any head slot the list resolution missed
+        for slot, names in HEAD_NAME_CANDIDATES.items():
+            if slot in self._head_names:
+                continue
+            for name in names:
+                ok, _ = await self._test_injection(name, 0.0, "set")
+                if ok:
+                    self._head_names[slot] = name
+                    break
 
+        # ---- Extra ----
+        self._extra_names = await self._resolve_from_list(
+            EXTRA_NAME_CANDIDATES, available
+        )
+        for slot, names in EXTRA_NAME_CANDIDATES.items():
+            if slot in self._extra_names:
+                continue
+            for name in names:
+                ok, _ = await self._test_injection(name, 0.0, "set")
+                if ok:
+                    self._extra_names[slot] = name
+                    break
+
+        # ---- Mouth ----
+        self._mouth_name = None
         for name in MOUTH_NAME_CANDIDATES:
-            if await self._try_inject_raw([{"id": name, "value": 0.0}]):
+            ok, _ = await self._test_injection(name, 0.0, "set")
+            if ok:
                 self._mouth_name = name
                 break
 
+        # ---- Smile ----
+        self._smile_name = None
         for name in SMILE_NAME_CANDIDATES:
-            if await self._try_inject_raw([{"id": name, "value": 0.0}]):
+            ok, _ = await self._test_injection(name, 0.0, "set")
+            if ok:
                 self._smile_name = name
                 break
+
+        # ---- Verify injectability of every resolved param ----
+        hub_emit(self.signals, "vts", "verifying injection modes…")
+        failures = {}
+
+        # Head — no fallback; primary outputs only
+        for slot in list((self._head_names or {}).keys()):
+            name = self._head_names[slot]
+            mode, err = await self._verify_param(name)
+            if mode:
+                self._param_modes[name] = mode
+            else:
+                failures[f"head.{slot}"] = f"{name} | {err}"
+                del self._head_names[slot]
+
+        # Extras — direct first, VTS Input fallback second
+        for slot in list((self._extra_names or {}).keys()):
+            name = self._extra_names[slot]
+            mode, err = await self._verify_param(name)
+            if mode:
+                self._param_modes[name] = mode
+                continue
+
+            fallback = VTS_INPUT_FALLBACK.get(slot)
+            if fallback and fallback != name:
+                fb_mode, fb_err = await self._verify_param(fallback)
+                if fb_mode:
+                    self._extra_names[slot] = fallback
+                    self._param_modes[fallback] = fb_mode
+                    hub_emit(
+                        self.signals, "vts",
+                        f"slot {slot}: direct '{name}' rejected, "
+                        f"using VTS Input fallback '{fallback}' "
+                        f"(mode={fb_mode}, shared input)"
+                    )
+                    continue
+                failures[f"extra.{slot}"] = (
+                    f"{name} | {err} || fallback {fallback} | {fb_err}"
+                )
+            else:
+                failures[f"extra.{slot}"] = f"{name} | {err}"
+            del self._extra_names[slot]
+
+        # Mouth / Smile
+        if self._mouth_name:
+            mode, err = await self._verify_param(self._mouth_name)
+            if mode:
+                self._param_modes[self._mouth_name] = mode
+            else:
+                failures["mouth"] = f"{self._mouth_name} | {err}"
+                self._mouth_name = None
+        if self._smile_name:
+            mode, err = await self._verify_param(self._smile_name)
+            if mode:
+                self._param_modes[self._smile_name] = mode
+            else:
+                failures["smile"] = f"{self._smile_name} | {err}"
+                self._smile_name = None
+
+        # Report failures with reasons
+        for k, v in failures.items():
+            hub_emit(self.signals, "vts",
+                     f"inject rejected: {k} — {v}", level="warn")
+
+        # ---- Detect head/body input sharing ----
+        # Body slots resolve to the same VTS Input as the head. Injecting
+        # both would stomp head motion every frame. We drop body slots
+        # and rely on VTS's own FaceAngleX → ParamBodyAngleX transform.
+        ext = self._extra_names or {}
+        if (ext.get("bx") == "FaceAngleX"
+                and ext.get("by") == "FaceAngleY"
+                and ext.get("bz") == "FaceAngleZ"):
+            hub_emit(
+                self.signals, "vts",
+                "body shares head's VTS input — dropping separate body "
+                "injection; head sway already drives body via VTS mapping"
+            )
+            self._extra_names.pop("bx", None)
+            self._extra_names.pop("by", None)
+            self._extra_names.pop("bz", None)
 
         hub_emit(
             self.signals, "vts",
@@ -612,6 +998,27 @@ class VtubeStudio(Module):
                 "WARNING — head detection incomplete. Head motion disabled.",
                 level="warn"
             )
+
+        ext = self._extra_names or {}
+        have_body = all(k in ext for k in ("bx", "by", "bz"))
+        have_brows = all(k in ext for k in ("bly", "bry"))
+        have_gaze = "ex" in ext and "ey" in ext
+        have_arms = all(
+            s in ext for s in ("la1", "la2", "la3", "la4",
+                               "ra1", "ra2", "ra3", "ra4")
+        )
+        hub_emit(
+            self.signals, "vts",
+            f"motion subsystems — body:{have_body} brows:{have_brows} "
+            f"gaze:{have_gaze} arms:{have_arms}"
+        )
+        if self._extra_names:
+            modes_summary = {
+                s: self._param_modes.get(n, "?")
+                for s, n in self._extra_names.items()
+            }
+            hub_emit(self.signals, "vts",
+                     f"extra param modes: {modes_summary}")
 
     def _resolve_hotkey(self, name):
         if not name:
@@ -629,28 +1036,46 @@ class VtubeStudio(Module):
     # Parameter injection
     # ---------------------------------------------------------------
     async def inject_parameters(self, parameters, mode="set"):
+        """Inject a batch of params. Per-param mode resolution:
+          1. explicit "_mode" key on the param dict
+          2. self._param_modes lookup by param id
+          3. the batch default `mode` argument
+
+        NOTE: this MUTATES the dicts by popping "_mode". Build fresh
+        lists per call if you plan to reuse them.
+        """
         if not parameters:
             return
+        by_mode = {}
+        for p in parameters:
+            m = p.pop("_mode", None)
+            if m is None:
+                m = self._param_modes.get(p["id"], mode)
+            by_mode.setdefault(m, []).append(p)
 
-        request = self.vts.vts_request.BaseRequest(
-            "InjectParameterDataRequest",
-            {
-                "faceFound": False,
-                "mode": mode,
-                "parameterValues": [
-                    {
-                        "id": p["id"],
-                        "value": self._clamp(p["id"], p["value"]),
-                        "weight": 1.0,
-                    }
-                    for p in parameters
-                ],
-            },
-        )
-        await self.send_request(request)
+        for m, group in by_mode.items():
+            request = self.vts.vts_request.BaseRequest(
+                "InjectParameterDataRequest",
+                {
+                    "faceFound": False,
+                    "mode": m,
+                    "parameterValues": [
+                        {
+                            "id": p["id"],
+                            "value": self._clamp(p["id"], p["value"]),
+                            "weight": 1.0,
+                        }
+                        for p in group
+                    ],
+                },
+            )
+            await self.send_request(request)
 
     def _clamp(self, param_id, value):
-        lo, hi = PARAM_RANGES.get(param_id, (-1.0, 1.0))
+        if param_id in VTS_INPUT_RANGES:
+            lo, hi = VTS_INPUT_RANGES[param_id]
+        else:
+            lo, hi = PARAM_RANGES.get(param_id, (-1.0, 1.0))
         return max(lo, min(hi, float(value)))
 
     # ---------------------------------------------------------------
@@ -666,91 +1091,61 @@ class VtubeStudio(Module):
         combo = HOTKEY_KEYBINDINGS.get((name or "").lower())
         if not combo:
             hub_emit(self.signals, "vts",
-                     f"no keybinding for hotkey '{name}'",
-                     level="warn")
+                     f"no keybinding for hotkey '{name}'", level="warn")
             return False
         try:
             import keyboard
         except ImportError:
             hub_emit(self.signals, "vts",
-                     "keyboard library not installed — "
-                     "cannot simulate hotkeys", level="error")
+                     "keyboard library not installed — cannot simulate hotkeys",
+                     level="error")
             return False
-
         focused = _focus_window_by_title(VTS_WINDOW_TITLE)
         if not focused:
             hub_emit(self.signals, "vts",
-                     f"could not focus VTS window for '{name}'",
-                     level="warn")
+                     f"could not focus VTS window for '{name}'", level="warn")
             return False
-
-        # Give Windows a beat to finish routing input to the newly
-        # focused window. Too short and the first key press is dropped.
         time.sleep(0.15)
-
         try:
             parts = combo.lower().split("+")
             key = parts[-1]
             modifiers = parts[:-1]
-
-            # Press all modifiers, small gap, tap the key, small gap,
-            # release modifiers in reverse. This mimics a real
-            # keypress sequence closely enough that even polling
-            # input loops catch it.
             for mod in modifiers:
                 keyboard.press(mod)
                 time.sleep(0.02)
-
             time.sleep(0.05)
             keyboard.press(key)
             time.sleep(0.05)
             keyboard.release(key)
-
             time.sleep(0.02)
             for mod in reversed(modifiers):
                 keyboard.release(mod)
                 time.sleep(0.02)
-
             hub_emit(self.signals, "vts",
                      f"keyboard hotkey '{name}' → {combo} (sequenced)")
             return True
         except Exception as e:
             hub_emit(self.signals, "vts",
-                     f"keyboard send failed for '{name}': {e}",
-                     level="warn")
+                     f"keyboard send failed for '{name}': {e}", level="warn")
             return False
 
     # ---------------------------------------------------------------
     # State-aware expression API
     # ---------------------------------------------------------------
     def set_expression_state(self, state_name, enabled):
-        """Set a state to on/off. Idempotent — no-op if already there.
-
-        Args:
-            state_name: user-facing state name from EXPRESSION_STATE_MAP
-            enabled: True to turn on, False to turn off
-
-        Returns:
-            (changed, actual_state, error_message)
-            error_message is None on success.
-        """
         key = (state_name or "").strip().lower()
         if key not in EXPRESSION_STATE_MAP:
             return False, False, f"unknown state name '{state_name}'"
-
         hotkey_name, sense = EXPRESSION_STATE_MAP[key]
         requested_hotkey_state = enabled if sense == +1 else (not enabled)
         current = self._toggle_state.get(hotkey_name, False)
-
         if current == requested_hotkey_state:
             return False, enabled, None
-
         self._trigger_via_keyboard(hotkey_name)
         self._toggle_state[hotkey_name] = requested_hotkey_state
         return True, enabled, None
 
     def list_expression_states(self):
-        """Return {state_name: bool} for every state in the map."""
         result = {}
         for state_name, (hotkey_name, sense) in EXPRESSION_STATE_MAP.items():
             raw = self._toggle_state.get(hotkey_name, False)
@@ -761,9 +1156,6 @@ class VtubeStudio(Module):
         return list(EXPRESSION_STATE_MAP.keys())
 
     def resync_expression_states(self, states):
-        """Manually override the internal toggle state. Use this after
-        changing expressions by hand in VTS to keep the module in sync.
-        `states` is a dict of {state_name: bool}."""
         for state_name, is_on in states.items():
             key = (state_name or "").strip().lower()
             if key not in EXPRESSION_STATE_MAP:
@@ -773,13 +1165,75 @@ class VtubeStudio(Module):
             self._toggle_state[hotkey_name] = raw_state
 
     # ---------------------------------------------------------------
+    # Brow computation
+    # ---------------------------------------------------------------
+    def _compute_brows(self, t, speaking):
+        ext = self._extra_names or {}
+        brow_slots = ("bly", "bry", "blf", "brf")
+        if not any(s in ext for s in brow_slots):
+            return []
+
+        now = time.time()
+        if now >= self._brow_baseline_expires:
+            self._brow_baseline = [0.0, 0.0, 0.0, 0.0]
+
+        idle_y = math.sin(t * 0.17 * math.tau) * 0.03
+        speech_y = (self._current_mouth_open * 0.08) if speaking else 0.0
+
+        targets = [
+            self._brow_baseline[0] + idle_y + speech_y,
+            self._brow_baseline[1] + idle_y + speech_y,
+            self._brow_baseline[2],
+            self._brow_baseline[3],
+        ]
+        for i in range(4):
+            self._brow_current[i] += (targets[i] - self._brow_current[i]) * 0.15
+
+        # Dedupe by target id — on ariu all four slots point to "Brows",
+        # so we send exactly one write per frame.
+        by_id = {}
+        by_id_count = {}
+        for slot, val in zip(brow_slots, self._brow_current):
+            if slot not in ext:
+                continue
+            pid = ext[slot]
+            # "Brows" input expects 0..1; direct param names expect -1..1.
+            if pid == "Brows":
+                val = (val + 1.0) * 0.5
+            by_id[pid] = by_id.get(pid, 0.0) + val
+            by_id_count[pid] = by_id_count.get(pid, 0) + 1
+
+        return [
+            {"id": pid, "value": by_id[pid] / by_id_count[pid]}
+            for pid in by_id
+        ]
+
+    # ---------------------------------------------------------------
+    # Arm computation
+    # ---------------------------------------------------------------
+    def _compute_arms(self, t, speaking, head_x, head_z):
+        ext = self._extra_names or {}
+        slots = ("la1", "la2", "la3", "la4", "ra1", "ra2", "ra3", "ra4")
+        if not all(s in ext for s in slots):
+            return []
+        d_l, d_r = self._arms.deltas(
+            t, speaking, self._current_mouth_open, head_x, head_z
+        )
+        out = []
+        for slot, delta in zip(("la1", "la2", "la3", "la4"), d_l):
+            out.append({"id": ext[slot], "value": delta})
+        for slot, delta in zip(("ra1", "ra2", "ra3", "ra4"), d_r):
+            out.append({"id": ext[slot], "value": delta})
+        return out
+
+    # ---------------------------------------------------------------
     # Motion tick
     # ---------------------------------------------------------------
     async def _tick_motion(self, speaking):
         now = time.time()
         t = now - self._session_start
 
-        # ---- 1. MOUTH ----
+        # ---- MOUTH ----
         if speaking:
             delta = self._target_mouth_open - self._current_mouth_open
             self._current_mouth_open += delta * 0.35
@@ -787,7 +1241,6 @@ class VtubeStudio(Module):
             self._current_mouth_open *= 0.75
             if self._current_mouth_open < 0.01:
                 self._current_mouth_open = 0.0
-
         if self._mouth_name:
             try:
                 await self.inject_parameters(
@@ -797,46 +1250,55 @@ class VtubeStudio(Module):
             except Exception:
                 pass
 
-        # ---- 2. HEAD + BLINK ----
-        if now - self._last_head_tick >= 0.05 and self._head_names:
+        # ---- HEAD + BLINK + SPEECH BOB (30 Hz) ----
+        head_x = head_z = 0.0
+        if now - self._last_head_tick >= 0.033 and self._head_names:
             hx, hy, hz = self._motion.head(t)
             if speaking:
-                hx *= 0.4
-                hy *= 0.4
-                hz *= 0.4
+                bob = self._motion.speech_bob(
+                    t, speaking, self._current_mouth_open
+                )
+                hy += bob
+                hx *= 0.85
+                hz *= 0.85
+            self._motion.tick(t, hx, hy, hz)
             eye_open = self._blink.value(now)
-
             params = []
-            if "x" in self._head_names:
-                params.append({"id": self._head_names["x"], "value": hx})
-            if "y" in self._head_names:
-                params.append({"id": self._head_names["y"], "value": hy})
-            if "z" in self._head_names:
-                params.append({"id": self._head_names["z"], "value": hz})
-            if "el" in self._head_names:
-                params.append({"id": self._head_names["el"], "value": eye_open})
-            if "er" in self._head_names:
-                params.append({"id": self._head_names["er"], "value": eye_open})
-
+            for slot, val in (("x", hx), ("y", hy), ("z", hz),
+                              ("el", eye_open), ("er", eye_open)):
+                if slot in self._head_names:
+                    params.append({"id": self._head_names[slot], "value": val})
             if params:
                 try:
                     await self.inject_parameters(params)
                 except Exception:
                     pass
-
+            head_x, head_z = hx, hz
             self._last_head_tick = now
+        else:
+            head_x, _, head_z = self._motion.head(t)
 
-        # ---- 3. EXTRA + STICKY EXPRESSIONS ----
-        if now - self._last_extra_tick >= 0.2:
+        # ---- BODY + GAZE + BROWS + ARMS + STICKY (20 Hz) ----
+        if now - self._last_extra_tick >= 0.05:
             extra = []
+            ext = self._extra_names or {}
 
-            if self._extra_names:
-                if "ex" in self._extra_names:
-                    ex, _ = self._motion.eyes(t)
-                    extra.append({"id": self._extra_names["ex"], "value": ex})
-                if "ey" in self._extra_names:
-                    _, ey = self._motion.eyes(t)
-                    extra.append({"id": self._extra_names["ey"], "value": ey})
+            bx, by, bz, bw = self._motion.body(t)
+            for slot, val in (("bx", bx), ("by", by), ("bz", bz), ("bw", bw)):
+                if slot in ext:
+                    extra.append({"id": ext[slot], "value": val})
+
+            if "ex" in ext and "ey" in ext:
+                bias_x = 0.0
+                bias_y = 0.05 if speaking else 0.0
+                gx, gy = self._saccades.value(
+                    t, bias_x, bias_y, lively=self._is_lively
+                )
+                extra.append({"id": ext["ex"], "value": gx})
+                extra.append({"id": ext["ey"], "value": gy})
+
+            extra.extend(self._compute_brows(t, speaking))
+            extra.extend(self._compute_arms(t, speaking, head_x, head_z))
 
             expired = []
             for name, (value, expire_at) in self._sticky_params.items():
@@ -852,28 +1314,23 @@ class VtubeStudio(Module):
                     await self.inject_parameters(extra)
                 except Exception:
                     pass
-
             self._last_extra_tick = now
 
     # ---------------------------------------------------------------
-    # Raw hotkey trigger (kept for emotion tags and legacy API)
+    # Raw hotkey trigger
     # ---------------------------------------------------------------
     async def trigger_expression(self, hotkey_name):
-        """Fire a raw hotkey. Used by the passive emotion path and by
-        the raw API — bypasses state tracking on purpose, because
-        emotion tags don't care about current state."""
         if not hotkey_name:
             return
-
         resolved = self._resolve_hotkey(hotkey_name)
         lookup_key = resolved.lower()
 
         if USE_KEYBOARD_HOTKEYS_ONLY:
             ok = self._trigger_via_keyboard(lookup_key)
             if ok:
-                # Flip the tracked state so subsequent set_expression
-                # calls stay in sync.
-                self._toggle_state[lookup_key] = not self._toggle_state.get(lookup_key, False)
+                self._toggle_state[lookup_key] = not self._toggle_state.get(
+                    lookup_key, False
+                )
             else:
                 hub_emit(self.signals, "vts",
                          f"hotkey '{lookup_key}' failed (keyboard path)",
@@ -881,7 +1338,6 @@ class VtubeStudio(Module):
             return
 
         hotkey_id = self._hotkey_cache.get(lookup_key)
-
         if not hotkey_id:
             try:
                 hotkeys = await self.get_hotkeys()
@@ -892,38 +1348,53 @@ class VtubeStudio(Module):
                         break
             except Exception:
                 pass
-
         if not hotkey_id:
             if self._trigger_via_keyboard(lookup_key):
-                self._toggle_state[lookup_key] = not self._toggle_state.get(lookup_key, False)
+                self._toggle_state[lookup_key] = not self._toggle_state.get(
+                    lookup_key, False
+                )
                 return
             hub_emit(self.signals, "vts",
-                     f"hotkey '{resolved}' NOT FOUND "
-                     f"(from alias '{hotkey_name}')",
-                     level="warn")
+                     f"hotkey '{resolved}' NOT FOUND", level="warn")
             return
 
         request = self.vts.vts_request.BaseRequest(
             "HotkeyTriggerRequest", {"hotkeyID": hotkey_id},
         )
         response = await self.send_request(request)
-
         if not response or response.get("messageType") == "APIError":
             if self._trigger_via_keyboard(lookup_key):
-                self._toggle_state[lookup_key] = not self._toggle_state.get(lookup_key, False)
+                self._toggle_state[lookup_key] = not self._toggle_state.get(
+                    lookup_key, False
+                )
                 return
             hub_emit(self.signals, "vts",
                      f"API + keyboard both failed for '{resolved}'",
                      level="warn")
             return
-
-        self._toggle_state[lookup_key] = not self._toggle_state.get(lookup_key, False)
+        self._toggle_state[lookup_key] = not self._toggle_state.get(
+            lookup_key, False
+        )
         hub_emit(self.signals, "vts", f"fired '{resolved}' (API)")
 
+    # ---------------------------------------------------------------
+    # Emotion routing
+    # ---------------------------------------------------------------
     async def set_emotion(self, emotion_tag):
-        tag = (emotion_tag or "").lower()
+        tag = (emotion_tag or "").lower().strip()
         if not tag:
             return
+        brow = BROW_EXPRESSION_MAP.get(tag)
+        if brow is not None:
+            self._brow_baseline = list(brow)
+            self._brow_baseline_expires = time.time() + EXPRESSION_DURATION
+            self._is_lively = tag in {
+                "excited", "surprised", "delighted",
+                "angry", "laughing", "chuckling",
+            }
+            hub_emit(self.signals, "vts",
+                     f"tag [{tag}] → brows {brow} lively={self._is_lively}")
+        self._arms.apply_emotion(tag)
 
         hotkey = EMOTION_HOTKEY_MAP.get(tag)
         if hotkey:
@@ -951,11 +1422,16 @@ class VtubeStudio(Module):
                          level="warn")
             return
 
-        hub_emit(self.signals, "vts",
-                 f"tag [{tag}] has no mapping (skipped)")
+        if brow is None:
+            hub_emit(self.signals, "vts",
+                     f"tag [{tag}] has no mapping (skipped)")
 
     async def clear_expression(self):
         self._sticky_params.clear()
+        self._brow_baseline = [0.0, 0.0, 0.0, 0.0]
+        self._brow_baseline_expires = 0.0
+        self._is_lively = False
+        self._arms.set_emotion_lean(0.0)
         hub_emit(self.signals, "vts", "expression cleared")
 
     # ---------------------------------------------------------------
@@ -1080,16 +1556,12 @@ class VtubeStudio(Module):
     async def run(self):
         if not self.enabled:
             return
-
         print("\033[90mVTube Studio: connecting...\033[0m")
         if not await self.connect_and_auth():
-            print(
-                "\033[91mVTube Studio: disabling module — connection "
-                "failed\033[0m"
-            )
+            print("\033[91mVTube Studio: disabling module — "
+                  "connection failed\033[0m")
             self.enabled = False
             return
-
         print("\033[92mVTube Studio: connected and authenticated\033[0m")
         self.item_list = await self.get_item_list()
         await self.load_hotkey_cache()
@@ -1097,30 +1569,26 @@ class VtubeStudio(Module):
 
         self.signals.vts_ready = True
         self._session_start = time.time()
-
         motion_interval = 1.0 / MOTION_HZ
 
         while not self.signals.terminate:
             if not self.enabled:
                 await asyncio.sleep(0.1)
                 continue
-
             try:
                 if not self.queue.empty():
                     action = self.queue.get()
                     await self._handle_action(action)
             except Exception as e:
                 print(f"\033[91mVTube Studio action error: {e}\033[0m")
-
             now = time.time()
             if now - self._last_motion_tick >= motion_interval:
                 speaking = getattr(self.signals, "AI_speaking", False)
                 try:
                     await self._tick_motion(speaking)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"\033[91mVTube motion error: {e}\033[0m")
                 self._last_motion_tick = now
-
             await asyncio.sleep(0.005)
 
         try:
@@ -1132,7 +1600,6 @@ class VtubeStudio(Module):
     async def _handle_action(self, action):
         a = action.action
         d = action.data
-
         if a == "get_hotkeys":
             self.signals.sio_queue.put(("get_hotkeys", await self.get_hotkeys()))
         elif a == "send_hotkey":
@@ -1182,7 +1649,6 @@ class VtubeStudio(Module):
         def __init__(self, outer):
             self.outer = outer
 
-        # --- Lifecycle ---
         def set_movement_status(self, status):
             self.outer.enabled = status
             self.outer.signals.sio_queue.put(("movement_status", status))
@@ -1193,7 +1659,6 @@ class VtubeStudio(Module):
         def get_movement_status(self):
             return self.outer.enabled
 
-        # --- Raw hotkeys (emotion path + legacy) ---
         def get_hotkeys(self):
             if not self.outer.enabled:
                 self.outer.signals.sio_queue.put(
@@ -1208,32 +1673,21 @@ class VtubeStudio(Module):
             self.outer.queue.put(self.outer.Action("send_hotkey", hotkey))
 
         def trigger_hotkey(self, name):
-            """Raw toggle trigger. Does NOT track state — prefer
-            set_expression for user-facing calls."""
             if not self.outer.enabled:
                 return
-            self.outer.queue.put(
-                self.outer.Action("trigger_expression", name)
-            )
+            self.outer.queue.put(self.outer.Action("trigger_expression", name))
 
         def set_emotion(self, emotion_tag):
             if not self.outer.enabled:
                 return
-            self.outer.queue.put(
-                self.outer.Action("set_emotion", emotion_tag)
-            )
+            self.outer.queue.put(self.outer.Action("set_emotion", emotion_tag))
 
         def clear_expression(self):
             if not self.outer.enabled:
                 return
-            self.outer.queue.put(
-                self.outer.Action("clear_expression", None)
-            )
+            self.outer.queue.put(self.outer.Action("clear_expression", None))
 
-        # --- State-aware expressions ---
         def set_expression(self, name, enabled):
-            """Idempotent state change. If already in the requested state,
-            the module no-ops."""
             if not self.outer.enabled:
                 return
             self.outer.queue.put(self.outer.Action(
@@ -1254,7 +1708,6 @@ class VtubeStudio(Module):
                 "resync_expression_states", states or {}
             ))
 
-        # --- Model position ---
         def move_model(self, mode):
             if not self.outer.enabled:
                 return
@@ -1266,13 +1719,11 @@ class VtubeStudio(Module):
         def list_hotkeys(self):
             return sorted(self.outer._hotkey_cache.keys())
 
-        # --- Props ---
         def trigger_prop(self, prop_action):
             if not self.outer.enabled:
                 return
             self.outer.queue.put(self.outer.Action(prop_action, None))
 
-        # --- Mouth (used by tts.py) ---
         def set_mouth_open(self, value):
             if not self.outer.enabled:
                 return
