@@ -2163,7 +2163,7 @@ async function renderModels(main) {
 
   stopModelsTimers();
   await loadModelsPage();
-  _modelsTimer = setInterval(loadModelsPage, 5000);
+  _modelsTimer = setInterval(loadModelsPage, 30000);
 }
 
 async function loadModelsPage() {
@@ -2271,6 +2271,9 @@ function renderLoadedSection() {
 function renderInstalledSection() {
   const host = $('#models-installed-section');
   if (!host) return;
+
+  if (host.contains(document.activeElement)) return;
+
   host.innerHTML = '';
 
   const title = document.createElement('h2');
@@ -2718,10 +2721,9 @@ function renderRoutingSection() {
   const host = $('#models-routing-section');
   if (!host) return;
 
-  // FIX: don't blow away form inputs the user is editing. The models
-  // page polls every 5s; without this guard, typing into any routing
-  // field would get reverted on the next tick.
   if (_modelsState.routingDirty) return;
+
+  if (host.contains(document.activeElement)) return;
 
   host.innerHTML = '';
 
