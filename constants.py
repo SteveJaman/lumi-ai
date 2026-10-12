@@ -13,7 +13,18 @@ CONFIG_ROOT    = os.path.join(WORKSPACE_ROOT, "config")
 DOCS_ROOT      = os.path.join(WORKSPACE_ROOT, "docs")
 
 LLM_ENDPOINT = "http://localhost:11434"
-MODEL_NAME = "lumi-qwen3"               # main model: custom Modelfile built from qwen3:8b
+
+# --- Model routing -------------------------------------------------------
+# MODEL_NAME handles agent turns and any request that needs tool calling.
+# lumi-qwen3 is the custom Modelfile built from qwen3:8b — it carries the
+# persona system prompt and has reliable structured tool-call output.
+#
+# FAST_MODEL_NAME handles short casual turns. It never sees tools. Llama
+# 3.1 8B tracks persona facts better than Gemma and has broader world
+# knowledge than Qwen3 at the same size. If you swap this, keep it in the
+# 7B-8B range and verify it reads the QUICK REFERENCE block correctly.
+MODEL_NAME = "qwen3:8b"
+FAST_MODEL_NAME = "qwen3:8b"
 VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached this turn
 
 # =======================================================
@@ -29,12 +40,10 @@ LUMI_VERSION = "0.10.14"
 # =======================================================
 # MODEL CONFIGURATION (Phase 5 — multi-model orchestration)
 # =======================================================
-FAST_MODEL_NAME = "lumi-qwen3"          # same weights as main — Ollama deduplicates in VRAM
 FAST_MODEL_ENABLED = True
 FAST_MODEL_NUM_CTX = 8192
-MAIN_NUM_CTX = 16384
+MAIN_NUM_CTX = 8192
 FAST_MODEL_KEEP_ALIVE = "5m"
-
 AUDIO_OUTPUT_MODE = "both"
 OUTPUT_DEVICE_INDEX = [24, 20]
 
@@ -271,6 +280,77 @@ def _text(value):
 
 
 # =======================================================
+# Quick Facts Block (Phase 10.20)
+# -------------------------------------------------------
+# Small models attend mostly to the beginning and end of a long
+# system prompt. Persona facts like "favorite color: Dusty violet"
+# sit in the middle of the YAML dump and get missed. This block
+# pulls the critical facts up to the top of the prompt in a short,
+# unambiguous list. When asked about any of these, the model answers
+# directly from the list instead of inventing.
+#
+# Important: the full value is kept, including any second-sentence
+# clarifications. "Dusty violet. Not purple." stays whole — the
+# clarification is exactly what the small models were missing.
+#
+# Add or remove facts here as the persona evolves. Keep it short —
+# the whole point is that it's easy to attend to.
+# =======================================================
+def _build_quick_facts(profile_dict):
+    """Return a compact facts block for the top of the system prompt.
+    Reads from profile_dict (already host-substituted)."""
+    identity = profile_dict.get("identity", {}) or {}
+    favorites = profile_dict.get("favorites", {}) or {}
+
+    ai_name = profile_dict.get("name", "Lumi")
+
+    def _get(d, key, default="unknown"):
+        val = (d or {}).get(key)
+        if val is None:
+            return default
+        if isinstance(val, str):
+            # Preserve the entire value. Do NOT split on sentence
+            # boundaries — second sentences often carry the fact that
+            # prevents the model from drifting ("Not purple",
+            # "Coffee only in emergencies").
+            return val.strip().replace("\n", " ") or default
+        return str(val)
+
+    lines = [
+        "=== QUICK REFERENCE — READ BEFORE ANSWERING ANYTHING ABOUT YOURSELF ===",
+        "",
+        "These are FACTS about you. They are written down. When the user asks",
+        "about any of these, quote the value directly. Do NOT invent.",
+        "",
+        f"  Name:            {ai_name}",
+        f"  Species:         {_get(identity, 'species')}",
+        f"  Presented age:   {_get(identity, 'presented_age')}",
+        f"  Birthday:        {_get(identity, 'birthday')}",
+        f"  Pronouns:        {_get(identity, 'pronouns')}",
+        "",
+        f"  Favorite color:  {_get(favorites, 'color')}",
+        f"  Favorite drink:  {_get(favorites, 'drink')}",
+        f"  Favorite food:   {_get(favorites, 'food')}",
+        f"  Favorite music:  {_get(favorites, 'music')}",
+        f"  Favorite game:   {_get(favorites, 'game')}",
+        f"  Favorite show:   {_get(favorites, 'show')}",
+        f"  Favorite season: {_get(favorites, 'season')}",
+        f"  Favorite time:   {_get(favorites, 'time_of_day')}",
+        f"  Favorite smell:  {_get(favorites, 'smell')}",
+        "",
+        "If asked about any of the above, answer with the exact value and",
+        "nothing else. Do not improvise. Do not add color commentary about",
+        "why the fact is interesting. Answer the question and stop.",
+        "",
+        "If asked about something NOT in this list, either say you don't",
+        "remember, or deflect in character. Never invent a fact.",
+        "",
+        "=== END QUICK REFERENCE ===",
+    ]
+    return "\n".join(lines)
+
+
+# =======================================================
 # Default Voice Emotion Prompt
 # -------------------------------------------------------
 # Used when the YAML does not define its own voice_performance
@@ -302,7 +382,7 @@ def _voice_emotion_prompt_from_profile(profile_dict):
 
 
 # =======================================================
-# Prompt Builder (Phase 10.1, extended in 10.10)
+# Prompt Builder (Phase 10.1, extended in 10.10, 10.20)
 # -------------------------------------------------------
 # build_system_prompt(host_name, profile_dict=None) produces the full
 # system prompt for a given host.
@@ -350,6 +430,9 @@ def build_system_prompt(host_name=None, profile_dict=None):
 
     formatted_personality_core = personality_core
     formatted_personality_values = _bullets(personality_values)
+
+    # --- Quick facts (top of prompt, high attention) ---
+    quick_facts = _build_quick_facts(profile_dict)
 
     # --- Backstory & Lore ---
     backstory_raw = profile_dict.get("backstory", "")
@@ -454,6 +537,8 @@ CRITICAL: You never speak in third person. Never say "{ai_name} thinks…",
 "I'm going to…". You never narrate yourself from outside. You never describe
 yourself as a character. You simply ARE her. If you catch yourself about to
 write your own name in a reply, stop and rewrite it as "I".
+
+{quick_facts}
 
 [Core Personality]
 {personality}

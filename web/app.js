@@ -40,6 +40,30 @@ async function api(path, { method = 'GET', body, csrf = false } = {}) {
   return data;
 }
 
+/* --------------------------------------------------------------
+   Fingerprinting — cheap stable hash of any JSON-able value.
+   Used to skip DOM work when polled state is identical.
+   -------------------------------------------------------------- */
+function fingerprint(value) {
+  // Stable stringify: sort object keys so {a,b} and {b,a} hash alike.
+  const str = (function stable(v) {
+    if (v === null) return 'null';
+    if (v === undefined) return 'undefined';
+    if (typeof v !== 'object') return JSON.stringify(v);
+    if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']';
+    return '{' + Object.keys(v).sort()
+      .map(k => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}';
+  })(value);
+
+  // FNV-1a 32-bit — fast, good enough for change detection.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(36) + ':' + str.length;
+}
+
 const ICONS = {
   chat:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
   dashboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>',
@@ -111,7 +135,12 @@ function showShell() {
 function navigate(view, replace = false) {
   state.view = view;
   if (view !== 'chat') stopChatPolling();
-  if (view !== 'models') stopModelsTimers();
+  if (view !== 'models') {
+    stopModelsTimers();
+    // FIX: clear the routing-dirty flag when leaving the Models page
+    // so the form refreshes normally next time we come back.
+    _modelsState.routingDirty = false;
+  }
   if (!replace) location.hash = `#/${view}`;
   $$('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.view === view);
@@ -127,13 +156,28 @@ window.addEventListener('hashchange', () => {
 /* --------------------------------------------------------------
    Status polling
    -------------------------------------------------------------- */
+const _statusFp = { value: null };
+
 async function startStatusPolling() {
   const tick = async () => {
     try {
       const s = await api('/api/status');
       state.status = s;
-      updateAgentChip();
-      updateTypingIndicator();
+
+      // Fingerprint: only re-render chips/indicators when values
+      // that matter for the UI have actually changed.
+      const uiSlice = {
+        agent_mode:  !!s.agent_mode,
+        ai_thinking: !!s.ai_thinking,
+        ai_speaking: !!s.ai_speaking,
+        host_name:   s.host?.name || null,
+      };
+      const fp = fingerprint(uiSlice);
+      if (fp !== _statusFp.value) {
+        _statusFp.value = fp;
+        updateAgentChip();
+        updateTypingIndicator();
+      }
     } catch {}
     setTimeout(tick, 2000);
   };
@@ -169,6 +213,9 @@ async function toggleAgentMode() {
       method: 'POST', body: {}, csrf: true,
     });
     state.status.agent_mode = res.enabled;
+    // Force chip refresh even though fingerprint may now match an
+    // older value.
+    _statusFp.value = null;
     updateAgentChip();
   } catch (e) {
     console.warn('agent toggle failed', e);
@@ -204,9 +251,14 @@ function render() {
    CHAT
    ============================================================== */
 let _chatPollTimer = null;
+let _chatFp = null;            // fingerprint of the last rendered history
+let _chatRenderedCount = 0;    // how many messages currently in the DOM
 
 function startChatPolling() {
   stopChatPolling();
+  // Reset the incremental-render bookkeeping when (re)entering chat.
+  _chatFp = null;
+  _chatRenderedCount = 0;
   refreshHistory();
   _chatPollTimer = setInterval(refreshHistory, 1500);
 }
@@ -223,12 +275,48 @@ async function refreshHistory() {
   try {
     const res = await api('/api/history?limit=100');
     const next = res.history || [];
-    if (JSON.stringify(next) === JSON.stringify(state.history)) return;
+
+    // Cheap "did anything change" gate.
+    const nextFp = fingerprint(next);
+    if (nextFp === _chatFp) return;
+
+    const prev = state.history;
+    const prevLen = prev.length;
+
+    // Fast path: existing head unchanged and only new messages appended.
+    const canAppend =
+      prevLen <= next.length &&
+      _chatRenderedCount === prevLen &&
+      fingerprint(next.slice(0, prevLen)) === fingerprint(prev);
+
     state.history = next;
-    renderChat();
-  } catch (e) {
+    _chatFp = nextFp;
+
+    if (canAppend) {
+      appendNewMessages(next, prevLen);
+    } else {
+      // History was edited/replaced somewhere in the middle — fall
+      // back to a full repaint of the scroll area only.
+      renderChat();
+    }
+  } catch {
     // Next tick retries.
   }
+}
+
+function appendNewMessages(fullHistory, fromIndex) {
+  const scroll = $('#chat-scroll');
+  if (!scroll) return;
+
+  const wasAtBottom =
+    (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) < 80;
+
+  for (let i = fromIndex; i < fullHistory.length; i++) {
+    renderChatMessage(fullHistory[i], scroll);
+  }
+  _chatRenderedCount = fullHistory.length;
+
+  if (wasAtBottom) scroll.scrollTop = scroll.scrollHeight;
 }
 
 async function renderChatView(main) {
@@ -264,7 +352,7 @@ async function renderChatView(main) {
     const res = await api('/api/history?limit=100');
     state.history = res.history || [];
   } catch {}
-  renderChat();
+  renderChat();   // seeds _chatFp and _chatRenderedCount
 
   startChatPolling();
 
@@ -295,7 +383,11 @@ function renderChat() {
     (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) < 80;
 
   scroll.innerHTML = '';
-  state.history.slice(-100).forEach(m => renderChatMessage(m, scroll));
+  state.history.forEach(m => renderChatMessage(m, scroll));
+
+  _chatRenderedCount = state.history.length;
+  _chatFp = fingerprint(state.history);
+
   if (wasAtBottom) scroll.scrollTop = scroll.scrollHeight;
 }
 
@@ -2014,6 +2106,7 @@ const _modelsState = {
   lastError: null,
   providers: [],
   providerCatalog: [],
+  routingDirty: false,  // FIX: tracks whether the Routing form has unsaved edits
 };
 
 function stopModelsTimers() {
@@ -2624,6 +2717,12 @@ function openProviderModal(p) {
 function renderRoutingSection() {
   const host = $('#models-routing-section');
   if (!host) return;
+
+  // FIX: don't blow away form inputs the user is editing. The models
+  // page polls every 5s; without this guard, typing into any routing
+  // field would get reverted on the next tick.
+  if (_modelsState.routingDirty) return;
+
   host.innerHTML = '';
 
   const title = document.createElement('h2');
@@ -2673,6 +2772,20 @@ function renderRoutingSection() {
 
   host.appendChild(grid);
 
+  // FIX: mark the form dirty on any edit so polling doesn't wipe it.
+  // The next poll tick will see routingDirty=true and skip the
+  // re-render until the user saves (or navigates away).
+  const markDirty = () => {
+    if (_modelsState.routingDirty) return;
+    _modelsState.routingDirty = true;
+    const hint = document.getElementById('routing-dirty-hint');
+    if (hint) hint.style.display = '';
+  };
+  grid.querySelectorAll('input, select').forEach(el => {
+    el.addEventListener('input', markDirty);
+    el.addEventListener('change', markDirty);
+  });
+
   const note = document.createElement('div');
   note.className = 'routing-note';
   note.textContent =
@@ -2688,6 +2801,17 @@ function renderRoutingSection() {
   saveBtn.textContent = 'Save routing';
   saveBtn.addEventListener('click', onSaveRouting);
   actions.appendChild(saveBtn);
+
+  // FIX: hidden hint that becomes visible when the form is dirty.
+  const dirtyHint = document.createElement('span');
+  dirtyHint.id = 'routing-dirty-hint';
+  dirtyHint.className = 'muted';
+  dirtyHint.style.marginLeft = '12px';
+  dirtyHint.style.fontSize = '12px';
+  dirtyHint.style.display = 'none';
+  dirtyHint.textContent = 'Unsaved changes — polling paused';
+  actions.appendChild(dirtyHint);
+
   host.appendChild(actions);
 }
 
@@ -2868,6 +2992,13 @@ async function onSaveRouting() {
       method: 'PUT', body: { routing: payload }, csrf: true,
     });
     _modelsState.routing = res.routing || _modelsState.routing;
+
+    // FIX: save succeeded — clear the dirty flag so the next poll
+    // refresh runs normally with the new values.
+    _modelsState.routingDirty = false;
+    const hint = document.getElementById('routing-dirty-hint');
+    if (hint) hint.style.display = 'none';
+
     btn.textContent = 'Saved';
     setTimeout(() => {
       btn.disabled = false;

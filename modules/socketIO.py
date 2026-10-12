@@ -764,11 +764,41 @@ class SocketIOServer:
         if not name:
             return _json_error(400, "Missing 'model'.")
 
+        # NEW: optional flag — when True, also set routing
+        set_routing = bool(body.get("set_routing", True))
+        target = (body.get("target") or "main").lower()  # "main" | "fast" | "both"
+
         loop = asyncio.get_event_loop()
+
+        # 1. Load into VRAM first
         ok, err = await loop.run_in_executor(None, mm.preload, name)
         if not ok:
             return _json_error(400, f"Load failed: {err}")
-        return web.json_response({"ok": True})
+
+        # 2. Optionally patch routing
+        if set_routing:
+            routing_patch = {}
+            if target in ("main", "both"):
+                routing_patch["MODEL_NAME"] = name
+            if target in ("fast", "both"):
+                routing_patch["FAST_MODEL_NAME"] = name
+
+            if routing_patch:
+                ok, err = await loop.run_in_executor(
+                    None, mm.save_routing, routing_patch,
+                )
+                if not ok:
+                    return _json_error(
+                        400,
+                        f"Model loaded but routing failed: {err}",
+                    )
+
+        return web.json_response({
+            "ok": True,
+            "model": name,
+            "routed": bool(set_routing),
+            "target": target,
+        })
 
     async def _handle_models_unload(self, request):
         if not self._origin_ok(request):
