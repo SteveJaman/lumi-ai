@@ -33,22 +33,22 @@
          ========================================================== -->
     <div class="bg-layer" aria-hidden="true">
 
-        <!-- Sleeping Lumi video loop -->
+        <!-- Sleeping Lumi video loop (single-buffered, no crossfade) -->
         <video class="bg-video"
                autoplay loop muted playsinline preload="auto"
                poster="/Lumi-room.png">
             <source src="/lumi_room_loop.mp4" type="video/mp4">
         </video>
 
-        <!-- Soft aurora sweep across the top -->
+        <!-- Soft aurora sweep -->
         <div class="aurora"></div>
 
-        <!-- Slow-drifting color orbs (Lumi's palette) -->
+        <!-- Drifting color orbs -->
         <div class="orb orb-teal"></div>
         <div class="orb orb-lavender"></div>
         <div class="orb orb-pink"></div>
 
-        <!-- Floating dream bubbles rising from bottom -->
+        <!-- Floating dream bubbles -->
         <div class="bubbles">
             <span></span><span></span><span></span><span></span>
             <span></span><span></span><span></span><span></span>
@@ -58,7 +58,7 @@
         <!-- Twinkling star field -->
         <div class="stars"></div>
 
-        <!-- Soft grain for texture -->
+        <!-- Soft grain -->
         <div class="grain"></div>
     </div>
 
@@ -92,11 +92,18 @@
         <main id="messages" class="messages" aria-live="polite" aria-label="Chat messages">
             <div class="message assistant">
                 <div class="bubble">
-                    <span class="spark">✨</span>
-                    hey! i'm running in playground mode here — no avatar, no mic,
-                    and i don't remember anything between visits. but i'm still
-                    me. what's up?
+                    <span class="spark">✨</span>hey! i'm running in playground
+                    mode here — no avatar, no mic, and i don't remember anything
+                    between visits. but i'm still me. what's up?
                 </div>
+            </div>
+
+            <!-- Suggestion chips — disappear after first user message -->
+            <div class="suggestions" id="suggestions">
+                <button type="button" data-prompt="who are you really?">who are you really?</button>
+                <button type="button" data-prompt="tell me something that surprised you recently">tell me something surprising</button>
+                <button type="button" data-prompt="what's your favorite kind of weather?">what's your favorite weather?</button>
+                <button type="button" data-prompt="say something to make me smile">cheer me up</button>
             </div>
         </main>
 
