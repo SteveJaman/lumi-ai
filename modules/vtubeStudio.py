@@ -728,6 +728,9 @@ class VtubeStudio(Module):
         self._last_interaction_time = time.time()
         self._is_idle = False
         self._idle_start_time = 0.0
+        
+        if not enabled:
+            self.signals.vts_state = "skipped"
 
     # ---------------------------------------------------------------
     # Connection / Authentication
@@ -739,6 +742,8 @@ class VtubeStudio(Module):
             print(f"\033[91mVTube Studio: connection failed — {e}\033[0m")
             hub_emit(self.signals, "vts",
                      f"connection failed: {e}", level="error")
+            self.signals.vts_state = "error"
+            self.signals.vts_detail = str(e)[:60]
             return False
         try:
             await self.vts.request_authenticate_token()
@@ -752,6 +757,7 @@ class VtubeStudio(Module):
                 pass
             return False
         hub_emit(self.signals, "vts", "connected and authenticated")
+        self.signals.vts_state = "ready"
         return True
 
     async def load_hotkey_cache(self):
@@ -769,6 +775,7 @@ class VtubeStudio(Module):
             names = sorted(self._hotkey_cache.keys())
             hub_emit(self.signals, "vts",
                      f"cached {len(names)} hotkeys: {names}")
+            self.signals.vts_detail = f"{len(names)} hotkeys"
             unmapped = []
             for tag, hotkey in EMOTION_HOTKEY_MAP.items():
                 resolved = self._resolve_hotkey(hotkey)

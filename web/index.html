@@ -12,7 +12,11 @@
 
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-logo">◆</div>
+      <div class="brand-logo" id="brand-logo">
+        <span class="brand-logo-mark">◆</span>
+        <img src="/web/Lumi.png" alt="" class="brand-logo-img"
+             onerror="this.style.display='none'">
+      </div>
       <div>
         <div class="brand-name">Lumi</div>
         <div class="brand-sub" id="host-name">—</div>
@@ -30,7 +34,7 @@
           <span class="dot" id="dot-mic"></span> Microphone
         </div>
         <div class="pill">
-          <span class="dot ok" id="dot-ollama"></span> Ollama
+          <span class="dot" id="dot-ollama"></span> Ollama
         </div>
       </div>
 
@@ -44,6 +48,25 @@
   </aside>
 
   <main class="main" id="main-content"></main>
+
+  <!-- Bloom loader — overlays the main pane, dismissed when boot completes -->
+  <div id="boot-loader" class="boot-loader hidden" aria-live="polite">
+    <div class="boot-flower" aria-hidden="true">
+      <div class="petal" style="--i:0"></div>
+      <div class="petal" style="--i:1"></div>
+      <div class="petal" style="--i:2"></div>
+      <div class="petal" style="--i:3"></div>
+      <div class="petal" style="--i:4"></div>
+      <div class="petal" style="--i:5"></div>
+      <div class="petal" style="--i:6"></div>
+      <div class="petal" style="--i:7"></div>
+      <div class="boot-flower-center"></div>
+    </div>
+    <div class="boot-title" id="boot-title">waking up…</div>
+    <ul class="boot-steps" id="boot-steps"></ul>
+    <button class="boot-skip hidden" id="boot-skip" type="button">Skip →</button>
+  </div>
+
 </div>
 
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>

@@ -252,6 +252,9 @@ class Memory(Module):
 
         count = self.collection.count()
         print(f"MEMORY: Loaded {count} memories from database.")
+        
+        self.signals.memory_ready = True
+        self.signals.memory_count = count
         if count == 0:
             print("MEMORY: Empty database. Importing from memoryinit.json")
             self.API.import_json(path=_MEMORY_INIT_PATH)

@@ -92,6 +92,62 @@ _SUBFOLDER_IMAGES    = "images"
 _SUBFOLDER_DOCUMENTS = "documents"
 _SUBFOLDER_TEXT      = "text"
 
+def _boot_block(sig):
+    """Assemble the boot progress dict for /api/status.
+
+    Each subsystem reports one of:
+      "loading" | "ready" | "skipped" | "error"
+    The frontend uses these to draw the bloom loader and to
+    colour the sidebar status pills. Missing attributes default to
+    "skipped" so an un-wired subsystem doesn't hang the loader.
+    """
+    def _flag(attr):
+        v = getattr(sig, attr, None)
+        if v is True:  return "ready"
+        if v is False: return "error"
+        return "loading"
+
+    vts_state  = getattr(sig, "vts_state",  None) or "loading"
+    vts_detail = getattr(sig, "vts_detail", "") or ""
+
+    if getattr(sig, "discord_configured", False):
+        discord_state  = getattr(sig, "discord_state", "loading")
+        discord_detail = getattr(sig, "discord_detail", "") or ""
+    else:
+        discord_state  = "skipped"
+        discord_detail = ""
+
+    boot = {
+        "memory": {
+            "state":  _flag("memory_ready"),
+            "detail": f"{getattr(sig, 'memory_count', 0)} memories",
+        },
+        "mic": {
+            "state":  _flag("mic_ready"),
+            "detail": "local whisper",
+        },
+        "tts": {
+            "state":  _flag("tts_ready"),
+            "detail": "fish audio",
+        },
+        "vts": {
+            "state":  vts_state,
+            "detail": vts_detail,
+        },
+        "self_model": {
+            "state":  _flag("self_model_ready"),
+            "detail": "",
+        },
+        "discord": {
+            "state":  discord_state,
+            "detail": discord_detail,
+        },
+    }
+    boot["complete"] = all(
+        s["state"] in ("ready", "skipped", "error")
+        for s in boot.values()
+    )
+    return boot
 
 def _classify_ext(ext):
     """Ext-based kind classifier. Mirrors _classify_upload(path) but
@@ -610,6 +666,7 @@ class SocketIOServer:
             "ai_thinking":  bool(getattr(signals, "AI_thinking", False)),
             "ai_speaking":  bool(getattr(signals, "AI_speaking", False)),
             "history_len":  len(getattr(signals, "history", [])),
+            "boot":        _boot_block(self.signals), 
             "agent_mode":   bool(getattr(
                 self.prompter, "agent_mode_enabled", False
             )) if self.prompter else False,

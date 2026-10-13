@@ -108,6 +108,9 @@ class MicInput(Module):
             # doesn't land between the "Anthony:" prompt and your input.
             hub_emit(self.signals, "mic",
                      "Microphone active — press \\ to toggle mute/unmute")
+            
+            self.signals.mic_ready = True
+
         except Exception as e:
             print(f"\033[91mMic Input Error: Failed to initialize microphone: {e}\033[0m")
             return

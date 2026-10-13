@@ -174,6 +174,27 @@ button { font-family: inherit; cursor: pointer; }
   display: grid; place-items: center;
   color: #fff; font-weight: 700;
   font-size: var(--fs-lg);
+  position: relative;
+  overflow: hidden;
+}
+.brand-logo-mark {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  color: #fff;
+  z-index: 1;
+}
+.brand-logo-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 20%;
+  z-index: 2;
 }
 .brand-name { font-weight: 600; font-size: var(--fs-lg); }
 .brand-sub  { font-size: var(--fs-xs); color: var(--text-dim); }
@@ -216,6 +237,7 @@ button { font-family: inherit; cursor: pointer; }
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--text-mute);
   flex-shrink: 0;
+  transition: background 0.3s ease;
 }
 .dot.ok   { background: var(--success); }
 .dot.warn { background: var(--warn); }
@@ -313,7 +335,29 @@ button { font-family: inherit; cursor: pointer; }
   flex-direction: column;
   gap: var(--s-4);
   scroll-behavior: smooth;
+  position: relative;
+  isolation: isolate;
 }
+
+/* Mood-reactive ambient tint — color follows --accent, which
+   app.js mutates when Lumi emits an emotion tag. */
+.chat-scroll::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    radial-gradient(ellipse 60% 50% at 20% 0%,
+      color-mix(in srgb, var(--accent) 8%, transparent) 0%,
+      transparent 70%),
+    radial-gradient(ellipse 55% 45% at 85% 100%,
+      color-mix(in srgb, var(--accent) 5%, transparent) 0%,
+      transparent 70%);
+  transition: background-image 1.2s ease;
+  opacity: 0.9;
+}
+
 .msg {
   display: flex;
   gap: var(--s-3);
@@ -331,12 +375,22 @@ button { font-family: inherit; cursor: pointer; }
   flex-shrink: 0;
   display: grid; place-items: center;
   font-size: var(--fs-xs); font-weight: 700; color: #fff;
+  overflow: hidden;
 }
 .msg.user .msg-avatar {
   background: linear-gradient(135deg, var(--magenta), var(--accent));
 }
 .msg.assistant .msg-avatar {
   background: linear-gradient(135deg, var(--accent), var(--violet));
+  padding: 0;
+}
+.msg.assistant .msg-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 20%;
+  display: block;
+  border-radius: 50%;
 }
 .msg-bubble {
   padding: 10px 14px;
@@ -384,6 +438,7 @@ button { font-family: inherit; cursor: pointer; }
   font-size: var(--fs-sm);
   color: var(--text-dim);
   background: var(--bg-elev);
+  flex-wrap: wrap;
 }
 .chat-status .mode-chip {
   padding: 4px 12px;
@@ -417,6 +472,34 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--error);
 }
 
+.mood-chip {
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--bg-inset);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.4s ease,
+              border-color 0.4s ease,
+              color 0.4s ease,
+              opacity 0.3s ease;
+  opacity: 0;
+  pointer-events: none;
+}
+.mood-chip.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+.mood-chip .mood-emoji {
+  font-size: 13px;
+  line-height: 1;
+}
+
 .chat-input {
   border-top: 1px solid var(--border);
   padding: var(--s-4) var(--s-6);
@@ -445,7 +528,6 @@ button { font-family: inherit; cursor: pointer; }
   box-shadow: 0 0 0 3px var(--accent-bg);
 }
 
-/* ---- Chat attachments ------------------------------------- */
 .chat-attach-btn {
   width: 40px;
   height: 40px;
@@ -631,7 +713,7 @@ button { font-family: inherit; cursor: pointer; }
 .cat.mic       { color: var(--accent); }
 .cat.vts       { color: var(--teal); }
 .cat.system    { color: var(--text-dim); }
-.cat.discord { color: #7c9cff; }
+.cat.discord   { color: #7c9cff; }
 .cat.print     { color: var(--text-mute); font-style: italic; }
 
 /* ============================================================
@@ -2060,3 +2142,179 @@ select.routing-input {
 .hidden { display: none !important; }
 .mt-4 { margin-top: var(--s-4); }
 .mt-5 { margin-top: var(--s-5); }
+
+/* ============================================================
+   Boot loader — bloom flower tracks startup progress
+   ============================================================ */
+
+.boot-loader {
+  position: absolute;
+  left: 240px;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 40%,
+                    rgba(88,166,255,0.06), transparent 70%),
+    var(--bg);
+  transition: opacity 0.55s ease-out, transform 0.55s ease-out;
+  will-change: opacity, transform;
+}
+
+.boot-loader.hidden { display: none; }
+
+.boot-loader.exit {
+  opacity: 0;
+  transform: scale(1.04);
+  pointer-events: none;
+}
+
+.boot-flower {
+  position: relative;
+  width: 180px;
+  height: 180px;
+  --bloom: 0;
+  animation: boot-sway 6s ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes boot-sway {
+  0%, 100% { transform: rotate(-1.5deg); }
+  50%      { transform: rotate(1.5deg);  }
+}
+
+.petal {
+  position: absolute;
+  bottom: 50%;
+  left: 50%;
+  width: 34px;
+  height: 74px;
+  margin-left: -17px;
+  border-radius: 50% 50% 50% 50% / 55% 55% 45% 45%;
+  background: linear-gradient(to top,
+    var(--violet) 0%,
+    var(--accent) 55%,
+    var(--teal)   100%);
+  transform-origin: bottom center;
+  transform:
+    rotate(calc(var(--i) * 45deg))
+    scale(calc(0.1 + var(--bloom) * 0.9));
+  opacity: calc(0.2 + var(--bloom) * 0.8);
+  transition: transform 0.28s ease-out, opacity 0.28s ease-out;
+  box-shadow:
+    0 0 24px rgba(88, 166, 255, calc(0.12 + var(--bloom) * 0.4)),
+    0 0 6px rgba(255, 255, 255, calc(0.05 + var(--bloom) * 0.15));
+  will-change: transform, opacity;
+}
+
+.boot-flower-center {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%,
+    #ffffff 0%,
+    var(--magenta) 45%,
+    var(--violet) 100%);
+  box-shadow:
+    0 0 22px rgba(247, 120, 186, calc(0.4 + var(--bloom) * 0.4)),
+    inset 0 -2px 6px rgba(0, 0, 0, 0.15);
+  transform: scale(calc(0.3 + var(--bloom) * 0.7));
+  transition: transform 0.28s ease-out;
+  z-index: 2;
+}
+
+.boot-flower.complete {
+  animation: bloom-pop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+@keyframes bloom-pop {
+  0%   { transform: scale(1);    opacity: 1; }
+  45%  { transform: scale(1.2);  opacity: 1; }
+  100% { transform: scale(1.55); opacity: 0; }
+}
+
+.boot-title {
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+
+.boot-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 280px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.boot-steps li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  color: var(--text-mute);
+  transition: color 0.3s ease;
+}
+
+.boot-steps li[data-state="ready"]   { color: var(--success); }
+.boot-steps li[data-state="error"]   { color: var(--error);   }
+.boot-steps li[data-state="skipped"] { color: var(--text-mute); }
+.boot-steps li[data-state="loading"] { color: var(--text-dim); }
+
+.boot-steps li .state {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.75;
+}
+
+.boot-skip {
+  margin-top: var(--s-4);
+  padding: 6px 18px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.boot-skip:hover {
+  border-color: var(--border-hi);
+  color: var(--text);
+}
+
+.boot-skip.hidden { display: none; }
+
+/* ============================================================
+   Reduced motion
+   ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-flower,
+  .boot-flower.complete,
+  .petal,
+  .boot-flower-center,
+  .boot-loader {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+}

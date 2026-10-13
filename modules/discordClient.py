@@ -648,6 +648,8 @@ class DiscordClient(Module):
             print(f"\033[92mDISCORD: {self.bot.user} is online and ready.\033[0m")
             hub_emit(self.signals, "discord",
                      f"{self.bot.user} is online and ready")
+            
+            self.signals.discord_ready = True
 
             self.bot.loop.create_task(self._tts_playback_loop())
             self.bot.loop.create_task(self._tts_listener_loop())

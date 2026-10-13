@@ -381,6 +381,8 @@ class SelfModel(Module):
             )
         except Exception:
             pass
+            
+        self.signals.self_model_ready = True
 
     # ---------------------------------------------------------------
     # Injection

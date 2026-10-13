@@ -81,7 +81,16 @@ async function checkAuth() {
     state.user = me.user;
     state.csrf = me.csrf;
     state.host = me.host;
+
+    // Show the shell behind the loader so it's ready when the
+    // loader fades. If the server doesn't expose a boot block, the
+    // loader skips instantly and this behaves exactly like before.
     showShell();
+    initBootLoader();
+    await pollBootStatus();
+    if (!_bootState.ready) {
+      _bootState.pollTimer = setInterval(pollBootStatus, 700);
+    }
   } catch (e) {
     location.replace('/login');
   }
@@ -133,6 +142,7 @@ function showShell() {
 function navigate(view, replace = false) {
   state.view = view;
   if (view !== 'chat') stopChatPolling();
+  if (view !== 'chat') resetMoodAccent();
   if (view !== 'models') {
     stopModelsTimers();
     _modelsState.routingDirty = false;
@@ -150,6 +160,263 @@ window.addEventListener('hashchange', () => {
 });
 
 /* --------------------------------------------------------------
+   Boot sequence — bloom loader
+   --------------------------------------------------------------
+   The server exposes /api/status.boot as a dict of subsystems:
+     { memory, mic, tts, vts, self_model, discord }
+   Each entry has { state, detail } where state is one of:
+     "loading" | "ready" | "skipped" | "error"
+   boot.complete is true when every subsystem is in a terminal
+   state. If the server doesn't send a boot block at all, we
+   treat the app as already booted and skip the loader.
+   -------------------------------------------------------------- */
+const _bootState = {
+  ready: false,
+  pollTimer: null,
+  skipShown: false,
+  startedAt: 0,
+};
+
+const BOOT_LABELS = {
+  memory:     'memory',
+  mic:        'microphone',
+  tts:        'voice',
+  vts:        'avatar',
+  self_model: 'self-model',
+  discord:    'discord',
+};
+
+const BOOT_STATE_LABEL = {
+  ready:   'ready',
+  loading: '…',
+  skipped: 'skipped',
+  error:   'failed',
+};
+
+const MOOD_ACCENTS = {
+  happy:     { color: '#f0883e', glow: '240, 136, 62'  },
+  delighted: { color: '#f0883e', glow: '240, 136, 62'  },
+  excited:   { color: '#f778ba', glow: '247, 120, 186' },
+  laughing:  { color: '#f778ba', glow: '247, 120, 186' },
+  amused:    { color: '#f0a030', glow: '240, 160, 48'  },
+  sad:       { color: '#58a6ff', glow: '88, 166, 255'  },
+  unhappy:   { color: '#58a6ff', glow: '88, 166, 255'  },
+  angry:     { color: '#f85149', glow: '248, 81, 73'   },
+  frustrated:{ color: '#f85149', glow: '248, 81, 73'   },
+  confused:  { color: '#a371f7', glow: '163, 113, 247' },
+  uncertain: { color: '#a371f7', glow: '163, 113, 247' },
+  surprised: { color: '#56d4dd', glow: '86, 212, 221'  },
+  calm:      { color: '#7ee787', glow: '126, 231, 135' },
+  satisfied: { color: '#7ee787', glow: '126, 231, 135' },
+  proud:     { color: '#7ee787', glow: '126, 231, 135' },
+  grateful:  { color: '#7ee787', glow: '126, 231, 135' },
+};
+
+const MOOD_EMOJI = {
+  happy:     '😊',
+  delighted: '✨',
+  excited:   '⭐',
+  laughing:  '😄',
+  amused:    '🙂',
+  sad:       '🌧️',
+  unhappy:   '☁️',
+  angry:     '🔥',
+  frustrated:'😤',
+  confused:  '💭',
+  uncertain: '🤔',
+  surprised: '😲',
+  calm:      '🌙',
+  satisfied: '😌',
+  proud:     '💪',
+  grateful:  '💗',
+};
+
+const DEFAULT_ACCENT = { color: '#58a6ff', glow: '88, 166, 255' };
+
+let _moodResetTimer = null;
+let _currentMood = null;
+
+function initBootLoader() {
+  const loader = document.getElementById('boot-loader');
+  const stepsEl = document.getElementById('boot-steps');
+  const skipBtn = document.getElementById('boot-skip');
+
+  if (!loader || !stepsEl) return;
+
+  loader.classList.remove('hidden');
+  _bootState.startedAt = Date.now();
+
+  stepsEl.innerHTML = Object.entries(BOOT_LABELS).map(([key, label]) =>
+    `<li data-subsystem="${key}" data-state="loading">` +
+    `<span>${label}</span>` +
+    `<span class="state">…</span>` +
+    `</li>`
+  ).join('');
+
+  if (skipBtn) {
+    skipBtn.classList.add('hidden');
+    skipBtn.addEventListener('click', () => finishBootLoader());
+  }
+}
+
+function updateBloomFromBoot(boot) {
+  if (!boot) {
+    // No boot block from the server — skip immediately.
+    finishBootLoader();
+    return;
+  }
+
+  const stepsEl = document.getElementById('boot-steps');
+  if (stepsEl) {
+    for (const [key] of Object.entries(BOOT_LABELS)) {
+      const li = stepsEl.querySelector(`[data-subsystem="${key}"]`);
+      if (!li) continue;
+      const s = boot[key] || { state: 'loading', detail: '' };
+      li.dataset.state = s.state;
+      const stateEl = li.querySelector('.state');
+      if (stateEl) {
+        stateEl.textContent = BOOT_STATE_LABEL[s.state] || s.state;
+        if (s.detail) stateEl.title = s.detail;
+      }
+    }
+  }
+
+  const keys = Object.keys(BOOT_LABELS);
+  const done = keys.filter(k => {
+    const s = boot[k] || {};
+    return s.state === 'ready' || s.state === 'skipped' || s.state === 'error';
+  }).length;
+  const pct = done / keys.length;
+
+  const flower = document.querySelector('.boot-flower');
+  if (flower) flower.style.setProperty('--bloom', pct.toFixed(3));
+
+  // Skip button after 3s of waiting
+  if (!_bootState.skipShown && Date.now() - _bootState.startedAt > 3000) {
+    _bootState.skipShown = true;
+    const skipBtn = document.getElementById('boot-skip');
+    if (skipBtn) skipBtn.classList.remove('hidden');
+  }
+
+  if (boot.complete && !_bootState.ready) {
+    finishBootLoader();
+  }
+}
+
+async function pollBootStatus() {
+  if (_bootState.ready) return;
+
+  try {
+    const res = await api('/api/status');
+    state.status = res;
+
+    // Sidebar status pills update from the same payload
+    updateStatusPills(res.boot || null);
+
+    updateBloomFromBoot(res.boot || null);
+  } catch {
+    // Server might still be starting up — retry next tick.
+  }
+}
+
+function finishBootLoader() {
+  if (_bootState.ready) return;
+  _bootState.ready = true;
+
+  if (_bootState.pollTimer) {
+    clearInterval(_bootState.pollTimer);
+    _bootState.pollTimer = null;
+  }
+
+  const flower = document.querySelector('.boot-flower');
+  if (flower) flower.classList.add('complete');
+
+  setTimeout(() => {
+    const loader = document.getElementById('boot-loader');
+    if (!loader) return;
+    loader.classList.add('exit');
+    setTimeout(() => loader.remove(), 700);
+  }, 550);
+
+  // Populate pills right away so they aren't blank once the
+  // loader finishes.
+  updateStatusPills(state.status?.boot || null);
+}
+
+function updateStatusPills(boot) {
+  const map = { vts: 'dot-vts', mic: 'dot-mic' };
+
+  for (const [key, id] of Object.entries(map)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const st = (boot && boot[key] && boot[key].state) || null;
+    el.className = 'dot' + (
+      st === 'ready'   ? ' ok'  :
+      st === 'error'   ? ' err' :
+      st === 'loading' ? ' warn' :
+      st === 'skipped' ? ''     :
+      ''
+    );
+  }
+
+  // Ollama: derived from whether the models endpoint responds.
+  // Cheap check — the boot payload may include it in the future.
+  const ollamaEl = document.getElementById('dot-ollama');
+  if (ollamaEl) {
+    if (!ollamaEl.dataset.checked) {
+      ollamaEl.dataset.checked = '1';
+      api('/api/models').then(() => {
+        ollamaEl.className = 'dot ok';
+      }).catch(() => {
+        ollamaEl.className = 'dot err';
+      });
+    }
+  }
+}
+
+/* --------------------------------------------------------------
+   Mood-reactive accent — applied on the chat page only
+   -------------------------------------------------------------- */
+function applyMoodAccent(tags) {
+  if (state.view !== 'chat') return;
+  if (!tags || !tags.length) return;
+
+  const tag = tags[tags.length - 1].toLowerCase();
+  const mood = MOOD_ACCENTS[tag];
+
+  if (!mood) return;
+  if (_currentMood === tag) return;
+
+  _currentMood = tag;
+  document.documentElement.style.setProperty('--accent', mood.color);
+  document.documentElement.style.setProperty(
+    '--accent-bg', `rgba(${mood.glow}, 0.12)`
+  );
+
+  const chip = document.getElementById('mood-chip');
+  const emoji = document.getElementById('mood-emoji');
+  const label = document.getElementById('mood-label');
+  if (chip && emoji && label) {
+    emoji.textContent = MOOD_EMOJI[tag] || '🌙';
+    label.textContent = tag;
+    chip.classList.add('active');
+  }
+
+  clearTimeout(_moodResetTimer);
+  _moodResetTimer = setTimeout(resetMoodAccent, 8000);
+}
+
+function resetMoodAccent() {
+  _currentMood = null;
+  document.documentElement.style.setProperty('--accent', DEFAULT_ACCENT.color);
+  document.documentElement.style.setProperty(
+    '--accent-bg', `rgba(${DEFAULT_ACCENT.glow}, 0.12)`
+  );
+  const chip = document.getElementById('mood-chip');
+  if (chip) chip.classList.remove('active');
+}
+
+/* --------------------------------------------------------------
    Status polling
    -------------------------------------------------------------- */
 const _statusFp = { value: null };
@@ -159,6 +426,9 @@ async function startStatusPolling() {
     try {
       const s = await api('/api/status');
       state.status = s;
+
+      // Sidebar pills react to boot state on every poll
+      if (s.boot) updateStatusPills(s.boot);
 
       const uiSlice = {
         agent_mode:  !!s.agent_mode,
@@ -318,6 +588,10 @@ async function renderChatView(main) {
         <div class="chat-status">
           <button class="mode-chip" id="agent-chip"
                   title="Toggle agent mode">⚡ Agent mode: OFF</button>
+          <span class="mood-chip" id="mood-chip" title="Lumi's current mood">
+            <span class="mood-emoji" id="mood-emoji">🌙</span>
+            <span id="mood-label">calm</span>
+          </span>
           <button class="mode-chip" id="tts-toggle"
                   title="Toggle voice playback in this tab">🔇 Voice: OFF</button>
           <button class="mode-chip" id="mic-toggle"
@@ -437,9 +711,19 @@ function renderChatMessage(msg, container = null) {
 
   const avatar = document.createElement('div');
   avatar.className = 'msg-avatar';
-  avatar.textContent = role === 'user'
-    ? (state.user?.display_name || '?').slice(0, 1).toUpperCase()
-    : '◆';
+  if (role === 'assistant') {
+    const img = document.createElement('img');
+    img.src = '/web/Lumi.png';
+    img.alt = '';
+    img.onerror = () => {
+      img.remove();
+      avatar.textContent = '◆';
+    };
+    avatar.appendChild(img);
+  } else {
+    avatar.textContent = (state.user?.display_name || '?')
+      .slice(0, 1).toUpperCase();
+  }
   div.appendChild(avatar);
 
   const bubble = document.createElement('div');
@@ -451,6 +735,7 @@ function renderChatMessage(msg, container = null) {
   const tags = [...raw.matchAll(tagRe)]
     .map(m => m[1].toLowerCase())
     .filter(t => isCanonicalTag(t));
+
   if (tags.length) {
     const tagRow = document.createElement('div');
     tagRow.className = 'msg-tags';
@@ -491,6 +776,13 @@ function renderChatMessage(msg, container = null) {
 
   div.appendChild(bubble);
   scroll.appendChild(div);
+
+  // After appending, if this was the newest assistant message and
+  // it carries an emotion tag, drive the accent.
+  if (role === 'assistant' && tags.length &&
+      div === scroll.lastElementChild) {
+    applyMoodAccent(tags);
+  }
 }
 
 const CANONICAL_TAGS = new Set([
