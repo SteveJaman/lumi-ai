@@ -229,8 +229,7 @@ const BOOT_LABELS = {
   mic:        'microphone',
   tts:        'voice',
   vts:        'avatar',
-  self_model: 'self-model',
-  discord:    'discord',
+  //  discord:    'discord',
 };
 
 const BOOT_STATE_LABEL = {
@@ -345,8 +344,18 @@ function updateBloomFromBoot(boot) {
     if (skipBtn) skipBtn.classList.remove('hidden');
   }
 
-  if (boot.complete && !_bootState.ready) {
-    finishBootLoader();
+  // If all tracked subsystems are done, let the user click to enter
+  if (done === keys.length && !_bootState.ready) {
+    const titleEl = document.getElementById('boot-title');
+    if (titleEl) {
+      titleEl.textContent = 'ready — click to enter ✨';
+      titleEl.style.cursor = 'pointer';
+      titleEl.onclick = () => finishBootLoader();
+    }
+    if (flower) {
+      flower.style.cursor = 'pointer';
+      flower.onclick = () => finishBootLoader();
+    }
   }
 }
 
@@ -383,7 +392,7 @@ function finishBootLoader() {
     if (!loader) return;
     loader.classList.add('exit');
     setTimeout(() => loader.remove(), 700);
-  }, 550);
+  }, 1000);
 
   // Populate pills right away so they aren't blank once the
   // loader finishes.
@@ -505,12 +514,67 @@ function updateAgentChip() {
     : 'Agent mode is OFF — conversation only. Click to enable.';
 }
 
+let _thinkingBubbleEl = null;
+let _lastSeenHistoryLength = 0;
+
 function updateTypingIndicator() {
-  const el = $('#chat-typing');
-  if (!el) return;
-  el.textContent = state.status.ai_thinking
-    ? 'Lumi is thinking…'
-    : (state.status.ai_speaking ? 'Lumi is speaking…' : '');
+  const scroll = $('#chat-scroll');
+  if (!scroll) return;
+
+  const isThinking = !!state.status.ai_thinking;
+  const historyLen = state.history.length;
+  const lastMsg = historyLen ? state.history[historyLen - 1] : null;
+
+  // History grew AND the newest entry is from the assistant → the
+  // reply landed, tear the bubble down. A user message also grows
+  // history but must not be mistaken for a reply.
+  const gotResponse =
+    historyLen > _lastSeenHistoryLength &&
+    lastMsg && lastMsg.role === 'assistant';
+
+  _lastSeenHistoryLength = historyLen;
+
+  if (_thinkingBubbleEl) {
+    if (!_thinkingBubbleEl.isConnected) {
+      // renderChat() wiped the scroll container out from under us.
+      _thinkingBubbleEl = null;
+    } else if (!isThinking || gotResponse) {
+      _thinkingBubbleEl.remove();
+      _thinkingBubbleEl = null;
+    }
+  }
+
+  // Nothing to do if we're not thinking, already show a bubble,
+  // or just watched the reply come in.
+  if (!isThinking || _thinkingBubbleEl || gotResponse) return;
+
+  const wasAtBottom =
+    (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) < 80;
+
+  const div = document.createElement('div');
+  div.className = 'msg assistant thinking-msg';
+
+  const avatar = document.createElement('div');
+  avatar.className = 'msg-avatar';
+  const img = document.createElement('img');
+  img.src = '/web/Lumi.png';
+  img.alt = '';
+  img.onerror = () => { img.remove(); avatar.textContent = '◆'; };
+  avatar.appendChild(img);
+  div.appendChild(avatar);
+
+  const bubble = document.createElement('div');
+  bubble.className = 'msg-bubble thinking-bubble';
+  bubble.innerHTML = `
+    <span class="dot-pulse">
+      <span></span><span></span><span></span>
+    </span>
+  `;
+  div.appendChild(bubble);
+  scroll.appendChild(div);
+
+  _thinkingBubbleEl = div;
+  if (wasAtBottom) scroll.scrollTop = scroll.scrollHeight;
 }
 
 async function toggleAgentMode() {
@@ -570,6 +634,8 @@ function startChatPolling() {
   stopChatPolling();
   _chatFp = null;
   _chatRenderedCount = 0;
+  _thinkingBubbleEl = null;        // ← new
+  _lastSeenHistoryLength = 0;      // ← new
   refreshHistory();
   _chatPollTimer = setInterval(refreshHistory, 1500);
 }
@@ -653,7 +719,6 @@ async function renderChatView(main) {
                   title="Toggle voice playback in this tab">🔇 Voice: OFF</button>
           <button class="mode-chip" id="mic-toggle"
                   title="Hold to record a voice message">🎤 Hold to talk</button>
-          <span class="muted" id="chat-typing"></span>
           <span class="grow"></span>
           <span class="mood-chip" id="mood-chip" title="Lumi's current mood">
             <span class="mood-emoji" id="mood-emoji">🌙</span>
@@ -755,10 +820,12 @@ function renderChat() {
     (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) < 80;
 
   scroll.innerHTML = '';
+  _thinkingBubbleEl = null;                         // ← new
   state.history.forEach(m => renderChatMessage(m, scroll));
 
   _chatRenderedCount = state.history.length;
   _chatFp = fingerprint(state.history);
+  _lastSeenHistoryLength = state.history.length;    // ← new
 
   if (wasAtBottom) scroll.scrollTop = scroll.scrollHeight;
 }
