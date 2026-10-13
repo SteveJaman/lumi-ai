@@ -95,8 +95,8 @@ body {
     height: 100%;
     object-fit: cover;
     object-position: center;
-    opacity: 0.55;                              /* dimmed for legibility */
-    filter: blur(1px) saturate(0.9) brightness(0.72);
+    opacity: 0.40;                              /* dimmed for legibility */
+    filter: blur(3px) saturate(0.9) brightness(0.65);
     z-index: 0;
     pointer-events: none;
 }
