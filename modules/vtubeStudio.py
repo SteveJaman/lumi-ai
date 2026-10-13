@@ -47,13 +47,12 @@ and produces a ~1/3-scale body lean from every head movement.
 Motion architecture (v6)
 ------------------------
   Head      : 3-octave sine sway, dampened slightly during speech
-  Speech bob: fast Y-axis bob keyed to the mouth envelope (4.5 Hz)
   Body      : via head (shared VTS Input, see above)
-  Eyes      : discrete saccades, biased to center when speaking
+  Eyes      : discrete saccades, biased to center when speaking, wider when idle
   Brows     : sticky emotion baseline + idle noise + speech emphasis,
               deduped to a single "Brows" write per frame
   Arms      : disabled (no VTS Input exists for arm params on ariu)
-  Blink     : scheduled, occasionally double-blinks
+  Blink     : scheduled, occasionally double-blinks, relaxed to 85% when idle
 
 Mode dispatch
 -------------
@@ -460,7 +459,6 @@ class _OrganicMotion:
         self._bw = [(rnd(0, tau), 0.016), (rnd(0, tau), 0.029)]
         self._head_hist = []
         self._LAG_S = 0.18
-        self._bob_env = 0.0
 
     @staticmethod
     def _sum(terms, t):
@@ -496,17 +494,6 @@ class _OrganicMotion:
         bw = self._sum(self._bw, t) * 2.0
         return bx, by, bz, bw
 
-    def speech_bob(self, t, speaking, mouth_level):
-        if not speaking:
-            self._bob_env *= 0.85
-            return 0.0
-        target = mouth_level
-        if target > self._bob_env:
-            self._bob_env += (target - self._bob_env) * 0.55
-        else:
-            self._bob_env += (target - self._bob_env) * 0.25
-        return math.sin(t * 4.5 * math.tau) * self._bob_env * 2.5
-
 
 # ===============================================================
 # SACCADE SCHEDULER
@@ -526,32 +513,47 @@ class _SaccadeScheduler:
         self._dur = self.SNAP_S
         self._next_at = 0.0
 
-    def _pick_new_target(self, t, gaze_bias_x, gaze_bias_y, lively):
+    def _pick_new_target(self, t, gaze_bias_x, gaze_bias_y, lively, idle):
         self._start_x = self._cur_x
         self._start_y = self._cur_y
         self._start_at = t
         r = random.random()
-        if r < 0.45:
-            mag_x, mag_y = 0.12, 0.10
-            self._dur = self.SNAP_S
-            hold = random.uniform(0.35, 1.40)
-        elif r < 0.85:
-            mag_x, mag_y = 0.45, 0.35
-            self._dur = self.SNAP_S
-            hold = random.uniform(0.45, 1.60)
+        
+        if idle:
+            # Bored / drifting attention: slower, wider drifts
+            if r < 0.4:
+                mag_x, mag_y = 0.30, 0.20
+                self._dur = self.SOFT_S * 1.5
+                hold = random.uniform(1.0, 3.5)
+            else:
+                mag_x, mag_y = 0.85, 0.70
+                self._dur = self.SOFT_S * 2.5
+                hold = random.uniform(2.5, 6.0)
         else:
-            mag_x, mag_y = 0.85, 0.60
-            self._dur = self.SOFT_S
-            hold = random.uniform(0.60, 2.20)
+            # Active attention: quick, focused snaps
+            if r < 0.45:
+                mag_x, mag_y = 0.12, 0.10
+                self._dur = self.SNAP_S
+                hold = random.uniform(0.35, 1.40)
+            elif r < 0.85:
+                mag_x, mag_y = 0.45, 0.35
+                self._dur = self.SNAP_S
+                hold = random.uniform(0.45, 1.60)
+            else:
+                mag_x, mag_y = 0.85, 0.60
+                self._dur = self.SOFT_S
+                hold = random.uniform(0.60, 2.20)
+                
         self._tgt_x = max(-1.0, min(1.0, random.uniform(-mag_x, mag_x) + gaze_bias_x))
         self._tgt_y = max(-1.0, min(1.0, random.uniform(-mag_y, mag_y) + gaze_bias_y))
-        if lively:
+        
+        if lively and not idle:
             hold *= 0.7
         self._next_at = t + hold
 
-    def value(self, t, gaze_bias_x=0.0, gaze_bias_y=0.0, lively=False):
+    def value(self, t, gaze_bias_x=0.0, gaze_bias_y=0.0, lively=False, idle=False):
         if self._next_at == 0.0 or t >= self._next_at:
-            self._pick_new_target(t, gaze_bias_x, gaze_bias_y, lively)
+            self._pick_new_target(t, gaze_bias_x, gaze_bias_y, lively, idle)
         elapsed = t - self._start_at
         k = min(1.0, elapsed / self._dur) if self._dur > 0 else 1.0
         e = 1.0 - (1.0 - k) ** 3
@@ -722,6 +724,11 @@ class VtubeStudio(Module):
         }
         self.vts = pyvts.vts(plugin_info=plugin_info)
 
+        # Tracking variables for idle/bored states
+        self._last_interaction_time = time.time()
+        self._is_idle = False
+        self._idle_start_time = 0.0
+
     # ---------------------------------------------------------------
     # Connection / Authentication
     # ---------------------------------------------------------------
@@ -778,29 +785,6 @@ class VtubeStudio(Module):
     # ---------------------------------------------------------------
     # Parameter discovery + verification
     # ---------------------------------------------------------------
-    async def _fetch_live2d_params(self):
-        try:
-            resp = await self.vts.request({
-                "apiName": "VTubeStudioPublicAPI",
-                "apiVersion": "1.0",
-                "requestID": "LumiParamList",
-                "messageType": "Live2DParameterListRequest",
-                "data": {},
-            })
-        except Exception as e:
-            hub_emit(self.signals, "vts",
-                     f"Live2DParameterListRequest failed: {e}",
-                     level="warn")
-            return set()
-        if not resp or resp.get("messageType") == "APIError":
-            return set()
-        names = set()
-        for p in resp.get("data", {}).get("parameters", []):
-            n = p.get("name")
-            if n:
-                names.add(n)
-        return names
-
     async def _test_injection(self, param_id, value, mode):
         """Return (ok, error_message_or_None)."""
         try:
@@ -838,78 +822,39 @@ class VtubeStudio(Module):
             return "add", None
         return None, f"set→[{err_set}] add→[{err_add}]"
 
-    async def _resolve_from_list(self, candidates_dict, available_names):
-        """Resolve each slot by looking for candidate names in the
-        model's exposed param list, in candidate order."""
-        result = {}
-        for slot, names in candidates_dict.items():
-            for name in names:
-                if available_names and name in available_names:
-                    result[slot] = name
-                    break
-        return result
+    async def _probe_candidates(self, candidates):
+        """Try each candidate name blindly; return first that VTS accepts."""
+        for name in candidates:
+            ok, _ = await self._test_injection(name, 0.0, "set")
+            if ok:
+                return name
+        return None
 
     async def detect_parameter_names(self):
-        hub_emit(self.signals, "vts", "probing parameter names…")
-        available = await self._fetch_live2d_params()
-        if available:
-            hub_emit(
-                self.signals, "vts",
-                f"model exposes {len(available)} Live2D params"
-            )
-        else:
-            hub_emit(self.signals, "vts",
-                     "could not read model param list — probing blind",
-                     level="warn")
+        hub_emit(self.signals, "vts", "probing parameter names blindly…")
 
         # ---- Head ----
-        self._head_names = await self._resolve_from_list(
-            HEAD_NAME_CANDIDATES, available
-        )
-        # Blind probe for any head slot the list resolution missed
-        for slot, names in HEAD_NAME_CANDIDATES.items():
-            if slot in self._head_names:
-                continue
-            for name in names:
-                ok, _ = await self._test_injection(name, 0.0, "set")
-                if ok:
-                    self._head_names[slot] = name
-                    break
+        self._head_names = {}
+        for slot, candidates in HEAD_NAME_CANDIDATES.items():
+            name = await self._probe_candidates(candidates)
+            if name:
+                self._head_names[slot] = name
 
         # ---- Extra ----
-        self._extra_names = await self._resolve_from_list(
-            EXTRA_NAME_CANDIDATES, available
-        )
-        for slot, names in EXTRA_NAME_CANDIDATES.items():
-            if slot in self._extra_names:
-                continue
-            for name in names:
-                ok, _ = await self._test_injection(name, 0.0, "set")
-                if ok:
-                    self._extra_names[slot] = name
-                    break
+        self._extra_names = {}
+        for slot, candidates in EXTRA_NAME_CANDIDATES.items():
+            name = await self._probe_candidates(candidates)
+            if name:
+                self._extra_names[slot] = name
 
-        # ---- Mouth ----
-        self._mouth_name = None
-        for name in MOUTH_NAME_CANDIDATES:
-            ok, _ = await self._test_injection(name, 0.0, "set")
-            if ok:
-                self._mouth_name = name
-                break
-
-        # ---- Smile ----
-        self._smile_name = None
-        for name in SMILE_NAME_CANDIDATES:
-            ok, _ = await self._test_injection(name, 0.0, "set")
-            if ok:
-                self._smile_name = name
-                break
+        # ---- Mouth & Smile ----
+        self._mouth_name = await self._probe_candidates(MOUTH_NAME_CANDIDATES)
+        self._smile_name = await self._probe_candidates(SMILE_NAME_CANDIDATES)
 
         # ---- Verify injectability of every resolved param ----
         hub_emit(self.signals, "vts", "verifying injection modes…")
         failures = {}
 
-        # Head — no fallback; primary outputs only
         for slot in list((self._head_names or {}).keys()):
             name = self._head_names[slot]
             mode, err = await self._verify_param(name)
@@ -919,7 +864,6 @@ class VtubeStudio(Module):
                 failures[f"head.{slot}"] = f"{name} | {err}"
                 del self._head_names[slot]
 
-        # Extras — direct first, VTS Input fallback second
         for slot in list((self._extra_names or {}).keys()):
             name = self._extra_names[slot]
             mode, err = await self._verify_param(name)
@@ -933,21 +877,12 @@ class VtubeStudio(Module):
                 if fb_mode:
                     self._extra_names[slot] = fallback
                     self._param_modes[fallback] = fb_mode
-                    hub_emit(
-                        self.signals, "vts",
-                        f"slot {slot}: direct '{name}' rejected, "
-                        f"using VTS Input fallback '{fallback}' "
-                        f"(mode={fb_mode}, shared input)"
-                    )
                     continue
-                failures[f"extra.{slot}"] = (
-                    f"{name} | {err} || fallback {fallback} | {fb_err}"
-                )
+                failures[f"extra.{slot}"] = f"{name} | {err} || fallback {fallback} | {fb_err}"
             else:
                 failures[f"extra.{slot}"] = f"{name} | {err}"
             del self._extra_names[slot]
 
-        # Mouth / Smile
         if self._mouth_name:
             mode, err = await self._verify_param(self._mouth_name)
             if mode:
@@ -955,6 +890,7 @@ class VtubeStudio(Module):
             else:
                 failures["mouth"] = f"{self._mouth_name} | {err}"
                 self._mouth_name = None
+                
         if self._smile_name:
             mode, err = await self._verify_param(self._smile_name)
             if mode:
@@ -963,33 +899,15 @@ class VtubeStudio(Module):
                 failures["smile"] = f"{self._smile_name} | {err}"
                 self._smile_name = None
 
-        # Report failures with reasons
-        for k, v in failures.items():
-            hub_emit(self.signals, "vts",
-                     f"inject rejected: {k} — {v}", level="warn")
-
-        # ---- Detect head/body input sharing ----
-        # Body slots resolve to the same VTS Input as the head. Injecting
-        # both would stomp head motion every frame. We drop body slots
-        # and rely on VTS's own FaceAngleX → ParamBodyAngleX transform.
         ext = self._extra_names or {}
-        if (ext.get("bx") == "FaceAngleX"
-                and ext.get("by") == "FaceAngleY"
-                and ext.get("bz") == "FaceAngleZ"):
-            hub_emit(
-                self.signals, "vts",
-                "body shares head's VTS input — dropping separate body "
-                "injection; head sway already drives body via VTS mapping"
-            )
+        if (ext.get("bx") == "FaceAngleX" and ext.get("by") == "FaceAngleY" and ext.get("bz") == "FaceAngleZ"):
             self._extra_names.pop("bx", None)
             self._extra_names.pop("by", None)
             self._extra_names.pop("bz", None)
 
         hub_emit(
             self.signals, "vts",
-            f"detected — head:{self._head_names} "
-            f"extra:{self._extra_names} mouth:{self._mouth_name} "
-            f"smile:{self._smile_name}"
+            f"detected — head:{self._head_names} extra:{self._extra_names} mouth:{self._mouth_name} smile:{self._smile_name}"
         )
 
         if not self._head_names or len(self._head_names) < 5:
@@ -1233,6 +1151,19 @@ class VtubeStudio(Module):
         now = time.time()
         t = now - self._session_start
 
+        # ---- IDLE TIMER ----
+        if speaking:
+            self._last_interaction_time = now
+            if self._is_idle:
+                self._is_idle = False
+        else:
+            if now - self._last_interaction_time > 5.0:
+                if not self._is_idle:
+                    self._is_idle = True
+                    self._idle_start_time = now
+            else:
+                self._is_idle = False
+
         # ---- MOUTH ----
         if speaking:
             delta = self._target_mouth_open - self._current_mouth_open
@@ -1250,19 +1181,36 @@ class VtubeStudio(Module):
             except Exception:
                 pass
 
-        # ---- HEAD + BLINK + SPEECH BOB (30 Hz) ----
+        # ---- HEAD + BLINK (30 Hz) ----
         head_x = head_z = 0.0
         if now - self._last_head_tick >= 0.033 and self._head_names:
             hx, hy, hz = self._motion.head(t)
-            if speaking:
-                bob = self._motion.speech_bob(
-                    t, speaking, self._current_mouth_open
-                )
-                hy += bob
+            
+            # --- IDLE & SPEECH MODIFIERS ---
+            if self._is_idle:
+                # Gradually relax head sway the longer she's idle (bottoms out at 40% movement)
+                idle_duration = now - self._idle_start_time
+                relax_factor = max(0.4, 1.0 - (idle_duration * 0.03)) 
+                hx *= relax_factor
+                hy *= relax_factor
+                hz *= relax_factor
+            elif speaking:
+                # Just scale down the regular sway slightly while talking, no jittery bobbing!
                 hx *= 0.85
+                hy *= 0.85
                 hz *= 0.85
+                
             self._motion.tick(t, hx, hy, hz)
+            
+            # --- BLINK & EYE RELAXATION ---
             eye_open = self._blink.value(now)
+            if self._is_idle:
+                # Relax her eyelids to 55% openness when idle so she doesn't look surprised
+                eye_open *= 0.55 
+            else:
+                # Keep her eyelids slightly relaxed at 75% when she is talking/active
+                eye_open *= 0.75
+
             params = []
             for slot, val in (("x", hx), ("y", hy), ("z", hz),
                               ("el", eye_open), ("er", eye_open)):
@@ -1292,7 +1240,7 @@ class VtubeStudio(Module):
                 bias_x = 0.0
                 bias_y = 0.05 if speaking else 0.0
                 gx, gy = self._saccades.value(
-                    t, bias_x, bias_y, lively=self._is_lively
+                    t, bias_x, bias_y, lively=self._is_lively, idle=self._is_idle
                 )
                 extra.append({"id": ext["ex"], "value": gx})
                 extra.append({"id": ext["ey"], "value": gy})
