@@ -1,5 +1,5 @@
 /* ================================================================
-   Lumi Playground — dreamscape theme
+   Lumi Playground — dreamscape theme + bloom loader
    ================================================================ */
 
 :root {
@@ -30,6 +30,9 @@
 
     --radius: 22px;
     --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+    /* Bloom progress — driven by JS during model loading, 0 → 1 */
+    --bloom: 0;
 }
 
 * { box-sizing: border-box; }
@@ -62,7 +65,7 @@ body {
 }
 
 /* ================================================================
-   Background — video + dream layers
+   Background
    ================================================================ */
 
 .bg-layer {
@@ -97,13 +100,10 @@ body {
     z-index: 1;
 }
 
-/* ---- Aurora sweep ---- */
 .aurora {
     position: absolute;
-    top: -40%;
-    left: -20%;
-    width: 140%;
-    height: 90%;
+    top: -40%; left: -20%;
+    width: 140%; height: 90%;
     background:
         conic-gradient(from 200deg at 50% 100%,
             transparent 0deg,
@@ -123,7 +123,6 @@ body {
     100% { transform: rotate(-1deg) scale(1.02); opacity: 0.65; }
 }
 
-/* ---- Color orbs ---- */
 .orb {
     position: absolute;
     border-radius: 50%;
@@ -171,7 +170,6 @@ body {
     66%      { transform: translate(50px, -40px) scale(1.08); }
 }
 
-/* ---- Floating dream bubbles ---- */
 .bubbles { position: absolute; inset: 0; overflow: hidden; }
 
 .bubbles span {
@@ -206,7 +204,6 @@ body {
     100% { transform: translateY(-105vh) translateX(-10px) scale(0.8); opacity: 0; }
 }
 
-/* ---- Stars ---- */
 .stars {
     position: absolute;
     inset: 0;
@@ -230,7 +227,6 @@ body {
     50%      { opacity: 0.7; }
 }
 
-/* ---- Grain ---- */
 .grain {
     position: absolute;
     inset: 0;
@@ -240,10 +236,142 @@ body {
 }
 
 /* ================================================================
-   Layout
+   Bloom loader
    ================================================================ */
 
-#app {
+.loader {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 40px;
+    background: radial-gradient(circle at center,
+        rgba(23, 20, 38, 0.55) 0%,
+        rgba(23, 20, 38, 0.85) 70%);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    transition: opacity 0.8s ease-out, visibility 0.8s;
+}
+
+.loader.fade-out {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* ---- Flower ---- */
+.flower {
+    position: relative;
+    width: 220px;
+    height: 220px;
+    will-change: transform, opacity;
+}
+
+.flower.popped {
+    animation: flower-pop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+@keyframes flower-pop {
+    0%   { transform: scale(1);    opacity: 1;   }
+    45%  { transform: scale(1.18); opacity: 1;   }
+    100% { transform: scale(1.55); opacity: 0;   }
+}
+
+/* ---- Petals ---- */
+.petal {
+    position: absolute;
+    bottom: 50%;
+    left: 50%;
+    width: 40px;
+    height: 88px;
+    margin-left: -20px;
+    /* Bloom shape: pointed at base, rounded at tip */
+    border-radius: 50% 50% 50% 50% / 55% 55% 45% 45%;
+    background: linear-gradient(to top,
+        var(--lavender) 0%,
+        var(--teal) 55%,
+        var(--mint) 100%);
+    transform-origin: bottom center;
+    transform:
+        rotate(calc(var(--i) * 45deg))
+        scale(calc(0.12 + var(--bloom) * 0.88));
+    opacity: calc(0.25 + var(--bloom) * 0.75);
+    transition: transform 0.18s ease-out, opacity 0.25s ease-out;
+    box-shadow:
+        0 0 24px rgba(126, 224, 212, calc(0.15 + var(--bloom) * 0.35)),
+        0 0 6px  rgba(255, 255, 255, calc(0.05 + var(--bloom) * 0.15));
+    will-change: transform, opacity;
+}
+
+/* ---- Flower center ---- */
+.flower-center {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 42px;
+    height: 42px;
+    margin: -21px 0 0 -21px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%,
+        #fff8ee 0%,
+        var(--pink) 45%,
+        var(--lavender) 100%);
+    box-shadow:
+        0 0 22px rgba(255, 179, 209, calc(0.4 + var(--bloom) * 0.4)),
+        inset 0 -2px 6px rgba(0, 0, 0, 0.15);
+    transform: scale(calc(0.3 + var(--bloom) * 0.7));
+    transition: transform 0.18s ease-out;
+    z-index: 2;
+}
+
+/* ---- Glow behind flower ---- */
+.flower-glow {
+    position: absolute;
+    inset: -60px;
+    border-radius: 50%;
+    background: radial-gradient(circle,
+        rgba(126, 224, 212, 0.35) 0%,
+        rgba(196, 165, 255, 0.20) 35%,
+        transparent 70%);
+    filter: blur(20px);
+    transform: scale(calc(0.4 + var(--bloom) * 0.9));
+    opacity: calc(0.2 + var(--bloom) * 0.7);
+    transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+    pointer-events: none;
+    z-index: -1;
+}
+
+/* ---- Loader text ---- */
+.loader-text {
+    font-size: 0.9rem;
+    color: var(--fg-dim);
+    letter-spacing: 0.04em;
+    text-align: center;
+    opacity: 0;
+    animation: fade-in-up 0.8s ease-out 0.35s forwards;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    min-height: 1.3em;
+}
+
+.loader-text.error {
+    color: var(--pink);
+    animation: none;
+    opacity: 1;
+}
+
+@keyframes fade-in-up {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0);   }
+}
+
+/* ================================================================
+   App — hidden until the loader finishes
+   ================================================================ */
+
+.app {
     position: relative;
     z-index: 1;
     display: flex;
@@ -252,6 +380,34 @@ body {
     max-width: 820px;
     margin: 0 auto;
     padding: 0 16px;
+    opacity: 0;
+    transform: translateY(12px);
+    transition: opacity 1s ease-out, transform 1s ease-out;
+    pointer-events: none;
+}
+
+.app.visible {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+/* Stagger text fade-in when the app first becomes visible */
+.app.visible .message,
+.app.visible .suggestions,
+.app.visible header,
+.app.visible footer {
+    animation: text-reveal 0.7s ease-out both;
+}
+
+.app.visible header      { animation-delay: 0.10s; }
+.app.visible .message    { animation-delay: 0.28s; }
+.app.visible .suggestions{ animation-delay: 0.44s; }
+.app.visible footer      { animation-delay: 0.20s; }
+
+@keyframes text-reveal {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0);   }
 }
 
 /* ================================================================
@@ -397,11 +553,15 @@ header {
 .message {
     display: flex;
     max-width: 88%;
-    animation: pop-in 0.42s var(--spring) both;
 }
 
 .message.user      { align-self: flex-end; }
 .message.assistant { align-self: flex-start; }
+
+/* Pop-in only applies to messages added AFTER the app is visible */
+.app.visible .messages .message:not(.pre-reveal) {
+    animation: pop-in 0.42s var(--spring) both;
+}
 
 @keyframes pop-in {
     from { opacity: 0; transform: translateY(10px) scale(0.94); }
@@ -434,11 +594,9 @@ header {
     box-shadow: 0 4px 22px -12px rgba(126, 224, 212, 0.55);
 }
 
-/* ---- Copy button (assistant only) ---- */
 .copy-btn {
     position: absolute;
-    top: 6px;
-    right: 6px;
+    top: 6px; right: 6px;
     width: 24px; height: 24px;
     display: grid; place-items: center;
     background: rgba(0, 0, 0, 0.4);
@@ -453,9 +611,7 @@ header {
 }
 
 .bubble:hover .copy-btn,
-.copy-btn:focus-visible {
-    opacity: 0.75;
-}
+.copy-btn:focus-visible { opacity: 0.75; }
 
 .copy-btn:hover {
     opacity: 1;
@@ -470,7 +626,6 @@ header {
     background: rgba(126, 224, 212, 0.25);
 }
 
-/* ---- Sparkle ---- */
 .spark {
     display: inline-block;
     margin-right: 4px;
@@ -483,7 +638,6 @@ header {
     50%      { transform: scale(1.2) rotate(15deg); opacity: 0.75; }
 }
 
-/* ---- Typing indicator ---- */
 .bubble.typing {
     display: inline-flex;
     align-items: center;
@@ -521,7 +675,6 @@ header {
     30%           { transform: translateY(-6px); opacity: 1;   }
 }
 
-/* ---- Streaming cursor ---- */
 .bubble.streaming .text::after {
     content: "▍";
     display: inline-block;
@@ -541,8 +694,6 @@ header {
     flex-wrap: wrap;
     gap: 8px;
     padding: 4px 4px 12px;
-    animation: pop-in 0.6s var(--spring) both;
-    animation-delay: 0.25s;
 }
 
 .suggestions button {
@@ -566,9 +717,7 @@ header {
     transform: translateY(-1px);
 }
 
-.suggestions button:active {
-    transform: scale(0.96);
-}
+.suggestions button:active { transform: scale(0.96); }
 
 /* ================================================================
    Composer
@@ -657,67 +806,6 @@ footer { padding: 10px 0 18px; flex-shrink: 0; }
 }
 
 /* ================================================================
-   Progress bar
-   ================================================================ */
-
-.progress {
-    margin-top: 12px;
-    padding: 0 4px;
-    animation: pop-in 0.5s var(--spring) both;
-}
-
-.progress-track {
-    height: 8px;
-    background: rgba(255, 255, 255, 0.08);
-    border-radius: 4px;
-    overflow: hidden;
-    position: relative;
-    border: 1px solid var(--border);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-}
-
-.progress-fill {
-    height: 100%;
-    width: 0%;
-    background: linear-gradient(90deg,
-        var(--teal) 0%, var(--mint) 33%, var(--lavender) 66%, var(--pink) 100%);
-    background-size: 200% 100%;
-    border-radius: 4px;
-    transition: width 0.3s ease;
-    animation: shimmer 3s linear infinite;
-    position: relative;
-}
-
-.progress-fill::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(90deg,
-        transparent, rgba(255, 255, 255, 0.4), transparent);
-    animation: sweep 2s ease-in-out infinite;
-}
-
-@keyframes shimmer {
-    0%   { background-position:   0% 50%; }
-    100% { background-position: 200% 50%; }
-}
-
-@keyframes sweep {
-    0%   { transform: translateX(-100%); }
-    100% { transform: translateX(100%);  }
-}
-
-.progress-text {
-    margin-top: 8px;
-    font-size: 0.78rem;
-    color: var(--fg-dim);
-    text-align: center;
-    font-style: italic;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-}
-
-/* ================================================================
    Footnote
    ================================================================ */
 
@@ -755,4 +843,12 @@ footer { padding: 10px 0 18px; flex-shrink: 0; }
         animation: none !important;
     }
     .bg-video { display: none; }
+
+    /* Skip the flower — just show loader text */
+    .petal,
+    .flower-center,
+    .flower-glow {
+        transform: none !important;
+        opacity: 0.9 !important;
+    }
 }

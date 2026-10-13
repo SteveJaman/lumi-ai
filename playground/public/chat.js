@@ -1,8 +1,8 @@
 /**
  * Lumi Playground — client-side inference.
  *
- * Runs entirely in the visitor's browser via WebGPU. Nothing is sent
- * to any server. Uses @mlc-ai/web-llm directly through esm.run.
+ * Runs entirely in the visitor's browser via WebGPU. Nothing is
+ * sent to any server. Uses @mlc-ai/web-llm directly through esm.run.
  */
 
 import * as webllm from "https://esm.run/@mlc-ai/web-llm";
@@ -15,10 +15,11 @@ const userInput         = document.getElementById("user-input");
 const messagesContainer = document.getElementById("messages");
 const sendButton        = document.getElementById("send-button");
 const modelStatusEl     = document.getElementById("model-status");
-const progressContainer = document.getElementById("progress-container");
-const progressBar       = document.getElementById("progress-bar");
-const progressText      = document.getElementById("progress-text");
 const newChatBtn        = document.getElementById("new-chat");
+const loaderEl          = document.getElementById("loader");
+const loaderTextEl      = document.getElementById("loader-text");
+const flowerEl          = document.querySelector(".flower");
+const appEl             = document.getElementById("app");
 
 // ================================================================
 // Config
@@ -54,7 +55,7 @@ function applyEmotion(text) {
     const match = text.match(/\[(\w+)\]/);
     if (!match) return;
     const tag = match[1].toLowerCase();
-    if (tag === lastEmotionTag) return;       // no-op if unchanged
+    if (tag === lastEmotionTag) return;
     const style = EMOTION_STYLES[tag];
     if (!style) return;
 
@@ -90,7 +91,12 @@ try {
             const restored = parsed.filter(m => m.role !== "system");
             history = [history[0], ...restored];
             for (const m of restored) {
-                addMessage(m.role, m.content);
+                const { bubble } = addMessage(m.role, m.content, { preReveal: true });
+            }
+            // Hide suggestions if there's any restored history
+            if (restored.length > 0) {
+                const s = document.getElementById("suggestions");
+                if (s) s.remove();
             }
         }
     }
@@ -106,7 +112,39 @@ function persistHistory() {
 }
 
 // ================================================================
-// Status helper
+// Loader helpers
+// ================================================================
+function setLoaderText(text) {
+    if (loaderTextEl) loaderTextEl.textContent = text;
+}
+
+function setBloom(p) {
+    const clamped = Math.max(0, Math.min(1, p));
+    document.documentElement.style.setProperty("--bloom", clamped.toFixed(3));
+}
+
+// Animate --bloom from current to target over `durationMs` (for cached case)
+function animateBloomTo(target, durationMs) {
+    const current = parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue("--bloom")
+    ) || 0;
+    const start = performance.now();
+    const delta = target - current;
+
+    return new Promise(resolve => {
+        function step(now) {
+            const k = Math.min(1, (now - start) / durationMs);
+            const eased = 1 - Math.pow(1 - k, 3);   // ease-out cubic
+            setBloom(current + delta * eased);
+            if (k < 1) requestAnimationFrame(step);
+            else resolve();
+        }
+        requestAnimationFrame(step);
+    });
+}
+
+// ================================================================
+// Status pill helper (header)
 // ================================================================
 function setStatus(text, mode = "ready") {
     if (!modelStatusEl) return;
@@ -118,93 +156,120 @@ function setStatus(text, mode = "ready") {
 }
 
 // ================================================================
-// Strip Qwen3 <think> blocks and [emotion] tags from visible text
+// Strip Qwen3 <think> blocks and [emotion] tags
 // ================================================================
 function stripThink(text) {
-    // Complete <think>...</think> blocks
     let out = text.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "");
-    // Complete [emotion] tags
     out = out.replace(/\[\w+\]/g, "");
-    // Unclosed <think> still streaming
     const openThink = out.search(/<think\b/i);
     if (openThink !== -1) out = out.slice(0, openThink);
-    // Unclosed [emotion tag being typed
     out = out.replace(/\[[\w]*$/, "");
     return out.replace(/^\s+|\s+$/g, "");
 }
 
 // ================================================================
-// Model initialization
+// Model initialization + bloom reveal
 // ================================================================
 async function initializeModel() {
+    // ---- WebGPU check ----
     if (!navigator.gpu) {
-        setStatus("Needs Chrome or Edge (WebGPU required)", "error");
-        userInput.disabled = true;
-        sendButton.disabled = true;
+        setLoaderText("Needs Chrome or Edge (WebGPU required)");
+        loaderTextEl.classList.add("error");
         return;
     }
 
     try {
         const adapter = await navigator.gpu.requestAdapter();
         if (!adapter) {
-            setStatus("WebGPU unavailable — try Chrome or Edge", "error");
-            userInput.disabled = true;
-            sendButton.disabled = true;
+            setLoaderText("WebGPU unavailable — try Chrome or Edge");
+            loaderTextEl.classList.add("error");
             return;
         }
     } catch {
-        setStatus("WebGPU initialization failed", "error");
-        userInput.disabled = true;
-        sendButton.disabled = true;
+        setLoaderText("WebGPU initialization failed");
+        loaderTextEl.classList.add("error");
         return;
     }
 
-    setStatus("Preparing AI model…", "loading");
-
     try {
-        let cached = false;
-        try {
-            cached = await webllm.hasModelInCache(MODEL_ID);
-        } catch {
-            cached = false;
-        }
+        const cached = await webllm.hasModelInCache(MODEL_ID);
 
         if (!cached) {
-            progressContainer.classList.remove("hidden");
-            progressText.textContent = "downloading model…";
-            progressBar.style.width = "0%";
+            setLoaderText("planting seeds…");
+        } else {
+            setLoaderText("waking up…");
         }
 
+        // ---- Load the engine ----
         engine = await webllm.CreateMLCEngine(MODEL_ID, {
             initProgressCallback: (progress) => {
-                progressContainer.classList.remove("hidden");
-                const pct = Math.round((progress.progress || 0) * 100);
-                progressBar.style.width = `${pct}%`;
-                progressText.textContent = progress.text || `loading: ${pct}%`;
+                const p = progress.progress || 0;
+                setBloom(p);
+
+                if (progress.text) {
+                    // MLC's own text is a bit noisy — trim to something friendly
+                    const t = progress.text.toLowerCase();
+                    if (t.includes("fetch") || t.includes("download")) {
+                        const pct = Math.round(p * 100);
+                        setLoaderText(`downloading my brain… ${pct}%`);
+                    } else if (t.includes("load") || t.includes("shader")) {
+                        setLoaderText("waking up…");
+                    } else {
+                        setLoaderText(progress.text);
+                    }
+                }
             },
         });
 
-        progressContainer.classList.add("hidden");
+        // ---- Ensure the flower is fully bloomed before pop ----
+        await animateBloomTo(1.0, 400);
+        setLoaderText("hello!");
+
+        // Small beat so the completed bloom is visible
+        await new Promise(r => setTimeout(r, 300));
+
+        // ---- Pop the flower ----
+        flowerEl.classList.add("popped");
+
+        // Wait for pop animation to mostly finish
+        await new Promise(r => setTimeout(r, 450));
+
+        // ---- Fade loader out ----
+        loaderEl.classList.add("fade-out");
+
+        // ---- Reveal the app (with slight overlap so it feels continuous) ----
+        setTimeout(() => {
+            appEl.classList.add("visible");
+        }, 150);
+
+        // Cleanup: remove loader from the DOM after the fade completes
+        setTimeout(() => {
+            loaderEl.style.display = "none";
+        }, 1200);
+
+        // ---- Enable input ----
         setStatus("Model ready. Start chatting!", "ready");
         userInput.disabled = false;
         sendButton.disabled = false;
-        userInput.focus();
+        setTimeout(() => userInput.focus(), 900);
+
     } catch (error) {
         console.error("Model initialization failed:", error);
-        setStatus(`Error: ${error.message || "unknown"}`, "error");
-        progressContainer.classList.add("hidden");
+        setLoaderText(`Error: ${error.message || "unknown"}`);
+        loaderTextEl.classList.add("error");
 
+        // Offer a retry button
         const retry = document.createElement("button");
         retry.textContent = "Retry";
         retry.className = "icon-btn";
-        retry.style.marginTop = "8px";
+        retry.style.marginTop = "12px";
         retry.onclick = () => location.reload();
-        modelStatusEl.appendChild(retry);
+        loaderEl.appendChild(retry);
     }
 }
 
 // ================================================================
-// Chat submit handler
+// Chat submit
 // ================================================================
 chatForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -224,7 +289,6 @@ chatForm.addEventListener("submit", async (event) => {
     generating = true;
     sendButton.disabled = true;
 
-    // Empty assistant bubble with typing dots
     const { bubble: assistantBubble, textSpan: assistantText } =
         addMessage("assistant", "");
     assistantBubble.classList.add("typing");
@@ -246,8 +310,6 @@ chatForm.addEventListener("submit", async (event) => {
             if (!delta) continue;
 
             accumulated += delta;
-
-            // Detect emotion in the raw text before stripping
             applyEmotion(accumulated);
 
             const visible = stripThink(accumulated);
@@ -260,7 +322,6 @@ chatForm.addEventListener("submit", async (event) => {
             }
         }
 
-        // Final pass
         assistantBubble.classList.remove("streaming");
         const finalVisible = stripThink(accumulated);
 
@@ -290,7 +351,7 @@ chatForm.addEventListener("submit", async (event) => {
 });
 
 // ================================================================
-// Suggestion chips
+// Suggestions
 // ================================================================
 function hideSuggestions() {
     const el = document.getElementById("suggestions");
@@ -339,14 +400,10 @@ userInput.addEventListener("keydown", (event) => {
 // ================================================================
 // Message rendering
 // ================================================================
-/**
- * Append a message to the container.
- * Returns { bubble, textSpan } — bubble is the styled box,
- * textSpan is the streaming target so we don't wipe the copy button.
- */
-function addMessage(role, text) {
+function addMessage(role, text, opts = {}) {
     const wrap = document.createElement("div");
     wrap.classList.add("message", role);
+    if (opts.preReveal) wrap.classList.add("pre-reveal");
 
     const bubble = document.createElement("div");
     bubble.classList.add("bubble");
@@ -356,7 +413,6 @@ function addMessage(role, text) {
     textSpan.textContent = text || "";
     bubble.appendChild(textSpan);
 
-    // Copy button (assistant only)
     if (role === "assistant") {
         const copyBtn = document.createElement("button");
         copyBtn.type = "button";
