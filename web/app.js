@@ -20,6 +20,50 @@ const state = {
   _agentToggling: false,
 };
 
+/* --------------------------------------------------------------
+   Theme — light (default) / dark toggle, persisted in localStorage
+   -------------------------------------------------------------- */
+function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem('lumi-theme'); } catch {}
+
+  let theme = saved;
+  if (theme !== 'light' && theme !== 'dark') {
+    // No saved preference — match OS
+    const prefersDark = window.matchMedia
+      && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    theme = prefersDark ? 'dark' : 'light';
+  }
+  applyTheme(theme);
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  try { localStorage.setItem('lumi-theme', theme); } catch {}
+
+  const btn = document.getElementById('theme-toggle');
+  if (btn) {
+    // Icon shows the mode you'll switch TO (GitHub/Vercel convention)
+    btn.textContent = theme === 'dark' ? '☀' : '☾';
+    btn.title = theme === 'dark'
+      ? 'Switch to light mode'
+      : 'Switch to dark mode';
+  }
+}
+
+function toggleTheme() {
+  const current =
+    document.documentElement.getAttribute('data-theme') || 'light';
+  applyTheme(current === 'light' ? 'dark' : 'light');
+}
+
+// Wire the toggle once the DOM has the button
+document.addEventListener('click', (e) => {
+  if (e.target && e.target.id === 'theme-toggle') {
+    toggleTheme();
+  }
+});
+
 async function api(path, { method = 'GET', body, csrf = false } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (csrf && state.csrf) headers['X-CSRF-Token'] = state.csrf;
@@ -82,10 +126,12 @@ async function checkAuth() {
     state.csrf = me.csrf;
     state.host = me.host;
 
-    // Show the shell behind the loader so it's ready when the
-    // loader fades. If the server doesn't expose a boot block, the
-    // loader skips instantly and this behaves exactly like before.
     showShell();
+
+    // Refresh theme button icon now that the sidebar exists
+    const t = document.documentElement.getAttribute('data-theme') || 'light';
+    applyTheme(t);
+
     initBootLoader();
     await pollBootStatus();
     if (!_bootState.ready) {
@@ -143,10 +189,6 @@ function navigate(view, replace = false) {
   state.view = view;
   if (view !== 'chat') stopChatPolling();
   if (view !== 'chat') resetMoodAccent();
-
-  // Pause the chat background video when the user leaves the chat
-  const bgVideo = document.querySelector('.chat-bg-video');
-  if (bgVideo && view !== 'chat') bgVideo.pause();
 
   if (view !== 'models') {
     stopModelsTimers();
@@ -591,12 +633,14 @@ async function renderChatView(main) {
 
         <!-- Blurred video loop + stars, behind everything -->
         <div class="chat-bg" aria-hidden="true">
-          <video class="chat-bg-video"
-                 autoplay loop muted playsinline preload="auto"></video>
-          <div class="chat-bg-tint"></div>
           <div class="chat-bg-stars"></div>
           <div class="chat-bg-stars-2"></div>
-          <div class="chat-bg-vignette"></div>
+          <div class="chat-bg-rising">
+            <span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
           <div class="chat-bg-mood"></div>
         </div>
 
@@ -631,16 +675,6 @@ async function renderChatView(main) {
     </div>
   `;
 
-  // ---- Wire the background video after the DOM exists ----
-  const bgVideo = main.querySelector('.chat-bg-video');
-  if (bgVideo) {
-    const src = document.createElement('source');
-    src.src = '/web/lumi_sleeping_brb.mp4';
-    src.type = 'video/mp4';
-    bgVideo.appendChild(src);
-    bgVideo.load();
-    bgVideo.play().catch(() => {});
-  }
 
   $('#chat-host').textContent = `as ${state.host?.name || ''}`;
   updateAgentChip();
@@ -4547,6 +4581,8 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+initTheme();   // <-- new line — runs before auth so there's no flash
 
 (async () => {
   await checkAuth();
