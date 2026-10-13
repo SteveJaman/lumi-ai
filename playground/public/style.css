@@ -1,123 +1,580 @@
+/* ================================================================
+   Lumi Playground — cute theme
+   ================================================================ */
+
 :root {
-    --bg: #0e0d12;
-    --fg: #eae6f0;
-    --dim: #9a95a6;
-    --accent: #b39ddb;
-    --user-bubble: #2a2540;
-    --ai-bubble: #1a1823;
+    /* Base */
+    --bg-0: #0f0c1a;
+    --bg-1: #1a1625;
+    --bg-2: #241f33;
+
+    /* Foreground */
+    --fg:       #f5f0ff;
+    --fg-dim:   #b0a8c4;
+    --fg-faint: #6f6885;
+
+    /* Accents */
+    --teal:     #7ee0d4;
+    --teal-dim: #4fbfb3;
+    --lavender: #c4a5ff;
+    --pink:     #ffb3d1;
+    --cream:    #fff8f0;
+
+    /* Surfaces */
+    --bubble-ai:   linear-gradient(140deg, rgba(126, 224, 212, 0.12), rgba(196, 165, 255, 0.08));
+    --bubble-user: linear-gradient(140deg, rgba(255, 179, 209, 0.18), rgba(196, 165, 255, 0.12));
+    --border:      rgba(196, 165, 255, 0.15);
+    --border-glow: rgba(126, 224, 212, 0.4);
+
+    --radius: 22px;
+    --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
 }
 
 body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: var(--bg);
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+                 "Helvetica Neue", sans-serif;
+    background: var(--bg-0);
     color: var(--fg);
-    height: 100dvh;
-    display: flex;
-    flex-direction: column;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
 }
+
+.sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* ================================================================
+   Animated background
+   ================================================================ */
+
+.bg-layer {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    z-index: 0;
+    pointer-events: none;
+    background:
+        radial-gradient(ellipse 80% 60% at 50% 0%, #2a2140 0%, transparent 70%),
+        linear-gradient(180deg, var(--bg-0) 0%, var(--bg-1) 60%, var(--bg-2) 100%);
+}
+
+.orb {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: 0.35;
+    will-change: transform;
+}
+
+.orb-1 {
+    width: 460px; height: 460px;
+    background: var(--teal);
+    top: -120px; left: -140px;
+    animation: drift-1 24s ease-in-out infinite;
+}
+
+.orb-2 {
+    width: 380px; height: 380px;
+    background: var(--lavender);
+    bottom: -100px; right: -80px;
+    animation: drift-2 28s ease-in-out infinite;
+}
+
+.orb-3 {
+    width: 340px; height: 340px;
+    background: var(--pink);
+    top: 45%; left: 55%;
+    opacity: 0.22;
+    animation: drift-3 32s ease-in-out infinite;
+}
+
+@keyframes drift-1 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    50%      { transform: translate(80px, 60px) scale(1.08); }
+}
+
+@keyframes drift-2 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    50%      { transform: translate(-60px, -40px) scale(1.06); }
+}
+
+@keyframes drift-3 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33%      { transform: translate(-50px, 40px) scale(0.95); }
+    66%      { transform: translate(40px, -30px) scale(1.05); }
+}
+
+/* Twinkling star field via layered radial gradients */
+.stars {
+    position: absolute;
+    inset: 0;
+    background-image:
+        radial-gradient(1.5px 1.5px at 12% 22%, var(--cream), transparent 50%),
+        radial-gradient(1px 1px at 34% 61%, var(--teal),    transparent 50%),
+        radial-gradient(1.5px 1.5px at 68% 15%, var(--pink),   transparent 50%),
+        radial-gradient(1px 1px at 82% 42%, var(--lavender),  transparent 50%),
+        radial-gradient(1.5px 1.5px at 18% 78%, var(--cream),  transparent 50%),
+        radial-gradient(1px 1px at 52% 88%, var(--teal),    transparent 50%),
+        radial-gradient(1.5px 1.5px at 91% 71%, var(--pink),   transparent 50%),
+        radial-gradient(1px 1px at 7% 45%, var(--lavender),  transparent 50%),
+        radial-gradient(1px 1px at 44% 12%, var(--cream),  transparent 50%),
+        radial-gradient(1.5px 1.5px at 76% 92%, var(--teal),   transparent 50%);
+    opacity: 0.55;
+    animation: twinkle 5s ease-in-out infinite;
+}
+
+@keyframes twinkle {
+    0%, 100% { opacity: 0.45; }
+    50%      { opacity: 0.75; }
+}
+
+/* Fine grain/noise for texture */
+.grain {
+    position: absolute;
+    inset: 0;
+    opacity: 0.035;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+/* ================================================================
+   Layout
+   ================================================================ */
 
 #app {
+    position: relative;
+    z-index: 1;
     display: flex;
     flex-direction: column;
-    height: 100%;
-    max-width: 800px;
+    height: 100dvh;
+    max-width: 820px;
     margin: 0 auto;
-    width: 100%;
+    padding: 0 16px;
 }
+
+/* ================================================================
+   Header
+   ================================================================ */
 
 header {
-    text-align: center;
-    padding: 1rem;
-    border-bottom: 1px solid #221f2e;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 4px;
+    flex-shrink: 0;
 }
-header h1 { margin: 0; font-size: 1.5rem; }
-header #model-status { font-size: 0.85rem; color: var(--dim); margin-top: 0.25rem; }
 
-#chat-container {
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+}
+
+.avatar-wrap {
+    position: relative;
+    width: 52px;
+    height: 52px;
+    flex-shrink: 0;
+}
+
+.avatar-mini {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    object-position: center 20%;
+    border: 2px solid rgba(255, 255, 255, 0.15);
+    position: relative;
+    z-index: 2;
+    animation: bob 3.4s ease-in-out infinite;
+}
+
+@keyframes bob {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-3px); }
+}
+
+.avatar-glow {
+    position: absolute;
+    inset: -6px;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--teal) 0%, transparent 70%);
+    opacity: 0.35;
+    z-index: 1;
+    animation: pulse 3s ease-in-out infinite;
+    filter: blur(6px);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 0.25; transform: scale(1); }
+    50%      { opacity: 0.55; transform: scale(1.08); }
+}
+
+.brand-text h1 {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    background: linear-gradient(120deg, var(--teal), var(--lavender) 60%, var(--pink));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.status {
+    margin: 2px 0 0;
+    font-size: 0.78rem;
+    color: var(--fg-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.status .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--teal);
+    box-shadow: 0 0 8px var(--teal);
+    animation: blink-dot 2s ease-in-out infinite;
+    flex-shrink: 0;
+}
+
+@keyframes blink-dot {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+}
+
+.status.loading .dot { background: var(--lavender); box-shadow: 0 0 8px var(--lavender); }
+.status.ready   .dot { background: var(--teal); }
+.status.error   .dot { background: var(--pink); box-shadow: 0 0 8px var(--pink); }
+
+.icon-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--fg-dim);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    transition: all 0.2s var(--spring);
+    flex-shrink: 0;
+}
+
+.icon-btn:hover {
+    color: var(--teal);
+    border-color: var(--border-glow);
+    transform: rotate(90deg);
+}
+
+/* ================================================================
+   Messages
+   ================================================================ */
+
+.messages {
     flex: 1;
     overflow-y: auto;
-    padding: 1rem;
-}
-
-#messages {
+    padding: 12px 4px 20px;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 14px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(196, 165, 255, 0.2) transparent;
+}
+
+.messages::-webkit-scrollbar { width: 6px; }
+.messages::-webkit-scrollbar-thumb {
+    background: rgba(196, 165, 255, 0.2);
+    border-radius: 3px;
 }
 
 .message {
-    max-width: 85%;
-    padding: 0.75rem 1rem;
-    border-radius: 14px;
-    line-height: 1.45;
-    word-wrap: break-word;
+    display: flex;
+    max-width: 88%;
+    animation: pop-in 0.42s var(--spring) both;
+}
+
+.message.user      { align-self: flex-end; }
+.message.assistant { align-self: flex-start; }
+
+@keyframes pop-in {
+    from { opacity: 0; transform: translateY(10px) scale(0.94); }
+    to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+
+.bubble {
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    line-height: 1.55;
     white-space: pre-wrap;
+    word-wrap: break-word;
+    position: relative;
+    border: 1px solid var(--border);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
 }
-.message.user {
-    align-self: flex-end;
-    background: var(--user-bubble);
-    border-bottom-right-radius: 4px;
+
+.message.user .bubble {
+    background: var(--bubble-user);
+    border-bottom-right-radius: 6px;
+    border-color: rgba(255, 179, 209, 0.2);
 }
-.message.assistant {
-    align-self: flex-start;
-    background: var(--ai-bubble);
-    border-bottom-left-radius: 4px;
+
+.message.assistant .bubble {
+    background: var(--bubble-ai);
+    border-bottom-left-radius: 6px;
+    border-color: rgba(126, 224, 212, 0.2);
+    box-shadow: 0 0 24px -8px rgba(126, 224, 212, 0.35);
 }
+
+.spark {
+    display: inline-block;
+    margin-right: 4px;
+    animation: sparkle 2.6s ease-in-out infinite;
+    transform-origin: center;
+}
+
+@keyframes sparkle {
+    0%, 100% { transform: scale(1)   rotate(0deg);   opacity: 1;    }
+    50%      { transform: scale(1.2) rotate(15deg); opacity: 0.75; }
+}
+
+/* Typing dots */
+.bubble.typing {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 14px 18px;
+    min-width: 62px;
+}
+
+.bubble.typing::before,
+.bubble.typing::after,
+.bubble.typing .dot-mid {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--teal);
+    opacity: 0.6;
+    animation: typing-bounce 1.3s ease-in-out infinite;
+}
+
+.bubble.typing::after { animation-delay: 0.32s; }
+.bubble.typing .dot-mid { display: inline-block; animation-delay: 0.16s; }
+
+@keyframes typing-bounce {
+    0%, 60%, 100% { transform: translateY(0);    opacity: 0.4; }
+    30%           { transform: translateY(-6px); opacity: 1;   }
+}
+
+/* ================================================================
+   Composer
+   ================================================================ */
 
 footer {
-    padding: 0.75rem 1rem;
-    border-top: 1px solid #221f2e;
+    padding: 10px 0 18px;
+    flex-shrink: 0;
 }
 
-#chat-form {
+.composer {
     display: flex;
-    gap: 0.5rem;
+    align-items: flex-end;
+    gap: 10px;
+    padding: 8px 8px 8px 18px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: 26px;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    transition: border-color 0.25s, box-shadow 0.25s;
+}
+
+.composer:focus-within {
+    border-color: var(--border-glow);
+    box-shadow: 0 0 0 3px rgba(126, 224, 212, 0.08),
+                0 0 26px -8px rgba(126, 224, 212, 0.5);
 }
 
 #user-input {
     flex: 1;
-    background: #1a1823;
+    border: none;
+    background: transparent;
     color: var(--fg);
-    border: 1px solid #2a2540;
-    border-radius: 10px;
-    padding: 0.6rem 0.8rem;
+    font: inherit;
     font-size: 0.95rem;
+    line-height: 1.5;
+    padding: 8px 0;
+    resize: none;
+    max-height: 140px;
+    outline: none;
+    scrollbar-width: thin;
 }
-#user-input:focus { outline: none; border-color: var(--accent); }
+
+#user-input::placeholder {
+    color: var(--fg-faint);
+    font-style: italic;
+}
 
 #send-button {
-    padding: 0.6rem 1.2rem;
-    background: var(--accent);
-    color: #1a1823;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px;
+    background: linear-gradient(120deg, var(--teal), var(--lavender));
+    color: #1a1625;
     border: none;
-    border-radius: 10px;
+    border-radius: 20px;
     font-weight: 600;
+    font-size: 0.9rem;
     cursor: pointer;
+    transition: transform 0.15s var(--spring),
+                box-shadow 0.25s,
+                opacity 0.2s;
+    box-shadow: 0 4px 18px -6px rgba(126, 224, 212, 0.6);
+    flex-shrink: 0;
+    min-width: 90px;
+    justify-content: center;
 }
-#send-button:disabled { opacity: 0.5; cursor: default; }
 
-#progress-container {
-    margin-top: 0.5rem;
-    background: #1a1823;
-    border-radius: 8px;
+#send-button:hover:not(:disabled) {
+    transform: translateY(-1px) scale(1.03);
+    box-shadow: 0 6px 24px -6px rgba(126, 224, 212, 0.8);
+}
+
+#send-button:active:not(:disabled) {
+    transform: scale(0.97);
+}
+
+#send-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+#send-button .icon-send { display: none; }
+#send-button .label    { display: inline; }
+
+@media (max-width: 520px) {
+    #send-button { min-width: 48px; padding: 10px 12px; }
+    #send-button .label    { display: none; }
+    #send-button .icon-send { display: block; }
+}
+
+/* ================================================================
+   Progress bar
+   ================================================================ */
+
+.progress {
+    margin-top: 12px;
+    padding: 0 4px;
+    animation: pop-in 0.5s var(--spring) both;
+}
+
+.progress-track {
+    height: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
     overflow: hidden;
     position: relative;
-    height: 28px;
+    border: 1px solid var(--border);
 }
-#progress-bar {
+
+.progress-fill {
     height: 100%;
     width: 0%;
-    background: var(--accent);
-    transition: width 0.2s ease;
+    background: linear-gradient(90deg, var(--teal), var(--lavender), var(--pink));
+    background-size: 200% 100%;
+    border-radius: 4px;
+    transition: width 0.3s ease;
+    animation: shimmer 2.4s linear infinite;
+    position: relative;
 }
-#progress-text {
+
+.progress-fill::after {
+    content: "";
     position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    font-size: 0.75rem;
-    color: #1a1823;
-    font-weight: 600;
+    inset: 0;
+    background: linear-gradient(90deg,
+        transparent,
+        rgba(255, 255, 255, 0.35),
+        transparent);
+    animation: sweep 1.8s ease-in-out infinite;
 }
-.hidden { display: none; }
+
+@keyframes shimmer {
+    0%   { background-position:   0% 50%; }
+    100% { background-position: 200% 50%; }
+}
+
+@keyframes sweep {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(100%);  }
+}
+
+.progress-text {
+    margin-top: 8px;
+    font-size: 0.78rem;
+    color: var(--fg-dim);
+    text-align: center;
+    font-style: italic;
+}
+
+/* ================================================================
+   Footnote
+   ================================================================ */
+
+.footnote {
+    margin: 14px 0 0;
+    text-align: center;
+    font-size: 0.72rem;
+    color: var(--fg-faint);
+}
+
+.footnote a {
+    color: var(--fg-dim);
+    text-decoration: none;
+    border-bottom: 1px dashed rgba(196, 165, 255, 0.3);
+    transition: color 0.2s, border-color 0.2s;
+}
+
+.footnote a:hover {
+    color: var(--teal);
+    border-color: var(--teal);
+}
+
+.hidden { display: none !important; }
+
+/* ================================================================
+   Reduced motion
+   ================================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+    .orb, .stars, .avatar-mini, .avatar-glow, .spark {
+        animation: none !important;
+    }
+}
