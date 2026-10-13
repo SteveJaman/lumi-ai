@@ -96,6 +96,86 @@ function stripThink(text) {
 }
 
 // ================================================================
+// Background video loop trim
+// ----------------------------------------------------------------
+// The sleeping Lumi clip is longer than we want to loop. Play only
+// 0 → 5.5s, then jump back to 0. Driven by requestAnimationFrame
+// (60fps) instead of the timeupdate event (~4fps) so the cut is
+// frame-accurate and doesn't visibly jitter.
+// ================================================================
+
+const VIDEO_LOOP_START = 0.0;   // seconds — where to jump back to
+const VIDEO_LOOP_END   = 5.5;   // seconds — where to cut back to start
+
+function attachVideoLoop() {
+    const vid = document.querySelector(".bg-video");
+    if (!vid) return;
+
+    function setup() {
+        // If the source clip is already shorter than our loop end,
+        // just use native loop and skip the manual work.
+        if (!isFinite(vid.duration) || vid.duration <= VIDEO_LOOP_END + 0.1) {
+            vid.loop = true;
+            return;
+        }
+
+        // Manual sub-range loop — remove the native `loop` attribute
+        // so it doesn't fight us by seeking to the very end.
+        vid.removeAttribute("loop");
+
+        let rafId = null;
+
+        function tick() {
+            // If we've passed the loop end, snap back to the start
+            if (vid.currentTime >= VIDEO_LOOP_END) {
+                vid.currentTime = VIDEO_LOOP_START;
+            }
+            rafId = requestAnimationFrame(tick);
+        }
+
+        function start() {
+            if (rafId === null) rafId = requestAnimationFrame(tick);
+        }
+
+        function stop() {
+            if (rafId !== null) {
+                cancelAnimationFrame(rafId);
+                rafId = null;
+            }
+        }
+
+        vid.addEventListener("play",  start);
+        vid.addEventListener("pause", stop);
+        vid.addEventListener("ended", stop);
+
+        // In case the video is already playing when we get here
+        if (!vid.paused) start();
+    }
+
+    // Metadata must be loaded before `duration` is known
+    if (vid.readyState >= 1) {
+        setup();
+    } else {
+        vid.addEventListener("loadedmetadata", setup, { once: true });
+    }
+}
+
+// Also pause the loop when the tab loses focus (saves CPU + battery)
+document.addEventListener("visibilitychange", () => {
+    const vid = document.querySelector(".bg-video");
+    if (!vid) return;
+    if (document.hidden) vid.pause();
+    else vid.play().catch(() => {});
+});
+
+// Kick off once the DOM is ready
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", attachVideoLoop);
+} else {
+    attachVideoLoop();
+}
+
+// ================================================================
 // Model initialization
 // ================================================================
 async function initializeModel() {
