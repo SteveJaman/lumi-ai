@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Title -->
+    <title>Lumi — Playground</title>
+
+    <!-- Primary meta -->
+    <meta name="description" content="Meet Lumi — a hyper-expressive AI companion. Chat with her in your browser. No install, no signup, no server.">
+    <meta name="theme-color" content="#0e0d12">
+
+    <!-- Icons -->
+    <link rel="icon" href="/favicon.png" type="image/png">
+    <link rel="apple-touch-icon" href="/Lumi.png">
+    <link rel="manifest" href="/manifest.webmanifest">
+
+    <!-- Open Graph (Discord, iMessage, Facebook, LinkedIn) -->
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Lumi — Playground">
+    <meta property="og:description" content="Chat with Lumi. Runs entirely in your browser.">
+    <meta property="og:image" content="/Lumi.png">
+    <meta property="og:url" content="https://lumi-playground.vercel.app/">
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Lumi — Playground">
+    <meta name="twitter:description" content="Chat with Lumi. Runs entirely in your browser.">
+    <meta name="twitter:image" content="/Lumi.png">
+
+    <!-- Existing stylesheet link should be here -->
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>Lumi Playground</h1>
+            <div id="model-status">AI runs entirely on your device.</div>
+        </header>
+        <main id="chat-container">
+            <div id="messages">
+                <!-- Chat messages will be inserted here -->
+            </div>
+        </main>
+        <footer>
+            <form id="chat-form">
+                <input type="text" id="user-input" placeholder="Say something to Lumi..." autocomplete="off">
+                <button type="submit" id="send-button">Send</button>
+            </form>
+            <div id="progress-container" class="hidden">
+                <div id="progress-bar"></div>
+                <div id="progress-text">Downloading model...</div>
+            </div>
+        </footer>
+    </div>
+    <script src="/chat.js"></script>
+</body>
+</html>

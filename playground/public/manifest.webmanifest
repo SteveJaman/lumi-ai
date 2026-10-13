@@ -1,0 +1,17 @@
+﻿{
+  "name": "Lumi — Playground",
+  "short_name": "Lumi",
+  "description": "Chat with Lumi. Runs entirely in your browser.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0e0d12",
+  "theme_color": "#b39ddb",
+  "icons": [
+    {
+      "src": "/Lumi.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
