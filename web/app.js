@@ -593,7 +593,9 @@ async function renderChatView(main) {
         <div class="chat-bg" aria-hidden="true">
           <video class="chat-bg-video"
                  autoplay loop muted playsinline preload="auto"></video>
+          <div class="chat-bg-tint"></div>
           <div class="chat-bg-stars"></div>
+          <div class="chat-bg-stars-2"></div>
           <div class="chat-bg-vignette"></div>
           <div class="chat-bg-mood"></div>
         </div>
