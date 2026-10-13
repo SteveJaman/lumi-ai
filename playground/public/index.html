@@ -29,7 +29,7 @@
 <body>
 
     <!-- ==========================================================
-         Animated background — sleeping Lumi video + dreamscape
+         Animated background
          ========================================================== -->
     <div class="bg-layer" aria-hidden="true">
         <video class="bg-video"
@@ -54,7 +54,7 @@
     </div>
 
     <!-- ==========================================================
-         Bloom loader — sits alone until the model is ready
+         Bloom loader
          ========================================================== -->
     <div id="loader" class="loader" role="status" aria-live="polite">
         <div class="flower" aria-hidden="true">
@@ -73,7 +73,7 @@
     </div>
 
     <!-- ==========================================================
-         App — hidden until the loader fades out
+         App
          ========================================================== -->
     <div id="app" class="app">
 
@@ -99,12 +99,16 @@
             </button>
         </header>
 
+        <!-- Emotion meter — floats above the chat -->
+        <div id="emotion-display" class="emotion-display">
+            <span class="emotion-emoji" id="emotion-emoji">🌸</span>
+            <span class="emotion-name"  id="emotion-name">happy</span>
+        </div>
+
         <main id="messages" class="messages" aria-live="polite" aria-label="Chat messages">
             <div class="message assistant">
                 <div class="bubble">
-                    <span class="spark">✨</span>hey! i'm running in playground
-                    mode here — no avatar, no mic, and i don't remember anything
-                    between visits. but i'm still me. what's up?
+                    <span class="spark">✨</span><span id="welcome-text">hey! i'm running in playground mode here — no avatar, no mic, and i don't remember anything between visits. but i'm still me. what's up?</span>
                 </div>
             </div>
 

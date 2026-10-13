@@ -1,5 +1,5 @@
 /**
- * Lumi Playground — client-side inference.
+ * Lumi Playground — client-side inference + personality showcase.
  *
  * Runs entirely in the visitor's browser via WebGPU. Nothing is
  * sent to any server. Uses @mlc-ai/web-llm directly through esm.run.
@@ -20,6 +20,10 @@ const loaderEl          = document.getElementById("loader");
 const loaderTextEl      = document.getElementById("loader-text");
 const flowerEl          = document.querySelector(".flower");
 const appEl             = document.getElementById("app");
+const emotionDisplayEl  = document.getElementById("emotion-display");
+const emotionEmojiEl    = document.getElementById("emotion-emoji");
+const emotionNameEl     = document.getElementById("emotion-name");
+const welcomeTextEl     = document.getElementById("welcome-text");
 
 // ================================================================
 // Config
@@ -33,46 +37,154 @@ When your mood shifts meaningfully, prefix your reply with a single tag like [ha
 const MAX_INPUT_CHARS = 500;
 
 // ================================================================
-// Emotion → UI accent color
+// Emotion definitions
 // ================================================================
-const EMOTION_STYLES = {
-    happy:     { color: "#ffd97a", glow: "255, 217, 122" },
-    excited:   { color: "#ffb3d1", glow: "255, 179, 209" },
-    sad:       { color: "#8bb4e6", glow: "139, 180, 230" },
-    angry:     { color: "#ff7a8a", glow: "255, 122, 138" },
-    confused:  { color: "#c4a5ff", glow: "196, 165, 255" },
-    surprised: { color: "#b8f0e6", glow: "184, 240, 230" },
-    calm:      { color: "#7ee0d4", glow: "126, 224, 212" },
+const EMOTIONS = {
+    happy: {
+        emoji: "🌸",
+        color: "#ffd97a",
+        glow:  "255, 217, 122",
+        hue:   45,          // warm yellow
+        bpm:   14,          // faster heartbeat
+    },
+    excited: {
+        emoji: "⭐",
+        color: "#ffb3d1",
+        glow:  "255, 179, 209",
+        hue:   330,         // hot pink
+        bpm:   11,          // fast
+    },
+    sad: {
+        emoji: "🌧️",
+        color: "#8bb4e6",
+        glow:  "139, 180, 230",
+        hue:   215,         // cold blue
+        bpm:   20,          // slow
+    },
+    angry: {
+        emoji: "🔥",
+        color: "#ff7a8a",
+        glow:  "255, 122, 138",
+        hue:   0,           // red
+        bpm:   8,           // very fast
+    },
+    confused: {
+        emoji: "💭",
+        color: "#c4a5ff",
+        glow:  "196, 165, 255",
+        hue:   275,         // lavender
+        bpm:   17,
+    },
+    surprised: {
+        emoji: "✨",
+        color: "#b8f0e6",
+        glow:  "184, 240, 230",
+        hue:   180,         // cyan
+        bpm:   12,          // quick
+    },
+    calm: {
+        emoji: "🌙",
+        color: "#7ee0d4",
+        glow:  "126, 224, 212",
+        hue:   172,         // Lumi's default
+        bpm:   22,          // very slow
+    },
 };
 
-const DEFAULT_TEAL = "#7ee0d4";
-const DEFAULT_GLOW = "126, 224, 212";
+const DEFAULT_MOOD = {
+    color: "#7ee0d4",
+    glow:  "126, 224, 212",
+    hue:   172,
+    bpm:   16,
+};
 
 let emotionResetTimer = null;
 let lastEmotionTag = null;
 
+// ================================================================
+// Emotion application — drives the whole personality showcase
+// ================================================================
 function applyEmotion(text) {
     const match = text.match(/\[(\w+)\]/);
     if (!match) return;
+
     const tag = match[1].toLowerCase();
     if (tag === lastEmotionTag) return;
-    const style = EMOTION_STYLES[tag];
-    if (!style) return;
+
+    const mood = EMOTIONS[tag];
+    if (!mood) return;
 
     lastEmotionTag = tag;
-    document.documentElement.style.setProperty("--teal", style.color);
+
+    // ---- Update accent color vars ----
+    document.documentElement.style.setProperty("--teal", mood.color);
     document.documentElement.style.setProperty(
-        "--border-glow", `rgba(${style.glow}, 0.42)`
+        "--border-glow", `rgba(${mood.glow}, 0.42)`
     );
 
+    // ---- Update mood-reactive background ----
+    document.documentElement.style.setProperty("--mood-hue", mood.hue);
+
+    // ---- Update heartbeat speed ----
+    document.documentElement.style.setProperty("--mood-bpm", mood.bpm);
+
+    // ---- Show the emotion meter ----
+    if (emotionEmojiEl) emotionEmojiEl.textContent = mood.emoji;
+    if (emotionNameEl)  emotionNameEl.textContent  = tag;
+    if (emotionDisplayEl) {
+        emotionDisplayEl.style.borderColor = `rgba(${mood.glow}, 0.55)`;
+        emotionDisplayEl.style.boxShadow =
+            `0 4px 18px -8px rgba(${mood.glow}, 0.6), ` +
+            `inset 0 0 12px -6px rgba(${mood.glow}, 0.5)`;
+        emotionDisplayEl.classList.add("active");
+    }
+
+    // ---- Reset after 6s ----
     clearTimeout(emotionResetTimer);
     emotionResetTimer = setTimeout(() => {
-        document.documentElement.style.setProperty("--teal", DEFAULT_TEAL);
+        document.documentElement.style.setProperty("--teal", DEFAULT_MOOD.color);
         document.documentElement.style.setProperty(
-            "--border-glow", `rgba(${DEFAULT_GLOW}, 0.42)`
+            "--border-glow", `rgba(${DEFAULT_MOOD.glow}, 0.42)`
         );
+        document.documentElement.style.setProperty("--mood-hue", DEFAULT_MOOD.hue);
+        document.documentElement.style.setProperty("--mood-bpm", DEFAULT_MOOD.bpm);
+
+        if (emotionDisplayEl) emotionDisplayEl.classList.remove("active");
         lastEmotionTag = null;
     }, 6000);
+}
+
+// ================================================================
+// Context-aware greeting — changes by time of day
+// ================================================================
+function getTimeGreeting() {
+    const h = new Date().getHours();
+    if (h < 5)  return "you're up late too, huh. what's keeping you awake?";
+    if (h < 12) return "morning. still half asleep but here — what's up?";
+    if (h < 17) return "hey. what's on your mind?";
+    if (h < 22) return "evening. how was your day?";
+    return "getting late. can't sleep?";
+}
+
+function setTimeGreeting() {
+    if (welcomeTextEl) {
+        welcomeTextEl.textContent = getTimeGreeting();
+    }
+}
+
+// ================================================================
+// Thoughtful pause — extra beat before personal/philosophical replies
+// ================================================================
+const THOUGHTFUL_TRIGGERS = [
+    "who are you", "what do you think", "do you feel", "do you dream",
+    "are you alive", "are you real", "what do you want",
+    "what makes you happy", "are you conscious", "do you remember",
+    "what are you", "how do you feel",
+];
+
+function isThoughtfulPrompt(text) {
+    const lower = text.toLowerCase();
+    return THOUGHTFUL_TRIGGERS.some(t => lower.includes(t));
 }
 
 // ================================================================
@@ -91,9 +203,8 @@ try {
             const restored = parsed.filter(m => m.role !== "system");
             history = [history[0], ...restored];
             for (const m of restored) {
-                const { bubble } = addMessage(m.role, m.content, { preReveal: true });
+                addMessage(m.role, m.content, { preReveal: true });
             }
-            // Hide suggestions if there's any restored history
             if (restored.length > 0) {
                 const s = document.getElementById("suggestions");
                 if (s) s.remove();
@@ -123,7 +234,6 @@ function setBloom(p) {
     document.documentElement.style.setProperty("--bloom", clamped.toFixed(3));
 }
 
-// Animate --bloom from current to target over `durationMs` (for cached case)
 function animateBloomTo(target, durationMs) {
     const current = parseFloat(
         getComputedStyle(document.documentElement).getPropertyValue("--bloom")
@@ -134,7 +244,7 @@ function animateBloomTo(target, durationMs) {
     return new Promise(resolve => {
         function step(now) {
             const k = Math.min(1, (now - start) / durationMs);
-            const eased = 1 - Math.pow(1 - k, 3);   // ease-out cubic
+            const eased = 1 - Math.pow(1 - k, 3);
             setBloom(current + delta * eased);
             if (k < 1) requestAnimationFrame(step);
             else resolve();
@@ -144,7 +254,7 @@ function animateBloomTo(target, durationMs) {
 }
 
 // ================================================================
-// Status pill helper (header)
+// Status pill helper
 // ================================================================
 function setStatus(text, mode = "ready") {
     if (!modelStatusEl) return;
@@ -171,7 +281,6 @@ function stripThink(text) {
 // Model initialization + bloom reveal
 // ================================================================
 async function initializeModel() {
-    // ---- WebGPU check ----
     if (!navigator.gpu) {
         setLoaderText("Needs Chrome or Edge (WebGPU required)");
         loaderTextEl.classList.add("error");
@@ -193,21 +302,14 @@ async function initializeModel() {
 
     try {
         const cached = await webllm.hasModelInCache(MODEL_ID);
+        setLoaderText(cached ? "waking up…" : "planting seeds…");
 
-        if (!cached) {
-            setLoaderText("planting seeds…");
-        } else {
-            setLoaderText("waking up…");
-        }
-
-        // ---- Load the engine ----
         engine = await webllm.CreateMLCEngine(MODEL_ID, {
             initProgressCallback: (progress) => {
                 const p = progress.progress || 0;
                 setBloom(p);
 
                 if (progress.text) {
-                    // MLC's own text is a bit noisy — trim to something friendly
                     const t = progress.text.toLowerCase();
                     if (t.includes("fetch") || t.includes("download")) {
                         const pct = Math.round(p * 100);
@@ -221,33 +323,24 @@ async function initializeModel() {
             },
         });
 
-        // ---- Ensure the flower is fully bloomed before pop ----
         await animateBloomTo(1.0, 400);
         setLoaderText("hello!");
-
-        // Small beat so the completed bloom is visible
         await new Promise(r => setTimeout(r, 300));
 
-        // ---- Pop the flower ----
         flowerEl.classList.add("popped");
-
-        // Wait for pop animation to mostly finish
         await new Promise(r => setTimeout(r, 450));
 
-        // ---- Fade loader out ----
         loaderEl.classList.add("fade-out");
 
-        // ---- Reveal the app (with slight overlap so it feels continuous) ----
         setTimeout(() => {
             appEl.classList.add("visible");
+            setTimeGreeting();
         }, 150);
 
-        // Cleanup: remove loader from the DOM after the fade completes
         setTimeout(() => {
             loaderEl.style.display = "none";
         }, 1200);
 
-        // ---- Enable input ----
         setStatus("Model ready. Start chatting!", "ready");
         userInput.disabled = false;
         sendButton.disabled = false;
@@ -258,7 +351,6 @@ async function initializeModel() {
         setLoaderText(`Error: ${error.message || "unknown"}`);
         loaderTextEl.classList.add("error");
 
-        // Offer a retry button
         const retry = document.createElement("button");
         retry.textContent = "Retry";
         retry.className = "icon-btn";
@@ -291,10 +383,27 @@ chatForm.addEventListener("submit", async (event) => {
 
     const { bubble: assistantBubble, textSpan: assistantText } =
         addMessage("assistant", "");
-    assistantBubble.classList.add("typing");
-    assistantText.innerHTML = '<span class="dot-mid"></span>';
+
+    // ---- Show "thinking" or plain "typing" ----
+    const thoughtful = isThoughtfulPrompt(userMessage);
+    if (thoughtful) {
+        assistantBubble.classList.add("thinking");
+        assistantText.innerHTML =
+            '<span class="thinking-dots">' +
+            '<span></span><span></span><span></span>' +
+            '</span><span class="thinking-label">thinking…</span>';
+    } else {
+        assistantBubble.classList.add("typing");
+        assistantText.innerHTML = '<span class="dot-mid"></span>';
+    }
+
+    // ---- Artificial hesitation for personal questions ----
+    if (thoughtful) {
+        await new Promise(r => setTimeout(r, 900));
+    }
 
     let accumulated = "";
+    let firstTokenReceived = false;
 
     try {
         const chunks = await engine.chat.completions.create({
@@ -315,14 +424,17 @@ chatForm.addEventListener("submit", async (event) => {
             const visible = stripThink(accumulated);
 
             if (visible) {
-                assistantBubble.classList.remove("typing");
-                assistantBubble.classList.add("streaming");
+                if (!firstTokenReceived) {
+                    firstTokenReceived = true;
+                    assistantBubble.classList.remove("typing", "thinking");
+                    assistantBubble.classList.add("streaming");
+                }
                 assistantText.textContent = visible;
                 scrollToBottom();
             }
         }
 
-        assistantBubble.classList.remove("streaming");
+        assistantBubble.classList.remove("streaming", "thinking");
         const finalVisible = stripThink(accumulated);
 
         if (finalVisible) {
@@ -339,11 +451,11 @@ chatForm.addEventListener("submit", async (event) => {
         persistHistory();
     } catch (error) {
         console.error("Generation error:", error);
-        assistantBubble.classList.remove("typing", "streaming");
+        assistantBubble.classList.remove("typing", "thinking", "streaming");
         assistantText.textContent =
             `⚠ ${error.message || "generation failed"}`;
     } finally {
-        assistantBubble.classList.remove("streaming");
+        assistantBubble.classList.remove("streaming", "thinking");
         generating = false;
         sendButton.disabled = false;
         userInput.focus();
@@ -377,7 +489,7 @@ if (newChatBtn) {
         history = [{ role: "system", content: SYSTEM_PROMPT }];
         localStorage.removeItem("lumi-history");
         messagesContainer.innerHTML = "";
-        addMessage("assistant", "fresh start. what's on your mind?");
+        addMessage("assistant", getTimeGreeting());
         userInput.focus();
     });
 }

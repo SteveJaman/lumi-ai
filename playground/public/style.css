@@ -1,5 +1,5 @@
 /* ================================================================
-   Lumi Playground — dreamscape theme + bloom loader
+   Lumi Playground — dreamscape + personality showcase
    ================================================================ */
 
 :root {
@@ -11,13 +11,16 @@
     --fg-dim:    #b8b0cc;
     --fg-faint:  #7a7292;
 
-    /* Lumi palette — --teal and --border-glow are mutated live by
-       the emotion system, reset after 6s */
     --teal:      #7ee0d4;
     --mint:      #b8f0e6;
     --lavender:  #c4a5ff;
     --pink:      #ffb3d1;
     --cream:     #fff8ee;
+
+    /* Live-mutated mood vars */
+    --mood-hue:   172;    /* hue degrees — drives aurora */
+    --mood-bpm:   16;     /* heartbeat duration, seconds — lower = faster */
+    --mood-glow:  0.42;   /* border-glow alpha */
 
     --bubble-ai:   linear-gradient(140deg,
         rgba(126, 224, 212, 0.13) 0%,
@@ -30,16 +33,13 @@
 
     --radius: 22px;
     --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-
-    /* Bloom progress — driven by JS during model loading, 0 → 1 */
     --bloom: 0;
 }
 
 * { box-sizing: border-box; }
 
 html, body {
-    margin: 0;
-    padding: 0;
+    margin: 0; padding: 0;
     height: 100%;
     overflow: hidden;
 }
@@ -85,8 +85,7 @@ body {
 .bg-video {
     position: absolute;
     inset: 0;
-    width: 100%;
-    height: 100%;
+    width: 100%; height: 100%;
     object-fit: cover;
     object-position: center;
     opacity: 0.55;
@@ -100,6 +99,7 @@ body {
     z-index: 1;
 }
 
+/* Aurora hue is driven by --mood-hue */
 .aurora {
     position: absolute;
     top: -40%; left: -20%;
@@ -107,14 +107,15 @@ body {
     background:
         conic-gradient(from 200deg at 50% 100%,
             transparent 0deg,
-            rgba(126, 224, 212, 0.10) 60deg,
-            rgba(196, 165, 255, 0.14) 140deg,
-            rgba(255, 179, 209, 0.10) 220deg,
+            hsla(var(--mood-hue), 60%, 65%, 0.10) 60deg,
+            hsla(calc(var(--mood-hue) + 60), 60%, 72%, 0.14) 140deg,
+            hsla(calc(var(--mood-hue) + 130), 60%, 75%, 0.10) 220deg,
             transparent 300deg);
     filter: blur(80px);
     opacity: 0.7;
     animation: aurora-shift 40s ease-in-out infinite alternate;
-    will-change: transform, opacity;
+    transition: background 1.2s ease;
+    will-change: transform, opacity, background;
 }
 
 @keyframes aurora-shift {
@@ -127,12 +128,13 @@ body {
     position: absolute;
     border-radius: 50%;
     filter: blur(100px);
+    transition: background 1.2s ease;
     will-change: transform;
 }
 
 .orb-teal {
     width: 480px; height: 480px;
-    background: var(--teal);
+    background: hsl(var(--mood-hue), 65%, 70%);
     top: -140px; left: -160px;
     opacity: 0.28;
     animation: drift-teal 28s ease-in-out infinite;
@@ -140,7 +142,7 @@ body {
 
 .orb-lavender {
     width: 420px; height: 420px;
-    background: var(--lavender);
+    background: hsl(calc(var(--mood-hue) + 55), 65%, 76%);
     bottom: -140px; right: -120px;
     opacity: 0.30;
     animation: drift-lavender 32s ease-in-out infinite;
@@ -148,7 +150,7 @@ body {
 
 .orb-pink {
     width: 320px; height: 320px;
-    background: var(--pink);
+    background: hsl(calc(var(--mood-hue) + 120), 70%, 80%);
     top: 40%; left: 58%;
     opacity: 0.18;
     animation: drift-pink 36s ease-in-out infinite;
@@ -249,8 +251,7 @@ body {
     justify-content: center;
     gap: 40px;
     background: radial-gradient(circle at center,
-        rgba(23, 20, 38, 0.55) 0%,
-        rgba(23, 20, 38, 0.85) 70%);
+        rgba(23, 20, 38, 0.55) 0%, rgba(23, 20, 38, 0.85) 70%);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     transition: opacity 0.8s ease-out, visibility 0.8s;
@@ -262,11 +263,9 @@ body {
     pointer-events: none;
 }
 
-/* ---- Flower ---- */
 .flower {
     position: relative;
-    width: 220px;
-    height: 220px;
+    width: 220px; height: 220px;
     will-change: transform, opacity;
 }
 
@@ -275,25 +274,19 @@ body {
 }
 
 @keyframes flower-pop {
-    0%   { transform: scale(1);    opacity: 1;   }
-    45%  { transform: scale(1.18); opacity: 1;   }
-    100% { transform: scale(1.55); opacity: 0;   }
+    0%   { transform: scale(1);    opacity: 1; }
+    45%  { transform: scale(1.18); opacity: 1; }
+    100% { transform: scale(1.55); opacity: 0; }
 }
 
-/* ---- Petals ---- */
 .petal {
     position: absolute;
-    bottom: 50%;
-    left: 50%;
-    width: 40px;
-    height: 88px;
+    bottom: 50%; left: 50%;
+    width: 40px; height: 88px;
     margin-left: -20px;
-    /* Bloom shape: pointed at base, rounded at tip */
     border-radius: 50% 50% 50% 50% / 55% 55% 45% 45%;
     background: linear-gradient(to top,
-        var(--lavender) 0%,
-        var(--teal) 55%,
-        var(--mint) 100%);
+        var(--lavender) 0%, var(--teal) 55%, var(--mint) 100%);
     transform-origin: bottom center;
     transform:
         rotate(calc(var(--i) * 45deg))
@@ -306,19 +299,14 @@ body {
     will-change: transform, opacity;
 }
 
-/* ---- Flower center ---- */
 .flower-center {
     position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 42px;
-    height: 42px;
+    top: 50%; left: 50%;
+    width: 42px; height: 42px;
     margin: -21px 0 0 -21px;
     border-radius: 50%;
     background: radial-gradient(circle at 35% 35%,
-        #fff8ee 0%,
-        var(--pink) 45%,
-        var(--lavender) 100%);
+        #fff8ee 0%, var(--pink) 45%, var(--lavender) 100%);
     box-shadow:
         0 0 22px rgba(255, 179, 209, calc(0.4 + var(--bloom) * 0.4)),
         inset 0 -2px 6px rgba(0, 0, 0, 0.15);
@@ -327,7 +315,6 @@ body {
     z-index: 2;
 }
 
-/* ---- Glow behind flower ---- */
 .flower-glow {
     position: absolute;
     inset: -60px;
@@ -344,7 +331,6 @@ body {
     z-index: -1;
 }
 
-/* ---- Loader text ---- */
 .loader-text {
     font-size: 0.9rem;
     color: var(--fg-dim);
@@ -364,11 +350,11 @@ body {
 
 @keyframes fade-in-up {
     from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0);   }
+    to   { opacity: 1; transform: translateY(0); }
 }
 
 /* ================================================================
-   App — hidden until the loader finishes
+   App reveal
    ================================================================ */
 
 .app {
@@ -392,22 +378,23 @@ body {
     pointer-events: auto;
 }
 
-/* Stagger text fade-in when the app first becomes visible */
 .app.visible .message,
 .app.visible .suggestions,
 .app.visible header,
-.app.visible footer {
+.app.visible footer,
+.app.visible .emotion-display {
     animation: text-reveal 0.7s ease-out both;
 }
 
-.app.visible header      { animation-delay: 0.10s; }
-.app.visible .message    { animation-delay: 0.28s; }
-.app.visible .suggestions{ animation-delay: 0.44s; }
-.app.visible footer      { animation-delay: 0.20s; }
+.app.visible header          { animation-delay: 0.10s; }
+.app.visible .emotion-display{ animation-delay: 0.16s; }
+.app.visible .message        { animation-delay: 0.28s; }
+.app.visible .suggestions    { animation-delay: 0.44s; }
+.app.visible footer          { animation-delay: 0.20s; }
 
 @keyframes text-reveal {
     from { opacity: 0; transform: translateY(8px); }
-    to   { opacity: 1; transform: translateY(0);   }
+    to   { opacity: 1; transform: translateY(0); }
 }
 
 /* ================================================================
@@ -419,7 +406,7 @@ header {
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 14px 4px;
+    padding: 14px 4px 10px;
     flex-shrink: 0;
 }
 
@@ -443,6 +430,7 @@ header {
     50%      { transform: translateY(-3px); }
 }
 
+/* Heartbeat — duration is driven by --mood-bpm */
 .avatar-glow {
     position: absolute;
     inset: -8px;
@@ -452,8 +440,9 @@ header {
         rgba(196, 165, 255, 0.3) 40%,
         transparent 70%);
     z-index: 1;
-    animation: pulse 3.6s ease-in-out infinite;
+    animation: pulse calc(var(--mood-bpm) * 1s) ease-in-out infinite;
     filter: blur(10px);
+    transition: animation-duration 0.8s ease;
 }
 
 @keyframes pulse {
@@ -500,7 +489,7 @@ header {
 }
 
 @keyframes blink-dot {
-    0%, 100% { opacity: 1;    }
+    0%, 100% { opacity: 1; }
     50%      { opacity: 0.35; }
 }
 
@@ -530,13 +519,62 @@ header {
 }
 
 /* ================================================================
+   Emotion meter — floats at top of the app
+   ================================================================ */
+
+.emotion-display {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    align-self: center;
+    padding: 6px 14px;
+    margin: 0 0 6px;
+    background: rgba(20, 18, 34, 0.55);
+    border: 1px solid var(--border-glow);
+    border-radius: 20px;
+    font-size: 0.82rem;
+    color: var(--fg);
+    letter-spacing: 0.02em;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow:
+        0 4px 18px -8px rgba(126, 224, 212, 0.5),
+        inset 0 0 12px -6px rgba(126, 224, 212, 0.4);
+    opacity: 0;
+    transform: translateY(-6px) scale(0.92);
+    transition:
+        opacity 0.5s ease,
+        transform 0.5s var(--spring),
+        border-color 0.5s ease,
+        box-shadow 0.5s ease;
+    pointer-events: none;
+    user-select: none;
+}
+
+.emotion-display.active {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+
+.emotion-emoji {
+    font-size: 1rem;
+    line-height: 1;
+    filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.4));
+}
+
+.emotion-name {
+    text-transform: lowercase;
+    font-weight: 500;
+}
+
+/* ================================================================
    Messages
    ================================================================ */
 
 .messages {
     flex: 1;
     overflow-y: auto;
-    padding: 12px 4px 20px;
+    padding: 8px 4px 20px;
     display: flex;
     flex-direction: column;
     gap: 14px;
@@ -558,7 +596,6 @@ header {
 .message.user      { align-self: flex-end; }
 .message.assistant { align-self: flex-start; }
 
-/* Pop-in only applies to messages added AFTER the app is visible */
 .app.visible .messages .message:not(.pre-reveal) {
     animation: pop-in 0.42s var(--spring) both;
 }
@@ -578,6 +615,7 @@ header {
     border: 1px solid var(--border);
     backdrop-filter: blur(14px) saturate(1.2);
     -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    transition: border-color 0.4s ease, box-shadow 0.4s ease;
 }
 
 .message.user .bubble {
@@ -634,10 +672,11 @@ header {
 }
 
 @keyframes sparkle {
-    0%, 100% { transform: scale(1)   rotate(0deg);   opacity: 1;    }
+    0%, 100% { transform: scale(1)   rotate(0deg);   opacity: 1; }
     50%      { transform: scale(1.2) rotate(15deg); opacity: 0.75; }
 }
 
+/* ---- Typing indicator ---- */
 .bubble.typing {
     display: inline-flex;
     align-items: center;
@@ -672,9 +711,55 @@ header {
 
 @keyframes typing-bounce {
     0%, 60%, 100% { transform: translateY(0);    opacity: 0.4; }
-    30%           { transform: translateY(-6px); opacity: 1;   }
+    30%           { transform: translateY(-6px); opacity: 1; }
 }
 
+/* ---- Thoughtful pause state ---- */
+.bubble.thinking {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 20px;
+    min-width: 100px;
+}
+
+.bubble.thinking::before,
+.bubble.thinking::after {
+    display: none;
+}
+
+.bubble.thinking .thinking-dots {
+    display: inline-flex;
+    gap: 6px;
+}
+
+.bubble.thinking .thinking-dots span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--lavender);
+    box-shadow: 0 0 10px rgba(196, 165, 255, 0.7);
+    animation: thinking-wave 1.6s ease-in-out infinite;
+}
+
+.bubble.thinking .thinking-dots span:nth-child(1) { animation-delay: 0s;    }
+.bubble.thinking .thinking-dots span:nth-child(2) { animation-delay: 0.2s;  }
+.bubble.thinking .thinking-dots span:nth-child(3) { animation-delay: 0.4s;  }
+
+@keyframes thinking-wave {
+    0%, 60%, 100% { transform: translateY(0)     scale(0.85); opacity: 0.5; }
+    30%           { transform: translateY(-8px)  scale(1.15); opacity: 1;   }
+}
+
+.bubble.thinking .thinking-label {
+    font-size: 0.78rem;
+    color: var(--fg-dim);
+    font-style: italic;
+    letter-spacing: 0.03em;
+    opacity: 0.7;
+}
+
+/* ---- Streaming cursor ---- */
 .bubble.streaming .text::after {
     content: "▍";
     display: inline-block;
@@ -844,10 +929,7 @@ footer { padding: 10px 0 18px; flex-shrink: 0; }
     }
     .bg-video { display: none; }
 
-    /* Skip the flower — just show loader text */
-    .petal,
-    .flower-center,
-    .flower-glow {
+    .petal, .flower-center, .flower-glow {
         transform: none !important;
         opacity: 0.9 !important;
     }
