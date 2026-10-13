@@ -143,6 +143,11 @@ function navigate(view, replace = false) {
   state.view = view;
   if (view !== 'chat') stopChatPolling();
   if (view !== 'chat') resetMoodAccent();
+
+  // Pause the chat background video when the user leaves the chat
+  const bgVideo = document.querySelector('.chat-bg-video');
+  if (bgVideo && view !== 'chat') bgVideo.pause();
+
   if (view !== 'models') {
     stopModelsTimers();
     _modelsState.routingDirty = false;
@@ -199,17 +204,17 @@ const MOOD_ACCENTS = {
   excited:   { color: '#f778ba', glow: '247, 120, 186' },
   laughing:  { color: '#f778ba', glow: '247, 120, 186' },
   amused:    { color: '#f0a030', glow: '240, 160, 48'  },
-  sad:       { color: '#58a6ff', glow: '88, 166, 255'  },
-  unhappy:   { color: '#58a6ff', glow: '88, 166, 255'  },
-  angry:     { color: '#f85149', glow: '248, 81, 73'   },
-  frustrated:{ color: '#f85149', glow: '248, 81, 73'   },
-  confused:  { color: '#a371f7', glow: '163, 113, 247' },
-  uncertain: { color: '#a371f7', glow: '163, 113, 247' },
-  surprised: { color: '#56d4dd', glow: '86, 212, 221'  },
-  calm:      { color: '#7ee787', glow: '126, 231, 135' },
-  satisfied: { color: '#7ee787', glow: '126, 231, 135' },
-  proud:     { color: '#7ee787', glow: '126, 231, 135' },
-  grateful:  { color: '#7ee787', glow: '126, 231, 135' },
+  sad:       { color: '#7db8ef', glow: '125, 184, 239' },
+  unhappy:   { color: '#7db8ef', glow: '125, 184, 239' },
+  angry:     { color: '#f87373', glow: '248, 115, 115' },
+  frustrated:{ color: '#f87373', glow: '248, 115, 115' },
+  confused:  { color: '#a78ce0', glow: '167, 140, 224' },
+  uncertain: { color: '#a78ce0', glow: '167, 140, 224' },
+  surprised: { color: '#7ad4dc', glow: '122, 212, 220' },
+  calm:      { color: '#7ee0d4', glow: '126, 224, 212' },
+  satisfied: { color: '#7ee0d4', glow: '126, 224, 212' },
+  proud:     { color: '#7ee0d4', glow: '126, 224, 212' },
+  grateful:  { color: '#7ee0d4', glow: '126, 224, 212' },
 };
 
 const MOOD_EMOJI = {
@@ -231,7 +236,7 @@ const MOOD_EMOJI = {
   grateful:  '💗',
 };
 
-const DEFAULT_ACCENT = { color: '#58a6ff', glow: '88, 166, 255' };
+const DEFAULT_ACCENT = { color: '#7ee0d4', glow: '126, 224, 212' };
 
 let _moodResetTimer = null;
 let _currentMood = null;
@@ -360,7 +365,6 @@ function updateStatusPills(boot) {
   }
 
   // Ollama: derived from whether the models endpoint responds.
-  // Cheap check — the boot payload may include it in the future.
   const ollamaEl = document.getElementById('dot-ollama');
   if (ollamaEl) {
     if (!ollamaEl.dataset.checked) {
@@ -584,20 +588,31 @@ async function renderChatView(main) {
   main.innerHTML = `
     <div class="page">
       <div class="chat-wrap">
+
+        <!-- Blurred video loop + stars, behind everything -->
+        <div class="chat-bg" aria-hidden="true">
+          <video class="chat-bg-video"
+                 autoplay loop muted playsinline preload="auto"></video>
+          <div class="chat-bg-stars"></div>
+          <div class="chat-bg-vignette"></div>
+          <div class="chat-bg-mood"></div>
+        </div>
+
         <div class="chat-scroll" id="chat-scroll"></div>
+
         <div class="chat-status">
           <button class="mode-chip" id="agent-chip"
                   title="Toggle agent mode">⚡ Agent mode: OFF</button>
-          <span class="mood-chip" id="mood-chip" title="Lumi's current mood">
-            <span class="mood-emoji" id="mood-emoji">🌙</span>
-            <span id="mood-label">calm</span>
-          </span>
           <button class="mode-chip" id="tts-toggle"
                   title="Toggle voice playback in this tab">🔇 Voice: OFF</button>
           <button class="mode-chip" id="mic-toggle"
                   title="Hold to record a voice message">🎤 Hold to talk</button>
           <span class="muted" id="chat-typing"></span>
           <span class="grow"></span>
+          <span class="mood-chip" id="mood-chip" title="Lumi's current mood">
+            <span class="mood-emoji" id="mood-emoji">🌙</span>
+            <span id="mood-label">calm</span>
+          </span>
           <span class="muted" id="chat-host"></span>
         </div>
         <div class="chat-attachments" id="chat-attachments"></div>
@@ -613,6 +628,17 @@ async function renderChatView(main) {
       </div>
     </div>
   `;
+
+  // ---- Wire the background video after the DOM exists ----
+  const bgVideo = main.querySelector('.chat-bg-video');
+  if (bgVideo) {
+    const src = document.createElement('source');
+    src.src = '/web/lumi_sleeping_brb.mp4';
+    src.type = 'video/mp4';
+    bgVideo.appendChild(src);
+    bgVideo.load();
+    bgVideo.play().catch(() => {});
+  }
 
   $('#chat-host').textContent = `as ${state.host?.name || ''}`;
   updateAgentChip();
@@ -777,8 +803,8 @@ function renderChatMessage(msg, container = null) {
   div.appendChild(bubble);
   scroll.appendChild(div);
 
-  // After appending, if this was the newest assistant message and
-  // it carries an emotion tag, drive the accent.
+  // If this was the newest assistant message and it carries an
+  // emotion tag, drive the accent + mood chip.
   if (role === 'assistant' && tags.length &&
       div === scroll.lastElementChild) {
     applyMoodAccent(tags);
@@ -831,7 +857,6 @@ async function handleFiles(files) {
       if (res.status === 409 && data.error === 'duplicate') {
         const choice = await confirmDuplicate(data);
         if (choice !== 'replace') {
-          // Cancelled — drop the chip entirely.
           const idx = _chatAttachments.indexOf(chip);
           if (idx !== -1) _chatAttachments.splice(idx, 1);
           renderAttachmentChips();

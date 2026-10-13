@@ -1,9 +1,10 @@
 /* ============================================================
    Lumi — Design System
-   GitHub-dark inspired. Token-based. No framework.
+   Teal-accented dark theme. Token-based. No framework.
    ============================================================ */
 
 :root {
+  /* Base — kept GitHub-dark-ish but slightly warmer */
   --bg:        #0d1117;
   --bg-elev:   #161b22;
   --bg-inset:  #010409;
@@ -14,9 +15,10 @@
   --text-dim:  #8b949e;
   --text-mute: #6e7681;
 
-  --accent:    #58a6ff;
-  --accent-hi: #79b8ff;
-  --accent-bg: rgba(88, 166, 255, 0.12);
+  /* Accent — Lumi's teal, replaces the old blue */
+  --accent:    #7ee0d4;
+  --accent-hi: #a4ece3;
+  --accent-bg: rgba(126, 224, 212, 0.12);
 
   --success:   #7ee787;
   --warn:      #f0883e;
@@ -24,7 +26,7 @@
 
   --magenta:   #f778ba;
   --violet:    #a371f7;
-  --teal:      #56d4dd;
+  --teal:      #7ee0d4;
   --orange:    #ffa657;
 
   --s-1: 4px;
@@ -73,6 +75,9 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--accent-hi); }
 button { font-family: inherit; cursor: pointer; }
 
+/* ============================================================
+   Buttons
+   ============================================================ */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -89,8 +94,15 @@ button { font-family: inherit; cursor: pointer; }
 }
 .btn:hover     { background: #1f242c; border-color: var(--border-hi); }
 .btn:disabled  { opacity: 0.5; cursor: not-allowed; }
-.btn-primary   { background: var(--accent); color: #fff; border-color: var(--accent); }
-.btn-primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+.btn-primary   {
+  background: var(--accent);
+  color: #0d1117;
+  border-color: var(--accent);
+}
+.btn-primary:hover {
+  background: var(--accent-hi);
+  border-color: var(--accent-hi);
+}
 .btn-danger    { background: transparent; color: var(--error); border-color: #4a1f1f; }
 .btn-danger:hover { background: rgba(248, 81, 73, 0.1); }
 .btn-ghost     { background: transparent; border-color: transparent; }
@@ -98,6 +110,9 @@ button { font-family: inherit; cursor: pointer; }
 .btn-sm        { padding: 4px 10px; font-size: var(--fs-sm); }
 .btn-lg        { padding: 10px 24px; font-size: var(--fs-lg); }
 
+/* ============================================================
+   Inputs
+   ============================================================ */
 .input, .textarea, .select {
   width: 100%;
   padding: 8px 12px;
@@ -125,6 +140,9 @@ button { font-family: inherit; cursor: pointer; }
 }
 .field { margin-bottom: var(--s-4); }
 
+/* ============================================================
+   Card
+   ============================================================ */
 .card {
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -167,15 +185,22 @@ button { font-family: inherit; cursor: pointer; }
   padding: var(--s-2) var(--s-2) var(--s-4);
   border-bottom: 1px solid var(--border);
 }
+
+/* Portrait-shaped logo, uses the new Lumi icon */
 .brand-logo {
-  width: 32px; height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: var(--r-md);
   background: linear-gradient(135deg, var(--accent), var(--violet));
-  display: grid; place-items: center;
-  color: #fff; font-weight: 700;
+  display: grid;
+  place-items: center;
+  color: #0d1117;
+  font-weight: 700;
   font-size: var(--fs-lg);
   position: relative;
   overflow: hidden;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(126, 224, 212, 0.25);
 }
 .brand-logo-mark {
   position: absolute;
@@ -184,7 +209,7 @@ button { font-family: inherit; cursor: pointer; }
   place-items: center;
   font-size: var(--fs-lg);
   font-weight: 700;
-  color: #fff;
+  color: #0d1117;
   z-index: 1;
 }
 .brand-logo-img {
@@ -193,7 +218,7 @@ button { font-family: inherit; cursor: pointer; }
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: center 20%;
+  object-position: center 35%;
   z-index: 2;
 }
 .brand-name { font-weight: 600; font-size: var(--fs-lg); }
@@ -239,7 +264,7 @@ button { font-family: inherit; cursor: pointer; }
   flex-shrink: 0;
   transition: background 0.3s ease;
 }
-.dot.ok   { background: var(--success); }
+.dot.ok   { background: var(--success); box-shadow: 0 0 6px rgba(126, 231, 135, 0.5); }
 .dot.warn { background: var(--warn); }
 .dot.err  { background: var(--error); }
 
@@ -252,9 +277,9 @@ button { font-family: inherit; cursor: pointer; }
 }
 .avatar {
   width: 22px; height: 22px; border-radius: 50%;
-  background: linear-gradient(135deg, var(--magenta), var(--accent));
+  background: linear-gradient(135deg, var(--accent), var(--violet));
   display: grid; place-items: center;
-  font-size: var(--fs-xs); font-weight: 700; color: #fff;
+  font-size: var(--fs-xs); font-weight: 700; color: #0d1117;
 }
 
 .main { overflow: hidden; display: flex; flex-direction: column; }
@@ -281,7 +306,7 @@ button { font-family: inherit; cursor: pointer; }
   padding: var(--s-5);
   background:
     radial-gradient(ellipse at 50% 0%,
-                    rgba(88,166,255,0.08), transparent 60%),
+                    rgba(126,224,212,0.08), transparent 60%),
     var(--bg);
 }
 .auth-card {
@@ -300,7 +325,7 @@ button { font-family: inherit; cursor: pointer; }
   border-radius: var(--r-lg);
   background: linear-gradient(135deg, var(--accent), var(--violet));
   display: grid; place-items: center;
-  color: #fff; font-size: var(--fs-2xl); font-weight: 700;
+  color: #0d1117; font-size: var(--fs-2xl); font-weight: 700;
 }
 .auth-title { font-size: var(--fs-xl); font-weight: 600; }
 .auth-sub   { font-size: var(--fs-sm); color: var(--text-dim); margin-top: 4px; }
@@ -324,9 +349,99 @@ button { font-family: inherit; cursor: pointer; }
 .auth-error.visible { display: block; }
 
 /* ============================================================
-   Chat
+   Chat — with looping video background, stars, mood tint
    ============================================================ */
-.chat-wrap { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+
+.chat-wrap {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  isolation: isolate;
+}
+
+/* ---- Background stack (behind everything) ---- */
+.chat-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.chat-bg-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 40%;
+  /* Blur + dim so text stays readable and the scene reads as mood */
+  filter: blur(12px) saturate(0.85) brightness(0.55);
+  transform: scale(1.08); /* hide the blurred edge fringing */
+  opacity: 0.85;
+  will-change: transform;
+}
+
+/* Stars twinkle over the video */
+.chat-bg-stars {
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1.5px 1.5px at 12% 22%, rgba(255,255,255,0.9), transparent 55%),
+    radial-gradient(1px   1px   at 34% 61%, rgba(126,224,212,0.9), transparent 55%),
+    radial-gradient(1.5px 1.5px at 68% 15%, rgba(255,255,255,0.75), transparent 55%),
+    radial-gradient(1px   1px   at 82% 42%, rgba(163,113,247,0.85), transparent 55%),
+    radial-gradient(1.5px 1.5px at 18% 78%, rgba(255,255,255,0.85), transparent 55%),
+    radial-gradient(1px   1px   at 52% 88%, rgba(126,224,212,0.8), transparent 55%),
+    radial-gradient(1.5px 1.5px at 91% 71%, rgba(247,120,186,0.85), transparent 55%),
+    radial-gradient(1px   1px   at  7% 45%, rgba(163,113,247,0.75), transparent 55%),
+    radial-gradient(1px   1px   at 44% 12%, rgba(255,255,255,0.85), transparent 55%),
+    radial-gradient(1.5px 1.5px at 76% 92%, rgba(126,224,212,0.75), transparent 55%),
+    radial-gradient(1px   1px   at 26% 34%, rgba(255,255,255,0.7), transparent 55%),
+    radial-gradient(1px   1px   at 62% 55%, rgba(247,120,186,0.65), transparent 55%);
+  opacity: 0.75;
+  animation: chat-twinkle 6s ease-in-out infinite;
+}
+
+@keyframes chat-twinkle {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 0.95; }
+}
+
+/* Dark vignette for readability — compresses the corners */
+.chat-bg-vignette {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 90% 70% at 50% 45%,
+      transparent 0%,
+      rgba(13, 17, 23, 0.55) 70%,
+      rgba(13, 17, 23, 0.9) 100%),
+    linear-gradient(180deg,
+      rgba(13, 17, 23, 0.35) 0%,
+      transparent 25%,
+      transparent 75%,
+      rgba(13, 17, 23, 0.5) 100%);
+}
+
+/* Mood tint — follows --accent, which app.js mutates on emotion tags */
+.chat-bg-mood {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 65% 55% at 30% 20%,
+      color-mix(in srgb, var(--accent) 14%, transparent) 0%,
+      transparent 60%),
+    radial-gradient(ellipse 55% 45% at 78% 85%,
+      color-mix(in srgb, var(--accent) 10%, transparent) 0%,
+      transparent 60%);
+  transition: background 1.4s ease;
+  opacity: 0.85;
+}
+
+/* ---- Scrolling message area (on top of background) ---- */
 .chat-scroll {
   flex: 1;
   overflow-y: auto;
@@ -336,26 +451,7 @@ button { font-family: inherit; cursor: pointer; }
   gap: var(--s-4);
   scroll-behavior: smooth;
   position: relative;
-  isolation: isolate;
-}
-
-/* Mood-reactive ambient tint — color follows --accent, which
-   app.js mutates when Lumi emits an emotion tag. */
-.chat-scroll::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background-image:
-    radial-gradient(ellipse 60% 50% at 20% 0%,
-      color-mix(in srgb, var(--accent) 8%, transparent) 0%,
-      transparent 70%),
-    radial-gradient(ellipse 55% 45% at 85% 100%,
-      color-mix(in srgb, var(--accent) 5%, transparent) 0%,
-      transparent 70%);
-  transition: background-image 1.2s ease;
-  opacity: 0.9;
+  z-index: 1;
 }
 
 .msg {
@@ -369,16 +465,23 @@ button { font-family: inherit; cursor: pointer; }
   to   { opacity: 1; transform: translateY(0); }
 }
 .msg.user { margin-left: auto; flex-direction: row-reverse; }
+
 .msg-avatar {
-  width: 28px; height: 28px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   flex-shrink: 0;
-  display: grid; place-items: center;
-  font-size: var(--fs-xs); font-weight: 700; color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: #0d1117;
   overflow: hidden;
+  border: 1px solid rgba(126, 224, 212, 0.3);
 }
 .msg.user .msg-avatar {
   background: linear-gradient(135deg, var(--magenta), var(--accent));
+  border-color: rgba(247, 120, 186, 0.4);
 }
 .msg.assistant .msg-avatar {
   background: linear-gradient(135deg, var(--accent), var(--violet));
@@ -388,14 +491,17 @@ button { font-family: inherit; cursor: pointer; }
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: center 20%;
+  object-position: center 35%;
   display: block;
   border-radius: 50%;
 }
+
 .msg-bubble {
   padding: 10px 14px;
   border-radius: var(--r-lg);
-  background: var(--bg-elev);
+  background: rgba(22, 27, 34, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--border);
   font-size: var(--fs-md);
   line-height: 1.55;
@@ -403,8 +509,8 @@ button { font-family: inherit; cursor: pointer; }
   white-space: pre-wrap;
 }
 .msg.user .msg-bubble {
-  background: var(--accent-bg);
-  border-color: rgba(88,166,255,0.35);
+  background: rgba(126, 224, 212, 0.12);
+  border-color: rgba(126, 224, 212, 0.35);
 }
 .msg.system .msg-bubble {
   background: transparent;
@@ -413,6 +519,7 @@ button { font-family: inherit; cursor: pointer; }
   font-size: var(--fs-sm);
   font-family: var(--font-mono);
 }
+
 .msg-tags {
   display: flex;
   gap: 4px;
@@ -423,28 +530,34 @@ button { font-family: inherit; cursor: pointer; }
   font-size: var(--fs-xs);
   padding: 1px 6px;
   border-radius: var(--r-sm);
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
+  background: rgba(126, 224, 212, 0.12);
+  border: 1px solid rgba(126, 224, 212, 0.35);
+  color: var(--accent);
   font-family: var(--font-mono);
 }
 
+/* ---- Chat status bar — tight, no invisible gap ---- */
 .chat-status {
   border-top: 1px solid var(--border);
   padding: var(--s-2) var(--s-6);
   display: flex;
   align-items: center;
-  gap: var(--s-3);
+  gap: var(--s-2);                 /* tight vertical rhythm */
   font-size: var(--fs-sm);
   color: var(--text-dim);
-  background: var(--bg-elev);
+  background: rgba(22, 27, 34, 0.9);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   flex-wrap: wrap;
+  position: relative;
+  z-index: 2;
 }
+
 .chat-status .mode-chip {
-  padding: 4px 12px;
+  padding: 4px 10px;
   border-radius: var(--r-md);
   border: 1px solid var(--border);
-  background: var(--bg-inset);
+  background: rgba(1, 4, 9, 0.6);
   color: var(--text);
   font-family: inherit;
   font-size: var(--fs-sm);
@@ -454,16 +567,16 @@ button { font-family: inherit; cursor: pointer; }
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 .chat-status .mode-chip:hover {
-  background: #1f242c;
+  background: rgba(31, 36, 44, 0.9);
   border-color: var(--border-hi);
 }
 .chat-status .mode-chip.agent {
   background: var(--accent-bg);
-  border-color: rgba(88,166,255,0.5);
+  border-color: rgba(126, 224, 212, 0.5);
   color: var(--accent);
 }
 .chat-status .mode-chip.agent:hover {
-  background: rgba(88,166,255,0.2);
+  background: rgba(126, 224, 212, 0.2);
 }
 
 #mic-toggle.agent {
@@ -472,92 +585,45 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--error);
 }
 
+/* Mood chip lives on the right, next to chat-host. It doesn't
+   take space when inactive (display: none instead of opacity: 0),
+   so it can't create a phantom gap between the mode chips. */
 .mood-chip {
   padding: 4px 10px;
   border-radius: var(--r-md);
-  border: 1px solid var(--border);
-  background: var(--bg-inset);
-  color: var(--text-dim);
+  border: 1px solid var(--accent);
+  background: rgba(126, 224, 212, 0.1);
+  color: var(--accent);
   font-size: var(--fs-sm);
   font-family: inherit;
   font-weight: 500;
-  display: inline-flex;
+  display: none;
   align-items: center;
   gap: 6px;
-  transition: background 0.4s ease,
-              border-color 0.4s ease,
-              color 0.4s ease,
-              opacity 0.3s ease;
-  opacity: 0;
-  pointer-events: none;
+  animation: mood-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .mood-chip.active {
-  opacity: 1;
-  pointer-events: auto;
+  display: inline-flex;
 }
 .mood-chip .mood-emoji {
   font-size: 13px;
   line-height: 1;
 }
 
-.chat-input {
-  border-top: 1px solid var(--border);
-  padding: var(--s-4) var(--s-6);
-  display: flex;
-  gap: var(--s-3);
-  background: var(--bg-elev);
-  align-items: flex-end;
-}
-.chat-input textarea {
-  flex: 1;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  padding: 10px 14px;
-  resize: none;
-  color: var(--text);
-  font-family: inherit;
-  font-size: var(--fs-md);
-  line-height: 1.5;
-  max-height: 180px;
-  min-height: 40px;
-}
-.chat-input textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-bg);
+@keyframes mood-pop {
+  from { opacity: 0; transform: scale(0.85); }
+  to   { opacity: 1; transform: scale(1); }
 }
 
-.chat-attach-btn {
-  width: 40px;
-  height: 40px;
-  flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  color: var(--text-dim);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
-}
-.chat-attach-btn:hover {
-  background: #1f242c;
-  border-color: var(--border-hi);
-  color: var(--text);
-}
-.chat-attach-btn:active {
-  transform: scale(0.96);
-}
-
+/* ---- Attachments strip ---- */
 .chat-attachments {
   display: flex;
   flex-wrap: wrap;
   gap: var(--s-2);
   padding: var(--s-2) var(--s-6) 0;
-  background: var(--bg-elev);
+  background: rgba(22, 27, 34, 0.9);
+  position: relative;
+  z-index: 2;
 }
 .chat-attachments:empty { display: none; }
 
@@ -574,9 +640,7 @@ button { font-family: inherit; cursor: pointer; }
   font-family: var(--font-mono);
   max-width: 320px;
 }
-.chat-attachment-chip.uploading {
-  opacity: 0.6;
-}
+.chat-attachment-chip.uploading { opacity: 0.6; }
 .chat-attachment-chip.error {
   border-color: rgba(248, 81, 73, 0.4);
   color: var(--error);
@@ -629,6 +693,61 @@ button { font-family: inherit; cursor: pointer; }
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
 }
+
+/* ---- Composer ---- */
+.chat-input {
+  border-top: 1px solid var(--border);
+  padding: var(--s-4) var(--s-6);
+  display: flex;
+  gap: var(--s-3);
+  background: rgba(22, 27, 34, 0.9);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  align-items: flex-end;
+  position: relative;
+  z-index: 2;
+}
+.chat-input textarea {
+  flex: 1;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px 14px;
+  resize: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  max-height: 180px;
+  min-height: 40px;
+}
+.chat-input textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.chat-attach-btn {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text-dim);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.chat-attach-btn:hover {
+  background: #1f242c;
+  border-color: var(--border-hi);
+  color: var(--text);
+}
+.chat-attach-btn:active { transform: scale(0.96); }
 
 /* ============================================================
    Dashboard
@@ -686,7 +805,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .filter-chip.active {
   background: var(--accent-bg);
-  border-color: rgba(88,166,255,0.35);
+  border-color: rgba(126, 224, 212, 0.35);
   color: var(--accent);
 }
 .event-list {
@@ -744,10 +863,10 @@ button { font-family: inherit; cursor: pointer; }
   transition: background 0.1s;
   cursor: pointer;
 }
-.memory-row:hover { background: rgba(88,166,255,0.05); }
+.memory-row:hover { background: rgba(126, 224, 212, 0.05); }
 .memory-row:last-child { border-bottom: none; }
 .memory-row.expanded {
-  background: rgba(88,166,255,0.08);
+  background: rgba(126, 224, 212, 0.08);
   border-bottom-color: var(--border);
 }
 .memory-star {
@@ -777,7 +896,7 @@ button { font-family: inherit; cursor: pointer; }
   text-align: center;
   width: fit-content;
 }
-.memory-valence.has { color: var(--accent); border-color: rgba(88,166,255,0.3); }
+.memory-valence.has { color: var(--accent); border-color: rgba(126, 224, 212, 0.3); }
 .memory-actions {
   display: flex;
   gap: 4px;
@@ -961,10 +1080,7 @@ button { font-family: inherit; cursor: pointer; }
   line-height: 1.55;
   transition: border-color 0.12s, box-shadow 0.12s;
 }
-.persona-textarea {
-  resize: vertical;
-  min-height: 60px;
-}
+.persona-textarea { resize: vertical; min-height: 60px; }
 .persona-input:focus,
 .persona-textarea:focus {
   outline: none;
@@ -993,26 +1109,15 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--text);
 }
 
-.persona-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-}
+.persona-list { display: flex; flex-direction: column; gap: var(--s-2); }
 .persona-list-row {
   display: grid;
   grid-template-columns: 1fr 32px;
   gap: var(--s-2);
   align-items: start;
 }
-.persona-list-textarea {
-  min-height: 40px;
-  font-size: var(--fs-sm);
-}
-.persona-list-obj {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-}
+.persona-list-textarea { min-height: 40px; font-size: var(--fs-sm); }
+.persona-list-obj { display: flex; flex-direction: column; gap: var(--s-3); }
 .persona-list-obj-card {
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -1032,35 +1137,17 @@ button { font-family: inherit; cursor: pointer; }
   font-family: var(--font-mono);
   color: var(--text-mute);
 }
-.persona-list-obj-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.persona-kv {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-}
+.persona-list-obj-field { display: flex; flex-direction: column; gap: 4px; }
+.persona-kv { display: flex; flex-direction: column; gap: var(--s-2); }
 .persona-kv-row {
   display: grid;
   grid-template-columns: 160px 1fr 32px;
   gap: var(--s-2);
   align-items: start;
 }
-.persona-kv-key {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-}
-.persona-kv-val {
-  min-height: 40px;
-  font-size: var(--fs-sm);
-}
-.persona-obj-map {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-}
+.persona-kv-key { font-family: var(--font-mono); font-size: var(--fs-sm); }
+.persona-kv-val { min-height: 40px; font-size: var(--fs-sm); }
+.persona-obj-map { display: flex; flex-direction: column; gap: var(--s-3); }
 .persona-obj-card {
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -1070,22 +1157,14 @@ button { font-family: inherit; cursor: pointer; }
   flex-direction: column;
   gap: var(--s-3);
 }
-.persona-obj-header {
-  display: flex;
-  gap: var(--s-2);
-  align-items: center;
-}
+.persona-obj-header { display: flex; gap: var(--s-2); align-items: center; }
 .persona-obj-name {
   flex: 1;
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   font-weight: 600;
 }
-.persona-obj-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
+.persona-obj-field { display: flex; flex-direction: column; gap: 4px; }
 .persona-traits {
   display: flex;
   flex-direction: column;
@@ -1137,9 +1216,7 @@ button { font-family: inherit; cursor: pointer; }
   cursor: pointer;
   transition: transform 0.1s;
 }
-.persona-trait-slider::-webkit-slider-thumb:hover {
-  transform: scale(1.15);
-}
+.persona-trait-slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
 .persona-trait-slider::-moz-range-thumb {
   width: 14px;
   height: 14px;
@@ -1229,12 +1306,8 @@ button { font-family: inherit; cursor: pointer; }
 /* ============================================================
    Models + Providers
    ============================================================ */
-.models-section {
-  margin-bottom: var(--s-7);
-}
-.models-section:last-child {
-  margin-bottom: var(--s-4);
-}
+.models-section { margin-bottom: var(--s-7); }
+.models-section:last-child { margin-bottom: var(--s-4); }
 .models-section-title {
   font-size: var(--fs-lg);
   font-weight: 600;
@@ -1304,23 +1377,11 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--success);
   border: 1px solid rgba(126, 231, 135, 0.35);
 }
-.model-actions {
-  display: flex;
-  gap: var(--s-2);
-  flex-shrink: 0;
-}
-.models-toolbar {
-  display: flex;
-  gap: var(--s-2);
-  margin-bottom: var(--s-3);
-}
+.model-actions { display: flex; gap: var(--s-2); flex-shrink: 0; }
+.models-toolbar { display: flex; gap: var(--s-2); margin-bottom: var(--s-3); }
 .models-toolbar .input { flex: 1; max-width: 320px; }
 
-.pull-row {
-  display: flex;
-  gap: var(--s-2);
-  align-items: center;
-}
+.pull-row { display: flex; gap: var(--s-2); align-items: center; }
 .pull-row .input {
   flex: 1;
   max-width: 420px;
@@ -1406,13 +1467,8 @@ button { font-family: inherit; cursor: pointer; }
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-bg);
 }
-.routing-input:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-select.routing-input {
-  font-family: var(--font-sans);
-}
+.routing-input:disabled { opacity: 0.5; cursor: not-allowed; }
+select.routing-input { font-family: var(--font-sans); }
 .routing-checkbox-row {
   display: flex;
   align-items: center;
@@ -1433,9 +1489,7 @@ select.routing-input {
   max-width: 640px;
   line-height: 1.5;
 }
-.routing-actions {
-  margin-top: var(--s-4);
-}
+.routing-actions { margin-top: var(--s-4); }
 
 .providers-help {
   font-size: var(--fs-sm);
@@ -1467,10 +1521,7 @@ select.routing-input {
   justify-content: space-between;
   gap: var(--s-2);
 }
-.provider-name {
-  font-weight: 600;
-  font-size: var(--fs-md);
-}
+.provider-name { font-weight: 600; font-size: var(--fs-md); }
 .provider-status {
   font-size: 10px;
   text-transform: uppercase;
@@ -1487,9 +1538,7 @@ select.routing-input {
   border-color: rgba(126, 231, 135, 0.35);
   background: rgba(126, 231, 135, 0.08);
 }
-.provider-status.pending {
-  color: var(--text-mute);
-}
+.provider-status.pending { color: var(--text-mute); }
 .provider-meta {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
@@ -1541,11 +1590,7 @@ select.routing-input {
   flex-direction: column;
   gap: var(--s-3);
 }
-.integration-header {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-}
+.integration-header { display: flex; align-items: center; gap: var(--s-3); }
 .integration-emoji {
   width: 42px;
   height: 42px;
@@ -1565,11 +1610,7 @@ select.routing-input {
   flex-direction: column;
   gap: 3px;
 }
-.integration-name {
-  font-weight: 600;
-  font-size: var(--fs-lg);
-  line-height: 1.2;
-}
+.integration-name { font-weight: 600; font-size: var(--fs-lg); line-height: 1.2; }
 .integration-status {
   font-size: 10px;
   text-transform: uppercase;
@@ -1598,9 +1639,7 @@ select.routing-input {
   border-color: rgba(248, 81, 73, 0.35);
   background: rgba(248, 81, 73, 0.08);
 }
-.integration-status.state-off {
-  color: var(--text-mute);
-}
+.integration-status.state-off { color: var(--text-mute); }
 .integration-desc {
   font-size: var(--fs-sm);
   color: var(--text-dim);
@@ -1648,7 +1687,6 @@ select.routing-input {
   color: var(--text-dim);
 }
 
-/* Toggle switch */
 .switch {
   position: relative;
   display: inline-block;
@@ -1657,12 +1695,7 @@ select.routing-input {
   cursor: pointer;
   flex-shrink: 0;
 }
-.switch input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-  position: absolute;
-}
+.switch input { opacity: 0; width: 0; height: 0; position: absolute; }
 .switch-slider {
   position: absolute;
   inset: 0;
@@ -1683,7 +1716,7 @@ select.routing-input {
   transition: transform 0.15s, background 0.15s;
 }
 .switch input:checked + .switch-slider {
-  background: rgba(88, 166, 255, 0.25);
+  background: rgba(126, 224, 212, 0.25);
   border-color: var(--accent);
 }
 .switch input:checked + .switch-slider::before {
@@ -1724,10 +1757,7 @@ select.routing-input {
   background: var(--accent-bg);
   color: var(--accent);
 }
-.settings-main {
-  overflow-y: auto;
-  padding: var(--s-6);
-}
+.settings-main { overflow-y: auto; padding: var(--s-6); }
 .settings-fields { max-width: 780px; }
 .settings-section-title {
   font-size: var(--fs-xl);
@@ -1742,9 +1772,7 @@ select.routing-input {
   line-height: 1.55;
   margin-bottom: var(--s-5);
 }
-.settings-field {
-  margin-bottom: var(--s-4);
-}
+.settings-field { margin-bottom: var(--s-4); }
 .settings-label {
   display: block;
   font-size: var(--fs-sm);
@@ -1794,10 +1822,7 @@ select.routing-input {
   font-size: 10px;
   padding-top: 3px;
 }
-.settings-info-val {
-  color: var(--text);
-  word-break: break-all;
-}
+.settings-info-val { color: var(--text); word-break: break-all; }
 .settings-actions {
   display: flex;
   gap: var(--s-2);
@@ -1875,9 +1900,7 @@ select.routing-input {
   line-height: 1.55;
   margin-bottom: var(--s-5);
 }
-.settings-danger-note strong {
-  color: var(--error);
-}
+.settings-danger-note strong { color: var(--error); }
 .settings-reset-row {
   display: flex;
   align-items: center;
@@ -1924,14 +1947,11 @@ select.routing-input {
   background: linear-gradient(135deg, var(--accent), var(--violet));
   display: grid;
   place-items: center;
-  color: #fff;
+  color: #0d1117;
   font-size: var(--fs-2xl);
   font-weight: 700;
 }
-.settings-about-name {
-  font-size: var(--fs-2xl);
-  font-weight: 600;
-}
+.settings-about-name { font-size: var(--fs-2xl); font-weight: 600; }
 .settings-about-version {
   font-size: var(--fs-sm);
   color: var(--text-dim);
@@ -1975,11 +1995,9 @@ select.routing-input {
 }
 
 /* ============================================================
-   Setup wizard (Phase 10.8)
+   Setup wizard
    ============================================================ */
-.setup-screen {
-  align-items: center;
-}
+.setup-screen { align-items: center; }
 .setup-card {
   width: 100%;
   max-width: 720px;
@@ -2013,30 +2031,17 @@ select.routing-input {
 .setup-step-dot.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: #0d1117;
 }
 .setup-step-dot.complete {
   background: rgba(126, 231, 135, 0.15);
   border-color: rgba(126, 231, 135, 0.35);
   color: var(--success);
 }
-.setup-step-line {
-  flex: 1;
-  height: 1px;
-  background: var(--border);
-}
-.setup-body {
-  min-height: 280px;
-}
-.setup-header {
-  text-align: center;
-  margin-bottom: var(--s-6);
-}
-.setup-title {
-  font-size: var(--fs-xl);
-  font-weight: 600;
-  margin-top: var(--s-3);
-}
+.setup-step-line { flex: 1; height: 1px; background: var(--border); }
+.setup-body { min-height: 280px; }
+.setup-header { text-align: center; margin-bottom: var(--s-6); }
+.setup-title { font-size: var(--fs-xl); font-weight: 600; margin-top: var(--s-3); }
 .setup-sub {
   font-size: var(--fs-sm);
   color: var(--text-dim);
@@ -2071,20 +2076,14 @@ select.routing-input {
   align-items: flex-start;
 }
 .setup-provider-name,
-.setup-integration-name {
-  font-weight: 600;
-  font-size: var(--fs-md);
-}
+.setup-integration-name { font-weight: 600; font-size: var(--fs-md); }
 .setup-provider-status,
 .setup-integration-status {
   font-size: var(--fs-xs);
   color: var(--text-mute);
   font-family: var(--font-mono);
 }
-.setup-integration-emoji {
-  font-size: 24px;
-  line-height: 1;
-}
+.setup-integration-emoji { font-size: 24px; line-height: 1; }
 .setup-actions {
   display: flex;
   gap: var(--s-3);
@@ -2092,9 +2091,7 @@ select.routing-input {
   padding-top: var(--s-4);
   border-top: 1px solid var(--border);
 }
-.setup-actions-center {
-  justify-content: center;
-}
+.setup-actions-center { justify-content: center; }
 .setup-done-list {
   max-width: 400px;
   margin: 0 auto var(--s-5);
@@ -2144,7 +2141,7 @@ select.routing-input {
 .mt-5 { margin-top: var(--s-5); }
 
 /* ============================================================
-   Boot loader — bloom flower tracks startup progress
+   Boot loader — bloom flower
    ============================================================ */
 
 .boot-loader {
@@ -2161,7 +2158,7 @@ select.routing-input {
   gap: 24px;
   background:
     radial-gradient(ellipse 70% 55% at 50% 40%,
-                    rgba(88,166,255,0.06), transparent 70%),
+                    rgba(126,224,212,0.06), transparent 70%),
     var(--bg);
   transition: opacity 0.55s ease-out, transform 0.55s ease-out;
   will-change: opacity, transform;
@@ -2208,7 +2205,7 @@ select.routing-input {
   opacity: calc(0.2 + var(--bloom) * 0.8);
   transition: transform 0.28s ease-out, opacity 0.28s ease-out;
   box-shadow:
-    0 0 24px rgba(88, 166, 255, calc(0.12 + var(--bloom) * 0.4)),
+    0 0 24px rgba(126, 224, 212, calc(0.12 + var(--bloom) * 0.4)),
     0 0 6px rgba(255, 255, 255, calc(0.05 + var(--bloom) * 0.15));
   will-change: transform, opacity;
 }
@@ -2297,11 +2294,7 @@ select.routing-input {
   transition: all 0.15s;
 }
 
-.boot-skip:hover {
-  border-color: var(--border-hi);
-  color: var(--text);
-}
-
+.boot-skip:hover { border-color: var(--border-hi); color: var(--text); }
 .boot-skip.hidden { display: none; }
 
 /* ============================================================
@@ -2313,7 +2306,8 @@ select.routing-input {
   .boot-flower.complete,
   .petal,
   .boot-flower-center,
-  .boot-loader {
+  .boot-loader,
+  .chat-bg-stars {
     animation: none !important;
     transition-duration: 0.01ms !important;
   }
