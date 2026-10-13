@@ -7,7 +7,7 @@
     <title>Lumi — Playground</title>
 
     <meta name="description" content="Meet Lumi — a hyper-expressive AI companion. Chat with her in your browser. No install, no signup, no server.">
-    <meta name="theme-color" content="#1a1625">
+    <meta name="theme-color" content="#171426">
 
     <link rel="icon" href="/favicon.png" type="image/png">
     <link rel="apple-touch-icon" href="/Lumi.png">
@@ -28,9 +28,19 @@
 </head>
 <body>
 
-    <!-- Animated background layers — dreamscape theme -->
+    <!-- ==========================================================
+         Animated background — sleeping Lumi video + dreamscape
+         ========================================================== -->
     <div class="bg-layer" aria-hidden="true">
-        <!-- Soft aurora sweeping across the top -->
+
+        <!-- Sleeping Lumi video loop -->
+        <video class="bg-video"
+               autoplay loop muted playsinline preload="auto"
+               poster="/Lumi-room.png">
+            <source src="/lumi_room_loop.mp4" type="video/mp4">
+        </video>
+
+        <!-- Soft aurora sweep across the top -->
         <div class="aurora"></div>
 
         <!-- Slow-drifting color orbs (Lumi's palette) -->
@@ -52,6 +62,9 @@
         <div class="grain"></div>
     </div>
 
+    <!-- ==========================================================
+         App
+         ========================================================== -->
     <div id="app">
 
         <header>
