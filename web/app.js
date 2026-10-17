@@ -619,6 +619,78 @@ function render() {
   }
 }
 
+/* --------------------------------------------------------------
+   Modals — shared shell for every dialog.
+   Dialogs stack instead of wiping each other, Escape closes the
+   topmost one, and onClose always runs exactly once, however the
+   dialog was dismissed.
+   -------------------------------------------------------------- */
+const _modalStack = [];
+
+function openModal({ title = '', wide = false, onClose = null } = {}) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+
+  const card = document.createElement('div');
+  card.className = 'modal-card' + (wide ? ' modal-wide' : '');
+  card.setAttribute('role', 'dialog');
+  card.setAttribute('aria-modal', 'true');
+  card.tabIndex = -1;
+
+  const header = document.createElement('div');
+  header.className = 'modal-header';
+  const titleEl = document.createElement('div');
+  titleEl.className = 'modal-title';
+  titleEl.textContent = title;
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'modal-close';
+  closeBtn.textContent = '×';
+  closeBtn.setAttribute('aria-label', 'Close');
+  header.appendChild(titleEl);
+  header.appendChild(closeBtn);
+  card.appendChild(header);
+  overlay.appendChild(card);
+
+  const prevFocus = document.activeElement;
+  let closed = false;
+  const modal = {
+    overlay,
+    card,
+    close() {
+      if (closed) return;
+      closed = true;
+      overlay.remove();
+      const i = _modalStack.indexOf(modal);
+      if (i !== -1) _modalStack.splice(i, 1);
+      if (prevFocus && prevFocus.isConnected) prevFocus.focus?.();
+      if (onClose) onClose();
+    },
+  };
+
+  closeBtn.addEventListener('click', () => modal.close());
+
+  // Only a click that both starts and ends on the backdrop dismisses —
+  // dragging a text selection out of a field shouldn't close the dialog.
+  let downOnBackdrop = false;
+  overlay.addEventListener('mousedown', (e) => {
+    downOnBackdrop = e.target === overlay;
+  });
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay && downOnBackdrop) modal.close();
+  });
+
+  _modalStack.push(modal);
+  document.body.appendChild(overlay);
+  card.focus();
+  return modal;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !_modalStack.length) return;
+  e.preventDefault();
+  _modalStack[_modalStack.length - 1].close();
+});
+
 /* ==============================================================
    CHAT
    ============================================================== */
@@ -1005,27 +1077,36 @@ async function uploadOne(file, replace) {
   });
 }
 
-function confirmDuplicate(info) {
-  return new Promise((resolve) => {
-    document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+// Duplicate prompts run one at a time, so dropping a second batch of
+// files while a prompt is open queues behind it instead of replacing it.
+let _dupPromptQueue = Promise.resolve();
 
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
+function confirmDuplicate(info) {
+  const result = _dupPromptQueue.then(() => showDuplicatePrompt(info));
+  _dupPromptQueue = result.catch(() => {});
+  return result;
+}
+
+function showDuplicatePrompt(info) {
+  return new Promise((resolve) => {
+    let choice = 'cancel';
+    const modal = openModal({
+      title: 'File already exists',
+      onClose: () => resolve(choice),
+    });
 
     const existing = info.existing || {};
+    const incomingName = info.incoming?.name || 'This file';
     const existingSize = formatBytesLocal(existing.size || 0);
     const existingWhen = existing.modified_at
       ? new Date(existing.modified_at * 1000).toLocaleString()
       : 'unknown';
 
-    overlay.innerHTML = `
-      <div class="modal-card">
-        <div class="modal-header">
-          <div class="modal-title">File already exists</div>
-          <button class="modal-close">×</button>
-        </div>
+    const body = document.createElement('div');
+    body.innerHTML = `
         <div style="font-size:13px;line-height:1.6;color:var(--text)">
-          A file with <strong>identical contents</strong> is already in
+          <strong>${escapeHtml(incomingName)}</strong> has
+          <strong>identical contents</strong> to a file already in
           your library:
           <div style="margin:12px 0;padding:12px 14px;
                       background:var(--bg-inset);
@@ -1044,26 +1125,19 @@ function confirmDuplicate(info) {
           the original?
         </div>
         <div class="modal-actions">
-          <button class="btn" id="dup-cancel">Cancel</button>
-          <button class="btn btn-primary" id="dup-replace">Replace</button>
+          <button class="btn" data-action="cancel">Cancel</button>
+          <button class="btn btn-primary" data-action="replace">Replace</button>
         </div>
-      </div>
     `;
-    document.body.appendChild(overlay);
+    modal.card.appendChild(body);
 
-    const close = (result) => {
-      overlay.remove();
-      resolve(result);
-    };
-    overlay.querySelector('.modal-close').addEventListener('click',
-      () => close('cancel'));
-    overlay.querySelector('#dup-cancel').addEventListener('click',
-      () => close('cancel'));
-    overlay.querySelector('#dup-replace').addEventListener('click',
-      () => close('replace'));
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) close('cancel');
+    const cancelBtn = body.querySelector('[data-action="cancel"]');
+    cancelBtn.addEventListener('click', () => modal.close());
+    body.querySelector('[data-action="replace"]').addEventListener('click', () => {
+      choice = 'replace';
+      modal.close();
     });
+    cancelBtn.focus();
   });
 }
 
@@ -1754,26 +1828,10 @@ async function deleteMemory(id) {
 }
 
 function openMemoryModal(mode, existing = null) {
-  document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-
-  const card = document.createElement('div');
-  card.className = 'modal-card';
-
-  const header = document.createElement('div');
-  header.className = 'modal-header';
-  const title = document.createElement('div');
-  title.className = 'modal-title';
-  title.textContent = mode === 'create' ? 'Add memory' : 'Edit memory';
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'modal-close';
-  closeBtn.textContent = '×';
-  closeBtn.addEventListener('click', () => overlay.remove());
-  header.appendChild(title);
-  header.appendChild(closeBtn);
-  card.appendChild(header);
+  const modal = openModal({
+    title: mode === 'create' ? 'Add memory' : 'Edit memory',
+  });
+  const { card } = modal;
 
   const factField = document.createElement('div');
   factField.className = 'field';
@@ -1814,7 +1872,7 @@ function openMemoryModal(mode, existing = null) {
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'btn';
   cancelBtn.textContent = 'Cancel';
-  cancelBtn.addEventListener('click', () => overlay.remove());
+  cancelBtn.addEventListener('click', () => modal.close());
   const saveBtn = document.createElement('button');
   saveBtn.className = 'btn btn-primary';
   saveBtn.textContent = mode === 'create' ? 'Add' : 'Save';
@@ -1839,7 +1897,7 @@ function openMemoryModal(mode, existing = null) {
           csrf: true,
         });
       }
-      overlay.remove();
+      modal.close();
       await loadMemories();
     } catch (e) {
       alert('Save failed: ' + e.message);
@@ -1849,12 +1907,6 @@ function openMemoryModal(mode, existing = null) {
   actions.appendChild(cancelBtn);
   actions.appendChild(saveBtn);
   card.appendChild(actions);
-
-  overlay.appendChild(card);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-  document.body.appendChild(overlay);
 
   setTimeout(() => factInput.focus(), 50);
 }
@@ -2793,26 +2845,8 @@ async function previewPrompt() {
 }
 
 function openPromptModal(text) {
-  document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-
-  const card = document.createElement('div');
-  card.className = 'modal-card modal-wide';
-
-  const header = document.createElement('div');
-  header.className = 'modal-header';
-  const title = document.createElement('div');
-  title.className = 'modal-title';
-  title.textContent = 'System Prompt Preview';
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'modal-close';
-  closeBtn.textContent = '×';
-  closeBtn.addEventListener('click', () => overlay.remove());
-  header.appendChild(title);
-  header.appendChild(closeBtn);
-  card.appendChild(header);
+  const modal = openModal({ title: 'System Prompt Preview', wide: true });
+  const { card } = modal;
 
   const help = document.createElement('div');
   help.className = 'persona-raw-help';
@@ -2841,16 +2875,10 @@ function openPromptModal(text) {
   const okBtn = document.createElement('button');
   okBtn.className = 'btn btn-primary';
   okBtn.textContent = 'Close';
-  okBtn.addEventListener('click', () => overlay.remove());
+  okBtn.addEventListener('click', () => modal.close());
   actions.appendChild(copyBtn);
   actions.appendChild(okBtn);
   card.appendChild(actions);
-
-  overlay.appendChild(card);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-  document.body.appendChild(overlay);
 }
 
 /* ==============================================================
@@ -3345,26 +3373,8 @@ async function testProvider(p) {
 }
 
 function openProviderModal(p) {
-  document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-
-  const card = document.createElement('div');
-  card.className = 'modal-card';
-
-  const header = document.createElement('div');
-  header.className = 'modal-header';
-  const title = document.createElement('div');
-  title.className = 'modal-title';
-  title.textContent = p.label;
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'modal-close';
-  closeBtn.textContent = '×';
-  closeBtn.addEventListener('click', () => overlay.remove());
-  header.appendChild(title);
-  header.appendChild(closeBtn);
-  card.appendChild(header);
+  const modal = openModal({ title: p.label });
+  const { card } = modal;
 
   const keyField = document.createElement('div');
   keyField.className = 'field';
@@ -3426,7 +3436,7 @@ function openProviderModal(p) {
         body: { api_key: '' },
         csrf: true,
       });
-      overlay.remove();
+      modal.close();
       loadModelsPage();
     } catch (e) {
       alert('Clear failed: ' + e.message);
@@ -3438,7 +3448,7 @@ function openProviderModal(p) {
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'btn';
   cancelBtn.textContent = 'Cancel';
-  cancelBtn.addEventListener('click', () => overlay.remove());
+  cancelBtn.addEventListener('click', () => modal.close());
   actions.appendChild(cancelBtn);
 
   const saveBtn = document.createElement('button');
@@ -3453,7 +3463,7 @@ function openProviderModal(p) {
     if (u) payload.base_url = u;
 
     if (!Object.keys(payload).length) {
-      overlay.remove();
+      modal.close();
       return;
     }
 
@@ -3465,7 +3475,7 @@ function openProviderModal(p) {
         body: payload,
         csrf: true,
       });
-      overlay.remove();
+      modal.close();
       loadModelsPage();
     } catch (e) {
       alert('Save failed: ' + e.message);
@@ -3476,12 +3486,6 @@ function openProviderModal(p) {
   actions.appendChild(saveBtn);
 
   card.appendChild(actions);
-
-  overlay.appendChild(card);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-  document.body.appendChild(overlay);
 
   setTimeout(() => keyInput.focus(), 50);
 }
@@ -4005,26 +4009,8 @@ async function onToggleIntegration(id, enabled) {
 }
 
 function openIntegrationModal(it) {
-  document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-
-  const card = document.createElement('div');
-  card.className = 'modal-card';
-
-  const header = document.createElement('div');
-  header.className = 'modal-header';
-  const title = document.createElement('div');
-  title.className = 'modal-title';
-  title.textContent = `${it.emoji || ''} ${it.label}`.trim();
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'modal-close';
-  closeBtn.textContent = '×';
-  closeBtn.addEventListener('click', () => overlay.remove());
-  header.appendChild(title);
-  header.appendChild(closeBtn);
-  card.appendChild(header);
+  const modal = openModal({ title: `${it.emoji || ''} ${it.label}`.trim() });
+  const { card } = modal;
 
   const hint = document.createElement('div');
   hint.className = 'provider-hint';
@@ -4078,7 +4064,7 @@ function openIntegrationModal(it) {
         await api(`/api/integrations/${encodeURIComponent(it.id)}`, {
           method: 'PUT', body: { values }, csrf: true,
         });
-        overlay.remove();
+        modal.close();
         loadIntegrations();
       } catch (e) {
         alert('Clear failed: ' + e.message);
@@ -4091,7 +4077,7 @@ function openIntegrationModal(it) {
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'btn';
   cancelBtn.textContent = 'Cancel';
-  cancelBtn.addEventListener('click', () => overlay.remove());
+  cancelBtn.addEventListener('click', () => modal.close());
   actions.appendChild(cancelBtn);
 
   const saveBtn = document.createElement('button');
@@ -4104,7 +4090,7 @@ function openIntegrationModal(it) {
       if (v) values[key] = v;
     }
     if (!Object.keys(values).length) {
-      overlay.remove();
+      modal.close();
       return;
     }
     saveBtn.disabled = true;
@@ -4113,7 +4099,7 @@ function openIntegrationModal(it) {
       await api(`/api/integrations/${encodeURIComponent(it.id)}`, {
         method: 'PUT', body: { values }, csrf: true,
       });
-      overlay.remove();
+      modal.close();
       loadIntegrations();
     } catch (e) {
       alert('Save failed: ' + e.message);
@@ -4124,12 +4110,6 @@ function openIntegrationModal(it) {
   actions.appendChild(saveBtn);
 
   card.appendChild(actions);
-
-  overlay.appendChild(card);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-  document.body.appendChild(overlay);
 
   const firstEmpty = it.fields.find(f => !f.is_set);
   if (firstEmpty && inputs[firstEmpty.key]) {

@@ -1287,6 +1287,9 @@ html[data-theme="dark"] .msg.user .msg-avatar {
   max-width: 520px;
   box-shadow: var(--sh-3);
 }
+/* The card takes focus on open so Escape/Tab start inside the dialog;
+   it isn't an interactive control, so no focus ring. */
+.modal-card:focus { outline: none; }
 .modal-card.modal-wide {
   max-width: 860px;
   max-height: 82vh;
