@@ -7,15 +7,15 @@ in this folder. Pick the doc that matches your question.
 
 | Doc | Covers |
 |---|---|
-| [architecture.md](architecture.md) | Turn flow, module topology, prompt stack, tool dispatch, SDK bridge |
+| [architecture.md](architecture.md) | Turn flow, process and threads, module topology, prompt stack, tool dispatch, SDK bridge, web server internals, diagnostics telemetry |
 | [configuration.md](configuration.md) | `.env`, `constants.py`, `config/lumi.yaml`, reset procedures |
-| [development.md](development.md) | Dev setup, module contract, test suite, code conventions, adding providers and tools |
-| [models.md](models.md) | Ollama, two-path routing, cloud providers, TTS/STT, embeddings, vision |
+| [development.md](development.md) | Dev setup, module contract, web-server conventions, test suite, code conventions, adding providers, tools, and pages |
+| [models.md](models.md) | Ollama, two-path routing, local and cloud routing, retries and rate limits, TTS/STT, embeddings, vision |
 | [discord-voice.md](discord-voice.md) | DAVE receive, VAD, group awareness, diagnostics |
-| [security.md](security.md) | Threat model, Phase 9 guards, incident response |
-| [roadmap.md](roadmap.md) | All ten phases, status, and what remains |
-| [known-limitations.md](known-limitations.md) | Architectural limitations and behavior that is not a bug |
-| [troubleshooting.md](troubleshooting.md) | Common failures, security refusals, voice, memory, uploads |
+| [security.md](security.md) | Threat model, Phase 9 guards, web client controls, incident response |
+| [roadmap.md](roadmap.md) | All ten phases, changelog, status, and what remains |
+| [known-limitations.md](known-limitations.md) | Architectural limitations, web client gaps, and behavior that is not a bug |
+| [troubleshooting.md](troubleshooting.md) | Common failures, security refusals, web client, voice, memory, uploads |
 
 ## Where to look if you want to...
 
@@ -27,6 +27,8 @@ in this folder. Pick the doc that matches your question.
 - **Fix something that broke.** [troubleshooting.md](troubleshooting.md) first, then [known-limitations.md](known-limitations.md) to check whether it is a known gap.
 - **Understand a config value.** [configuration.md](configuration.md) is the map. `constants.py` is the source of truth.
 - **See what's shipped and what's left.** [roadmap.md](roadmap.md).
+- **Decide what runs locally and what goes to the cloud.** [models.md](models.md#local-and-cloud-routing).
+- **Work on the browser UI.** [`../web/README.md`](../web/README.md) for client conventions, [architecture.md](architecture.md#web-server-modulessocketiopy) for the server side.
 
 ## Conventions
 
@@ -47,7 +49,6 @@ thing a new reader sees and the last thing anyone remembers to fix.
 ## Related docs
 
 - `../README.md`: the project overview
-- `../CONTRIBUTING.md`: for contributors, if present
 - Per-folder READMEs for file-level maps:
   - [`../modules/README.md`](../modules/README.md) — runtime modules
   - [`../web/README.md`](../web/README.md) — local web client

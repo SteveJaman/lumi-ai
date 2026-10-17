@@ -3,7 +3,7 @@
   Goal: Move from reactive chatbot to autonomous companion
   Reference: Neuro-sama (Vedal987), Neuro SDK (VedalAI/neuro-sdk)
   Created:  2026-09-19
-  Updated:  2026-10-12
+  Updated:  2026-10-17
 
   STATUS: All ten architectural phases are complete.
           The remaining work is optional polish.
@@ -23,6 +23,38 @@ iteration against real use, not new subsystems.
   CHANGELOG
 ================================================================
   Reverse chronological. What shipped, when, and why.
+
+  2026-10-17
+    - Web server robustness. A JSON error middleware wraps /api/*
+      and /auth/*, so every failure is {"error": ...} and the
+      traceback goes to the console. Memory and library calls from
+      HTTP handlers moved to a dedicated single-worker executor
+      (the web-memory thread); PDF/DOCX extraction moved to the
+      default executor. The event loop no longer blocks on ChromaDB.
+    - Upload pipeline. Image uploads no longer round-trip base64
+      through the browser and chat history (it was unused and
+      pushed images over ~750 KB past the 1 MB body limit). The
+      duplicate scan only hashes same-size files and caches hashes.
+      /api/history returns attachments as {name, kind} only.
+    - Browser voice. One socket per page load (extra sockets
+      replayed audio), opt-out reaches the server, MediaRecorder
+      MIME detection for Safari/Chrome/Firefox, pointer-event
+      hold-to-talk for touch, no stuck recording on a quick tap,
+      CSRF and a 10 MB cap on /api/voice_message.
+    - Web UI. Shared openModal() helper (stacking, Escape, focus
+      return; queued duplicate prompts). theme-init.js applies the
+      theme before first paint on every page; the theme follows
+      the OS until chosen. Mood accents fade via @property and
+      respect each theme. Thinking indicator anchored on content.
+      Chat keeps scroll position on redraw, patches the newest
+      bubble in place, and shows a "Latest" jump button. Real
+      links for navigation with deep-link reload, keyboard-
+      expandable memory rows, phone layout at <= 760px, broader
+      reduced-motion coverage.
+    - Docs pass against the code. Removed references to
+      tests/test_phase9.py (never committed) and the edge layer
+      (removed in babb3fa); documented local/cloud routing, the
+      web server internals, and diagnostics telemetry.
 
   2026-10-12
     - File upload pipeline. Web chat accepts screenshots, PDFs,
@@ -64,7 +96,8 @@ iteration against real use, not new subsystems.
       incident response playbook (9.14).
     - Two new test harnesses. tests/test_phase9.py (47 offline
       guard checks) and tests/test_debug.py (14-section project
-      health check).
+      health check). [test_phase9.py was never committed to the
+      repo; see 2026-10-17.]
     - requirements.lock.txt generated with pip freeze.
 
   2026-09-29
@@ -185,7 +218,11 @@ iteration against real use, not new subsystems.
     - Auth: SQLite, argon2id, sliding sessions, CSRF, origin
       check, login rate limit.
     - Voice in browser via socket.io (TTS playback only; chat is
-      polling).
+      polling). One socket per tab, server-side opt-in.
+    - Server: JSON error middleware on /api/* and /auth/*;
+      memory/library work on a dedicated background thread.
+    - UI: shared modal helper, pre-paint theme, mood-accent fades,
+      scroll-preserving chat with a jump button, phone layout.
 
   External SDK
     - WebSocket server on 127.0.0.1:5056.
@@ -194,10 +231,14 @@ iteration against real use, not new subsystems.
     - Modeled after Neuro SDK's wire protocol.
 
   Diagnostics
-    - Log hub with dashboard at 127.0.0.1:5001.
+    - Log hub at 127.0.0.1:5001: secret-scrubbed events in an
+      800-entry ring buffer plus data/logs/events.log, served to a
+      dashboard that polls /events every 2s.
     - scripts/check_system.py: machine pre-flight.
     - tests/test_debug.py: whole-project health check.
-    - tests/test_phase9.py: security guard verification.
+    - tests/test_all_features.py: end-to-end feature smoke test,
+      including the sandbox, shell, provenance, and redaction
+      guards.
     - tests/test_comprehensive.py: integration + hardware.
 
 ================================================================
@@ -243,10 +284,25 @@ iteration against real use, not new subsystems.
         facts. The current prompt already has some HARD RULES for
         this; extend them.
 
-    [ ] History trim at 20 messages caps backfill depth.
-        The prompter trims signals.history to the last 20 turns.
-        Older turns are lost for backfill purposes. Fix: raise the
-        trim to 100 in modules/prompter.py.
+    [ ] History collapse caps backfill depth.
+        signals.add_message() collapses history past 25 entries
+        into a summary plus the last 10 turns, and boot loads only
+        the last 30. Older verbatim turns are lost for backfill.
+        Fix: raise the thresholds in signals.py.
+
+    [ ] /auth/logout has no CSRF or origin check.
+        A cross-site page can sign the user out. Fix: apply
+        _origin_ok() and _require_csrf() as on other POST routes,
+        and send the token from doLogout() in web/app.js.
+
+    [ ] Revoked sessions keep their socket.io connection.
+        Fix: track sid -> session token and disconnect matching
+        sockets when a session is revoked.
+
+    [ ] web_message is emitted twice per web chat message.
+        _handle_chat_send emits it and _broadcast_history emits it
+        again. Harmless while chat is polled; fix before moving
+        chat to socket.io.
 
     [ ] sdk/actions/force is stubbed but not wired.
         The wire protocol supports it and both client and server
@@ -451,7 +507,11 @@ iteration against real use, not new subsystems.
     ✅ Settings page (General, Security, Advanced, About)
     ✅ Setup wizard
     ✅ File uploads with duplicate detection
-    ✅ Voice in browser
+    ✅ Voice in browser (single socket, MIME detection, touch)
+    ✅ JSON API errors and a background memory thread
+    ✅ Shared modal helper, pre-paint theme, mood-accent fades
+    ✅ Scroll-preserving chat with jump-to-latest
+    ✅ Keyboard navigation and phone layout
 
   External SDK
     ✅ Server on 127.0.0.1:5056
@@ -481,7 +541,7 @@ iteration against real use, not new subsystems.
     ✅ Structured diagnostics with localhost dashboard
     ✅ Pre-flight system check (scripts/check_system.py)
     ✅ Project health harness (tests/test_debug.py)
-    ✅ Phase 9 guard verification (tests/test_phase9.py)
+    ✅ End-to-end feature harness (tests/test_all_features.py)
     ✅ Integration harness (tests/test_comprehensive.py)
     ✅ Pytest suite for pure-logic modules
 

@@ -98,7 +98,9 @@ Prompter run loop (tick every 50ms)
 ```
 
 After the reply lands in history, the web client sees it on its next
-`/api/history` poll (1.5s).
+`/api/history` poll (1.5s). If only the newest entry changed in place, the
+poll patches that one bubble instead of redrawing; see
+[Web server](#web-server-modulessocketiopy).
 
 ## Prompt assembly stack
 
@@ -184,9 +186,28 @@ Background loops (independent threads):
   heartbeat (30s)      · emotional_state decay (30s)
   ambient_perception   · self_model (60s/600s)
   memory reflection    · discord client
-  log hub              · SDK server
+  log hub (HTTP :5001) · SDK server (:5056)
   library_indexer (60s)
+  web server (aiohttp + socket.io, :5000)
+    └─ web-memory worker (1 thread, memory/library calls from HTTP)
 ```
+
+## Process and threads
+
+Lumi is one Python process. Nothing is a separate service except Ollama,
+VTube Studio, and any cloud provider you configure.
+
+| Thread | Started by | Event loop | Purpose |
+|---|---|---|---|
+| Main | `python main.py` | `asyncio.run(prompter.run())` | Prompter run loop (50ms tick) |
+| One per module | `main.py` → `module.init_event_loop()` | Own `asyncio` loop each | Memory, library indexer, mic, Discord, VTS, heartbeat, emotional state, self-model, SDK server, TTS, and the rest of the module list |
+| Web server | `main.py` → `SocketIOServer.run()` | aiohttp's loop | HTTP routes, static files, socket.io, history broadcaster |
+| Web-memory worker | `SocketIOServer.__init__` | None (`ThreadPoolExecutor`, 1 worker) | Memory and library calls made by HTTP handlers |
+| Default executor | aiohttp loop | None | PDF/DOCX extraction, VLM image analysis, Ollama and provider calls from the Models page |
+| Log hub | `main.py` → `LogHub.start()` | None (`ThreadingHTTPServer`) | Diagnostics dashboard and `/events` |
+
+All of them share state through `signals`. Cross-thread calls into the web
+server's loop (TTS audio fan-out) use `asyncio.run_coroutine_threadsafe`.
 
 ## Background modules
 
@@ -202,8 +223,9 @@ Each runs in its own thread with its own event loop, spawned by
 | `memory.py` | every 10 messages | Reflection pass extracts facts from recent history. Routes through `chat_sync(FAST_MODEL_NAME, think=False)`. |
 | `library_indexer.py` | 60s rescan | Walks `data/library/`, indexes new files into the `library_docs` collection, and prunes chunks for files that no longer exist. |
 | `discordClient.py` | continuous | Voice receive (DAVE decrypt + Opus decode + VAD) and send (Fish Audio → FFmpeg). |
-| `log_hub.py` | continuous | Structured diagnostics stream at `127.0.0.1:5001`. |
+| `log_hub.py` | continuous | Diagnostics telemetry at `127.0.0.1:5001`. See [Diagnostics telemetry](#diagnostics-telemetry). |
 | `sdk/server.py` | continuous | Websocket server at `127.0.0.1:5056` for external plugins. |
+| `socketIO.py` | continuous | Web client backend at `127.0.0.1:5000`. See [Web server](#web-server-modulessocketiopy). |
 
 ## Data flow between subsystems
 
@@ -263,10 +285,18 @@ PNG can't be embedded, but the report describing it can. The passive
 injector applies a distance threshold (`< 1.0`). The agent-mode
 `search_library` tool does not; it always returns the top hits.
 
-Duplicate detection uses SHA-256 of the file contents. The first request
-returns 409 with metadata about the existing file; on `?replace=1` the
-old file, sidecar, and ChromaDB chunks are removed before the new one
-lands.
+Duplicate detection uses SHA-256 of the file contents. Only library files
+with the same byte size as the upload are hashed, and each file's hash is
+cached by `(mtime, size)` for the life of the process, so the scan stays
+cheap as the library grows. The first request returns 409 with metadata
+about the existing file; on `?replace=1` the old file, sidecar, and
+ChromaDB chunks are removed before the new one lands.
+
+The upload response returns the extracted text (capped at 15,000
+characters), never the image bytes. The browser sends that text back with
+the next chat message, the server stores it on the history entry, and
+`prompter._expand_message()` inlines it into the turn. The main model
+reads the VLM's report, not pixels.
 
 ### TTS output
 
@@ -367,12 +397,78 @@ External app                 sdk/server.py                prompter
      │ ◄─ speech_finished ──────── │ ◄─ broadcast ───────────  │
 ```
 
-The server binds strictly to `127.0.0.1:5056` unless
+The SDK server binds strictly to `127.0.0.1:5056` unless
 `ALLOW_LAN_EXPOSURE` is `True`. Auth is a shared token at
 `data/memories/sdk_token.txt`. Per-client approval and capability
 ceilings live at `data/memories/sdk_allowlist.json`. Capability tiers
 (`read` / `write` / `dangerous`) determine the confirmation gate. The
 allowlist is read at connect time — edits require a restart.
+
+### Web server (`modules/socketIO.py`)
+
+One aiohttp application with python-socketio attached, bound to
+`127.0.0.1:5000` (or `0.0.0.0` when `ALLOW_LAN_EXPOSURE` is set).
+
+```
+Browser                         aiohttp app (:5000)
+   │                                 │
+   │ ── GET /, /login, /setup ─────► │ server-side gating → HTML
+   │ ── GET /web/* ────────────────► │ static files (path-traversal checked)
+   │ ── /api/*, /auth/* ───────────► │ _json_error_middleware
+   │                                 │   └─ handler: origin → session → CSRF
+   │                                 │        ├─ memory/library → _run_mem()
+   │                                 │        │      (web-memory worker)
+   │                                 │        ├─ parsing / VLM / Ollama
+   │                                 │        │      → default executor
+   │                                 │        └─ signals.history.append(...)
+   │ ◄═ socket.io: tts_audio ═══════ │ only to sockets that sent
+   │                                 │   web_voice_optin {enabled: true}
+```
+
+- **Chat is polled, not pushed.** The browser polls `/api/history` every 1.5s
+  and `/api/status` every 2s. socket.io carries TTS audio to opted-in tabs
+  (plus legacy control events); the browser does not read chat from it.
+- **History is slimmed for polling.** `/api/history` returns attachments as
+  `{name, kind}` only. The extracted text stays on the server-side history
+  entry for the prompter.
+- **JSON errors.** `_json_error_middleware` converts any unhandled exception
+  or HTTP error on `/api/*` and `/auth/*` into `{"error": ...}` with the
+  right status and prints the traceback. Redirects, pages, static files, and
+  socket.io are untouched.
+- **Background memory thread.** HTTP handlers never call ChromaDB or the
+  library indexer on the event loop.
+  - `_run_mem(fn, ...)` runs those calls on a single-worker
+    `ThreadPoolExecutor`. One worker keeps web-originated memory writes
+    serialized, as they were when they ran inline.
+  - The memory browser routes (list, search, get, create, update, delete,
+    export), upload sidecar indexing, library deletes on replace, the upload
+    breadcrumb memory, and the duplicate scan all go through it.
+  - Full-document indexing after an upload is queued on the same worker
+    without awaiting it, so the HTTP response returns first.
+- **Request limits.**
+
+  | Request | Limit |
+  |---|---|
+  | JSON body | aiohttp's default 1 MB |
+  | `/api/chat/upload` | 25 MB, streamed in 64 KB chunks |
+  | `/api/voice_message` | 10 MB |
+  | Attachments per message | 6, each with ≤ 15,000 characters of text |
+
+### Diagnostics telemetry
+
+Every module reports through `modules/log_hub.py:emit(signals, category,
+message, level)`. That call:
+
+1. Scrubs secrets (API keys, Discord tokens, bearer tokens, long hex keys).
+2. Appends the event to an in-memory ring buffer (800 events).
+3. Appends a line to `data/logs/events.log`.
+
+A `ThreadingHTTPServer` on `127.0.0.1:5001` serves a dashboard page and
+`/events`. The hub's own page polls `/events` every 2 seconds; the web
+client's Dashboard page fetches it once per visit or Refresh. There is no
+push channel. `emit()` never blocks on a network
+call, which is why high-frequency loops (ambient sampling, heartbeat) use it
+instead of `print()`.
 
 ## Key files (top level)
 
@@ -380,7 +476,7 @@ allowlist is read at connect time — edits require a restart.
 |---|---|
 | `main.py` | Entry point — audio routing menu, module spawning, shutdown handler |
 | `constants.py` | Config, paths, `HOST`, persona loader, model names, `build_system_prompt()` |
-| `signals.py` | Shared state (history, flags, queues, `input_paused`) |
+| `signals.py` | Shared state (history, flags, queues, `input_paused`); loads and saves `data/logs/chat_history.json` and collapses old turns into a summary |
 
 ## Key files (modules)
 
@@ -392,7 +488,7 @@ allowlist is read at connect time — edits require a restart.
 | `library_indexer.py` | Walks `data/library/`, indexes into `library_docs` |
 | `llm_providers.py` | Multi-provider LLM clients, `chat_sync()` |
 | `model_manager.py` | Ollama management + live `constants.py` patching |
-| `socketIO.py` | aiohttp HTTP routes + python-socketio + static serving |
+| `socketIO.py` | aiohttp HTTP routes + python-socketio + static serving, JSON error middleware, web-memory worker |
 | `emotional_state.py` | Traits, state variables, cognitive frames |
 | `self_model.py` | Pattern tracking, periodic reflection |
 | `heartbeat.py` | Autonomous initiation loop |
@@ -418,6 +514,22 @@ agent turns, memory reflection, session summary, self-model reflection,
 heartbeat decision. This means cloud providers work everywhere
 transparently, and the Ollama-only fields (`think`, `num_ctx`,
 `keep_alive`) are dropped for non-Ollama specs.
+
+**Local first, cloud by choice.**
+- **What can go to the cloud.** `MODEL_NAME` (main path) and
+  `FAST_MODEL_NAME` (fast path and background tasks) are set independently.
+  Each is a local Ollama model or a cloud `provider:model`, so you can keep
+  chat local and send only heavy turns out, or the reverse.
+- **What stays local.** Vision, speech-to-text, and embeddings always run on
+  the machine. TTS is Fish Audio's cloud API.
+- **Retries, not failover.** Cloud calls retry on 429/5xx and enforce
+  per-provider rate limits. There is no automatic failover from local to
+  cloud or back; if the configured model is down, the turn fails. See
+  [models.md](models.md#local-and-cloud-routing).
+
+**The event loop never waits on memory.** Request handlers hand blocking
+work to an executor (see [Web server](#web-server-modulessocketiopy)), so a
+slow ChromaDB query or PDF parse delays only the request that needs it.
 
 **Guards fire before dispatch, and can force retries.** The prompter is
 the only place with the full picture of the current turn, so validation,

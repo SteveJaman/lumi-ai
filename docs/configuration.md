@@ -45,10 +45,23 @@ DISCORD_CHANNEL_ID=000000000000000000
 # GEMINI_BASE_URL=
 # GROQ_BASE_URL=
 # OPENROUTER_BASE_URL=
+
+# --- Cloud throttling overrides (optional, per provider) ---
+# GEMINI_RPM=5            requests per minute
+# GEMINI_TPM=200000       tokens per minute
+# GEMINI_RPD=100          requests per day (or "unlimited")
+# GEMINI_RATE_LIMIT=off   disable throttling for this provider
+# LLM_MAX_TOOL_CHARS=6000 cap on each tool result sent to a throttled
+#                         OpenAI-compatible provider
 ```
 
 `FISH_API_KEY` and `FISH_REFERENCE_ID` are required for voice output.
 Everything else is optional.
+
+The throttling keys work for any provider prefix (`OPENAI_`, `GROQ_`, …).
+Only Gemini has built-in defaults; other providers are unthrottled unless
+you set a value. Daily usage is tracked in `.rate_usage.json` next to
+`.env`. See [models.md](models.md#local-and-cloud-routing).
 
 ### Writing rules
 

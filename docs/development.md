@@ -135,7 +135,7 @@ Not pytest tests. Run them directly with `python`.
 ```powershell
 python scripts\check_system.py       # machine pre-flight
 python tests\test_debug.py           # whole-project health
-python tests\test_phase9.py          # security guard verification
+python tests\test_all_features.py    # end-to-end feature smoke test
 python tests\test_comprehensive.py   # integration & hardware
 ```
 
@@ -143,10 +143,21 @@ python tests\test_comprehensive.py   # integration & hardware
 |---|---|---|
 | `scripts/check_system.py` | Python, folders, packages, ports, Ollama, FFmpeg, Playwright, GPU, `.env`, `lumi.yaml` | Yes (skips live services gracefully) |
 | `tests/test_debug.py` | 14 sections — workspace, syntax, imports, constants, persona YAML, signals, agent tools, Ollama, storage, ports, config files, module shape, smoke tests, optional deps | Yes (Ollama check is a 2s ping) |
-| `tests/test_phase9.py` | 47 checks covering every Phase 9 guard as a function AND as a source pattern | Yes |
+| `tests/test_all_features.py` | Every major subsystem, including the path sandbox, shell guards, provenance wrapping, and secret redaction; unconfigured optional services SKIP unless `LUMI_STRICT=1` | Yes |
 | `tests/test_comprehensive.py` | Audio routing, database locks, library RAG, prompt assembly, tool dispatch parity | Partially — needs PyAudio, ChromaDB, Ollama for full coverage |
 
-`tests/README.md` documents all four plus the pytest suite.
+`tests/README.md` documents these plus `test_performance.py`,
+`test_vtube_motion.py`, and the pytest suite.
+
+### Checking the web client
+
+The browser UI has no automated tests. To check layout and theming
+without the full backend, serve `web/` from a throwaway aiohttp app that
+returns canned JSON for `/auth/me`, `/api/status`, `/api/history`, and the
+routes of the page under test, then drive it with Playwright (`channel="chrome"`
+uses the installed Chrome). Screenshot light and dark at desktop width and at
+≤ 760px, and watch the console for `pageerror` events. Socket.io 404s are
+expected against a mock.
 
 ### What belongs in a test
 
@@ -277,6 +288,21 @@ via `init_event_loop()`, which calls `asyncio.run(self.run())`.
 event loop stays responsive. Network calls, file reads, and subprocess
 invocations all qualify.
 
+In `modules/socketIO.py` specifically:
+
+- **Memory and library calls** (`memory.API.*`, `index_single_file`,
+  anything touching ChromaDB) go through `await self._run_mem(fn, *args,
+  **kwargs)`. That uses the server's single-worker memory executor, so
+  web-originated memory work stays serialized.
+- **Other blocking work** (parsing, VLM, Ollama or provider HTTP) uses
+  `asyncio.get_running_loop().run_in_executor(None, ...)`.
+- **Errors.** Return expected failures with `_json_error(status, message)`.
+  Anything you don't catch is turned into a JSON 500 by
+  `_json_error_middleware`, with the traceback printed to the console.
+- **Order of checks** for a state-changing route: `_origin_ok()`, then
+  `_current_user()`, then `_require_csrf()` (JSON) or
+  `_require_csrf_header()` (multipart).
+
 **Do not call another module directly.** Coordinate through `signals`:
 
 ```python
@@ -321,7 +347,9 @@ Three destinations, three purposes:
 
 The diagnostics dashboard at `127.0.0.1:5001` reads from `hub_emit`. If
 you're inside a 30-second loop, use `hub_emit`. If you're inside a
-user-triggered action, `print()` is fine.
+user-triggered action, `print()` is fine. `hub_emit` scrubs secrets, keeps
+the last 800 events in memory, and appends to `data/logs/events.log`; it
+never blocks on the network.
 
 ANSI color codes are defined at the top of `prompter.py`:
 
@@ -408,9 +436,15 @@ patchable.
 3. Write a `renderMyPage(main)` function that fills `#main-content`.
 4. If the page needs data, add a `/api/my-thing` route in
    `modules/socketIO.py`. Follow the pattern of the existing routes —
-   login-gated, CSRF on state-changing requests.
+   login-gated, CSRF on state-changing requests, blocking work off the
+   event loop (see [Module contract](#module-contract)).
+5. Use `openModal()` for dialogs and `escapeHtml()` for any server or user
+   text inside an HTML string.
+6. Check it at phone width (≤ 760px) and in both themes.
 
-The SPA uses hash-based routing (`#/my-page`). No build step.
+The SPA uses hash-based routing (`#/my-page`). No build step. The nav entry
+becomes an `<a href="#/my-page">` automatically. See
+[`../web/README.md`](../web/README.md) for the client's conventions.
 
 ### Adding an SDK action
 
@@ -475,7 +509,7 @@ with `/` or `\`.
 Before pushing a version bump:
 
 - [ ] `pytest tests/ -v` passes
-- [ ] `python tests\test_phase9.py` passes
+- [ ] `python tests\test_all_features.py` passes
 - [ ] `python tests\test_debug.py` passes with no errors
 - [ ] `ruff check .` clean
 - [ ] `python scripts\check_system.py` shows a healthy environment

@@ -139,6 +139,52 @@ API keys live in `.env`. The Models page writes them with a
 comment-preserving editor that chmods the file to `0600` on POSIX and
 never returns a key unmasked to the browser.
 
+### Local and cloud routing
+
+Lumi is local-first. A cloud model is used only where you put one, and the
+choice is made per path rather than per request.
+
+| Workload | Where it runs | Set by |
+|---|---|---|
+| Main path (complex turns, agent turns, attachments) | Ollama, or any cloud `provider:model` | `MODEL_NAME` |
+| Fast path and background tasks (reflection, summaries, heartbeat) | Ollama, or any cloud `provider:model` | `FAST_MODEL_NAME` |
+| Upload image analysis, ambient and on-demand screen descriptions | Local Ollama VLM | `VISION_MODEL_NAME`, `moondream` |
+| Speech-to-text | Local faster-whisper | — |
+| Embeddings | Local, inside ChromaDB | — |
+| Text-to-speech | Fish Audio cloud API | `FISH_REFERENCE_ID` |
+
+Common mixes:
+
+- **Everything local.** Both names are Ollama models. Nothing but TTS leaves
+  the machine.
+- **Heavy turns to the cloud.** `MODEL_NAME` is a cloud spec and
+  `FAST_MODEL_NAME` stays local. Casual chat and all background extraction
+  stay on the GPU; agent turns and long or complex questions go out.
+- **Light machine.** `FAST_MODEL_NAME` is a cheap cloud model (for example
+  Groq) so the background tasks don't compete with the main model for VRAM.
+
+What the provider layer does for cloud calls:
+
+- **Retries.** HTTP 429 and 5xx responses, and connection errors, are retried
+  after 2, 5, and 10 seconds. A numeric `Retry-After` header is honoured, up
+  to 30 seconds. A 429 that says the *daily* quota is spent is not retried.
+- **Rate limiting.** `PROVIDER_RATE_LIMITS` sets per-provider requests per
+  minute, tokens per minute, and requests per day. Only Gemini has a default
+  (5 RPM, 200K TPM, 100 RPD). You can override any provider with
+  `<PROVIDER>_RPM`, `<PROVIDER>_TPM`, or `<PROVIDER>_RPD` in `.env`, or turn
+  limiting off with `<PROVIDER>_RATE_LIMIT=off`. Daily usage is kept in
+  `.rate_usage.json` next to `.env`.
+
+There is **no automatic failover**. If the model a path points at is
+unreachable, that turn fails with an error; Lumi does not fall back from
+cloud to local or from local to cloud. An earlier experimental edge-hardware
+layer (`modules/edge/`) was removed in commit `babb3fa` and is not part of
+the current routing.
+
+Privacy follows the routing: any path pointed at a cloud model sends that
+path's full prompt (persona, injected memories, screen context, attachment
+text) to the provider. See [security.md](security.md).
+
 ### Attachments and content blocks
 
 Messages sent to `chat_sync()` may carry `content` as either a plain
@@ -152,8 +198,10 @@ that shape natively:
 | `AnthropicClient` | Converts `image_url` blocks into Anthropic's `{type: "image", source: {…}}` shape |
 
 In practice, the conversational path inlines attachment content as text
-because the VLM has already run at upload time. The content-array shape
-is kept for callers that want to pass raw images.
+because the VLM has already run at upload time. The web client never sends
+image bytes with a chat message; only the VLM's text report travels with
+it. The content-array shape is kept for callers that want to pass raw
+images.
 
 ## Text-to-speech
 
@@ -180,7 +228,9 @@ picks the reference from the reply text.
 
 **Model:** `faster-whisper` (`base`, CPU, `int8`).
 
-Used by two modules:
+Used by two modules, plus the browser hold-to-talk route
+(`/api/voice_message` in `modules/socketIO.py`, which lazily loads its own
+`base` model on first use and accepts webm, ogg, mp4/m4a, or wav clips):
 
 - `modules/mic_input.py` for the local microphone, with VAD and
   barge-in on the local input device.

@@ -78,11 +78,49 @@ here is architectural, not defensive.
 
 ## Session & History
 
-* **History trim at 20 messages caps backfill depth.** The prompter
-  trims `signals.history` to the last 20 messages. Long conversations
-  lose older turns. The memory reflection pass captures facts before
-  they're trimmed, so durable information survives, but verbatim context
-  does not.
+* **Old turns collapse into a summary.** When `signals.add_message()`
+  pushes history past 25 entries, `quantize_history()` replaces the older
+  turns with one summary block and keeps the last 10 verbatim. Only
+  microphone and Discord input go through `add_message()`; the terminal,
+  web chat, and the prompter's replies append to `signals.history`
+  directly and don't trigger the collapse themselves. On boot only the
+  last 30 saved entries are loaded. Long conversations lose verbatim
+  context; the memory reflection pass captures durable facts first.
+
+## Web Client
+
+* **Chat is polled, not pushed.** New messages appear on the next
+  `/api/history` poll (up to 1.5 s late) and status on the next
+  `/api/status` poll (up to 2 s). socket.io carries only TTS audio to the
+  browser.
+
+* **Only the last 100 messages are shown.** `/api/history` is capped at 100
+  entries per request; there is no "load older" in the chat view.
+
+* **Replies are not streamed.** The chat client can patch the newest
+  bubble in place, but the backend writes each reply to history once, when
+  it is complete.
+
+* **Revoked sessions keep open sockets.** Revoking a session from
+  Settings → Security stops its HTTP requests immediately, but a socket.io
+  connection it already opened stays connected until the tab closes. That
+  socket can still receive TTS audio and send the legacy control events.
+
+* **Logout has no CSRF check.** `/auth/logout` doesn't verify origin or
+  CSRF, so a cross-site page can sign you out. It cannot do anything else.
+
+* **Chat messages are emitted twice on the socket.** `/api/chat/send` emits
+  `web_message` and the history broadcaster emits it again. Harmless while
+  the browser ignores chat on the socket; it has to be fixed before chat
+  moves to socket.io.
+
+* **Browser support for voice and motion.** Hold-to-talk needs
+  `MediaRecorder` (the button is disabled without it). The smooth mood-accent
+  fade needs CSS `@property`; older browsers switch colours instantly.
+
+* **The Dashboard is a snapshot.** The web Dashboard page fetches the log
+  hub's events once per visit or Refresh click. The log hub's own page at
+  `127.0.0.1:5001` re-polls every 2 seconds and is the live view.
 
 ## SDK
 

@@ -92,13 +92,13 @@ The Python side of the browser UI. The frontend lives in `web/`.
 
 | File | Role | Status |
 |---|---|---|
-| `socketIO.py` | aiohttp and python-socketio server, and the largest backend file. Routes cover auth, chat, chat upload, agent toggle, memories, persona, models, providers, integrations, settings, voice, and static and SPA serving | spawned |
+| `socketIO.py` | aiohttp and python-socketio server, and the largest backend file. Routes cover auth, chat, chat upload, agent toggle, memories, persona, models, providers, integrations, settings, voice, and static and SPA serving. A JSON error middleware wraps `/api/*` and `/auth/*`; memory and library calls run on a dedicated single-thread executor (`_run_mem()`) so they never block the event loop. See [Web server internals](#web-server-internals) | spawned |
 | `user_auth.py` | SQLite user store, argon2id hashing, session tokens, session listing and revocation | imported |
 | `persona_editor.py` | ruamel round-trip load, edit, and save of `config/lumi.yaml`, preserving comments | imported |
 | `settings_manager.py` | General settings (timezone, Ollama endpoint), About info, and the Advanced reset allowlist | imported |
 | `model_manager.py` | Ollama model management and line-patching of routing constants in `constants.py` | imported |
 | `integrations.py` | Registry of the five integrations (Ollama, VTube Studio, Discord, Fish Audio, Browser) with probe, test, and config fields | imported |
-| `llm_providers.py` | Three provider client classes (Ollama, OpenAI-compatible, Anthropic) and `chat_sync("provider:model")` | imported |
+| `llm_providers.py` | Three provider client classes (`OllamaClient`, `OpenAICompatClient`, `AnthropicClient`), `chat_sync("provider:model")`, retry on 429/5xx, and per-provider rate limiting (`PROVIDER_RATE_LIMITS`) | imported |
 
 ### Discord
 
@@ -116,7 +116,7 @@ Small shared pieces.
 
 | File | Role | Status |
 |---|---|---|
-| `log_hub.py` | Structured diagnostics stream and the dashboard at `127.0.0.1:5001` | spawned |
+| `log_hub.py` | Diagnostics telemetry: `emit()` puts secret-scrubbed events into an 800-entry ring buffer and appends them to `data/logs/events.log`; a threaded HTTP server serves the dashboard and `/events` at `127.0.0.1:5001`. Started directly by `main.py`, not through the module list | spawned |
 | `moods.py` | Mood profiles (`default`, `bratty`, `brocon`, `soft`) | imported |
 | `stt.py` | Earlier speech-to-text helper | legacy |
 | `customPrompt.py` | Earlier prompt customization helper | legacy |
@@ -154,6 +154,22 @@ vtubeStudio.py -> avatar
    v
 self_model.note_turn(), signals.history -> web clients poll /api/history
 ```
+
+## Web server internals
+
+`socketIO.py` runs one aiohttp application on its own thread (started from
+`main.py`, not the module list). Three conventions matter when editing it:
+
+| Convention | Detail |
+|---|---|
+| JSON errors | `_json_error_middleware` turns any unhandled exception or HTTP error on `/api/*` and `/auth/*` into `{"error": "..."}` with the right status, and prints the traceback. Pages, static files, redirects, and socket.io are left alone. Handlers still return expected failures themselves with `_json_error(status, message)` |
+| Blocking work | Memory and library calls (`memory.API.*`, `index_single_file`, `delete_library_file`, the duplicate scan) go through `await self._run_mem(fn, ...)`, which runs them on `self._mem_executor`, a single-worker `ThreadPoolExecutor`. One worker keeps them serialized, as they were when they ran inline. PDF/DOCX extraction and model or provider calls use the default executor |
+| CSRF | Every state-changing route calls `_require_csrf()` (JSON body) or `_require_csrf_header()` (multipart: `/api/chat/upload`, `/api/voice_message`) after the origin and session checks. `/auth/login` and `/auth/register` rely on the origin check; `/auth/logout` has neither yet |
+
+Upload duplicate detection compares sizes before hashing and caches each
+library file's SHA-256 by `(mtime, size)`, so a new upload only hashes
+same-size candidates. Image uploads return the VLM text report, not the
+image bytes; nothing downstream reads raw image data.
 
 Background loops (`heartbeat.py`, `ambient_perception.py`, `self_model.py`, `emotional_state.py`, `memory.py` reflection, `library_indexer.py`) run independently of this path and feed it through their prompt injections, through the stores they maintain, or by appending unprompted messages.
 
@@ -217,7 +233,7 @@ Persistent files the modules read and write:
 | `data/memories/sdk_token.txt` | `sdk/server.py` |
 | `data/memories/memoryinit.json` | `memory.py` (optional seed) |
 | `data/library/{documents,images,text}/` | `socketIO.py` writes, `library_indexer.py` indexes |
-| `data/logs/chat_history.json` | `prompter.py` |
+| `data/logs/chat_history.json` | `signals.py` (`load_history()` / `save_history()`); written whenever the prompter or the web server appends a message |
 | `data/logs/events.log` | `log_hub.py` |
 
 API keys and Discord IDs are read from `.env`, not `constants.py`.
@@ -235,8 +251,11 @@ Nothing in `main.py` spawns or imports these. They are kept for historical refer
 | `local_input.py` | Not spawned. Kept for historical reference. |
 | `vts_manager.py` | Not spawned. Kept for historical reference. `vtubeStudio.py` is the live controller. |
 | `discord_audio_bot.js` | Not spawned. Kept for historical reference. The Node.js sidecar was replaced by pure-Python voice receive. |
-| `upload_analyzer.py` | Not spawned. Kept for historical reference. Superseded by inline VLM extraction in `socketIO.py`. |
-| `sdk.py` (repo root) | Not spawned. Superseded by the `sdk/` package. |
+| `sdk.py` | Not spawned or imported. Superseded by the `sdk/` package at the repo root. |
+
+The edge-hardware layer (`modules/edge/`) was removed in commit `babb3fa`.
+There is no separate upload analyzer; upload analysis lives inline in
+`socketIO.py`.
 
 ## See also
 

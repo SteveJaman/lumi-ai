@@ -80,7 +80,27 @@ These predate Phase 9 and still apply.
 | Read-only query gate | Refuses `write_file` when the user only asked to read |
 | No-op and duplicate guards | Refuses identical writes and repeated calls |
 | Backups | `write_file` saves a `.bak` before overwriting |
-| Web client | CSRF double-submit, WebSocket origin check, login rate limit of 5 per minute per user, loopback-only binding, no `innerHTML` |
+| Web client | See [Web client](#web-client) below |
+
+### Web client
+
+| Control | Behavior |
+|---|---|
+| Binding | `127.0.0.1:5000` only, unless `ALLOW_LAN_EXPOSURE` is `True` |
+| Session cookie | `lumi_session`, `HttpOnly`, `SameSite=Lax`, 30-day lifetime; argon2id password hashes in `data/memories/users.db` |
+| Login throttle | 5 failed logins per username within 60 seconds blocks further attempts until the window passes (`user_auth.py:_rate_ok`) |
+| Origin check | Every state-changing HTTP route and the socket.io handshake reject an `Origin` outside `http://127.0.0.1:5000` / `http://localhost:5000` |
+| CSRF | Double-submit: the readable `lumi_csrf` cookie must match `X-CSRF-Token` (or a JSON `csrf` field), compared in constant time. Required on every POST/PUT/PATCH/DELETE under `/api/`, including the multipart routes `/api/chat/upload` and `/api/voice_message` |
+| Request size | JSON bodies capped at aiohttp's 1 MB default; uploads 25 MB; voice clips 10 MB; both multipart routes stream and stop at the cap |
+| Uploads | Extension allowlist, sanitized filenames, files written only under `data/library/{documents,images,text}/` |
+| Static files | `/web/*` refuses `..`, absolute paths, and NUL bytes, and checks the resolved path stays inside `web/` |
+| Error responses | API errors return `{"error": ...}`; tracebacks go to the console, not the browser |
+| Rendering | Untrusted text is inserted with `textContent` or `escapeHtml()`. `innerHTML` is used for static templates only |
+
+Known gaps, tracked in [known-limitations.md](known-limitations.md):
+`/auth/logout` has no CSRF or origin check (worst case: a cross-site page
+signs you out), and revoking a session does not disconnect a socket.io
+connection that session already opened.
 
 ## Operating safely
 
@@ -151,13 +171,18 @@ Stop first, investigate second. Most steps below assume Lumi is stopped.
 ## Verifying the guards
 
 ```powershell
-python tests/test_phase9.py
+python tests/test_all_features.py
 python tests/test_debug.py
+pytest tests/test_agent_tools.py -v
 ```
 
-`tests/test_phase9.py` runs 47 offline checks covering the Phase 9
-guards. `tests/test_debug.py` is a 14-section health check. See
-[../tests/README.md](../tests/README.md).
+`tests/test_all_features.py` exercises the path sandbox, shell guards,
+provenance wrapping, and secret redaction. `tests/test_agent_tools.py`
+covers the `realpath` sandbox under pytest. `tests/test_debug.py` is a
+14-section health check. There is no dedicated harness for every Phase 9
+item in the repo (an earlier `tests/test_phase9.py` was never committed),
+so the remaining guards are verified by reading the code paths in the
+table above. See [../tests/README.md](../tests/README.md).
 
 ## Reporting a security issue
 

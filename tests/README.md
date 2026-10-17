@@ -7,8 +7,9 @@ Two kinds of test live here:
    directly with `python`. They print their own pass/fail summary and
    exit non-zero on failure, but they are not pytest-collected.
 
-Neither kind needs external services. Ollama, ChromaDB, Discord, and
-VTube Studio are all mocked or bypassed.
+The pytest suite needs no external services. The harnesses skip or
+bypass services that are not running; `test_comprehensive.py` and
+`test_vtube_motion.py` need the real hardware or app for full coverage.
 
 ## What's covered
 
@@ -24,11 +25,19 @@ VTube Studio are all mocked or bypassed.
 
 | File | What it tests |
 |---|---|
-| `test_phase9.py` | Every Phase 9 security guard in isolation: command allowlist (9.4), filesystem sandbox (9.5), log scrubber and VLM filter (9.6), LAN gate (9.7), memory poisoning (9.8), Discord safety (9.9), self-modification guard (9.10), tool anomaly detection (9.11), provenance markers (9.1), SDK allowlist and capability policy (9.2/9.3), playbook presence (9.14) |
 | `test_debug.py` | Whole-project health check: workspace layout, Python syntax, imports, constants, persona YAML, signals, agent tool schemas, Ollama connectivity, storage writability, ports, config files, module shape, smoke tests, optional deps |
 | `test_all_features.py` | **End-to-end feature smoke test.** Walks every major subsystem — environment, core + optional deps, module imports, constants, ChromaDB round-trip, Ollama connectivity, agent tool schema, path sandbox, shell guards, provenance wrapping, secret redaction, web assets, SDK files/token/allowlist, ffmpeg, VTube Studio, Discord token, prompter surface. Prints a color-coded PASS/FAIL/SKIP summary. Optional subsystems (Discord, VTS, cloud providers) report SKIP rather than FAIL when unconfigured — set `LUMI_STRICT=1` to force them into failures. |
-| `test_edge.py` | Verifies `lumi-edge` hardware detection, execution provider resolution (CPU vs DirectML), and edge adapter initialization for ARM/Surface Pro 11 deployment |
+| `test_comprehensive.py` | Integration and hardware checks: audio output routing, database locks and integrity, library indexer and ChromaDB collection, prompt assembly and persona resolution, agent tool dispatch mapping |
 | `test_performance.py` | Benchmarks critical path latency, memory retrieval scaling, and serialization efficiency across core modules |
+| `test_vtube_motion.py` | Interactive VTube Studio motion check. Opens its own pyvts connection (separate plugin name and token) and drives each motion channel through a scripted sequence so you can confirm range by eye. Needs VTS running |
+
+There is no dedicated Phase 9 security harness in the repo. The guards
+that `test_all_features.py` covers (path sandbox, shell guards,
+provenance wrapping, secret redaction) are the automated check; the
+rest are verified by reading the code paths listed in
+[`../docs/security.md`](../docs/security.md). The earlier edge-hardware
+harness (`test_edge.py`) was removed with the edge layer in commit
+`babb3fa`.
 
 ## Run
 
@@ -44,9 +53,9 @@ pytest tests/test_agent_tools.py -v
 ```powershell
 python tests/test_all_features.py
 python tests/test_debug.py
-python tests/test_phase9.py
-python tests/test_edge.py
+python tests/test_comprehensive.py
 python tests/test_performance.py
+python tests/test_vtube_motion.py   # VTS must be running
 ```
 
 ### Strict mode
@@ -80,7 +89,7 @@ All standalone harnesses exit `0` on success and `1` on failure, so
 they compose cleanly with shell chaining:
 
 ```powershell
-python tests/test_all_features.py; if ($LASTEXITCODE -eq 0) { python tests/test_phase9.py }
+python tests/test_all_features.py; if ($LASTEXITCODE -eq 0) { python tests/test_debug.py }
 ```
 
 `test_all_features.py` prints a final block listing every failure by

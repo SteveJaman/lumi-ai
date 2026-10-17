@@ -108,9 +108,14 @@ for the pipeline.
   See [data/README.md](data/README.md).
 - **Screen awareness.** An ambient sampler and an on-demand multimodal path use
   a local vision model to describe what is on screen.
-- **Local models, optional cloud.** Runs on local Ollama by default, with an
-  optional fast path for casual chat and optional OpenAI, Anthropic, Gemini,
-  Groq, and OpenRouter routing. See [docs/models.md](docs/models.md).
+- **Local first, cloud by choice.** Runs entirely on local Ollama by default.
+  The main path and the fast/background path can each be pointed at a local
+  model or at OpenAI, Anthropic, Gemini, Groq, OpenRouter, or any
+  OpenAI-compatible endpoint, so you decide which work leaves the machine.
+  Cloud calls retry on rate limits and server errors and respect
+  per-provider quotas. There is no automatic failover. Vision, speech-to-text,
+  and embeddings always stay local. See
+  [docs/models.md](docs/models.md#local-and-cloud-routing).
 - **VTube Studio avatar.** Drives her own Live2D avatar through expressions,
   positions, and emotion-tag triggers. See [modules/README.md](modules/README.md).
 - **Discord voice.** Joins voice channels, hears every speaker, and talks back
@@ -118,16 +123,39 @@ for the pipeline.
   [docs/discord-voice.md](docs/discord-voice.md).
 - **Local web client.** Setup wizard, chat, dashboard, memory browser, persona
   editor, model manager, integrations, and settings at
-  `http://127.0.0.1:5000/`. No framework, no build step. See
-  [web/README.md](web/README.md).
+  `http://127.0.0.1:5000/`. No framework, no build step.
+  - **Chat.** Keeps your scroll position, offers a jump-to-latest button, and
+    tints the UI with Lumi's current mood.
+  - **Look.** Light and dark themes that apply before first paint and follow
+    the OS until you choose, plus a phone layout.
+  - **Input.** Keyboard navigation, and hold-to-talk that works with mouse or
+    touch and picks a recording format the browser supports (webm, ogg, or
+    Safari's mp4).
+
+  See [web/README.md](web/README.md).
+- **Diagnostics.** Every module reports to a log hub at
+  `http://127.0.0.1:5001/`: secret-scrubbed events, a live dashboard, and a
+  persistent `data/logs/events.log`. See
+  [docs/architecture.md](docs/architecture.md#diagnostics-telemetry).
 - **External SDK.** Third-party apps connect over a local websocket, register
   their own actions, and push context. See [sdk/README.md](sdk/README.md).
 
 ### Architecture
 
-The turn flow, component topology, key files, and background modules are
-documented in [docs/architecture.md](docs/architecture.md). For a file-level
-map of the backend, see [modules/README.md](modules/README.md).
+Lumi is a single Python process. The parts:
+
+| Part | What it is |
+|---|---|
+| Shared state | One `signals` object; every input (terminal, mic, Discord, web) appends to `signals.history` |
+| Turn engine | The prompter loop, which picks up new messages every 50 ms and calls the model through one `chat_sync()` entry point, local or cloud |
+| Background modules | Each on its own thread and event loop: memory, library indexer, heartbeat, emotional state, self-model, ambient perception, Discord, VTube Studio, TTS, SDK server |
+| Web server | aiohttp with python-socketio at `127.0.0.1:5000`. The browser polls for chat; socket.io carries TTS audio to tabs that opted in. API errors always come back as JSON |
+| Background memory thread | Blocking memory and library work from the web server (ChromaDB queries, indexing, the upload duplicate scan) runs on a dedicated worker, so it never stalls other requests |
+| Log hub | A small threaded HTTP server at `127.0.0.1:5001` |
+
+The turn flow, process and thread layout, web server internals, and
+telemetry are documented in [docs/architecture.md](docs/architecture.md). For
+a file-level map of the backend, see [modules/README.md](modules/README.md).
 
 ---
 
@@ -138,7 +166,9 @@ points:
 
 | If you need... | Read |
 |---|---|
-| Model routing, providers, and the model manager | [docs/models.md](docs/models.md) |
+| Model routing, local vs. cloud, providers, and the model manager | [docs/models.md](docs/models.md) |
+| How the process, threads, and web server fit together | [docs/architecture.md](docs/architecture.md) |
+| Working on the browser UI | [web/README.md](web/README.md) |
 | Discord voice details and diagnostics | [docs/discord-voice.md](docs/discord-voice.md) |
 | Safety layers and the threat model | [docs/security.md](docs/security.md) |
 | What does not work yet | [docs/known-limitations.md](docs/known-limitations.md) |
@@ -271,6 +301,7 @@ both). Once initialized, the terminal prints:
   Mic: active (press \ to toggle mute)
   Web client:  http://127.0.0.1:5000/
   Diagnostics: http://127.0.0.1:5001/
+  SDK:         ws://127.0.0.1:5056/ws
 =======================================================
 ```
 
@@ -377,10 +408,11 @@ capability ceilings, a command allowlist, a `realpath` file sandbox, protected
 paths, secret scrubbing in logs, memory-poisoning guards, Discord rate
 limiting, tool-call anomaly detection, a LAN exposure gate, and a pinned
 dependency lock file. Encryption at rest is a BitLocker recommendation, not an
-in-app feature. Live diagnostics, machine checks, and guard verification are
-available as offline harnesses: `scripts/check_system.py` for the environment,
+in-app feature. Live diagnostics and machine checks are available as offline
+harnesses: `scripts/check_system.py` for the environment,
 `tests/test_debug.py` for a whole-project health pass, and
-`tests/test_phase9.py` for the security guards. See
+`tests/test_all_features.py` for an end-to-end feature pass that includes
+the sandbox, shell, provenance, and redaction guards. See
 [docs/security.md](docs/security.md) for the threat model and incident
 playbook, and [docs/roadmap.md](docs/roadmap.md) for phase status.
 

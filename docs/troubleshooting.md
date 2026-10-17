@@ -1,8 +1,9 @@
 # Troubleshooting
 
 **Run `python tests\test_debug.py` first.** It's a 14-section whole-project
-health check that localizes failures in about two seconds. For security
-guard verification, run `python tests\test_phase9.py`. For integration
+health check that localizes failures in about two seconds. For an
+end-to-end feature pass, including the sandbox, shell, provenance, and
+redaction guards, run `python tests\test_all_features.py`. For integration
 and hardware checks, run `python tests\test_comprehensive.py`. For a
 machine pre-flight before the app's own imports resolve, run
 `python scripts\check_system.py`.
@@ -124,6 +125,49 @@ The allowlist is read at connection time — editing the JSON while Lumi is runn
 **Resolution:** On the web client, use the Replace button in the modal. The old file, its sidecar, and its ChromaDB chunks are removed before the new one lands.
 
 **Where to check:** the `memory` category for `upload: duplicate detected`.
+
+## Web client
+
+### An API call fails with only "HTTP 500"
+
+**Symptom:** A page shows an error with just a status code.
+**Cause:** API routes always answer in JSON. The server's error middleware turns an unhandled exception into `{"error": "Internal error: <ExceptionType>"}` and prints the full traceback to the Lumi console.
+**Resolution:** Read the traceback in the terminal running `main.py`. The browser only gets the exception type, by design.
+
+### Sending a message fails with HTTP 413
+
+**Symptom:** `Failed to send: HTTP 413` in the chat.
+**Cause:** The JSON body exceeded aiohttp's 1 MB limit. Normal messages, including image attachments, stay far below it, because only the extracted text travels with the message (≤ 15,000 characters per attachment, at most 6 attachments). Builds before 2026-10-17 also sent each image's base64 and hit this limit with images over ~750 KB.
+**Resolution:** Reload the tab so the current `app.js` is running.
+
+### Voice playback plays every clip twice
+
+**Symptom:** With Voice ON, each sentence plays twice or more.
+**Cause:** More than one socket.io connection is open in the tab. The current client opens exactly one per page load.
+**Resolution:** Reload the tab. If it persists, check that nothing other than `ensureVoiceSocket()` in `web/app.js` calls `io()`.
+
+### Hold-to-talk does nothing, or fails
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Button is greyed out | The browser has no `MediaRecorder` | Use a current Chrome, Edge, Firefox, or Safari |
+| "Microphone permission denied." | Mic access blocked for `127.0.0.1:5000` | Allow the microphone in the browser's site settings |
+| A quick tap does nothing | Clips under ~1 KB are dropped as accidental taps | Hold the button while speaking |
+| `Voice message failed: CSRF token mismatch.` | Stale tab after signing in elsewhere | Reload the tab |
+| `Voice message failed: Voice clip too large` | Clip over 10 MB | Record shorter clips |
+| `Transcription failed: ...` | faster-whisper missing, or the clip couldn't be decoded | `pip install faster-whisper`; the Lumi console has the decoder error |
+
+### The theme flashes or the accent colour looks wrong
+
+**Symptom:** Dark-mode users see a light flash on load, or the light theme's accent turns mint or stays a mood colour.
+**Cause:** `web/theme-init.js` isn't loading before `style.css`, or something wrote `--accent` inline on `<html>` without removing it.
+**Resolution:** Confirm each HTML page has `<script src="/web/theme-init.js"></script>` in `<head>` before the stylesheet. Mood colours must go through `setAccentForMood()` / `resetMoodAccent()` in `web/app.js`. See [../web/README.md](../web/README.md).
+
+### Memory page or uploads feel slow
+
+**Symptom:** The Memory page or an upload takes a while, but the rest of the web client stays responsive.
+**Cause:** Memory and library calls from the web server run one at a time on a dedicated background thread, so a long ChromaDB query or indexing job makes the next memory request wait its turn. Full-document indexing after an upload is queued on the same thread.
+**Resolution:** Wait for the queued work to finish. The `memory` category in the Log Hub shows `upload:` and `library: indexed` lines as each job completes.
 
 ## Discord Voice Sending (Audio Output)
 

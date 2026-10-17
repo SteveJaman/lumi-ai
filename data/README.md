@@ -10,8 +10,8 @@ The last column separates disposable files from destructive deletes. "Yes" means
 
 | Path | Contents | Safe to delete? |
 |---|---|---|
-| `data/logs/chat_history.json` | Active conversation history. The prompter trims it to the last ~20 turns and collapses older turns into a summary block. | Yes (loses the backfill material used by `scripts/import_chat_history.py`) |
-| `data/logs/events.log` | Diagnostics event stream | Yes |
+| `data/logs/chat_history.json` | Active conversation history, owned by `signals.py`. When a message added through `add_message()` (microphone and Discord input) pushes it past 25 entries, older turns collapse into one summary block and the last 10 stay verbatim. Only the last 30 entries are loaded on boot. Web chat attachments are stored as name, kind, and extracted text only; image bytes are never written here, and any left by older builds are stripped on load. | Yes (loses the backfill material used by `scripts/import_chat_history.py`) |
+| `data/logs/events.log` | Diagnostics event stream from the log hub, secret-scrubbed, append-only | Yes |
 | `data/logs/visual_memory.json` | Recent screen descriptions | Yes |
 | `data/logs/images/` | Timestamped screen captures (JPEG) | Yes |
 | `data/logs/screenshots/` | Plugin-captured screenshots (PNG) | Yes |
@@ -36,13 +36,13 @@ Uploads move through this pipeline: web chat → `data/library/` → ChromaDB `l
 
 | Path | Purpose |
 |---|---|
-| `data/library/documents/` | Uploaded PDFs and DOCX |
+| `data/library/documents/` | Uploaded PDF, DOCX, and DOC |
 | `data/library/images/` | Uploaded images (PNG, JPG, GIF, WebP, BMP) |
 | `data/library/text/` | Uploaded text-like files (TXT, MD, JSON, YAML, CSV, LOG) |
 | `data/library/**/*.meta.md` | Auto-generated sidecar per upload: upload metadata plus extracted content (VLM report for images, preview for documents, full text for text-like files). This is what makes uploads retrievable by semantic query on later turns. |
 
 - Filenames follow `<YYYYMMDD>_<HHMMSS>_<original_name>`. Collisions get a `_1`, `_2` suffix.
-- Byte-identical uploads return HTTP 409. The user can choose Replace, which removes the old file, its sidecar, and its ChromaDB chunks first.
+- Byte-identical uploads return HTTP 409. The user can choose Replace, which removes the old file, its sidecar, and its ChromaDB chunks first. The check only hashes library files of the same size as the upload, and caches each file's hash in memory for the life of the process.
 - The `LibraryIndexer` rescans every 60 seconds, indexes new files, and prunes chunks for files no longer on disk.
 
 Deleting `data/library/` loses your uploaded documents.
