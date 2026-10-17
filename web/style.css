@@ -894,6 +894,14 @@ html[data-theme="dark"] .msg.user .msg-avatar {
   background: color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
+/* Hold-to-talk: keep touch drags from scrolling (which would cancel
+   the pointer and end the recording) or selecting the label. */
+#mic-toggle {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 #mic-toggle.agent {
   background: var(--error-bg);
   border-color: var(--error-border);

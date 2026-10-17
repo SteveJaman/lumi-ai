@@ -71,6 +71,9 @@ _CSRF_COOKIE = "lumi_csrf"
 # ===============================================================
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024   # 25 MB hard cap on the raw upload
 _MAX_INJECT_CHARS = 15000              # cap on text injected into a turn
+_MAX_VOICE_BYTES  = 10 * 1024 * 1024   # 10 MB cap on a push-to-talk clip
+
+_VOICE_EXTS = {".webm", ".ogg", ".mp4", ".m4a", ".wav"}
 
 _ALLOWED_UPLOAD_EXTS = {
     # Documents
@@ -2016,15 +2019,37 @@ class SocketIOServer:
         user = self._current_user(request)
         if not user:
             return _json_error(401, "Not logged in.")
+        ok, err = self._require_csrf_header(request)
+        if not ok:
+            return _json_error(403, err)
 
         try:
             reader = await request.multipart()
             field = await reader.next()
             if field is None or field.name != "audio":
                 return _json_error(400, "Expected multipart field 'audio'.")
-            blob = await field.read()
+            chunks_in = []
+            total = 0
+            while True:
+                chunk = await field.read_chunk(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MAX_VOICE_BYTES:
+                    return _json_error(
+                        413,
+                        f"Voice clip too large "
+                        f"(limit {_MAX_VOICE_BYTES // (1024*1024)} MB).",
+                    )
+                chunks_in.append(chunk)
+            blob = b"".join(chunks_in)
             if not blob:
                 return _json_error(400, "Empty audio blob.")
+            # The browser names the clip after the container it actually
+            # recorded (webm on Chrome/Firefox, mp4 on Safari).
+            suffix = os.path.splitext(field.filename or "")[1].lower()
+            if suffix not in _VOICE_EXTS:
+                suffix = ".webm"
         except Exception as e:
             return _json_error(400, f"Could not read audio: {e}")
 
@@ -2037,7 +2062,7 @@ class SocketIOServer:
                 return None, "faster-whisper is not installed."
             try:
                 import tempfile
-                fd, tmp = tempfile.mkstemp(suffix=".webm")
+                fd, tmp = tempfile.mkstemp(suffix=suffix)
                 os.close(fd)
                 try:
                     with open(tmp, "wb") as f:

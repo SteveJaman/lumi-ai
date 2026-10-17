@@ -1181,30 +1181,69 @@ let _voiceSocket = null;
 let _voiceEnabled = false;
 let _mediaRecorder = null;
 let _mediaChunks = [];
+let _micHeld = false;       // true while the talk button is pressed
+let _micStarting = false;   // true while getUserMedia is pending
+
+// Preferred recording formats, best first. Chrome/Firefox take webm or
+// ogg; Safari only records mp4. Whisper (via ffmpeg) decodes all three.
+const RECORDER_MIME_CANDIDATES = [
+  'audio/webm;codecs=opus',
+  'audio/webm',
+  'audio/ogg;codecs=opus',
+  'audio/mp4',
+];
+
+function pickRecorderMime() {
+  if (typeof MediaRecorder.isTypeSupported !== 'function') return '';
+  return RECORDER_MIME_CANDIDATES.find(t => MediaRecorder.isTypeSupported(t)) || '';
+}
+
+function extForMime(mime) {
+  const base = (mime || '').split(';')[0].trim();
+  return {
+    'audio/webm': 'webm',
+    'audio/ogg':  'ogg',
+    'audio/mp4':  'mp4',
+    'audio/x-m4a': 'm4a',
+    'audio/wav':  'wav',
+  }[base] || 'webm';
+}
 
 function initVoiceControls() {
   const ttsBtn = $('#tts-toggle');
   const micBtn = $('#mic-toggle');
 
   if (ttsBtn) {
-    _voiceEnabled = localStorage.getItem('lumi_voice') === 'on';
+    try { _voiceEnabled = localStorage.getItem('lumi_voice') === 'on'; } catch {}
     updateVoiceButton();
     ttsBtn.addEventListener('click', () => {
       _voiceEnabled = !_voiceEnabled;
-      localStorage.setItem('lumi_voice', _voiceEnabled ? 'on' : 'off');
+      try { localStorage.setItem('lumi_voice', _voiceEnabled ? 'on' : 'off'); } catch {}
       updateVoiceButton();
       ensureVoiceSocket();
     });
   }
 
   if (micBtn) {
-    micBtn.addEventListener('mousedown', startMicRecording);
-    micBtn.addEventListener('mouseup', stopMicRecording);
-    micBtn.addEventListener('mouseleave', () => {
-      if (_mediaRecorder && _mediaRecorder.state === 'recording') {
-        stopMicRecording();
-      }
-    });
+    const supported = typeof MediaRecorder !== 'undefined'
+      && navigator.mediaDevices
+      && typeof navigator.mediaDevices.getUserMedia === 'function';
+    if (!supported) {
+      micBtn.disabled = true;
+      micBtn.title = 'Voice recording is not supported in this browser.';
+    } else {
+      // Pointer events cover mouse, touch and pen. Capturing the
+      // pointer means a finger sliding off the button still delivers
+      // the matching pointerup.
+      micBtn.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        micBtn.setPointerCapture?.(e.pointerId);
+        startMicRecording();
+      });
+      micBtn.addEventListener('pointerup', stopMicRecording);
+      micBtn.addEventListener('pointercancel', stopMicRecording);
+      micBtn.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
   }
 
   ensureVoiceSocket();
@@ -1217,12 +1256,15 @@ function updateVoiceButton() {
   btn.classList.toggle('agent', _voiceEnabled);
 }
 
-async function ensureVoiceSocket() {
+function ensureVoiceSocket() {
   if (typeof io === 'undefined') return;
 
-  if (_voiceSocket && _voiceSocket.connected) {
-    if (_voiceEnabled) {
-      _voiceSocket.emit('web_voice_optin', { enabled: true });
+  // One socket per page load. socket.io reconnects on its own and the
+  // 'connect' handler re-sends the opt-in, so never open a second one —
+  // each extra socket would play every clip again.
+  if (_voiceSocket) {
+    if (_voiceSocket.connected) {
+      _voiceSocket.emit('web_voice_optin', { enabled: _voiceEnabled });
     }
     return;
   }
@@ -1242,8 +1284,6 @@ async function ensureVoiceSocket() {
       if (!payload || !payload.data) return;
       playTtsAudio(payload.data);
     });
-
-    _voiceSocket.on('disconnect', () => {});
   } catch (e) {
     console.warn('voice socket failed', e);
   }
@@ -1266,25 +1306,54 @@ function playTtsAudio(b64) {
 
 async function startMicRecording() {
   const btn = $('#mic-toggle');
-  if (!btn) return;
+  if (!btn || btn.disabled) return;
+  _micHeld = true;
+  if (_micStarting) return;
   if (_mediaRecorder && _mediaRecorder.state === 'recording') return;
 
+  _micStarting = true;
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
+    _micHeld = false;
     alert('Microphone permission denied.');
+    return;
+  } finally {
+    _micStarting = false;
+  }
+
+  // Released while the permission prompt / device open was pending —
+  // don't start a recording nobody is holding the button for.
+  if (!_micHeld) {
+    stream.getTracks().forEach(t => t.stop());
+    return;
+  }
+
+  const requestedMime = pickRecorderMime();
+  let recorder;
+  try {
+    recorder = requestedMime
+      ? new MediaRecorder(stream, { mimeType: requestedMime })
+      : new MediaRecorder(stream);
+  } catch (e) {
+    stream.getTracks().forEach(t => t.stop());
+    _micHeld = false;
+    alert('Could not start recording: ' + e.message);
     return;
   }
 
   _mediaChunks = [];
-  _mediaRecorder = new MediaRecorder(stream);
-  _mediaRecorder.addEventListener('dataavailable', (e) => {
+  _mediaRecorder = recorder;
+  recorder.addEventListener('dataavailable', (e) => {
     if (e.data.size > 0) _mediaChunks.push(e.data);
   });
-  _mediaRecorder.addEventListener('stop', async () => {
+  recorder.addEventListener('stop', async () => {
     stream.getTracks().forEach(t => t.stop());
-    const blob = new Blob(_mediaChunks, { type: 'audio/webm' });
+    // recorder.mimeType is what the browser actually produced, which
+    // can differ from what we asked for.
+    const mime = recorder.mimeType || requestedMime || 'audio/webm';
+    const blob = new Blob(_mediaChunks, { type: mime });
     _mediaChunks = [];
     if (blob.size < 1000) return;
 
@@ -1292,10 +1361,11 @@ async function startMicRecording() {
     btn.disabled = true;
     try {
       const fd = new FormData();
-      fd.append('audio', blob, 'clip.webm');
+      fd.append('audio', blob, `clip.${extForMime(mime)}`);
       const res = await fetch('/api/voice_message', {
         method: 'POST',
         credentials: 'same-origin',
+        headers: { 'X-CSRF-Token': state.csrf || '' },
         body: fd,
       });
       const data = await res.json().catch(() => ({}));
@@ -1312,12 +1382,13 @@ async function startMicRecording() {
     }
   });
 
-  _mediaRecorder.start();
+  recorder.start();
   btn.textContent = '🎤 Recording… (release)';
   btn.classList.add('agent');
 }
 
 function stopMicRecording() {
+  _micHeld = false;
   const btn = $('#mic-toggle');
   if (_mediaRecorder && _mediaRecorder.state === 'recording') {
     _mediaRecorder.stop();
