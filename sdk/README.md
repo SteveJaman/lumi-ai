@@ -36,7 +36,12 @@ sdk/
 ├── server.py          SDKServer module (runs inside Lumi)
 ├── README.md          This file
 └── examples/
-    └── system_stats.py   Python reference client
+    ├── system_stats.py          Python reference client (psutil stats)
+    └── minecraft/
+        ├── bot.js               Node.js mineflayer bot with Voyager skill support
+        ├── package.json         npm dependencies
+        ├── .env.example         Config template
+        └── README.md            Setup, action reference, Voyager notes
 ```
 
 Third-party developers need four files: `protocol.py`, `actions.py`, `client.py`, and `errors.py`. They are standalone and import nothing else from Lumi's internals. `server.py` runs inside Lumi and is not something a plugin imports.
@@ -332,7 +337,13 @@ Registered actions and their handlers survive a reconnect: the client re-registe
 ## Reference clients
 
 - `examples/system_stats.py` — Python client that exposes system stats (uses `psutil`).
-- `examples/minecraft/bot.js` — Node.js client, for non-Python reference.
+- `examples/minecraft/bot.js` — Node.js mineflayer bot. Registers eight actions
+  (`minecraft_get_status`, `minecraft_chat`, `minecraft_move_to`,
+  `minecraft_look_at`, `minecraft_attack_nearest`, `minecraft_stop`,
+  `minecraft_dig`, `minecraft_execute_skill`) and bridges them to a live
+  Minecraft server. `minecraft_execute_skill` accepts
+  [Voyager](https://github.com/MineDojo/Voyager)-compatible async JavaScript
+  skills. See [`examples/minecraft/README.md`](examples/minecraft/README.md).
 
 ## Debugging
 
