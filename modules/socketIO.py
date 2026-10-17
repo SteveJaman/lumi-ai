@@ -40,7 +40,6 @@ Security posture (Phase 10.17):
 
 import os
 import re
-import io
 import time
 import base64
 import secrets
@@ -71,7 +70,6 @@ _CSRF_COOKIE = "lumi_csrf"
 # Upload limits and allowlists
 # ===============================================================
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024   # 25 MB hard cap on the raw upload
-_MAX_IMAGE_BYTES  = 5  * 1024 * 1024   # 5 MB cap before downscaling kicks in
 _MAX_INJECT_CHARS = 15000              # cap on text injected into a turn
 
 _ALLOWED_UPLOAD_EXTS = {
@@ -274,34 +272,6 @@ def _classify_upload(path):
     if ext in _IMAGE_EXTS:
         return "image"
     return "text"
-
-
-def _prepare_image_b64(path, max_bytes=_MAX_IMAGE_BYTES):
-    """Return base64 for an image, downscaling if needed. Uses Pillow
-    when available; falls back to raw bytes otherwise."""
-    try:
-        with open(path, "rb") as f:
-            raw = f.read()
-    except Exception:
-        return ""
-
-    if len(raw) <= max_bytes:
-        return base64.b64encode(raw).decode("ascii")
-
-    try:
-        from PIL import Image
-    except ImportError:
-        # No Pillow — send raw anyway; the provider may reject it.
-        return base64.b64encode(raw).decode("ascii")
-
-    try:
-        img = Image.open(io.BytesIO(raw))
-        img.thumbnail((1600, 1600), Image.LANCZOS)
-        buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=82)
-        return base64.b64encode(buf.getvalue()).decode("ascii")
-    except Exception:
-        return base64.b64encode(raw).decode("ascii")
 
 
 def _extract_upload_text(path, kind):
@@ -682,7 +652,18 @@ class SocketIOServer:
         limit = int(request.query.get("limit", 40))
         limit = max(1, min(limit, 200))
         history = getattr(self.signals, "history", [])[-limit:]
-        return web.json_response({"history": history})
+        # The chat only renders attachment badges, so don't ship the
+        # extracted text on every poll.
+        slim = []
+        for msg in history:
+            atts = msg.get("attachments")
+            if atts:
+                msg = {**msg, "attachments": [
+                    {"name": a.get("name"), "kind": a.get("kind")}
+                    for a in atts if isinstance(a, dict)
+                ]}
+            slim.append(msg)
+        return web.json_response({"history": slim})
 
     async def _handle_chat_send(self, request):
         if not self._origin_ok(request):
@@ -716,7 +697,6 @@ class SocketIOServer:
                 "stored_path": str(att.get("stored_path") or ""),
                 "kind": str(att.get("kind") or "text"),
                 "text": str(att.get("text") or "")[:_MAX_INJECT_CHARS],
-                "image_b64": str(att.get("image_b64") or ""),
             })
 
         history_msg = {"role": "user", "content": text}
@@ -914,10 +894,8 @@ class SocketIOServer:
         # ── Extract (VLM for images, direct parse for docs) ──────
         text = ""
         extract_err = None
-        image_b64 = ""
 
         if kind == "image":
-            image_b64 = _prepare_image_b64(stored_path)
             try:
                 from modules.agent_tools import read_image_vlm
             except Exception as e:
@@ -1037,7 +1015,6 @@ class SocketIOServer:
             "text_truncated": bool(text and len(text) > _MAX_INJECT_CHARS),
             "text_chars": len(text or ""),
             "extract_error": extract_err,
-            "image_b64": image_b64,
             "replaced": bool(existing_dup and replace_flag),
             "sidecar": sidecar_rel,
         }) 

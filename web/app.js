@@ -978,7 +978,6 @@ async function handleFiles(files) {
       chip.source       = data.source;
       chip.subfolder    = data.subfolder;
       chip.text         = data.text || '';
-      chip.image_b64    = data.image_b64 || '';
       chip.size         = data.size || 0;
       chip.ready        = true;
       chip.error        = null;
@@ -1144,7 +1143,6 @@ async function sendChat() {
     stored_path: a.stored_path,
     kind:        a.kind,
     text:        a.text,
-    image_b64:   a.image_b64,
   }));
 
   input.value = '';

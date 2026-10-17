@@ -42,6 +42,12 @@ class Signals:
             try:
                 with open(self.log_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                    # Older builds stored full image base64 on each
+                    # attachment; nothing reads it, so drop it on load.
+                    for msg in data:
+                        for att in msg.get("attachments") or []:
+                            if isinstance(att, dict):
+                                att.pop("image_b64", None)
                     hub_emit(self, "system",
                              f"history loaded ({len(data)} messages)")
                     return data[-limit:]
