@@ -177,14 +177,20 @@ function showShell() {
     (state.user.display_name || state.user.username)
       .slice(0, 1).toUpperCase();
 
+  // Open whichever page the URL names (e.g. a reload on #/memory).
+  state.view = viewFromHash();
+
   const nav = $('#nav');
   nav.innerHTML = '';
   for (const item of NAV) {
-    const el = document.createElement('div');
+    // Real links: keyboard/focus/middle-click work for free, and the
+    // hashchange listener does the routing.
+    const el = document.createElement('a');
     el.className = 'nav-item' + (item.id === state.view ? ' active' : '');
+    el.href = `#/${item.id}`;
     el.dataset.view = item.id;
+    el.title = item.label;
     el.innerHTML = `${ICONS[item.icon]}<span>${item.label}</span>`;
-    el.addEventListener('click', () => navigate(item.id));
     nav.appendChild(el);
   }
 
@@ -192,7 +198,13 @@ function showShell() {
   startStatusPolling();
 }
 
+function viewFromHash() {
+  const id = (location.hash || '').replace(/^#\/?/, '');
+  return NAV.some(n => n.id === id) ? id : 'chat';
+}
+
 function navigate(view, replace = false) {
+  if (!NAV.some(n => n.id === view)) view = 'chat';
   state.view = view;
   if (view !== 'chat') stopChatPolling();
   if (view !== 'chat') resetMoodAccent();
@@ -203,14 +215,17 @@ function navigate(view, replace = false) {
   }
   if (!replace) location.hash = `#/${view}`;
   $$('.nav-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.view === view);
+    const on = el.dataset.view === view;
+    el.classList.toggle('active', on);
+    if (on) el.setAttribute('aria-current', 'page');
+    else el.removeAttribute('aria-current');
   });
   render();
 }
 
 window.addEventListener('hashchange', () => {
-  const hash = (location.hash || '#/chat').replace('#/', '');
-  if (hash !== state.view) navigate(hash, true);
+  const view = viewFromHash();
+  if (view !== state.view) navigate(view, true);
 });
 
 /* --------------------------------------------------------------
@@ -457,6 +472,10 @@ function applyMoodAccent(tags) {
   if (chip && emoji && label) {
     emoji.textContent = MOOD_EMOJI[tag] || '🌙';
     label.textContent = tag;
+    chip.title = `Lumi seems ${tag}`;
+    // Restart the pop so a mood *change* is as visible as the first one.
+    chip.classList.remove('active', 'leaving');
+    void chip.offsetWidth;
     chip.classList.add('active');
   }
 
@@ -484,8 +503,19 @@ function resetMoodAccent() {
   // Drop the inline overrides so the active theme's own accent applies.
   document.documentElement.style.removeProperty('--accent');
   document.documentElement.style.removeProperty('--accent-bg');
+  clearTimeout(_moodResetTimer);
   const chip = document.getElementById('mood-chip');
-  if (chip) chip.classList.remove('active');
+  if (!chip || !chip.classList.contains('active')) return;
+  // Fade out, then hide — unless a new mood re-activated it meanwhile.
+  chip.classList.add('leaving');
+  const onEnd = (e) => {
+    if (e.target !== chip) return;   // ignore the emoji's own animation
+    chip.removeEventListener('animationend', onEnd);
+    if (chip.classList.contains('leaving')) {
+      chip.classList.remove('active', 'leaving');
+    }
+  };
+  chip.addEventListener('animationend', onEnd);
 }
 
 /* --------------------------------------------------------------
@@ -751,16 +781,26 @@ async function refreshHistory() {
     const prev = state.history;
     const prevLen = prev.length;
 
+    const inSync = _chatRenderedCount === prevLen;
     const canAppend =
+      inSync &&
       prevLen <= next.length &&
-      _chatRenderedCount === prevLen &&
       fingerprint(next.slice(0, prevLen)) === fingerprint(prev);
+    // A streaming reply edits the newest entry in place — same length,
+    // everything before it unchanged. Patch that one bubble instead of
+    // redrawing (and re-animating) the whole conversation.
+    const canPatchLast =
+      !canAppend && inSync &&
+      prevLen > 0 && next.length === prevLen &&
+      fingerprint(next.slice(0, -1)) === fingerprint(prev.slice(0, -1));
 
     state.history = next;
     _chatFp = nextFp;
 
     if (canAppend) {
       appendNewMessages(next, prevLen);
+    } else if (canPatchLast) {
+      patchLastMessage(next[next.length - 1]);
     } else {
       renderChat();
     }
@@ -769,20 +809,63 @@ async function refreshHistory() {
   }
 }
 
+function isChatAtBottom(scroll) {
+  return (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) < 80;
+}
+
+function scrollChatToBottom(scroll, smooth = false) {
+  scroll.scrollTo({ top: scroll.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+}
+
+// "↓ Latest" button: visible whenever the reader has scrolled away from
+// the bottom; says "New messages" if something arrived meanwhile.
+let _chatUnseen = 0;
+
+function updateJumpButton() {
+  const scroll = $('#chat-scroll');
+  const btn = $('#chat-jump');
+  if (!scroll || !btn) return;
+  const atBottom = isChatAtBottom(scroll);
+  if (atBottom) _chatUnseen = 0;
+  btn.classList.toggle('is-away', atBottom);
+  btn.tabIndex = atBottom ? -1 : 0;
+  btn.classList.toggle('has-new', _chatUnseen > 0);
+  btn.textContent = _chatUnseen > 0 ? '↓ New messages' : '↓ Latest';
+}
+
 function appendNewMessages(fullHistory, fromIndex) {
   const scroll = $('#chat-scroll');
   if (!scroll) return;
 
-  const wasAtBottom =
-    (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) < 80;
+  const wasAtBottom = isChatAtBottom(scroll);
 
   for (let i = fromIndex; i < fullHistory.length; i++) {
     renderChatMessage(fullHistory[i], scroll);
   }
   _chatRenderedCount = fullHistory.length;
 
-  if (wasAtBottom) scroll.scrollTop = scroll.scrollHeight;
+  // Instant, not smooth: a smooth follow would briefly read as
+  // "scrolled away" and flash the jump button on every message.
+  if (wasAtBottom) scrollChatToBottom(scroll);
+  else _chatUnseen += fullHistory.length - fromIndex;
+  syncMoodFromLatest();
   updateTypingIndicator();
+  updateJumpButton();
+}
+
+function patchLastMessage(msg) {
+  const scroll = $('#chat-scroll');
+  if (!scroll) return;
+  const rendered = scroll.querySelectorAll('.msg:not(.thinking-msg)');
+  const old = rendered[rendered.length - 1];
+  if (!old) { renderChat(); return; }
+
+  const wasAtBottom = isChatAtBottom(scroll);
+  old.replaceWith(buildChatMessage(msg, { animate: false }));
+  if (wasAtBottom) scrollChatToBottom(scroll);
+  syncMoodFromLatest();
+  updateTypingIndicator();
+  updateJumpButton();
 }
 
 async function renderChatView(main) {
@@ -803,7 +886,11 @@ async function renderChatView(main) {
           <div class="chat-bg-mood"></div>
         </div>
 
-        <div class="chat-scroll" id="chat-scroll"></div>
+        <div class="chat-scroll-wrap">
+          <div class="chat-scroll" id="chat-scroll" aria-live="polite"></div>
+          <button class="chat-jump is-away" id="chat-jump" type="button"
+                  title="Scroll to the newest message">↓ Latest</button>
+        </div>
 
         <div class="chat-status">
           <button class="mode-chip" id="agent-chip"
@@ -847,6 +934,11 @@ async function renderChatView(main) {
   startChatPolling();
 
   const input = $('#chat-input');
+  // The keyboard hint wraps and gets clipped on narrow screens, where
+  // there's usually no Shift key anyway.
+  if (window.matchMedia?.('(max-width: 760px)').matches) {
+    input.placeholder = 'Message Lumi…';
+  }
   input.focus();
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -901,6 +993,12 @@ async function renderChatView(main) {
   $('#chat-send').addEventListener('click', sendChat);
   $('#agent-chip').addEventListener('click', toggleAgentMode);
 
+  const chatScroll = $('#chat-scroll');
+  chatScroll.addEventListener('scroll', updateJumpButton, { passive: true });
+  $('#chat-jump').addEventListener('click', () => {
+    scrollChatToBottom(chatScroll, true);
+  });
+
   renderAttachmentChips();
   initVoiceControls();
 }
@@ -909,27 +1007,60 @@ function renderChat() {
   const scroll = $('#chat-scroll');
   if (!scroll) return;
 
-  const wasAtBottom =
-    (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) < 80;
+  const wasAtBottom = isChatAtBottom(scroll);
+  const prevTop = scroll.scrollTop;
 
-  scroll.innerHTML = '';
+  // Build off-DOM and swap in one go. Rows drawn by a full redraw
+  // don't play the pop-in animation — only genuinely new ones do.
+  const frag = document.createDocumentFragment();
+  state.history.forEach(m => frag.appendChild(buildChatMessage(m, { animate: false })));
+  scroll.replaceChildren(frag);
   _thinkingBubbleEl = null;
-  state.history.forEach(m => renderChatMessage(m, scroll));
 
   _chatRenderedCount = state.history.length;
   _chatFp = fingerprint(state.history);
 
-  if (wasAtBottom) scroll.scrollTop = scroll.scrollHeight;
+  // Stay pinned to the bottom if we were there; otherwise keep the
+  // reader where they were instead of snapping to the top.
+  if (wasAtBottom) scrollChatToBottom(scroll);
+  else scroll.scrollTop = prevTop;
+  syncMoodFromLatest();
   updateTypingIndicator();
+  updateJumpButton();
 }
 
 function renderChatMessage(msg, container = null) {
   const scroll = container || $('#chat-scroll');
   if (!scroll) return;
+  scroll.appendChild(buildChatMessage(msg));
+}
 
+// Emotion tags like "[happy]" that the TTS layer understands.
+function extractTags(raw) {
+  return [...String(raw || '').matchAll(/\[([a-zA-Z][a-zA-Z\s\-]{0,30})\]/g)]
+    .map(m => m[1].toLowerCase())
+    .filter(t => isCanonicalTag(t));
+}
+
+// Drive the mood accent from the newest message, once per message —
+// a later redraw of the same message won't revive a mood that has
+// already faded.
+let _moodSourceFp = null;
+
+function syncMoodFromLatest() {
+  const last = state.history[state.history.length - 1];
+  if (!last || last.role !== 'assistant') return;
+  const fp = fingerprint(last);
+  if (fp === _moodSourceFp) return;
+  _moodSourceFp = fp;
+  const tags = extractTags(last.content);
+  if (tags.length) applyMoodAccent(tags);
+}
+
+function buildChatMessage(msg, { animate = true } = {}) {
   const role = msg.role || 'assistant';
   const div = document.createElement('div');
-  div.className = `msg ${role}`;
+  div.className = `msg ${role}` + (animate ? '' : ' msg-static');
 
   const avatar = document.createElement('div');
   avatar.className = 'msg-avatar';
@@ -952,11 +1083,7 @@ function renderChatMessage(msg, container = null) {
   bubble.className = 'msg-bubble';
 
   const raw = String(msg.content || '');
-
-  const tagRe = /\[([a-zA-Z][a-zA-Z\s\-]{0,30})\]/g;
-  const tags = [...raw.matchAll(tagRe)]
-    .map(m => m[1].toLowerCase())
-    .filter(t => isCanonicalTag(t));
+  const tags = extractTags(raw);
 
   if (tags.length) {
     const tagRow = document.createElement('div');
@@ -997,14 +1124,7 @@ function renderChatMessage(msg, container = null) {
   bubble.appendChild(text);
 
   div.appendChild(bubble);
-  scroll.appendChild(div);
-
-  // If this was the newest assistant message and it carries an
-  // emotion tag, drive the accent + mood chip.
-  if (role === 'assistant' && tags.length &&
-      div === scroll.lastElementChild) {
-    applyMoodAccent(tags);
-  }
+  return div;
 }
 
 const CANONICAL_TAGS = new Set([
@@ -1245,12 +1365,14 @@ async function sendChat() {
   _chatAttachments.length = 0;
   renderAttachmentChips();
 
-  state.history.push({
-    role: 'user',
-    content: text,
-    attachments: payloadAttachments.map(a => ({ name: a.name, kind: a.kind })),
-  });
-  renderChat();
+  // Same shape /api/history returns, so the next poll sees a matching
+  // prefix and appends rather than redrawing everything.
+  const localMsg = { role: 'user', content: text };
+  if (payloadAttachments.length) {
+    localMsg.attachments =
+      payloadAttachments.map(a => ({ name: a.name, kind: a.kind }));
+  }
+  appendLocalMessage(localMsg);
 
   try {
     await api('/api/chat/send', {
@@ -1260,12 +1382,26 @@ async function sendChat() {
     });
     refreshHistory();
   } catch (err) {
-    state.history.push({
+    appendLocalMessage({
       role: 'system',
       content: `Failed to send: ${err.message}`,
     });
-    renderChat();
   }
+}
+
+// Show a message immediately, before the server echoes it back. Your
+// own message always scrolls into view.
+function appendLocalMessage(msg) {
+  state.history.push(msg);
+  const scroll = $('#chat-scroll');
+  if (!scroll || _chatRenderedCount !== state.history.length - 1) {
+    renderChat();
+  } else {
+    appendNewMessages(state.history, state.history.length - 1);
+  }
+  if (scroll) scrollChatToBottom(scroll);
+  _chatUnseen = 0;
+  updateJumpButton();
 }
 
 /* ==============================================================
@@ -1466,8 +1602,7 @@ async function startMicRecording() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       if (data.text) {
-        state.history.push({ role: 'user', content: data.text });
-        renderChat();
+        appendLocalMessage({ role: 'user', content: data.text });
       }
     } catch (e) {
       alert('Voice message failed: ' + e.message);
@@ -1544,8 +1679,8 @@ function renderDashboardStats() {
   ];
   $('#dash-stats').innerHTML = stats.map(st => `
     <div class="stat">
-      <div class="stat-label">${st.label}</div>
-      <div class="stat-value">${st.value}</div>
+      <div class="stat-label">${escapeHtml(st.label)}</div>
+      <div class="stat-value">${escapeHtml(st.value)}</div>
     </div>
   `).join('');
 }
@@ -1580,9 +1715,9 @@ function renderEvents(events) {
   }
   el.innerHTML = events.slice(-300).map(ev => `
     <div class="event-row">
-      <span class="ts">${ev.time || ''}</span>
-      <span class="cat ${ev.category}">${ev.category}</span>
-      <span class="msg">${escapeHtml(ev.message)}</span>
+      <span class="ts">${escapeHtml(ev.time || '')}</span>
+      <span class="cat ${escapeHtml(ev.category || '')}">${escapeHtml(ev.category || '')}</span>
+      <span class="ev-msg">${escapeHtml(ev.message ?? '')}</span>
     </div>
   `).join('');
   el.scrollTop = el.scrollHeight;
@@ -1780,7 +1915,7 @@ function buildMemoryRow(mem) {
   row.appendChild(actions);
 
   if (mem.id) {
-    row.addEventListener('click', () => {
+    const toggle = () => {
       if (_memoryState.expanded === mem.id) {
         _memoryState.expanded = null;
       } else {
@@ -1788,7 +1923,22 @@ function buildMemoryRow(mem) {
       }
       renderMemoryTable();
       const el = document.querySelector(`.memory-row[data-id="${CSS.escape(mem.id)}"]`);
-      if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      if (el) {
+        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        el.focus({ preventScroll: true });
+      }
+    };
+    // Focusable so the details can be opened from the keyboard; the
+    // Edit/Delete buttons inside keep their own keys.
+    row.tabIndex = 0;
+    row.setAttribute('aria-expanded', String(_memoryState.expanded === mem.id));
+    row.addEventListener('click', toggle);
+    row.addEventListener('keydown', (e) => {
+      if (e.target !== row) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggle();
+      }
     });
   }
 

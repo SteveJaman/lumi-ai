@@ -17,6 +17,25 @@
      · Lavender-gray #D9D9DE
    ============================================================ */
 
+/* Registering the accent tokens as colours makes them interpolable, so
+   a mood change (or theme toggle) fades the accent everywhere instead
+   of snapping — including the gradient tint behind the chat, which a
+   plain `transition: background` can't animate. Browsers without
+   @property just switch instantly, as before. */
+@property --accent {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #389183;
+}
+@property --accent-bg {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: rgba(129, 212, 198, 0.20);
+}
+html {
+  transition: --accent 1.2s ease, --accent-bg 1.2s ease;
+}
+
 :root,
 html[data-theme="light"] {
   /* Backgrounds — mint-tinted whites, peach never used as a bg */
@@ -353,6 +372,9 @@ button { font-family: inherit; cursor: pointer; }
   display: grid;
   grid-template-columns: 240px 1fr;
   grid-template-rows: 100vh;
+  /* Dynamic viewport height: excludes mobile browser chrome, so the
+     chat input isn't hidden under the address bar. */
+  grid-template-rows: 100dvh;
 }
 
 .sidebar {
@@ -423,8 +445,15 @@ button { font-family: inherit; cursor: pointer; }
   user-select: none;
   transition: background 0.1s, color 0.1s;
 }
+a.nav-item { text-decoration: none; }
 .nav-item:hover  { background: var(--bg-hover); color: var(--text); }
 .nav-item.active { background: var(--accent-bg); color: var(--accent-hi); }
+.nav-item:focus-visible,
+.chat-jump:focus-visible,
+.mode-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .nav-item svg    { width: 15px; height: 15px; flex-shrink: 0; }
 
 .sidebar-footer {
@@ -705,18 +734,64 @@ button { font-family: inherit; cursor: pointer; }
 }
 
 /* ---- Messages ---- */
+/* Wrapper gives the jump button something to anchor to without
+   scrolling along with the messages. */
+.chat-scroll-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  z-index: 1;
+}
+/* No `scroll-behavior: smooth` here: the code pins to the bottom with
+   instant jumps, and smooth would animate through the whole history on
+   every redraw. The jump button asks for smooth explicitly. */
 .chat-scroll {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--s-5) var(--s-6);
   display: flex;
   flex-direction: column;
   gap: var(--s-4);
-  scroll-behavior: smooth;
   position: relative;
-  z-index: 1;
   scrollbar-width: thin;
   scrollbar-color: var(--border-hi) transparent;
+}
+
+.chat-jump {
+  position: absolute;
+  left: 50%;
+  bottom: var(--s-4);
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-hi);
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  box-shadow: var(--sh-2);
+  cursor: pointer;
+  z-index: 3;
+  transition: opacity 0.18s ease, transform 0.18s ease,
+              background 0.12s, border-color 0.12s;
+}
+.chat-jump:hover { background: var(--bg-hover); }
+.chat-jump.has-new {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent-hi);
+}
+/* Own class rather than the global .hidden (display:none !important),
+   so it can fade instead of popping. */
+.chat-jump.is-away {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 8px);
 }
 .chat-scroll::-webkit-scrollbar { width: 8px; }
 .chat-scroll::-webkit-scrollbar-thumb {
@@ -732,6 +807,9 @@ button { font-family: inherit; cursor: pointer; }
   max-width: 780px;
   animation: messagePopup 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+/* Rows drawn by a full redraw (history load, reconnect) appear
+   instantly; only genuinely new messages pop in. */
+.msg.msg-static { animation: none; }
 
 @keyframes messagePopup {
   0% {
@@ -923,16 +1001,36 @@ html[data-theme="dark"] .msg.user .msg-avatar {
 }
 .mood-chip.active {
   display: inline-flex;
+  /* Tinted by the live mood accent, which itself fades between moods. */
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--accent-bg);
+  color: var(--text);
   animation: mood-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.mood-chip.active.leaving {
+  animation: mood-fade 0.4s ease forwards;
 }
 .mood-chip .mood-emoji {
   font-size: 13px;
   line-height: 1;
+  display: inline-block;
+}
+.mood-chip.active:not(.leaving) .mood-emoji {
+  animation: mood-emoji-bob 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 @keyframes mood-pop {
   from { opacity: 0; transform: scale(0.85); }
   to   { opacity: 1; transform: scale(1); }
+}
+@keyframes mood-fade {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.92); }
+}
+@keyframes mood-emoji-bob {
+  0%   { transform: translateY(3px) scale(0.7) rotate(-12deg); }
+  60%  { transform: translateY(-2px) scale(1.15) rotate(6deg); }
+  100% { transform: none; }
 }
 
 /* ---- Attachments ---- */
@@ -1145,7 +1243,7 @@ html[data-theme="dark"] .msg.user .msg-avatar {
 .event-row:last-child { border-bottom: none; }
 .event-row .ts  { color: var(--text-mute); font-size: var(--fs-xs); }
 .event-row .cat { font-weight: 600; font-size: var(--fs-xs); }
-.event-row .msg { color: var(--text); word-break: break-word; }
+.event-row .ev-msg { color: var(--text); word-break: break-word; }
 .cat.ambient   { color: var(--lavender); }
 .cat.heartbeat { color: var(--accent-2); }
 .cat.memory    { color: var(--success); }
@@ -1186,6 +1284,10 @@ html[data-theme="dark"] .msg.user .msg-avatar {
   cursor: pointer;
 }
 .memory-row:hover { background: var(--bg-hover); }
+.memory-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .memory-row:last-child { border-bottom: none; }
 .memory-row.expanded {
   background: var(--accent-bg);
@@ -2646,6 +2748,93 @@ select.routing-input { font-family: var(--font-sans); }
    Reduced motion
    ============================================================ */
 
+/* ============================================================
+   Narrow screens (phones, split-screen) — the 240px sidebar becomes a
+   compact top bar with icon-only navigation.
+   ============================================================ */
+@media (max-width: 760px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .sidebar {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow: visible;
+    min-width: 0;
+  }
+  /* All seven nav icons need the width more than the logo does. */
+  .brand,
+  .status-pills,
+  .github-link,
+  #user-name,
+  .user-chip .avatar { display: none; }
+
+  .nav {
+    flex-direction: row;
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav-item { flex-shrink: 0; padding: 8px; }
+  .nav-item span { display: none; }
+  .nav-item svg { width: 18px; height: 18px; }
+
+  .sidebar-footer {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+  }
+  .user-chip { padding: 2px; background: transparent; }
+
+  .page-header {
+    padding: var(--s-3) var(--s-4);
+    flex-wrap: wrap;
+    gap: var(--s-2);
+  }
+  .page-scroll { padding: var(--s-4); }
+
+  .chat-scroll { padding: var(--s-4); gap: var(--s-3); }
+  .chat-status,
+  .chat-attachments { padding-left: var(--s-4); padding-right: var(--s-4); }
+  .chat-input { padding: var(--s-3) var(--s-4); gap: var(--s-2); }
+  .msg { max-width: 100%; }
+  .chat-attachment-chip { max-width: 100%; }
+
+  .memory-toolbar { flex-wrap: wrap; }
+  .memory-toolbar .select { width: auto; flex: 1; }
+  /* Fact gets the full first line; age, valence and actions share
+     the second. */
+  .memory-row {
+    grid-template-columns: 24px minmax(0, 1fr) auto auto;
+    gap: var(--s-2) var(--s-3);
+    padding: var(--s-3);
+  }
+  .memory-fact { grid-column: 2 / -1; }
+  .memory-time { grid-column: 2; }
+  .memory-detail { grid-template-columns: 84px minmax(0, 1fr); }
+
+  .event-row { grid-template-columns: 64px minmax(0, 1fr); }
+  .event-row .ev-msg { grid-column: 1 / -1; }
+
+  .modal-overlay { padding: var(--s-4); }
+  .modal-card {
+    max-height: calc(100dvh - 2 * var(--s-4));
+    overflow-y: auto;
+  }
+
+  .boot-loader { left: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .boot-flower,
   .boot-flower.complete,
@@ -2654,8 +2843,15 @@ select.routing-input { font-family: var(--font-sans); }
   .boot-loader,
   .chat-bg-stars,
   .chat-bg-stars-2,
-  .chat-bg-rising span {
+  .chat-bg-rising span,
+  .msg,
+  .mood-chip,
+  .mood-chip .mood-emoji,
+  .chat-jump {
     animation: none !important;
     transition-duration: 0.01ms !important;
   }
+  html { transition: none; }
+  /* No fade-out animation means no animationend — hide immediately. */
+  .mood-chip.leaving { display: none !important; }
 }
