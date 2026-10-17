@@ -23,23 +23,30 @@ const state = {
 /* --------------------------------------------------------------
    Theme — light (default) / dark toggle, persisted in localStorage
    -------------------------------------------------------------- */
-function initTheme() {
+function savedTheme() {
   let saved = null;
   try { saved = localStorage.getItem('lumi-theme'); } catch {}
-
-  let theme = saved;
-  if (theme !== 'light' && theme !== 'dark') {
-    // No saved preference — match OS
-    const prefersDark = window.matchMedia
-      && window.matchMedia('(prefers-color-scheme: dark)').matches;
-    theme = prefersDark ? 'dark' : 'light';
-  }
-  applyTheme(theme);
+  return saved === 'light' || saved === 'dark' ? saved : null;
 }
 
-function applyTheme(theme) {
+function initTheme() {
+  // theme-init.js already set data-theme before first paint; this just
+  // syncs the toggle button and follows OS changes until the user picks.
+  applyTheme(document.documentElement.getAttribute('data-theme') || 'light');
+
+  const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+  mq?.addEventListener?.('change', (e) => {
+    if (!savedTheme()) applyTheme(e.matches ? 'dark' : 'light');
+  });
+}
+
+function applyTheme(theme, { persist = false } = {}) {
   document.documentElement.setAttribute('data-theme', theme);
-  try { localStorage.setItem('lumi-theme', theme); } catch {}
+  if (persist) {
+    try { localStorage.setItem('lumi-theme', theme); } catch {}
+  }
+  // Mood accents are tuned per theme; re-derive for the new one.
+  if (_currentMood) setAccentForMood(_currentMood);
 
   const btn = document.getElementById('theme-toggle');
   if (btn) {
@@ -54,7 +61,7 @@ function applyTheme(theme) {
 function toggleTheme() {
   const current =
     document.documentElement.getAttribute('data-theme') || 'light';
-  applyTheme(current === 'light' ? 'dark' : 'light');
+  applyTheme(current === 'light' ? 'dark' : 'light', { persist: true });
 }
 
 // Wire the toggle once the DOM has the button
@@ -277,7 +284,6 @@ const MOOD_EMOJI = {
   grateful:  '💗',
 };
 
-const DEFAULT_ACCENT = { color: '#7ee0d4', glow: '126, 224, 212' };
 
 let _moodResetTimer = null;
 let _currentMood = null;
@@ -443,10 +449,7 @@ function applyMoodAccent(tags) {
   if (_currentMood === tag) return;
 
   _currentMood = tag;
-  document.documentElement.style.setProperty('--accent', mood.color);
-  document.documentElement.style.setProperty(
-    '--accent-bg', `rgba(${mood.glow}, 0.12)`
-  );
+  setAccentForMood(tag);
 
   const chip = document.getElementById('mood-chip');
   const emoji = document.getElementById('mood-emoji');
@@ -461,12 +464,26 @@ function applyMoodAccent(tags) {
   _moodResetTimer = setTimeout(resetMoodAccent, 8000);
 }
 
+// Mood colours are bright pastels picked for the dark theme. On the
+// light theme they're mixed toward the text colour so the accent still
+// reads as text/borders on white.
+function setAccentForMood(tag) {
+  const mood = MOOD_ACCENTS[tag];
+  if (!mood) return;
+  const root = document.documentElement;
+  const light = root.getAttribute('data-theme') !== 'dark';
+  root.style.setProperty('--accent', light
+    ? `color-mix(in srgb, ${mood.color} 55%, #1E2A2E)`
+    : mood.color);
+  root.style.setProperty('--accent-bg',
+    `rgba(${mood.glow}, ${light ? 0.20 : 0.12})`);
+}
+
 function resetMoodAccent() {
   _currentMood = null;
-  document.documentElement.style.setProperty('--accent', DEFAULT_ACCENT.color);
-  document.documentElement.style.setProperty(
-    '--accent-bg', `rgba(${DEFAULT_ACCENT.glow}, 0.12)`
-  );
+  // Drop the inline overrides so the active theme's own accent applies.
+  document.documentElement.style.removeProperty('--accent');
+  document.documentElement.style.removeProperty('--accent-bg');
   const chip = document.getElementById('mood-chip');
   if (chip) chip.classList.remove('active');
 }
@@ -495,8 +512,10 @@ async function startStatusPolling() {
       if (fp !== _statusFp.value) {
         _statusFp.value = fp;
         updateAgentChip();
-        updateTypingIndicator();
       }
+      // Cheap, and its answer depends on history as well as status,
+      // so run it every tick rather than only when status changes.
+      updateTypingIndicator();
     } catch {}
     setTimeout(tick, 2000);
   };
@@ -515,41 +534,44 @@ function updateAgentChip() {
 }
 
 let _thinkingBubbleEl = null;
-let _lastSeenHistoryLength = 0;
+// Fingerprint of the newest history entry at the moment the current
+// thinking spell began (undefined = not thinking). A reply has landed
+// once the newest entry is an assistant message that differs from it.
+// Anchoring on content rather than history length keeps working when
+// the 100-message window is full and the length stops growing.
+let _thinkingAnchor = undefined;
 
 function updateTypingIndicator() {
-  const scroll = $('#chat-scroll');
-  if (!scroll) return;
-
   const isThinking = !!state.status.ai_thinking;
-  const historyLen = state.history.length;
-  const lastMsg = historyLen ? state.history[historyLen - 1] : null;
+  const lastMsg = state.history[state.history.length - 1] || null;
+  const lastFp = lastMsg ? fingerprint(lastMsg) : null;
 
-  // History grew AND the newest entry is from the assistant → the
-  // reply landed, tear the bubble down. A user message also grows
-  // history but must not be mistaken for a reply.
-  const gotResponse =
-    historyLen > _lastSeenHistoryLength &&
-    lastMsg && lastMsg.role === 'assistant';
+  if (!isThinking) _thinkingAnchor = undefined;
+  else if (_thinkingAnchor === undefined) _thinkingAnchor = lastFp;
 
-  _lastSeenHistoryLength = historyLen;
+  const replied = isThinking && lastMsg && lastMsg.role === 'assistant'
+    && lastFp !== _thinkingAnchor;
 
-  if (_thinkingBubbleEl) {
-    if (!_thinkingBubbleEl.isConnected) {
-      // renderChat() wiped the scroll container out from under us.
-      _thinkingBubbleEl = null;
-    } else if (!isThinking || gotResponse) {
-      _thinkingBubbleEl.remove();
-      _thinkingBubbleEl = null;
-    }
+  const scroll = $('#chat-scroll');
+  const want = !!scroll && isThinking && !replied;
+
+  if (_thinkingBubbleEl && (!want || _thinkingBubbleEl.parentNode !== scroll)) {
+    _thinkingBubbleEl.remove();
+    _thinkingBubbleEl = null;
   }
-
-  // Nothing to do if we're not thinking, already show a bubble,
-  // or just watched the reply come in.
-  if (!isThinking || _thinkingBubbleEl || gotResponse) return;
+  if (!want) return;
 
   const wasAtBottom =
     (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) < 80;
+
+  if (_thinkingBubbleEl) {
+    // Keep it below any message that arrived while thinking.
+    if (scroll.lastElementChild !== _thinkingBubbleEl) {
+      scroll.appendChild(_thinkingBubbleEl);
+      if (wasAtBottom) scroll.scrollTop = scroll.scrollHeight;
+    }
+    return;
+  }
 
   const div = document.createElement('div');
   div.className = 'msg assistant thinking-msg';
@@ -706,8 +728,6 @@ function startChatPolling() {
   stopChatPolling();
   _chatFp = null;
   _chatRenderedCount = 0;
-  _thinkingBubbleEl = null;        // ← new
-  _lastSeenHistoryLength = 0;      // ← new
   refreshHistory();
   _chatPollTimer = setInterval(refreshHistory, 1500);
 }
@@ -762,6 +782,7 @@ function appendNewMessages(fullHistory, fromIndex) {
   _chatRenderedCount = fullHistory.length;
 
   if (wasAtBottom) scroll.scrollTop = scroll.scrollHeight;
+  updateTypingIndicator();
 }
 
 async function renderChatView(main) {
@@ -892,14 +913,14 @@ function renderChat() {
     (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) < 80;
 
   scroll.innerHTML = '';
-  _thinkingBubbleEl = null;                         // ← new
+  _thinkingBubbleEl = null;
   state.history.forEach(m => renderChatMessage(m, scroll));
 
   _chatRenderedCount = state.history.length;
   _chatFp = fingerprint(state.history);
-  _lastSeenHistoryLength = state.history.length;    // ← new
 
   if (wasAtBottom) scroll.scrollTop = scroll.scrollHeight;
+  updateTypingIndicator();
 }
 
 function renderChatMessage(msg, container = null) {
