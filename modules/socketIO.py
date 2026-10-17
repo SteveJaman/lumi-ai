@@ -44,7 +44,9 @@ import time
 import base64
 import secrets
 import asyncio
+import functools
 import mimetypes
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from aiohttp import web
@@ -186,7 +188,22 @@ def _sha256_of_file(path):
     return h.hexdigest()
 
 
-def _find_library_duplicate(library_root, new_hash):
+# path -> (mtime, size, sha256). Library files are write-once, so each
+# one is hashed at most once per process unless it changes on disk.
+_library_hash_cache = {}
+
+
+def _cached_sha256(path, st):
+    key = (st.st_mtime, st.st_size)
+    hit = _library_hash_cache.get(path)
+    if hit and hit[:2] == key:
+        return hit[2]
+    digest = _sha256_of_file(path)
+    _library_hash_cache[path] = (*key, digest)
+    return digest
+
+
+def _find_library_duplicate(library_root, new_hash, new_size=None):
     """Walk data/library/{images,documents,text}/ and return metadata
     for the first file whose contents hash matches `new_hash`. Returns
     None if nothing matches.
@@ -211,10 +228,15 @@ def _find_library_duplicate(library_root, new_hash):
             continue
         for fname in sorted(os.listdir(sub_dir)):
             fpath = os.path.join(sub_dir, fname)
-            if not os.path.isfile(fpath):
-                continue
             try:
-                if _sha256_of_file(fpath) != new_hash:
+                st = os.stat(fpath)
+                if not os.path.isfile(fpath):
+                    continue
+                # Different size can't be identical content — skip the
+                # hash entirely. This rules out nearly every file.
+                if new_size is not None and st.st_size != new_size:
+                    continue
+                if _cached_sha256(fpath, st) != new_hash:
                     continue
             except Exception:
                 continue
@@ -232,14 +254,42 @@ def _find_library_duplicate(library_root, new_hash):
                 "source": f"{sub}/{fname}",
                 "original_name": original,
                 "subfolder": sub,
-                "size": os.path.getsize(fpath),
-                "modified_at": os.path.getmtime(fpath),
+                "size": st.st_size,
+                "modified_at": st.st_mtime,
             }
     return None
 
 
 def _json_error(status, message):
     return web.json_response({"error": message}, status=status)
+
+
+# Paths whose callers (app.js `api()`) expect a JSON body on every
+# response, including failures.
+_JSON_PREFIXES = ("/api/", "/auth/")
+
+
+@web.middleware
+async def _json_error_middleware(request, handler):
+    """Turn unhandled errors on API routes into `{"error": ...}` JSON
+    instead of aiohttp's default HTML error page. Pages, static files
+    and socket.io are left untouched, as are redirects."""
+    if not request.path.startswith(_JSON_PREFIXES):
+        return await handler(request)
+    try:
+        return await handler(request)
+    except web.HTTPException as e:
+        if e.status < 400:
+            raise
+        return _json_error(e.status, e.reason or "Request failed.")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"\033[91mHTTP: {request.method} {request.path} failed — "
+              f"{type(e).__name__}: {e}\033[0m")
+        traceback.print_exc()
+        return _json_error(500, f"Internal error: {type(e).__name__}")
 
 
 def _parse_cookies(cookie_header):
@@ -388,8 +438,16 @@ class SocketIOServer:
             logger=False,
             engineio_logger=False,
         )
-        self.app = web.Application()
+        self.app = web.Application(middlewares=[_json_error_middleware])
         self.sio.attach(self.app)
+
+        # Memory/library calls (ChromaDB, embeddings, file parsing) are
+        # blocking. Run them on one dedicated worker so they don't stall
+        # the event loop, while staying serialized the way they were
+        # when they ran inline.
+        self._mem_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="web-memory",
+        )
 
         # Phase 10.19 — voice in browser.
         self._tts_clients = set()
@@ -398,6 +456,13 @@ class SocketIOServer:
 
         self._register_http_routes()
         self._register_socket_events()
+
+    async def _run_mem(self, fn, *args, **kwargs):
+        """Run a blocking memory/library call on the memory worker."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._mem_executor, functools.partial(fn, *args, **kwargs),
+        )
 
     def _model_manager(self):
         if self.model_manager is not None:
@@ -652,7 +717,10 @@ class SocketIOServer:
         user = self._current_user(request)
         if not user:
             return _json_error(401, "Not logged in.")
-        limit = int(request.query.get("limit", 40))
+        try:
+            limit = int(request.query.get("limit", 40))
+        except ValueError:
+            limit = 40
         limit = max(1, min(limit, 200))
         history = getattr(self.signals, "history", [])[-limit:]
         # The chat only renders attachment badges, so don't ship the
@@ -805,7 +873,9 @@ class SocketIOServer:
             in ("1", "true", "yes")
         )
 
-        existing_dup = _find_library_duplicate(library_root, new_hash)
+        existing_dup = await self._run_mem(
+            _find_library_duplicate, library_root, new_hash, len(raw),
+        )
 
         if existing_dup and not replace_flag:
             try:
@@ -845,6 +915,7 @@ class SocketIOServer:
                 os.remove(old_path)
             except Exception:
                 pass
+            _library_hash_cache.pop(old_path, None)
 
             # Remove the old sidecar if it exists.
             old_stem = os.path.splitext(old_path)[0]
@@ -857,11 +928,13 @@ class SocketIOServer:
             try:
                 mem = self.modules.get("memory")
                 if mem and hasattr(mem.API, "delete_library_file"):
-                    mem.API.delete_library_file(old_source)
+                    await self._run_mem(
+                        mem.API.delete_library_file, old_source,
+                    )
                     # Also try the sidecar source if it existed.
                     old_rel = os.path.splitext(old_source)[0]
-                    mem.API.delete_library_file(
-                        f"{old_rel}.meta.md"
+                    await self._run_mem(
+                        mem.API.delete_library_file, f"{old_rel}.meta.md",
                     )
             except Exception:
                 pass
@@ -904,7 +977,7 @@ class SocketIOServer:
             except Exception as e:
                 extract_err = f"image analyzer unavailable: {e}"
             else:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 vlm_text, vlm_err = await loop.run_in_executor(
                     None,
                     lambda: read_image_vlm(
@@ -916,7 +989,10 @@ class SocketIOServer:
                 else:
                     extract_err = vlm_err or "VLM extraction failed"
         else:
-            text, extract_err = _extract_upload_text(stored_path, kind)
+            # PDF/DOCX parsing can take seconds on large files.
+            text, extract_err = await asyncio.get_running_loop().run_in_executor(
+                None, _extract_upload_text, stored_path, kind,
+            )
 
         rel_path = os.path.relpath(
             stored_path, WORKSPACE_ROOT
@@ -945,7 +1021,9 @@ class SocketIOServer:
                 # Index the sidecar right now — it's small and fast.
                 try:
                     from modules.library_indexer import index_single_file
-                    index_single_file(self.signals, sidecar_path)
+                    await self._run_mem(
+                        index_single_file, self.signals, sidecar_path,
+                    )
                 except Exception as e:
                     try:
                         from modules.log_hub import emit as hub_emit
@@ -960,14 +1038,12 @@ class SocketIOServer:
                 # For non-image uploads, queue the raw document for
                 # background indexing. The sidecar has a preview, but
                 # "what does the PDF say about X" needs the full
-                # text. Runs on the default executor so the HTTP
-                # response isn't blocked on PDF parsing.
+                # text. Queued on the memory worker (not awaited) so the
+                # HTTP response isn't blocked on PDF parsing.
                 if kind != "image":
                     try:
                         from modules.library_indexer import index_single_file
-                        loop = asyncio.get_event_loop()
-                        loop.run_in_executor(
-                            None,
+                        self._mem_executor.submit(
                             index_single_file,
                             self.signals,
                             stored_path,
@@ -989,7 +1065,9 @@ class SocketIOServer:
                     )
                     if first_line:
                         fact += f" Content started with: {first_line}"
-                    mem.API.create_memory(fact, importance=0.55)
+                    await self._run_mem(
+                        mem.API.create_memory, fact, importance=0.55,
+                    )
             except Exception:
                 pass
 
@@ -1078,7 +1156,7 @@ class SocketIOServer:
 
         try:
             if q:
-                hits = api.query_temporal(q, limit=limit)
+                hits = await self._run_mem(api.query_temporal, q, limit=limit)
                 rows = []
                 for h in hits:
                     rows.append({
@@ -1096,7 +1174,9 @@ class SocketIOServer:
                     "search": True,
                 })
 
-            data = api.list_all(limit=limit, offset=offset, sort=sort)
+            data = await self._run_mem(
+                api.list_all, limit=limit, offset=offset, sort=sort,
+            )
             return web.json_response(data)
         except Exception as e:
             return _json_error(500, f"Memory list failed: {e}")
@@ -1109,7 +1189,8 @@ class SocketIOServer:
         if api is None:
             return _json_error(503, "Memory module is not loaded.")
         try:
-            return web.json_response({"memories": api.export_all()})
+            memories = await self._run_mem(api.export_all)
+            return web.json_response({"memories": memories})
         except Exception as e:
             return _json_error(500, f"Export failed: {e}")
 
@@ -1143,8 +1224,10 @@ class SocketIOServer:
 
         valence = body.get("valence")
         try:
-            new_id = api.create_memory(fact, importance=importance,
-                                       valence=valence)
+            new_id = await self._run_mem(
+                api.create_memory, fact, importance=importance,
+                valence=valence,
+            )
         except Exception as e:
             return _json_error(500, f"Create failed: {e}")
 
@@ -1159,7 +1242,7 @@ class SocketIOServer:
             return _json_error(503, "Memory module is not loaded.")
 
         mem_id = request.match_info.get("mem_id", "")
-        row = api.get_by_id(mem_id)
+        row = await self._run_mem(api.get_by_id, mem_id)
         if row is None:
             return _json_error(404, "Memory not found.")
         return web.json_response(row)
@@ -1187,10 +1270,8 @@ class SocketIOServer:
         importance = body.get("importance")
         valence = body.get("valence")
 
-        if valence is None and "valence" in body:
-            valence = body.get("valence")
-
-        ok, err = api.update_memory(
+        ok, err = await self._run_mem(
+            api.update_memory,
             mem_id,
             document=fact,
             importance=importance,
@@ -1222,7 +1303,7 @@ class SocketIOServer:
         if not mem_id:
             return _json_error(400, "Missing memory id.")
 
-        deleted = api.delete_memory(mem_id)
+        deleted = await self._run_mem(api.delete_memory, mem_id)
         if not deleted:
             return _json_error(404, "Memory not found or delete failed.")
         return web.json_response({"ok": True})
