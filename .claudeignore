@@ -1,0 +1,37 @@
+# Python Cache & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# IDE & Git
+.git/
+.vscode/
+
+# Browser Cache & Local Storage (MASSIVE TOKEN TRAP)
+data/browser_profile/
+
+# Databases & Vector Memory (CRITICAL TO IGNORE)
+data/memories/
+*.db
+*.sqlite
+*.sqlite3
+
+# Media, Assets, and Uploads
+data/library/
+data/logs/
+data/outputs/
+data/songs/
+data/voices/
+assets/
+results/
+
+# Model Weights
+data/models/
+
+# Secrets & API Keys
+.env
+.env.local
+.rate_usage.json
