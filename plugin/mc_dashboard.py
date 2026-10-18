@@ -548,9 +548,9 @@ function renderStatus() {
   const bot = _botSt;
 
   // MinecraftAgent SDK pill
-  const agentOk = t && t.loop_state && t.loop_state !== "starting";
-  setPill("cp-agent", agentOk ? "ok" : "bad",
-    "MinecraftAgent SDK: " + (t.loop_state || "offline"));
+  const agentOk = t && t.lumi_sdk === "connected";
+  setPill("cp-agent", agentOk ? "ok" : "warn",
+    "Lumi SDK: " + (t.lumi_sdk || "offline"));
 
   // bot.js control API pill
   const botOk = bot && bot.ready;
@@ -564,7 +564,7 @@ function renderStatus() {
     "Skill loop: " + (t.loop_state || "—"));
 
   // Header pills
-  updatePill("pill-agent", agentOk, "agent: " + (t.loop_state || "offline"));
+  updatePill("pill-agent", loopOk, "agent: " + (t.loop_state || "offline"));
   updatePill("pill-bot", botOk, "bot: " + (bot ? (bot.ready ? bot.username || "ready" : "spawning") : "unreachable"));
 
   // Skill table

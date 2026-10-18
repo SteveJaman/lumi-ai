@@ -107,7 +107,7 @@ function createBot() {
     pushBotContext(`[chat] ${username}: ${message}`);
   });
 
-  bot.on("error", (err) => console.error("[mc] error:", err.message));
+  bot.on("error", (err) => console.error("[mc] error:", err.code || err.message || err));
 
   const thisBot = bot;
   bot.on("end", (reason) => {
@@ -159,6 +159,7 @@ function _logEv(category, message) {
 let ws             = null;
 let stopping       = false;
 let reconnectTimer = null;
+let sdkOffline     = false;
 
 function sendJson(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -563,7 +564,7 @@ function connect() {
   }
 
   const uri = `ws://${LUMI_HOST}:${LUMI_PORT}/ws`;
-  console.log(`[sdk] connecting to ${uri}`);
+  if (!sdkOffline) console.log(`[sdk] connecting to ${uri}`);
   ws = new WebSocket(uri);
 
   ws.on("open", () => {
@@ -586,6 +587,7 @@ function connect() {
         const proto = (msg.data || {}).protocolVersion || "?";
         console.log(`[sdk] welcome — session=${sess.sessionId} protocol=${proto}`);
         _logEv("sdk", `connected session=${sess.sessionId} proto=${proto}`);
+        sdkOffline = false;
         registerActions();
         pushBotContext();
         break;
@@ -614,12 +616,23 @@ function connect() {
   ws.on("close", () => {
     ws = null;
     if (!stopping) {
-      console.log(`[sdk] disconnected — reconnecting in ${RECONNECT_MS / 1000} s`);
+      if (!sdkOffline) console.log(`[sdk] disconnected — reconnecting in ${RECONNECT_MS / 1000} s`);
       reconnectTimer = setTimeout(connect, RECONNECT_MS);
     }
   });
 
-  ws.on("error", (err) => console.error("[sdk] ws error:", err.message));
+  ws.on("error", (err) => {
+    if (err.code === "ECONNREFUSED") {
+      if (!sdkOffline) {
+        console.log("[sdk] Lumi is not running (127.0.0.1:5056) — the bot still works; " +
+                    "retrying quietly every 5 s until Lumi starts");
+        _logEv("sdk", "Lumi SDK offline — retrying quietly");
+      }
+      sdkOffline = true;
+    } else {
+      console.error("[sdk] ws error:", err.message);
+    }
+  });
 }
 
 // Push a fresh status snapshot every 30 s so Lumi stays up-to-date.

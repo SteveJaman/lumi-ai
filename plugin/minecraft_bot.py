@@ -121,6 +121,7 @@ class MinecraftAgent(LumiClient):
         self._loop_task: Optional[asyncio.Task] = None
         self._tel: Dict[str, Any] = {
             "bot_status": "unreachable",
+            "lumi_sdk": "offline",
             "position": None,
             "health": None,
             "food": None,
@@ -170,13 +171,43 @@ class MinecraftAgent(LumiClient):
             "Use mc_agent_status for live progress.",
             silent=True,
         )
-        self._loop_task = asyncio.create_task(self._skill_loop())
-        self._record("agent", "Agent connected to Lumi SDK — skill loop starting")
+        self._tel["lumi_sdk"] = "connected"
+        self._record("sdk", "Connected to Lumi SDK — status/control actions registered")
 
     async def on_disconnect(self) -> None:
-        if self._loop_task:
-            self._loop_task.cancel()
-        self._record("agent", "Agent disconnected from Lumi SDK")
+        self._tel["lumi_sdk"] = "offline"
+        self._record("sdk", "Disconnected from Lumi SDK — skill loop keeps running")
+
+    def start_loop(self) -> None:
+        if self._loop_task is None or self._loop_task.done():
+            self._loop_task = asyncio.create_task(self._skill_loop())
+
+    async def run(self) -> None:
+        """Quiet reconnect: probe the port first so a missing Lumi doesn't
+        spam the terminal. The skill loop runs regardless."""
+        warned = False
+        while not self._stop:
+            if await self._lumi_port_open():
+                warned = False
+                try:
+                    await self._connect_and_loop()
+                except Exception as e:
+                    self._record("error", f"Lumi SDK connection error: {e}")
+            elif not warned:
+                print("[mc-agent] Lumi is not running (127.0.0.1:5056) — skill loop "
+                      "runs anyway; will attach to Lumi when it starts")
+                self._tel["lumi_sdk"] = "offline"
+                warned = True
+            await asyncio.sleep(self.reconnect_delay)
+
+    async def _lumi_port_open(self) -> bool:
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.port), timeout=1.0)
+            writer.close()
+            return True
+        except Exception:
+            return False
 
     # ─── SDK handlers ─────────────────────────────────────────────
 
@@ -419,6 +450,7 @@ async def _main() -> None:
     print(f"[mc-agent] Bot control API: {BOT_API}")
     print(f"[mc-agent] Token: {TOKEN_PATH}")
     agent = MinecraftAgent()
+    agent.start_loop()
     try:
         await agent.run()
     except KeyboardInterrupt:
