@@ -7,8 +7,10 @@ external platform integrations, state management, and rendering.
 **Note on security.** Prior to Phase 9 this file listed prompt
 injection, command execution, SDK auth, and memory poisoning as known
 gaps. All of those are now closed. See [security.md](security.md) for
-the current threat model and the guards that back it. What remains
-here is architectural, not defensive.
+the current threat model and the guards that back it. One defensive gap
+is open: the Minecraft bot's control API on `:5057` is unauthenticated
+(see [Minecraft](#minecraft) below). Everything else here is
+architectural.
 
 ## Discord Voice Bridge (DAVE E2EE)
 
@@ -133,6 +135,41 @@ here is architectural, not defensive.
   developers must copy `sdk/protocol.py`, `sdk/actions.py`,
   `sdk/client.py`, and `sdk/errors.py` into their project manually.
   Packaging as `lumi-sdk` is planned but not shipped.
+
+* **Invocations time out after 30 s.** `INVOKE_TIMEOUT_SECONDS` in
+  `sdk/server.py` is fixed. Lumi's model gets `action timed out` while
+  the client may still be working.
+
+## Minecraft
+
+* **The bot's control API has no authentication.** Anything that can
+  reach `127.0.0.1:5057`, including a web page in your browser, can make
+  `bot.js` run arbitrary JavaScript. Run `bot.js` only while using it.
+  Details and the planned fix are in
+  [security.md](security.md#minecraft-bot-control-api).
+
+* **No LLM-written skills.** Voyager's curriculum, action and critic
+  agents are not used, because they need the OpenAI API. The autonomous
+  agent follows a fixed curriculum from logs to diamonds, and it does not
+  learn new skills.
+
+* **The curriculum assumes oak.** Every wood tier uses `oak_log` and
+  `oak_planks`. In a biome without oak, `collect_wood` keeps failing with
+  Voyager's `No oak_log nearby` message.
+
+* **Long skills outrun Lumi's timeout.** Mining or exploring often
+  takes longer than the SDK's 30 s, so Lumi reports a timeout while the
+  bot finishes the job. The autonomous agent waits up to 135 s.
+
+* **No bow combat.** `minecrafthawkeye` isn't installed, so `shoot()`
+  and `killMob` with a bow in hand fail. Melee works.
+
+* **LAN ports are set by hand.** Minecraft picks a new port each time a
+  world is opened to LAN. Set it in the dashboard; the bot does not
+  discover it.
+
+* **One bot per `bot.js`.** Each process controls one account, and two
+  processes need different `BOT_CONTROL_PORT` values.
 
 ## Model Behavior
 

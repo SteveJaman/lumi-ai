@@ -7,7 +7,7 @@ in this folder. Pick the doc that matches your question.
 
 | Doc | Covers |
 |---|---|
-| [architecture.md](architecture.md) | Turn flow, process and threads, module topology, prompt stack, tool dispatch, SDK bridge, web server internals, diagnostics telemetry |
+| [architecture.md](architecture.md) | Turn flow, process and threads, module topology, prompt stack, tool dispatch, SDK bridge, external Minecraft processes, web server internals, diagnostics telemetry |
 | [configuration.md](configuration.md) | `.env`, `constants.py`, `config/lumi.yaml`, reset procedures |
 | [development.md](development.md) | Dev setup, module contract, web-server conventions, test suite, code conventions, adding providers, tools, and pages |
 | [models.md](models.md) | Ollama, two-path routing, local and cloud routing, retries and rate limits, TTS/STT, embeddings, vision |
@@ -29,6 +29,8 @@ in this folder. Pick the doc that matches your question.
 - **See what's shipped and what's left.** [roadmap.md](roadmap.md).
 - **Decide what runs locally and what goes to the cloud.** [models.md](models.md#local-and-cloud-routing).
 - **Work on the browser UI.** [`../web/README.md`](../web/README.md) for client conventions, [architecture.md](architecture.md#web-server-modulessocketiopy) for the server side.
+- **Write a plugin.** [`../sdk/README.md`](../sdk/README.md) for the protocol, then [`../plugin/README.md`](../plugin/README.md) for the reference plugin.
+- **Let Lumi play Minecraft.** [`../sdk/examples/minecraft/README.md`](../sdk/examples/minecraft/README.md) for the bot and its Voyager actions, [`../plugin/README.md`](../plugin/README.md) for the autonomous agent and the `:5002` dashboard. Read [security.md](security.md#minecraft-bot-control-api) first.
 
 ## Conventions
 
@@ -53,5 +55,7 @@ thing a new reader sees and the last thing anyone remembers to fix.
   - [`../modules/README.md`](../modules/README.md) — runtime modules
   - [`../web/README.md`](../web/README.md) — local web client
   - [`../sdk/README.md`](../sdk/README.md) — external SDK
+  - [`../sdk/examples/minecraft/README.md`](../sdk/examples/minecraft/README.md) — Minecraft bot and Voyager integration
+  - [`../plugin/README.md`](../plugin/README.md) — reference plugin, Minecraft agent and dashboard
   - [`../data/README.md`](../data/README.md) — runtime state
   - [`../tests/README.md`](../tests/README.md) — test suite and harnesses

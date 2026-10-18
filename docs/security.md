@@ -18,6 +18,7 @@ anything she reads or anything that connects to her.
 | Destructive tool use | Overwriting a source file or running a shell one-liner | `y/n` confirmation, protected paths, command allowlist |
 | Path escape | `../../` reads outside `WORKSPACE_ROOT` | `realpath` sandbox |
 | Rogue SDK client | A local plugin registers a dangerous action | Deny-by-default allowlist, capability ceiling |
+| Drive-by request to a local service | A web page you visit POSTs code to the Minecraft bot's control API on `:5057` | **None yet.** See [Minecraft bot control API](#minecraft-bot-control-api) |
 | Memory poisoning | A page plants a false "fact" in long-term memory | Poisoning guards, importance cap |
 | Secret leakage | An API key lands in a log or a screen description | Log scrubber, VLM output filter |
 | Network exposure | The web client is reachable from the LAN | Loopback binding, `ALLOW_LAN_EXPOSURE` gate |
@@ -47,9 +48,6 @@ instance as single-user.
 | 9.13 | Pinned dependencies | `requirements.lock.txt` |
 | 9.14 | Incident playbook | This document |
 
-<!-- VERIFY: confirm the symbol names in the Where column against the
-code, especially `_COMMAND_ALLOWLIST` and `_is_poisoned_fact()`. -->
-
 ### Provenance markers
 
 Content Lumi reads from files, the web, memory, or an SDK plugin is
@@ -60,14 +58,43 @@ and allowlists below exist as independent layers.
 
 ### SDK controls
 
-An SDK client can only run actions that appear in
-`data/memories/sdk_allowlist.json`. Each client also has a capability
-ceiling: an action cannot exceed the tier its client is allowed. Set
-`auto_approve_writes: false` for a client to make its write actions ask
-for confirmation in the terminal every time.
+A client can register actions only if its entry in
+`data/memories/sdk_allowlist.json` has `approved: true`. Unknown clients
+get a denied entry on first connect. Each client also has a
+`capability_ceiling`: an action that declares a higher tier is refused at
+registration and again before dispatch. `write` actions ask for `y/n`
+confirmation in the terminal unless the client has
+`auto_approve_writes: true`. `dangerous` actions, and any action with
+`requires_confirm`, always ask. The file is read on every new connection.
 
-<!-- VERIFY: confirm the allowlist JSON schema and the
-auto_approve_writes key name against sdk/server.py. -->
+### Minecraft bot control API
+
+`sdk/examples/minecraft/bot.js` serves an HTTP control API on
+`127.0.0.1:5057` for the autonomous agent and the diagnostics page.
+**It has no authentication and sends `Access-Control-Allow-Origin: *`.**
+`POST /action` with `execute_skill` runs arbitrary JavaScript inside the
+Node process, with your user's permissions. The SDK allowlist and the
+`y/n` gate do not apply, because the request never passes through Lumi.
+
+So while `bot.js` is running, any local process, and potentially any web
+page open in your browser, can run code on your machine. A plain-text
+`POST` from a page is a "simple" cross-origin request with no preflight,
+and browsers do not reliably block public sites from reaching
+`127.0.0.1`.
+
+Until the API requires a token:
+
+- Run `bot.js` only while you are using it, and stop it afterwards.
+- Don't browse untrusted sites in the same session.
+- Keep `BOT_CONTROL_PORT` on loopback. `bot.js` binds to `127.0.0.1`
+  and ignores `ALLOW_LAN_EXPOSURE`.
+
+The planned fix: require the SDK token (`data/memories/sdk_token.txt`)
+on every control request, drop the wildcard CORS header, and have the
+dashboard on `:5002` proxy its requests server-side.
+
+The Minecraft dashboard on `127.0.0.1:5002` is read-only apart from
+forwarding the server address, and serves only Minecraft telemetry.
 
 ## Earlier layers
 
@@ -122,8 +149,8 @@ connection that session already opened.
 pip install -r requirements.lock.txt
 ```
 
-<!-- VERIFY: confirm .env is now in .gitignore; the older README said it
-was not by default. -->
+`.env` is in `.gitignore`. The rule matches any `.env`, including
+`sdk/examples/minecraft/.env`.
 
 ### Encryption at rest
 
@@ -166,6 +193,7 @@ Stop first, investigate second. Most steps below assume Lumi is stopped.
 **Unintended network exposure.**
 1. Confirm `ALLOW_LAN_EXPOSURE = False` in `constants.py`.
 2. Check that ports 5000, 5001, and 5056 listen on `127.0.0.1` only.
+   If the Minecraft tools are running, check 5002 and 5057 as well.
 3. Change your password and end other sessions under Settings.
 
 ## Verifying the guards

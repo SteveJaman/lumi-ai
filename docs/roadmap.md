@@ -25,6 +25,21 @@ iteration against real use, not new subsystems.
   Reverse chronological. What shipped, when, and why.
 
   2026-10-17
+    - Minecraft integration. sdk/examples/minecraft/bot.js is a
+      mineflayer bot registered as SDK client MinecraftBot with 13
+      actions. MineDojo/Voyager is a submodule at plugin/voyager, and
+      its control primitives (mineBlock, craftItem, smeltItem,
+      placeItem, killMob, exploreUntil) run inside bot.js with
+      Voyager's own scope. plugin/minecraft_bot.py is an autonomous
+      agent (client MinecraftAgent) running a fixed curriculum from
+      logs to diamonds, independent of main.py. plugin/mc_dashboard.py
+      serves diagnostics on :5002, including a live server switcher
+      for LAN worlds. Voyager's OpenAI-based agents are not used.
+      Open issue: the bot's :5057 control API is unauthenticated
+      (docs/security.md).
+    - SDK docs corrected against the code: wire shapes, ping/pong
+      direction, allowlist reload behaviour (per connection, no Lumi
+      restart), write-tier confirmation, and the builder examples.
     - Web server robustness. A JSON error middleware wraps /api/*
       and /auth/*, so every failure is {"error": ...} and the
       traceback goes to the console. Memory and library calls from

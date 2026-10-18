@@ -22,6 +22,8 @@ Expected output:
 [sdk] registered: log_note
 ```
 
+On the first run the actions are refused until you approve the client: set `"approved": true` for `"Lumi Plugin"` in `data/memories/sdk_allowlist.json` and restart the plugin (see [Allowlist](#allowlist)).
+
 Then say "Take a screenshot." in the web chat. Lumi calls `sdk__screenshot_primary_monitor`, the plugin captures the display, and she replies in character.
 
 ## Contents
@@ -74,52 +76,79 @@ LumiClient(game="My App", token_path="data/memories/sdk_token.txt")
 LumiClient(game="My App", token="the-token-string")
 ```
 
-If the token is missing or does not match, the server rejects the connection and the client raises an authentication error (see [Errors](#errors)). Per-client credentials and capability allowlists are not implemented yet.
+If the token is missing or does not match, the server sends an `error` (`invalid auth_token`) and closes the socket. A client that authenticates but is not approved in `data/memories/sdk_allowlist.json` stays connected and receives `speech_finished`, but every `actions/register` is refused. See [Allowlist](#allowlist).
+
+## Allowlist
+
+The SDK is deny-by-default. The first time a client connects, the server adds a denied entry for its `game` name to `data/memories/sdk_allowlist.json`. To approve it, edit the entry:
+
+```json
+{
+  "deny_by_default": true,
+  "clients": {
+    "My App": {
+      "approved": true,
+      "capability_ceiling": ["read", "write"],
+      "auto_approve_writes": false
+    }
+  }
+}
+```
+
+The server reads the file on every new connection, so restarting the client is enough. Lumi does not need a restart, although the refusal message still says it does. `capability_ceiling` is the highest tier the client may register (see [Capability tiers](#capability-tiers)). `auto_approve_writes: true` skips the `y/n` prompt for `write` actions from this client.
 
 ## Wire protocol
 
-Messages are plaintext JSON objects with three keys:
+Messages are plaintext JSON objects. Client messages carry the client's `game` name; server messages do not:
 
 ```json
 {"command": "<name>", "game": "<app name>", "data": {}}
+{"command": "<name>", "data": {}}
 ```
 
-Commands are namespaced with `/` where they group (`actions/register`, `action/result`, `context/clear`).
+Commands are namespaced with `/` where they group (`actions/register`, `action/result`, `context/clear`). The constants live in `sdk/protocol.py` (`ClientCommand`, `ServerCommand`).
 
 ### Client to server
 
 | Command | Purpose |
 |---|---|
-| `hello` | Open the session and present the token |
-| `startup` | Announce the app; clears previously registered actions for this `game` |
+| `hello` | Open the session and present the token. Must be the first message, within 10 s |
 | `actions/register` | Register one or more actions |
+| `actions/unregister` | Drop actions this client registered |
 | `action/result` | Return the result of an invocation |
-| `context` | Push context text into Lumi's prompt |
+| `context` | Push context text into Lumi's prompt (replaces this client's previous context) |
 | `context/clear` | Remove context this client pushed |
-| `ping` | Keepalive |
+| `pong` | Reply to the server's `ping` |
+| `actions/force` | Stubbed: the server answers with an `error`. Do not rely on it |
 
 ### Server to client
 
 | Command | Purpose |
 |---|---|
-| `actions/registered` | Acknowledge a registration |
+| `startup` | Handshake accepted; carries the session id and protocol version |
+| `actions/registered` | Acknowledge one registered action |
 | `action` | Invoke a registered action |
 | `speech_finished` | Lumi finished a reply |
-| `pong` | Keepalive response |
-| `error` | Report a protocol or auth failure |
-
-`actions/force` exists in the protocol but is stubbed. Client and server can both send it, but the prompter hook that bypasses normal tool selection is not built. Do not rely on it.
-
-<!-- VERIFY: payload field names below follow the Neuro SDK convention; confirm each against sdk/protocol.py before publishing. -->
+| `ping` | Keepalive, every 30 s |
+| `error` | Report a protocol, auth, or approval failure |
 
 ### hello and startup
 
 ```json
-{"command": "hello", "game": "My App", "data": {"token": "..."}}
-{"command": "startup", "game": "My App"}
+{"command": "hello", "game": "My App", "client_name": "My App",
+ "client_version": "0.1.0", "auth_token": "..."}
 ```
 
-The server answers `hello` with a welcome carrying the session id and protocol version (`session=... protocol=1.0` in the reference plugin's log).
+The server answers with `startup`:
+
+```json
+{"command": "startup",
+ "data": {"session": {"sessionId": "...", "characterId": "lumi",
+                      "displayName": "Lumi Voidwright"},
+          "protocolVersion": "1.0"}}
+```
+
+`LumiClient` registers its actions when `startup` arrives.
 
 ### actions/register
 
@@ -134,23 +163,27 @@ The server answers `hello` with a welcome carrying the session id and protocol v
         "description": "Save a timestamped note to the notes file.",
         "schema": {"type": "object",
                    "properties": {"text": {"type": "string"}},
-                   "required": ["text"]}
+                   "required": ["text"]},
+        "capabilities": ["write"],
+        "requires_confirm": false
       }
     ]
   }
 }
 ```
 
-Capability tier and confirmation settings travel with each action; see [Capability tiers](#capability-tiers). The server acknowledges with `actions/registered`:
+`capabilities` and `requires_confirm` are Lumi extensions to Neuro's format; see [Capability tiers](#capability-tiers). The server acknowledges each accepted action separately:
 
 ```json
-{"command": "actions/registered", "game": "lumi", "data": {"names": ["log_note"]}}
+{"command": "actions/registered", "data": {"action_name": "log_note"}}
 ```
+
+An action whose capabilities exceed the client's ceiling is refused with an `error` instead.
 
 ### action
 
 ```json
-{"command": "action", "game": "lumi",
+{"command": "action",
  "data": {"id": "a1b2c3", "name": "log_note",
           "data": "{\"text\": \"remember to buy milk\"}"}}
 ```
@@ -164,7 +197,7 @@ Capability tier and confirmation settings travel with each action; see [Capabili
  "data": {"id": "a1b2c3", "success": true, "message": "Saved note."}}
 ```
 
-`id` must echo the `id` from the `action` message. `message` is what Lumi's model sees as the tool result.
+`id` must echo the `id` from the `action` message. `message` is what Lumi's model sees as the tool result. The server waits 30 s for the result, then reports `action timed out` to the model.
 
 ### context
 
@@ -176,8 +209,9 @@ Capability tier and confirmation settings travel with each action; see [Capabili
 ### speech_finished
 
 ```json
-{"command": "speech_finished", "game": "lumi",
- "data": {"text": "Screenshot taken.", "isFinal": true, "cancelled": false}}
+{"command": "speech_finished",
+ "data": {"message": "Screenshot taken.", "role": "assistant",
+          "isFinal": true, "cancelled": false}}
 ```
 
 `cancelled` is true when the user interrupted her (barge-in). `isFinal` marks the last chunk of a reply.
@@ -186,16 +220,14 @@ Capability tier and confirmation settings travel with each action; see [Capabili
 
 ```json
 {"command": "context/clear", "game": "My App"}
-{"command": "ping", "game": "My App"}
-{"command": "pong", "game": "lumi"}
-{"command": "error", "game": "lumi", "data": {"message": "invalid token"}}
+{"command": "ping"}
+{"command": "pong", "game": "My App"}
+{"command": "error", "data": {"message": "invalid auth_token"}}
 ```
 
 ## Building a client
 
-A minimal plugin that registers one action:
-
-<!-- VERIFY: setup() hook name, register_action signature, and the run entry point against sdk/client.py. -->
+A minimal plugin that registers one action. `setup()` runs after every successful handshake, and `run()` connects and reconnects until `stop()` is called:
 
 ```python
 import asyncio
@@ -207,8 +239,8 @@ class NotesPlugin(LumiClient):
     async def setup(self):
         self.register_action(
             action("log_note", "Save a timestamped note to notes.txt.")
-            .param("text", "string", "The note to save", required=True)
-            .capabilities(["write"])
+            .param("text", "string", description="The note to save", required=True)
+            .capabilities("write")
             .build(),
             self.handle_log_note,
         )
@@ -234,15 +266,13 @@ if __name__ == "__main__":
 
 ### Handler return shapes
 
-The client library normalizes what a handler returns into an `action/result`.
-
-<!-- VERIFY: the five accepted forms against sdk/client.py. -->
+The client library normalizes what a handler returns into an `action/result` (`LumiClient._format_result`).
 
 | Handler returns | Sent as |
 |---|---|
 | `None` | `success: true`, empty message |
 | `str` | `success: true`, message is the string |
-| `bool` | `success` is the bool, generic message |
+| `bool` | `success` is the bool, empty message |
 | `(bool, str)` | `success` and message from the tuple |
 | `dict` with `success` and `message` | Used as given |
 
@@ -250,19 +280,17 @@ If a handler raises, the client sends `success: false` with the exception text a
 
 ## Action builder
 
-`sdk/actions.py` provides `action()` and `param()`:
-
-<!-- VERIFY: param() signature (positional vs keyword; enum/default keyword names). -->
+`sdk/actions.py` provides `action()` and `param()`. In `param(name, type_, *, description, required, enum, default)`, everything after the type is keyword-only. `capabilities()` takes the tiers as separate arguments, not a list.
 
 ```python
 from sdk import action
 
 spec = (
     action("set_volume", "Set the music volume for the player app.")
-    .param("level", "integer", "Volume from 0 to 100", required=True)
-    .param("channel", "string", "Which output to change",
+    .param("level", "integer", description="Volume from 0 to 100", required=True)
+    .param("channel", "string", description="Which output to change",
            enum=["music", "voice"], default="music")
-    .capabilities(["write"])
+    .capabilities("write")
     .requires_confirm(False)
     .build()
 )
@@ -288,10 +316,10 @@ Each action declares `capabilities=["read" | "write" | "dangerous"]` and `requir
 | Tier | Behavior |
 |---|---|
 | `read` | Auto-approved. Runs without a prompt. |
-| `write` | Runs and is logged. |
-| `dangerous` | Gated on a `y/n` prompt before running. |
+| `write` | Gated on a `y/n` prompt, unless the client's allowlist entry has `auto_approve_writes: true`. |
+| `dangerous` | Always gated on a `y/n` prompt. |
 
-`requires_confirm=True` upgrades any action to the dangerous behavior regardless of its declared tier.
+`requires_confirm=True` upgrades any action to the dangerous behavior regardless of its declared tier. A client can only register tiers that its allowlist `capability_ceiling` covers.
 
 The prompt appears in Lumi's terminal, not in the client. The user answers there, the same way they confirm `write_file` or `run_command`. If the user declines, the action is never sent to your client. Lumi's model receives a declined result and can tell the user.
 
@@ -316,34 +344,40 @@ Rules:
 
 ## Errors
 
-Exceptions live in `sdk/errors.py`.
+`LumiClient` does not raise on network or protocol problems. It prints them and keeps reconnecting, so a plugin survives Lumi restarts:
 
-<!-- VERIFY: replace TODO with the actual class names from sdk/errors.py. -->
-
-| Exception | Raised when |
+| Situation | What the client does |
 |---|---|
-| `TODO` | The token is missing, unreadable, or rejected by the server |
-| `TODO` | The websocket cannot connect (Lumi not running, port in use) |
-| `TODO` | The server sends a protocol `error` or an unexpected command |
-| `TODO` | An action schema or builder call is invalid |
-| `TODO` | An invocation exceeds its timeout |
+| Lumi not running, port closed | Prints `[sdk] connection error`, retries after `reconnect_delay` |
+| Token rejected | Prints `[sdk] server error: invalid auth_token`; the server closes the socket and the client retries |
+| Client not approved, or an action above the ceiling | Prints `[sdk] server error: ...`; stays connected without those actions |
+| Handler raises | Sends `success: false` with `handler raised: <message>` |
+| Invocation takes more than 30 s | The server reports `action timed out` to Lumi; the client is not told |
+
+Construction errors do raise: `ValueError` when neither `token` nor `token_path` is given, and `RuntimeError` when `websockets` is not installed.
+
+`sdk/errors.py` defines `SDKError` and its subclasses `AuthError`, `ProtocolError`, `ActionError` and `ClientDisconnected`. Only the server raises one today (`AuthError`, internally, for a bad token). They are exported for plugins that want to raise them from their own code.
 
 ## Reconnection
 
-`LumiClient` reconnects automatically with backoff. The default `reconnect_delay` is 5 seconds.
+`LumiClient` reconnects after a fixed delay, `reconnect_delay`, which defaults to 5 seconds.
 
 Registered actions and their handlers survive a reconnect: the client re-registers them automatically. Context pushed with `context` does not survive. Re-push any context you still want Lumi to see, for example from the `on_connected` callback.
 
 ## Reference clients
 
 - `examples/system_stats.py` — Python client that exposes system stats (uses `psutil`).
-- `examples/minecraft/bot.js` — Node.js mineflayer bot. Registers eight actions
-  (`minecraft_get_status`, `minecraft_chat`, `minecraft_move_to`,
-  `minecraft_look_at`, `minecraft_attack_nearest`, `minecraft_stop`,
-  `minecraft_dig`, `minecraft_execute_skill`) and bridges them to a live
-  Minecraft server. `minecraft_execute_skill` accepts
-  [Voyager](https://github.com/MineDojo/Voyager)-compatible async JavaScript
-  skills. See [`examples/minecraft/README.md`](examples/minecraft/README.md).
+- `examples/minecraft/bot.js` — Node.js mineflayer bot, connecting as client
+  `MinecraftBot`. Registers 13 actions: movement, chat, status, digging, and
+  combat, plus five that wrap [Voyager](https://github.com/MineDojo/Voyager)'s
+  control primitives (`minecraft_mine_block`, `minecraft_craft_item`,
+  `minecraft_smelt_item`, `minecraft_place_item`, `minecraft_kill_mob`).
+  `minecraft_execute_skill` runs Voyager-style JavaScript with those
+  primitives in scope. See [`examples/minecraft/README.md`](examples/minecraft/README.md).
+- [`../plugin/minecraft_bot.py`](../plugin/minecraft_bot.py) — Python client
+  `MinecraftAgent`. Runs an autonomous skill loop against `bot.js` and
+  registers status and control actions. It keeps playing when Lumi is not
+  running. See [`../plugin/README.md`](../plugin/README.md).
 
 ## Debugging
 

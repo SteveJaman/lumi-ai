@@ -402,7 +402,37 @@ The SDK server binds strictly to `127.0.0.1:5056` unless
 `data/memories/sdk_token.txt`. Per-client approval and capability
 ceilings live at `data/memories/sdk_allowlist.json`. Capability tiers
 (`read` / `write` / `dangerous`) determine the confirmation gate. The
-allowlist is read at connect time — edits require a restart.
+allowlist is read each time a client connects, so after an edit,
+reconnecting the client is enough.
+
+### External Minecraft processes
+
+The Minecraft integration is three processes outside Lumi. They talk to
+Lumi only through the SDK, and to each other over a local HTTP API:
+
+```
+                    ┌──────────────── Lumi (main.py) ────────────────┐
+                    │  prompter ◄──► sdk/server.py (:5056)           │
+                    └──────────▲──────────────────────▲──────────────┘
+                               │ SDK websocket         │ SDK websocket
+                               │ client MinecraftBot   │ client MinecraftAgent
+   ┌───────────────────────────┴───────┐     ┌─────────┴───────────────────┐
+   │ sdk/examples/minecraft/bot.js     │     │ plugin/minecraft_bot.py     │
+   │  mineflayer bot + plugins         │◄────│  curriculum skill loop      │
+   │  Voyager primitives (submodule)   │HTTP │  data/minecraft/*.json      │
+   │  control API :5057                │     └─────────────────────────────┘
+   └──────┬────────────────────▲───────┘
+          │ Minecraft protocol │ HTTP (browser)
+          ▼                    │
+     Minecraft world    plugin/mc_dashboard.py (:5002)
+```
+
+If Lumi is not running, the bot and the agent keep playing and reconnect
+to `:5056` when it starts. Skill code runs inside `bot.js` with
+[Voyager](https://github.com/MineDojo/Voyager)'s control primitives in
+scope; see [../sdk/examples/minecraft/README.md](../sdk/examples/minecraft/README.md).
+The control API is unauthenticated; see
+[security.md](security.md#minecraft-bot-control-api).
 
 ### Web server (`modules/socketIO.py`)
 
@@ -477,6 +507,7 @@ instead of `print()`.
 | `main.py` | Entry point — audio routing menu, module spawning, shutdown handler |
 | `constants.py` | Config, paths, `HOST`, persona loader, model names, `build_system_prompt()` |
 | `signals.py` | Shared state (history, flags, queues, `input_paused`); loads and saves `data/logs/chat_history.json` and collapses old turns into a summary |
+| `plugin/` | External SDK clients: the reference plugin, the Minecraft agent and dashboard, and the Voyager submodule. Not imported by Lumi |
 
 ## Key files (modules)
 

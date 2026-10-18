@@ -254,6 +254,10 @@ Changing this value has no effect on already-running services. Restart
 after toggling. Nothing warns you if you flip it — the exposure is
 intentional and silent on the assumption that you meant it.
 
+The Minecraft tools are separate processes that do not read this flag.
+`plugin/mc_dashboard.py` (`:5002`) and the `bot.js` control API (`:5057`)
+always bind to `127.0.0.1`.
+
 ### SDK server
 
 ```python
@@ -265,8 +269,23 @@ SDK_VERSION = "0.10.14"
 The server binds strictly to `127.0.0.1` unless `ALLOW_LAN_EXPOSURE` is
 `True`. Token lives at `data/memories/sdk_token.txt`, generated on first
 boot. Per-client approval and capability ceilings live at
-`data/memories/sdk_allowlist.json`. Edits to the allowlist require a
-restart — it's read at connect time, not reloaded live.
+`data/memories/sdk_allowlist.json`. The allowlist is read each time a
+client connects, so after editing it, restart the client. Lumi doesn't
+need a restart.
+
+### Minecraft tools
+
+The Minecraft bot, agent and dashboard don't use `constants.py`. They are
+configured with environment variables:
+
+| Process | Where to set | Variables |
+|---|---|---|
+| `sdk/examples/minecraft/bot.js` | `sdk/examples/minecraft/.env` | `MC_HOST`, `MC_PORT`, `MC_USERNAME`, `MC_AUTH`, `MC_VERSION`, `LUMI_HOST`, `LUMI_PORT`, `LUMI_TOKEN_PATH`, `BOT_CONTROL_PORT`, `SKILL_TIMEOUT_MS`, `VOYAGER_DIR` |
+| `plugin/minecraft_bot.py` | Shell environment | `BOT_API`, `MC_LOOP_INTERVAL`, `MC_ACTION_TIMEOUT` |
+| `plugin/mc_dashboard.py` | Shell environment | `MC_DASH_PORT` |
+
+Defaults and meanings are in [the Minecraft README](../sdk/examples/minecraft/README.md#configuration-env)
+and [plugin/README.md](../plugin/README.md#configuration).
 
 ### Version
 
@@ -350,6 +369,7 @@ user's facts; a cross-user wipe needs the full reset above.
 | Clear the uploaded library | `Remove-Item data\library -Recurse` |
 | Force memory re-import from seed | Delete `data\memories\chroma.db\`, place `memoryinit.json` at `data\memories\memoryinit.json`, restart |
 | Wipe user accounts | `Remove-Item data\memories\users.db` |
+| Restart the Minecraft curriculum | `Remove-Item data\minecraft\skills.json` (stop `minecraft_bot.py` first) |
 
 After any of those, restart Lumi — the affected module regenerates its
 state on next boot.
@@ -368,4 +388,4 @@ state on next boot.
 - [models.md](models.md) — model routing and cloud providers
 - [architecture.md](architecture.md) — where each config value is used
 - [data/README.md](../data/README.md) — what lives under `data/`
-- [../config/README.md](../config/README.md) — the config folder
+- [`config/lumi.yaml`](#configlumiyaml) — the persona file, documented above

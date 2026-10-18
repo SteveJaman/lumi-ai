@@ -87,14 +87,14 @@ Filter by the category a given guard logs under.
 ### An SDK action will not run
 
 **Symptom:** A plugin connects and registers, but Lumi never calls its action, or the call is refused.
-**Cause:** The SDK is deny-by-default. The action is missing from `data/memories/sdk_allowlist.json`, or it exceeds the capability ceiling set for that client. If the action never appears at all, see the routing notes in [../sdk/README.md](../sdk/README.md).
+**Cause:** The SDK is deny-by-default. The client's entry in `data/memories/sdk_allowlist.json` has `approved: false` (the default the server writes on first connect), or the action declares a tier above that client's `capability_ceiling`. The allowlist approves clients, not individual actions. If the action never appears at all, see the routing notes in [../sdk/README.md](../sdk/README.md).
 **Resolution:**
 
-1. Review the plugin, then add its client and action to `data/memories/sdk_allowlist.json`.
+1. Review the plugin, then set `approved: true` for its `game` name in `data/memories/sdk_allowlist.json`.
 2. Lower the action's declared tier, or raise the client's ceiling if you trust it.
-3. Restart Lumi so the server picks up the change.
+3. Restart the plugin. Lumi doesn't need a restart.
 
-The allowlist is read at connection time — editing the JSON while Lumi is running has no effect until the next boot.
+The server reads the allowlist each time a client connects, so a plugin that was already connected keeps its old approval until it reconnects. The refusal message tells you to restart Lumi; restarting only the plugin is enough.
 
 **Where to check:** the `sdk` category for the allowlist or capability refusal.
 
@@ -215,7 +215,27 @@ winget install Gyan.FFmpeg
 1. Ensure VTube Studio is open and the API/Websocket is enabled in the software settings.
 2. Verify the authentication token inside `data/vtubeStudio_token.txt` is valid. If it expired or was revoked, delete the file and restart Lumi to trigger a new plugin authorization prompt in VTube Studio.
 
+## Minecraft bot and agent
 
+Three processes are involved: `sdk/examples/minecraft/bot.js` (the bot and
+its control API on `:5057`), `plugin/minecraft_bot.py` (the autonomous
+agent), and `plugin/mc_dashboard.py` (diagnostics on `:5002`). None of
+them need Lumi to be running. The dashboard's relay and error panels are
+the first place to look.
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| `Cannot find module 'ws'` | npm packages not installed | `npm install` in `sdk/examples/minecraft` |
+| `[voyager] primitives not loaded` | The Voyager submodule wasn't fetched | `git submodule update --init plugin/voyager` |
+| `ECONNREFUSED ...:25565` repeating | No world on that port | Open the world to LAN and enter its port in the dashboard's Minecraft Server panel |
+| `[sdk] Lumi is not running (127.0.0.1:5056)` | `main.py` isn't running | Expected. The bot plays anyway and attaches when Lumi starts |
+| Dashboard: "Cannot reach bot.js control API" | `bot.js` stopped, or an old process without the API | Restart `bot.js`; look for `[ctrl] control API on 127.0.0.1:5057` |
+| Agent stuck on `waiting for bot` | `bot.js` not running, or not spawned in a world | Start `bot.js` first, then check it printed `bot spawned and ready` |
+| Skill fails with `No oak_log nearby, please explore first` | Voyager primitive feedback: the resource isn't within range | Move the bot near oak trees. The curriculum only uses oak |
+| Lumi reports `action timed out` but the bot keeps working | SDK invocations time out after 30 s | Expected for long skills; see [known-limitations.md](known-limitations.md#minecraft) |
+| Curriculum restarts from logs | `data/minecraft/skills.json` was deleted, or tiers are being redone for materials | Intended. Delete `skills.json` to force a full restart |
+
+Full reference: [../sdk/examples/minecraft/README.md](../sdk/examples/minecraft/README.md#troubleshooting).
 
 ## Viewing Live Logs
 

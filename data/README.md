@@ -59,9 +59,19 @@ Deleting `data/library/` loses your uploaded documents.
 | Path | Contents | Safe to delete? |
 |---|---|---|
 | `data/outputs/tts_output.wav` | Debug TTS output | Yes |
-| `data/notes.txt` | Plugin's timestamped notes | Yes (loses your notes) |
+| `data/notes.txt` | Plugin's timestamped notes. Not gitignored | Yes (loses your notes) |
 | `data/test_tone.wav` | Diagnostics tone | Yes |
 | `data/temp_discord_audio_*.wav` | Temporary Discord playback audio | Yes |
+
+### Minecraft
+
+Written by `plugin/minecraft_bot.py`. See [`../plugin/README.md`](../plugin/README.md#files-it-writes).
+
+| Path | Contents | Safe to delete? |
+|---|---|---|
+| `data/minecraft/telemetry.json` | Latest bot and loop state, read by the dashboard on `:5002` | Yes, rewritten every loop step |
+| `data/minecraft/events.jsonl` | Append-only agent event log | Yes |
+| `data/minecraft/skills.json` | Curriculum tiers the agent has completed | Yes (the curriculum starts over) |
 
 ## Resetting
 
@@ -94,10 +104,18 @@ On the next boot Lumi recreates the folders it needs, generates a fresh SDK toke
 | Clear the uploaded library | Delete `data/library/`. Chunks are pruned on the next `LibraryIndexer` scan. |
 | Force memory re-import from seed | Delete `data/memories/chroma.db/`, place `memoryinit.json` at `data/memories/memoryinit.json`, and restart |
 | Reset all SDK client approvals | Delete `data/memories/sdk_allowlist.json` |
+| Restart the Minecraft curriculum | Delete `data/minecraft/skills.json` |
 
 ## Gitignore
 
-`data/*` is excluded from git with a single exception for `data/README.md`. Nothing written here is ever committed. The SDK token, the VTS token, and the user database all live here, so the same rule keeps them out of the repo.
+`.gitignore` excludes each runtime folder and file here by name (`data/memories/`, `data/logs/`, `data/library/*`, `data/minecraft/`, the VTS token, and so on), and `*.wav` and `*.log` everywhere. The SDK token, the VTS token, and the user database are all covered.
+
+Two exceptions to know about:
+
+- `data/notes.txt`, written by the reference plugin's `log_note`, is **not** ignored. Check `git status` before committing if you use it.
+- `data/vtubeStudio_test_token.txt` is tracked in the repository.
+
+When you add a new runtime path under `data/`, add it to `.gitignore` too.
 
 ## Backup
 

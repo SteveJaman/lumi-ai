@@ -2,16 +2,18 @@
 
 A [mineflayer](https://github.com/PrismarineJS/mineflayer) bot that connects to
 Lumi's SDK server and exposes Minecraft controls as Lumi actions. Lumi can chat
-in-game, navigate, attack mobs, dig blocks, and execute
-[Voyager](https://github.com/MineDojo/Voyager)-compatible async JavaScript
-skills — all through her normal agent tool-use path.
+in-game, navigate, mine, craft, smelt, place blocks, fight mobs, and run
+[Voyager](https://github.com/MineDojo/Voyager)-style JavaScript skills, all
+through her normal agent tool-use path. The bot also serves a local control API
+that the autonomous agent ([`plugin/minecraft_bot.py`](../../../plugin/README.md))
+and the diagnostics page use.
 
 ```
-Lumi agent
-  └─ sdk__minecraft_move_to({x, y, z})
-       └─ SDKServer (ws://127.0.0.1:5056)
-            └─ bot.js
-                 └─ mineflayer bot → Minecraft server
+Lumi agent ─ sdk__minecraft_mine_block ─► SDK server (:5056) ─┐
+                                                              ▼
+plugin/minecraft_bot.py ─ POST /action ─────────────────► bot.js ─► mineflayer ─► Minecraft
+plugin/mc_dashboard.py  ─ GET /status, /events, /config ─►   │      (Voyager primitives
+                                                       (:5057)       in skill scope)
 ```
 
 ---
@@ -71,6 +73,12 @@ For a LAN world, the port changes every launch. Set it from the dashboard's
 | `MC_USERNAME` | `LumiBot` | Bot account username |
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
 | `MC_VERSION` | *(auto)* | Pin a Minecraft version string, e.g. `1.20.1` |
+| `BOT_CONTROL_PORT` | `5057` | Port for the local control API |
+| `SKILL_TIMEOUT_MS` | `120000` | Time limit for one skill run |
+| `VOYAGER_DIR` | `../../../plugin/voyager/voyager` | Where to load Voyager's primitives from |
+
+`MC_HOST` and `MC_PORT` can also be changed while the bot runs, through
+`POST /config` or the dashboard. That is how LAN worlds are handled.
 
 ---
 
@@ -308,6 +316,25 @@ she decides to call a tool.
 
 ---
 
+## Control API
+
+`bot.js` serves plain HTTP on `127.0.0.1:BOT_CONTROL_PORT` (default `5057`).
+It doesn't go through Lumi, so it works whether or not Lumi is running.
+
+| Method | Path | Body / response |
+|---|---|---|
+| `GET` | `/status` | `{ready, username, server, position, health, food, inventory}` |
+| `GET` | `/events` | Last 100 entries of the bot's event log |
+| `GET` | `/config` | `{host, port, username, auth}` |
+| `POST` | `/config` | `{host, port}`. Updates the target server and reconnects if it changed |
+| `POST` | `/action` | `{action, args}`, where `action` is an action name without the `minecraft_` prefix (e.g. `mine_block`). Returns `{success, message}` |
+
+The API has no authentication and allows any origin (CORS `*`). See the
+warning in [docs/security.md](../../../docs/security.md#minecraft-bot-control-api)
+before running the bot on a machine where you browse untrusted sites.
+
+---
+
 ## Voyager integration notes
 
 [Voyager](https://github.com/MineDojo/Voyager) is a git submodule at
@@ -342,15 +369,38 @@ names that overlap with built-in tools are skipped.
 Check `data/memories/sdk_allowlist.json`. The entry must have `"approved": true`.
 Restart `bot.js` after editing the file (the allowlist is read on connect).
 
+**`Cannot find module 'ws'` (or another package).**
+Run `npm install` in `sdk/examples/minecraft`.
+
+**`[voyager] primitives not loaded`.**
+The submodule is missing. Run `git submodule update --init plugin/voyager` from
+the workspace root, or set `VOYAGER_DIR`.
+
+**`[sdk] Lumi is not running (127.0.0.1:5056)`.**
+Expected when `main.py` isn't running. The bot still joins and plays, and
+attaches to Lumi when it starts.
+
+**`ECONNREFUSED ...:25565` at startup.**
+Nothing is listening on the configured Minecraft port. For a LAN world, set the
+port shown by *Open to LAN* in the dashboard's Minecraft Server panel.
+
+**Dashboard says "Cannot reach bot.js control API (:5057)".**
+`bot.js` isn't running, or is an old process from before the control API
+existed. Restart it and look for `[ctrl] control API on 127.0.0.1:5057`.
+
 **Pathfinding never completes.**
 The target may be surrounded by solid blocks or over water. Supply a `range`
 parameter (e.g. `range: 3`) to let the bot stop short, or check that
 `mineflayer-pathfinder` is installed (`npm install`).
 
+**A skill fails with `No oak_log nearby, please explore first` (or similar).**
+That message comes from a Voyager primitive through the bot's chat. Move the bot
+closer to the resource, or add an `exploreUntil(...)` call before `mineBlock`.
+
 **`minecraft_execute_skill` times out.**
-Skills that `await` forever (e.g. `GoalFollow` with no exit condition) hit the
-30-second limit. Structure long-running skills with a loop limit or a
-`Promise.race` timeout inside the code itself.
+`bot.js` stops a skill after `SKILL_TIMEOUT_MS` (120 s). When Lumi calls the
+action, the SDK server gives up after 30 s and reports a timeout while the bot
+keeps working. Split long jobs into several calls.
 
 **Bot logs `[mc] disconnected` and reconnects every 10 seconds.**
 The Minecraft server is refusing the connection. Check `MC_HOST`, `MC_PORT`,

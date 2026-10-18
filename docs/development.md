@@ -11,12 +11,14 @@ How to set up a working environment, run tests, and extend Lumi.
 - Ollama running locally
 - FFmpeg on PATH (for Discord voice)
 - Playwright Firefox (for browser tools)
+- Node.js 18+ (only for the Minecraft bot in `sdk/examples/minecraft/`)
 
 ### Clone and install
 
 ```powershell
-git clone https://github.com/SteveJaman/lumi-ai.git Lumi-master
+git clone --recurse-submodules https://github.com/SteveJaman/lumi-ai.git Lumi-master
 cd Lumi-master
+# Already cloned without submodules? Run: git submodule update --init
 
 conda create -n lumi python=3.11
 conda activate lumi
@@ -99,7 +101,9 @@ Lumi-master/
 ├── modules/                 Runtime — all background loops and I/O
 ├── web/                     Local HTML/CSS/JS client
 ├── sdk/                     External SDK (server + client library)
-├── plugin/                  Reference SDK plugin
+│   └── examples/minecraft/  Node.js mineflayer bot (npm install here)
+├── plugin/                  SDK clients: reference plugin, Minecraft agent + dashboard
+│   └── voyager/             MineDojo/Voyager submodule (read-only)
 ├── config/                  Editable config (.example files tracked)
 ├── docs/                    Deep documentation
 ├── scripts/                 Standalone utilities
@@ -455,6 +459,27 @@ Plugin authors write SDK actions. See
 If you're adding an SDK action **to Lumi itself** (rare), you're
 probably actually adding an agent tool. SDK actions are for external
 clients.
+
+To add a Minecraft action, add a handler to `HANDLERS` in
+`sdk/examples/minecraft/bot.js` and its spec to `registerActions()`.
+The control API exposes it automatically at `POST /action`, under its
+name without the `minecraft_` prefix. If it interpolates an item or
+block name into skill code, validate the name first, as the existing
+`badId()` handlers do.
+
+### Working with the Voyager submodule
+
+`plugin/voyager` is pinned to an upstream commit. Don't edit files
+there: changes appear as a dirty submodule and are lost on update. To
+move to a newer upstream commit:
+
+```powershell
+cd plugin/voyager; git fetch; git checkout <commit>; cd ../..
+git add plugin/voyager
+```
+
+Then restart `bot.js` and check it prints
+`[voyager] loaded 11 control primitives` (or the new count).
 
 ## Debugging
 

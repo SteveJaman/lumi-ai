@@ -139,6 +139,13 @@ for the pipeline.
   [docs/architecture.md](docs/architecture.md#diagnostics-telemetry).
 - **External SDK.** Third-party apps connect over a local websocket, register
   their own actions, and push context. See [sdk/README.md](sdk/README.md).
+- **Minecraft.** A mineflayer bot gives Lumi in-game actions: move, chat,
+  mine, craft, smelt, place, and fight. Skills run with
+  [Voyager](https://github.com/MineDojo/Voyager)'s control primitives. An
+  autonomous agent can play on its own from wood to diamonds, without Lumi
+  running, and a diagnostics page on `:5002` shows what it's doing. See
+  [sdk/examples/minecraft/README.md](sdk/examples/minecraft/README.md) and
+  [plugin/README.md](plugin/README.md).
 
 ### Architecture
 
@@ -190,6 +197,7 @@ The remaining Python packages (`discord.py>=2.7`, `davey`, `chromadb`,
 `faster-whisper`, `websockets>=12.0`) install through `pip` in the steps below.
 `ruamel.yaml` is optional — install it for comment preservation when editing
 the persona. `psutil` and `mss` are only needed for the SDK example clients.
+**Node.js 18+** is only needed for the optional Minecraft bot.
 
 For reproducible installs, use the pinned lock file instead of resolving fresh
 versions: `pip install -r requirements.lock.txt`.
@@ -201,9 +209,13 @@ versions: `pip install -r requirements.lock.txt`.
 1. **Clone and enter the workspace.**
 
    ```bash
-   git clone https://github.com/SteveJaman/lumi-ai.git Lumi-master
+   git clone --recurse-submodules https://github.com/SteveJaman/lumi-ai.git Lumi-master
    cd Lumi-master
    ```
+
+   `--recurse-submodules` fetches Voyager into `plugin/voyager`, which only
+   the Minecraft bot uses. If you cloned without it, run
+   `git submodule update --init`.
 
 
 2. **Create and activate a Conda environment.** 
@@ -361,6 +373,24 @@ settings can be changed from the browser, including resets of chat history,
 session state, self-model, and memory under **Settings, then Advanced**. See
 [web/README.md](web/README.md) for the client's structure.
 
+### Minecraft (optional)
+
+Open a single-player world to LAN, or use a server, then run each in its own
+terminal:
+
+```powershell
+cd sdk/examples/minecraft; npm install; node bot.js   # the bot
+python plugin/minecraft_bot.py                        # autonomous agent
+python plugin/mc_dashboard.py                         # http://127.0.0.1:5002/
+```
+
+Enter the LAN port in the dashboard's **Minecraft Server** panel. With Lumi
+also running, approve `MinecraftBot` and `MinecraftAgent` in
+`data/memories/sdk_allowlist.json`, and Lumi can drive the bot from chat
+("mine 3 oak logs"). The bot's control API on `:5057` has no
+authentication, so stop `bot.js` when you're done. See
+[docs/security.md](docs/security.md#minecraft-bot-control-api).
+
 ---
 
 ## Roadmap
@@ -431,6 +461,11 @@ Built as a personal project. Architecture inspired by Neuro-sama
 * **Reference plugin** under [`plugin/plugin.py`](plugin/plugin.py) demonstrates
   the SDK protocol with two actions: a screenshot capture and a timestamped
   note logger.
+* **Minecraft control primitives** from
+  [Voyager](https://github.com/MineDojo/Voyager) (MineDojo, MIT license),
+  included as a git submodule. The bot is built on
+  [mineflayer](https://github.com/PrismarineJS/mineflayer) and its
+  pathfinder, tool, collectblock, and pvp plugins.
 
 Built using Ollama, ChromaDB, Faster-Whisper, Fish Audio, Playwright,
 pyvts, aiohttp, python-socketio, ruamel.yaml, discord.py, davey, and
