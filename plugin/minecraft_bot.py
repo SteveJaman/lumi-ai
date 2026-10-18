@@ -51,53 +51,70 @@ TOKEN_PATH     = os.path.join(DATA_ROOT, "memories", "sdk_token.txt")
 
 BOT_API        = os.environ.get("BOT_API", "http://127.0.0.1:5057")
 LOOP_INTERVAL  = float(os.environ.get("MC_LOOP_INTERVAL", "4"))  # seconds between steps
+# Must exceed bot.js SKILL_TIMEOUT_MS (120 s) so bot.js reports the timeout itself.
+ACTION_TIMEOUT = float(os.environ.get("MC_ACTION_TIMEOUT", "135"))
 
 # ─── Voyager curriculum ───────────────────────────────────────────────────────
-# Each tier lists the items that must already be in inventory before it fires,
-# and a human-readable description used in logging and context pushes.
+# Each tier fires once its required items are in inventory. Quantities are
+# sized so each tier leaves enough material for the next ones.
 CURRICULUM: List[Dict[str, Any]] = [
-    {"goal": "collect_wood",        "requires": {},                              "desc": "Collect oak logs"},
-    {"goal": "craft_planks",        "requires": {"oak_log": 1},                 "desc": "Craft wooden planks"},
-    {"goal": "craft_workbench",     "requires": {"oak_planks": 4},              "desc": "Craft a crafting table"},
-    {"goal": "craft_wood_pickaxe",  "requires": {"oak_planks": 3},              "desc": "Craft a wooden pickaxe"},
-    {"goal": "mine_stone",          "requires": {"wooden_pickaxe": 1},          "desc": "Mine cobblestone"},
-    {"goal": "craft_stone_pickaxe", "requires": {"cobblestone": 3},             "desc": "Craft a stone pickaxe"},
-    {"goal": "mine_iron_ore",       "requires": {"stone_pickaxe": 1},           "desc": "Mine iron ore"},
-    {"goal": "smelt_iron",          "requires": {"iron_ore": 3},                "desc": "Smelt iron ingots"},
-    {"goal": "craft_iron_pickaxe",  "requires": {"iron_ingot": 3},              "desc": "Craft an iron pickaxe"},
-    {"goal": "mine_diamond",        "requires": {"iron_pickaxe": 1},            "desc": "Mine diamonds"},
+    {"goal": "collect_wood",        "requires": {},                                    "desc": "Collect oak logs"},
+    {"goal": "craft_planks",        "requires": {"oak_log": 5},                        "desc": "Craft wooden planks"},
+    {"goal": "craft_workbench",     "requires": {"oak_planks": 4},                     "desc": "Craft a crafting table"},
+    {"goal": "craft_wood_pickaxe",  "requires": {"crafting_table": 1, "oak_planks": 7}, "desc": "Craft sticks and a wooden pickaxe"},
+    {"goal": "mine_stone",          "requires": {"wooden_pickaxe": 1},                 "desc": "Mine cobblestone"},
+    {"goal": "craft_stone_pickaxe", "requires": {"cobblestone": 3, "stick": 2},        "desc": "Craft a stone pickaxe"},
+    {"goal": "craft_furnace",       "requires": {"cobblestone": 8},                    "desc": "Craft a furnace"},
+    {"goal": "mine_iron_ore",       "requires": {"stone_pickaxe": 1},                  "desc": "Find and mine iron ore"},
+    {"goal": "smelt_iron",          "requires": {"raw_iron": 3},                       "desc": "Smelt iron ingots"},
+    {"goal": "craft_iron_pickaxe",  "requires": {"iron_ingot": 3, "stick": 2},         "desc": "Craft an iron pickaxe"},
+    {"goal": "mine_diamond",        "requires": {"iron_pickaxe": 1},                   "desc": "Find and mine diamonds"},
 ]
 
-# Built-in Voyager-compatible skill library (JS executed by bot.js)
+# Helpers shared by the skills below. Everything else they call (mineBlock,
+# craftItem, placeItem, smeltItem, exploreUntil) is a Voyager control
+# primitive that bot.js puts in scope from plugin/voyager.
+_PRELUDE = """
+async function ensureNear(blockName) {
+  const id = mcData.blocksByName[blockName].id;
+  if (bot.findBlock({ matching: id, maxDistance: 32 })) return;
+  if (!bot.inventory.items().find(i => i.name === blockName)) {
+    await craftItem(bot, blockName, 1);
+  }
+  await placeItem(bot, blockName, bot.entity.position.offset(1, 0, 0));
+}
+async function findOrExplore(blockName, direction) {
+  const id = mcData.blocksByName[blockName].id;
+  const look = () => bot.findBlock({ matching: id, maxDistance: 32 });
+  if (look()) return;
+  if (!(await exploreUntil(bot, direction, 60, look))) {
+    throw new Error(`No ${blockName} found after exploring`);
+  }
+}
+"""
+
 BUILTIN_SKILLS: Dict[str, str] = {
-    "collect_wood": """
-const block = bot.findBlock({ matching: b => b.name.includes("log"), maxDistance: 64 });
-if (!block) return "No wood found within 64 blocks";
-await bot.pathfinder.goto(new goals.GoalNear(block.position.x, block.position.y, block.position.z, 1));
-await bot.dig(block);
-return "Collected " + block.name;
-""",
-    "mine_stone": """
-const stone = bot.findBlock({ matching: b => ["stone","cobblestone"].includes(b.name), maxDistance: 32 });
-if (!stone) return "No stone nearby";
-await bot.pathfinder.goto(new goals.GoalNear(stone.position.x, stone.position.y, stone.position.z, 1));
-await bot.dig(stone);
-return "Mined " + stone.name;
-""",
-    "mine_iron_ore": """
-const ore = bot.findBlock({ matching: b => b.name === "iron_ore" || b.name === "deepslate_iron_ore", maxDistance: 32 });
-if (!ore) return "No iron ore nearby — try digging deeper";
-await bot.pathfinder.goto(new goals.GoalNear(ore.position.x, ore.position.y, ore.position.z, 1));
-await bot.dig(ore);
-return "Mined iron ore at " + JSON.stringify(ore.position);
-""",
-    "mine_diamond": """
-const ore = bot.findBlock({ matching: b => b.name === "diamond_ore" || b.name === "deepslate_diamond_ore", maxDistance: 32 });
-if (!ore) return "No diamond ore nearby — diamonds generate below y=16";
-await bot.pathfinder.goto(new goals.GoalNear(ore.position.x, ore.position.y, ore.position.z, 1));
-await bot.dig(ore);
-return "Mined diamond ore at " + JSON.stringify(ore.position);
-""",
+    name: _PRELUDE + body for name, body in {
+        "collect_wood":        'await mineBlock(bot, "oak_log", 5);',
+        "craft_planks":        'await craftItem(bot, "oak_planks", 5);',
+        "craft_workbench":     'await craftItem(bot, "crafting_table", 1);',
+        "craft_wood_pickaxe":  'await ensureNear("crafting_table");\n'
+                               'await craftItem(bot, "stick", 2);\n'
+                               'await craftItem(bot, "wooden_pickaxe", 1);',
+        "mine_stone":          'await mineBlock(bot, "stone", 11);',
+        "craft_stone_pickaxe": 'await ensureNear("crafting_table");\n'
+                               'await craftItem(bot, "stone_pickaxe", 1);',
+        "craft_furnace":       'await ensureNear("crafting_table");\n'
+                               'await craftItem(bot, "furnace", 1);',
+        "mine_iron_ore":       'await findOrExplore("iron_ore", new Vec3(1, -1, 1));\n'
+                               'await mineBlock(bot, "iron_ore", 3);',
+        "smelt_iron":          'await ensureNear("furnace");\n'
+                               'await smeltItem(bot, "raw_iron", "oak_planks", 3);',
+        "craft_iron_pickaxe":  'await ensureNear("crafting_table");\n'
+                               'await craftItem(bot, "iron_pickaxe", 1);',
+        "mine_diamond":        'await findOrExplore("diamond_ore", new Vec3(1, -1, 0));\n'
+                               'await mineBlock(bot, "diamond_ore", 1);',
+    }.items()
 }
 
 
@@ -271,7 +288,7 @@ class MinecraftAgent(LumiClient):
                     f"{BOT_API}/action", data=body,
                     headers={"Content-Type": "application/json"},
                 )
-                with urllib.request.urlopen(req, timeout=36) as r:
+                with urllib.request.urlopen(req, timeout=ACTION_TIMEOUT) as r:
                     return json.loads(r.read())
             return await loop.run_in_executor(None, _post)
         except urllib.error.URLError as e:
@@ -382,18 +399,22 @@ class MinecraftAgent(LumiClient):
 
     def _pick_tier(self, inventory: List[Dict]) -> Optional[Dict]:
         inv = {i["name"]: i["count"] for i in inventory}
-        for tier in CURRICULUM:
-            reqs = tier.get("requires", {})
-            if all(inv.get(k, 0) >= v for k, v in reqs.items()):
-                if not self._skills.get(tier["goal"], {}).get("verified"):
-                    return tier
+
+        def ready(tier: Dict) -> bool:
+            return all(inv.get(k, 0) >= v for k, v in tier["requires"].items())
+
+        for idx, tier in enumerate(CURRICULUM):
+            if self._skills.get(tier["goal"], {}).get("verified"):
+                continue
+            if ready(tier):
+                return tier
+            # The frontier tier lacks materials: redo the closest earlier tier
+            # that can run (e.g. chop more logs) instead of stalling.
+            return next((t for t in reversed(CURRICULUM[:idx]) if ready(t)), None)
         return None
 
     def _get_skill_code(self, goal: str) -> Optional[str]:
-        saved = self._skills.get(goal, {})
-        if saved.get("code"):
-            return saved["code"]
-        return BUILTIN_SKILLS.get(goal)
+        return BUILTIN_SKILLS.get(goal) or self._skills.get(goal, {}).get("code")
 
     def _save_skill(self, goal: str, code: str) -> None:
         self._skills[goal] = {"code": code, "verified": True, "ts": time.time()}

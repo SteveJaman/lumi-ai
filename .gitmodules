@@ -1,0 +1,3 @@
+[submodule "plugin/voyager"]
+	path = plugin/voyager
+	url = https://github.com/MineDojo/Voyager

@@ -19,8 +19,10 @@ Lumi agent
 ## Requirements
 
 - **Node.js 18+**
-- **A running Minecraft server** (local Paper/Vanilla or a public server)
-- **Lumi running** with agent mode on — the SDK server binds on `127.0.0.1:5056`
+- **A Minecraft world to join**: a server, or a single-player world opened to LAN
+- **The Voyager submodule** at `plugin/voyager` (see Setup)
+- **Lumi running** (`python main.py`) only if you want Lumi to call the actions.
+  The bot joins and plays without it.
 - `MinecraftBot` approved in `data/memories/sdk_allowlist.json` (pre-filled by this integration)
 
 ---
@@ -29,6 +31,7 @@ Lumi agent
 
 ```powershell
 # from the project root
+git submodule update --init plugin/voyager   # Voyager's control primitives
 cd sdk/examples/minecraft
 npm install
 cp .env.example .env        # then edit .env with your server details
@@ -38,19 +41,20 @@ node bot.js
 Expected output:
 
 ```
-[mc]  connecting to localhost:25565 as LumiBot
+[voyager] loaded 11 control primitives
+[mc] connecting to localhost:25565 as LumiBot
 [sdk] connecting to ws://127.0.0.1:5056/ws
+[ctrl] control API on 127.0.0.1:5057
 [sdk] welcome — session=... protocol=1.0
 [sdk] registered: minecraft_get_status
-[sdk] registered: minecraft_chat
-[sdk] registered: minecraft_move_to
-[sdk] registered: minecraft_look_at
-[sdk] registered: minecraft_attack_nearest
-[sdk] registered: minecraft_stop
-[sdk] registered: minecraft_dig
-[sdk] registered: minecraft_execute_skill
-[mc]  bot spawned and ready
+...
+[sdk] registered: minecraft_kill_mob
+[mc] bot spawned and ready
 ```
+
+For a LAN world, the port changes every launch. Set it from the dashboard's
+**Minecraft Server** panel (`python plugin/mc_dashboard.py`, then
+`http://127.0.0.1:5002/`) instead of editing `.env`.
 
 ---
 
@@ -216,72 +220,78 @@ digging fails.
 
 **Tier:** `dangerous` + `requires_confirm: true`
 
-Executes a [Voyager](https://github.com/MineDojo/Voyager)-compatible async
-JavaScript skill against the live mineflayer bot. Always prompts for
-confirmation in Lumi's terminal.
+Runs async JavaScript the same way Voyager's own environment does: Voyager's
+control primitives and your code are joined into one async function body.
+Always prompts for confirmation in Lumi's terminal.
 
-The code runs as the body of:
-
-```js
-async function(bot, goals, Movements, Vec3) {
-  // your code here
-}
-```
-
-Four names are injected into scope:
+In scope:
 
 | Name | What it is |
 |---|---|
-| `bot` | The live mineflayer bot instance |
-| `goals` | `mineflayer-pathfinder` goals (GoalNear, GoalBlock, GoalFollow, …) |
-| `Movements` | `mineflayer-pathfinder` Movements class |
-| `Vec3` | `vec3` Vec3 constructor |
+| `bot` | The live mineflayer bot, with Voyager's `inject()` applied (`bot.save`, `bot.inventoryUsed`) |
+| `mcData` | `minecraft-data` for the server's version |
+| `Vec3`, `Movements`, `goals`, `GoalNear`, `GoalBlock`, `GoalFollow`, … | `vec3` and `mineflayer-pathfinder` |
+| `mineBlock`, `craftItem`, `smeltItem`, `placeItem`, `killMob`, `exploreUntil`, chest helpers | Voyager control primitives |
 
-The skill has a 30-second timeout. Its return value (coerced to string) is what
-Lumi sees as the tool result.
+The skill times out after 120 s (`SKILL_TIMEOUT_MS`). The result Lumi sees is
+the return value plus the last lines the bot said in chat, because the
+primitives report progress and failures through `bot.chat` (for example
+`No oak_log nearby, please explore first`).
+
+When Lumi calls an action, the SDK server waits 30 s for the result, so long
+skills report a timeout to Lumi while the bot keeps working. The autonomous
+agent (`plugin/minecraft_bot.py`) waits the full 120 s.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `code` | string | yes | Async JavaScript code |
 | `description` | string | no | Human-readable label (logged, not executed) |
 
-**Returns:** The skill's return value, or an error message on timeout or throw.
+#### Examples
 
-#### Voyager skill examples
-
-**Collect wood:**
+**Wooden pickaxe from scratch:**
 ```js
-const woodBlock = bot.findBlock({
-  matching: (b) => b.name.includes("log"),
-  maxDistance: 32,
-});
-if (!woodBlock) return "No wood found nearby";
-await bot.pathfinder.goto(new goals.GoalNear(
-  woodBlock.position.x, woodBlock.position.y, woodBlock.position.z, 1
-));
-await bot.dig(woodBlock);
-return `Collected ${woodBlock.name}`;
+await mineBlock(bot, "oak_log", 3);
+await craftItem(bot, "oak_planks", 3);
+await craftItem(bot, "crafting_table", 1);
+await placeItem(bot, "crafting_table", bot.entity.position.offset(1, 0, 0));
+await craftItem(bot, "stick", 1);
+await craftItem(bot, "wooden_pickaxe", 1);
 ```
 
-**Follow nearest player:**
+**Explore until iron shows up, then mine it:**
 ```js
-const player = Object.values(bot.entities).find(
-  e => e.type === "player" && e !== bot.entity
-);
+const look = () => bot.findBlock({ matching: mcData.blocksByName.iron_ore.id, maxDistance: 32 });
+await exploreUntil(bot, new Vec3(1, -1, 1), 60, look);
+await mineBlock(bot, "iron_ore", 3);
+```
+
+**Follow the nearest player:**
+```js
+const player = bot.nearestEntity(e => e.type === "player");
 if (!player) return "No player nearby";
-await bot.pathfinder.goto(new goals.GoalFollow(player, 2));
+bot.pathfinder.setGoal(new GoalFollow(player, 2), true);
 return `Following ${player.username}`;
 ```
 
-**Craft a crafting table:**
-```js
-const plankTypes = ["oak_planks","spruce_planks","birch_planks","jungle_planks"];
-const plank = plankTypes.find(n => bot.inventory.items().some(i => i.name === n));
-if (!plank) return "No planks in inventory";
-const craftingTable = bot.registry.itemsByName["crafting_table"];
-await bot.craft(bot.registry.craftingRecipe(craftingTable.id), 1, null);
-return "Crafted crafting table";
-```
+---
+
+### Voyager primitive actions
+
+**Tier:** `write`. Lumi asks `y/n` in its terminal unless the client's
+`auto_approve_writes` is `true` in the allowlist.
+
+Single-call wrappers around the primitives, so Lumi doesn't have to write
+JavaScript for common tasks. Names must be Minecraft ids (`[a-z0-9_]`).
+Counts are clamped to 1–64.
+
+| Action | Parameters | Primitive |
+|---|---|---|
+| `minecraft_mine_block` | `name`, `count` | `mineBlock(bot, name, count)` |
+| `minecraft_craft_item` | `name`, `count` | `craftItem(bot, name, count)`. 3×3 recipes need a crafting table within 32 blocks |
+| `minecraft_smelt_item` | `name`, `fuel` (default `coal`), `count` | `smeltItem(bot, name, fuel, count)`. Needs a furnace within 32 blocks |
+| `minecraft_place_item` | `name`, optional `x`,`y`,`z` | `placeItem(bot, name, pos)`. Defaults to the block beside the bot |
+| `minecraft_kill_mob` | `name` | `killMob(bot, name, 60)` |
 
 ---
 
@@ -300,21 +310,23 @@ she decides to call a tool.
 
 ## Voyager integration notes
 
-[Voyager](https://github.com/MineDojo/Voyager) is an LLM-powered agent that
-generates and accumulates JavaScript skills for Minecraft. This bridge is
-compatible with Voyager's skill format at the `minecraft_execute_skill` level:
-Voyager writes async skill bodies that receive a `bot` argument, and
-`minecraft_execute_skill` accepts exactly that shape.
+[Voyager](https://github.com/MineDojo/Voyager) is a git submodule at
+`plugin/voyager`. Its files are used in place, not copied:
 
-To use Voyager's full curriculum and skill library alongside Lumi:
+| Voyager piece | Used? | How |
+|---|---|---|
+| `voyager/control_primitives/*.js` | Yes | Read by `bot.js` at startup and put in scope for every skill |
+| `env/mineflayer/lib/skillLoader.js` (`inject`) | Yes | Applied to each new bot |
+| Plugins: pathfinder, tool, collectblock, pvp | Yes | Installed from npm in this folder |
+| `minecrafthawkeye` (bow aiming) | No | Only `shoot()` and `killMob` while holding a bow need it |
+| `env/mineflayer/index.js` (Voyager's Node server) | No | `bot.js` replaces it, so only one bot joins the world |
+| Python LLM agents (curriculum, action, critic) | No | They require the OpenAI API. `plugin/minecraft_bot.py` runs a fixed curriculum built on the same primitives instead |
 
-1. Run Voyager's Python process separately (it manages its own mineflayer
-   connection and skill database).
-2. Use `minecraft_execute_skill` to feed skills from Voyager's library directly
-   to Lumi — paste the skill code as the `code` parameter.
-3. Or implement a second SDK client in Python that wraps
-   `voyager.env.step(skill_code)` and registers a single
-   `voyager_run_skill` action for higher-level orchestration.
+The fixed curriculum in `plugin/minecraft_bot.py` goes logs → planks →
+crafting table → wooden pickaxe → stone → stone pickaxe → furnace → iron →
+smelting → iron pickaxe → diamonds. If a tier is missing materials, the agent
+re-runs the closest earlier tier, for example chopping more logs, rather than
+stalling.
 
 ---
 

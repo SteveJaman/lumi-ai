@@ -87,6 +87,12 @@ data/API/
 # --- TTS output buffers ---
 data/outputs/
 
+# --- Minecraft agent telemetry, event log, skill library ---
+data/minecraft/
+
+# --- npm dependencies for the Node SDK examples ---
+node_modules/
+
 # --- Local user-supplied documents ---
 data/library/*
 !data/library/.gitkeep

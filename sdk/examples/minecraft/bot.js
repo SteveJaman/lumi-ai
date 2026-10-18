@@ -23,6 +23,9 @@ const WebSocket = require("ws");
 const mineflayer = require("mineflayer");
 const { pathfinder, Movements, goals } = require("mineflayer-pathfinder");
 const { Vec3 } = require("vec3");
+const { plugin: toolPlugin }   = require("mineflayer-tool");
+const { plugin: collectBlock } = require("mineflayer-collectblock");
+const { plugin: pvpPlugin }    = require("mineflayer-pvp");
 const fs   = require("fs");
 const path = require("path");
 const http = require("http");
@@ -47,6 +50,25 @@ const MC_AUTH     = process.env.MC_AUTH     || "offline";
 const MC_VERSION       = process.env.MC_VERSION        || undefined;
 // Internal control API used by minecraft_bot.py — localhost only.
 const BOT_CONTROL_PORT = parseInt(process.env.BOT_CONTROL_PORT || "5057", 10);
+
+// ─── Voyager control primitives (plugin/voyager submodule) ─────────────────
+
+const VOYAGER_DIR      = process.env.VOYAGER_DIR
+                       || path.join(__dirname, "../../../plugin/voyager/voyager");
+const SKILL_TIMEOUT_MS = parseInt(process.env.SKILL_TIMEOUT_MS || "120000", 10);
+
+let voyagerInject   = null;
+let voyagerPrograms = "";
+try {
+  voyagerInject = require(path.join(VOYAGER_DIR, "env/mineflayer/lib/skillLoader.js")).inject;
+  const primDir = path.join(VOYAGER_DIR, "control_primitives");
+  const files   = fs.readdirSync(primDir).filter(f => f.endsWith(".js")).sort();
+  voyagerPrograms = files.map(f => fs.readFileSync(path.join(primDir, f), "utf8")).join("\n");
+  console.log(`[voyager] loaded ${files.length} control primitives`);
+} catch (e) {
+  console.warn(`[voyager] primitives not loaded (${e.message}). ` +
+               "Run: git submodule update --init plugin/voyager");
+}
 
 // ─── Token ─────────────────────────────────────────────────────────────────
 
@@ -77,6 +99,11 @@ function createBot() {
   if (MC_VERSION) opts.version = MC_VERSION;
   bot = mineflayer.createBot(opts);
   bot.loadPlugin(pathfinder);
+  bot.loadPlugin(toolPlugin);
+  bot.loadPlugin(collectBlock);
+  bot.loadPlugin(pvpPlugin);
+  // Adds bot.save / bot.inventoryUsed and the chatEvent hook the primitives use.
+  if (voyagerInject) voyagerInject(bot);
 
   bot.once("spawn", () => {
     const mcData = require("minecraft-data")(bot.version);
@@ -264,17 +291,89 @@ function registerActions() {
         },
         {
           name: "minecraft_execute_skill",
-          description: "Execute a Voyager-compatible async JavaScript skill on the mineflayer bot. The code runs as an async function body and receives `bot`, `goals`, `Movements`, and `Vec3` in scope. Returns the skill's return value as a string.",
+          description: "Run Voyager-style async JavaScript on the Minecraft bot. In scope: bot, mcData, Vec3, Goal* classes, and Voyager primitives mineBlock(bot,name,count), craftItem(bot,name,count), smeltItem(bot,item,fuel,count), placeItem(bot,name,pos), killMob(bot,name,timeout), exploreUntil(bot,dir,maxTime,callback).",
           schema: {
             type: "object",
             properties: {
-              code:        { type: "string", description: "Async JavaScript code. Runs as the body of `async function(bot, goals, Movements, Vec3) { <code> }`." },
-              description: { type: "string", description: "Human-readable description of what the skill does (logged, not executed)." },
+              code:        { type: "string", description: "Async JavaScript body, e.g. `await mineBlock(bot, \"oak_log\", 3);`" },
+              description: { type: "string", description: "Short label for the skill (logged, not executed)." },
             },
             required: ["code"],
           },
           capabilities: ["dangerous"],
           requires_confirm: true,
+        },
+        {
+          name: "minecraft_mine_block",
+          description: "Have the Minecraft bot find, walk to, and mine blocks of one type, collecting the drops.",
+          schema: {
+            type: "object",
+            properties: {
+              name:  { type: "string",  description: "Block id, e.g. oak_log, stone, iron_ore." },
+              count: { type: "integer", description: "How many blocks to mine (1-64). Default 1." },
+            },
+            required: ["name"],
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_craft_item",
+          description: "Have the Minecraft bot craft an item from its inventory. 3x3 recipes need a crafting table within 32 blocks.",
+          schema: {
+            type: "object",
+            properties: {
+              name:  { type: "string",  description: "Item id, e.g. oak_planks, stick, wooden_pickaxe." },
+              count: { type: "integer", description: "How many times to run the recipe (1-64). Default 1." },
+            },
+            required: ["name"],
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_smelt_item",
+          description: "Have the Minecraft bot smelt an item in a furnace within 32 blocks.",
+          schema: {
+            type: "object",
+            properties: {
+              name:  { type: "string",  description: "Item to smelt, e.g. raw_iron." },
+              fuel:  { type: "string",  description: "Fuel item id. Default coal." },
+              count: { type: "integer", description: "How many to smelt (1-64). Default 1." },
+            },
+            required: ["name"],
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_place_item",
+          description: "Have the Minecraft bot place a block from its inventory, next to itself unless coordinates are given.",
+          schema: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Item id, e.g. crafting_table, furnace." },
+              x:    { type: "integer", description: "Optional target X." },
+              y:    { type: "integer", description: "Optional target Y." },
+              z:    { type: "integer", description: "Optional target Z." },
+            },
+            required: ["name"],
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_kill_mob",
+          description: "Have the Minecraft bot hunt and kill the nearest mob of a type, then collect its drops.",
+          schema: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Mob id, e.g. zombie, cow, pig." },
+            },
+            required: ["name"],
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
         },
       ],
     },
@@ -369,27 +468,101 @@ async function handleDig(args) {
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
-async function handleExecuteSkill(args) {
+// Same names Voyager's env/mineflayer/index.js puts in scope for skill code.
+const GOAL_NAMES = [
+  "Goal", "GoalBlock", "GoalNear", "GoalXZ", "GoalNearXZ", "GoalY",
+  "GoalGetToBlock", "GoalLookAtBlock", "GoalBreakBlock", "GoalCompositeAny",
+  "GoalCompositeAll", "GoalInvert", "GoalFollow", "GoalPlaceBlock",
+];
+const FAIL_COUNTERS =
+  "let _craftItemFailCount = 0, _killMobFailCount = 0, _mineBlockFailCount = 0, " +
+  "_placeItemFailCount = 0, _smeltItemFailCount = 0;\n";
+
+// Runs skill code the way Voyager does: primitives + code in one async body.
+// The primitives report progress through bot.chat, so those lines become the
+// result message Lumi (or minecraft_bot.py) sees.
+async function runVoyager(code, label) {
   if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  if (!voyagerPrograms) return { success: false, message: "Voyager primitives not loaded" };
+
+  const mcData = require("minecraft-data")(bot.version);
+  mcData.blocksByName.lapis_lazuli_ore ??= mcData.blocksByName.lapis_ore;
+  mcData.itemsByName.lapis_lazuli_ore  ??= mcData.itemsByName.lapis_ore;
+
+  const chatLog = [];
+  const onChat  = (who, msg) => { if (who === "bot") chatLog.push(msg); };
+  bot.on("chatEvent", onChat);
+  console.log(`[voyager] running ${label}`);
+  _logEv("skill", `run ${label}`);
+
+  let timer;
+  try {
+    const fn = new AsyncFunction(
+      "bot", "mcData", "Vec3", "Movements", "goals", ...GOAL_NAMES,
+      FAIL_COUNTERS + voyagerPrograms + "\n" + code,
+    );
+    const result = await Promise.race([
+      fn(bot, mcData, Vec3, Movements, goals, ...GOAL_NAMES.map(n => goals[n])),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out after ${SKILL_TIMEOUT_MS / 1000} s`)),
+                           SKILL_TIMEOUT_MS);
+      }),
+    ]);
+    const parts = [result !== undefined ? String(result) : "Skill completed.", ...chatLog.slice(-8)];
+    return { success: true, message: parts.join(" | ") };
+  } catch (e) {
+    try { bot.pathfinder.stop(); bot.pvp.stop(); } catch (_) {}
+    const feedback = chatLog.length ? " | " + chatLog.slice(-8).join(" | ") : "";
+    return { success: false, message: `Skill error: ${e.message}${feedback}` };
+  } finally {
+    clearTimeout(timer);
+    bot.removeListener("chatEvent", onChat);
+  }
+}
+
+async function handleExecuteSkill(args) {
   const code = String(args.code || "").trim();
   if (!code) return { success: false, message: "code cannot be empty" };
+  return runVoyager(code, args.description || "custom skill");
+}
 
-  const desc = args.description ? ` (${args.description})` : "";
-  console.log(`[mc] executing Voyager skill${desc}`);
+// Item/block/mob names are interpolated into skill code, so restrict them to
+// Minecraft identifier characters.
+const ID_RE = /^[a-z0-9_]+$/;
+const badId = (v) => typeof v !== "string" || !ID_RE.test(v);
+const count = (v, def = 1) => {
+  const n = parseInt(v ?? def, 10);
+  return Number.isNaN(n) ? def : Math.min(Math.max(n, 1), 64);
+};
 
-  try {
-    // Voyager convention: async skill body receives bot and helpers.
-    const skillFn = new AsyncFunction("bot", "goals", "Movements", "Vec3", code);
-    const result = await Promise.race([
-      skillFn(bot, goals, Movements, Vec3),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("skill timed out after 30 s")), 30_000)
-      ),
-    ]);
-    return { success: true, message: result !== undefined ? String(result) : "Skill completed." };
-  } catch (e) {
-    return { success: false, message: `Skill error: ${e.message}` };
-  }
+async function handleMineBlock(a) {
+  if (badId(a.name)) return { success: false, message: "name must be a block id like oak_log" };
+  return runVoyager(`await mineBlock(bot, "${a.name}", ${count(a.count)});`, `mineBlock ${a.name}`);
+}
+
+async function handleCraftItem(a) {
+  if (badId(a.name)) return { success: false, message: "name must be an item id like wooden_pickaxe" };
+  return runVoyager(`await craftItem(bot, "${a.name}", ${count(a.count)});`, `craftItem ${a.name}`);
+}
+
+async function handleSmeltItem(a) {
+  const fuel = a.fuel || "coal";
+  if (badId(a.name) || badId(fuel)) return { success: false, message: "name and fuel must be item ids" };
+  return runVoyager(`await smeltItem(bot, "${a.name}", "${fuel}", ${count(a.count)});`, `smeltItem ${a.name}`);
+}
+
+async function handlePlaceItem(a) {
+  if (badId(a.name)) return { success: false, message: "name must be an item id like crafting_table" };
+  const xyz = [a.x, a.y, a.z].map(Number);
+  const pos = xyz.every(n => Number.isFinite(n))
+    ? `new Vec3(${xyz.map(Math.floor).join(", ")})`
+    : "bot.entity.position.offset(1, 0, 0)";
+  return runVoyager(`await placeItem(bot, "${a.name}", ${pos});`, `placeItem ${a.name}`);
+}
+
+async function handleKillMob(a) {
+  if (badId(a.name)) return { success: false, message: "name must be a mob id like zombie" };
+  return runVoyager(`await killMob(bot, "${a.name}", 60);`, `killMob ${a.name}`);
 }
 
 // ─── Dispatch ────────────────────────────────────────────────────────────────
@@ -403,6 +576,11 @@ const HANDLERS = {
   minecraft_stop:          handleStop,
   minecraft_dig:           handleDig,
   minecraft_execute_skill: handleExecuteSkill,
+  minecraft_mine_block:    handleMineBlock,
+  minecraft_craft_item:    handleCraftItem,
+  minecraft_smelt_item:    handleSmeltItem,
+  minecraft_place_item:    handlePlaceItem,
+  minecraft_kill_mob:      handleKillMob,
 };
 
 // ─── Local control API (127.0.0.1:BOT_CONTROL_PORT) ─────────────────────────
