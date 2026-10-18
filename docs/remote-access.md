@@ -110,6 +110,31 @@ and no Access login is possible: anyone with the URL reaches Lumi's login
 page. They can't register, but a guessed password gets them in. Don't
 share a quick-tunnel URL with anyone you wouldn't hand your laptop to.
 
+### Start the quick tunnel with Lumi
+
+To skip the second terminal, set `AUTO_START_TUNNEL = True` in
+`constants.py`. `python main.py` then starts a quick tunnel to `:5080`,
+waits up to 30 s for its URL, and prints it in the banner:
+
+```
+  Public URL:  https://<random-words>.trycloudflare.com
+```
+
+If `cloudflared` is missing or doesn't produce a URL in time, the banner
+says `Public URL:  (not started — …)` and the console line above it
+gives the reason; Lumi itself starts either way. Ctrl+C stops
+`cloudflared` and removes the URL from `.env`.
+
+Each start gets a new random URL, and the old one stops working. That's
+how quick tunnels behave. The same warnings as `quick` apply: anyone
+with the URL reaches the login page. Named tunnels aren't auto-started;
+keep using `run` for those.
+
+The tunnel always targets `TUNNEL_PORT`. `modules/tunnel.py` refuses to
+tunnel port 5000, and `main.py` won't start one unless Lumi's own
+remote-tier listener holds `TUNNEL_PORT`, so a different program on that
+port is never exposed.
+
 ### Permanent hostname (for campus)
 
 You need a domain whose DNS is on Cloudflare (a free plan is fine).

@@ -26,7 +26,9 @@ Lumi re-reads it on the fly, so order doesn't matter: start Lumi
 first or the tunnel first.
 
 This script does NOT import constants.py, so it runs even when Lumi's
-dependencies are broken.
+dependencies are broken. The quick-tunnel and .env logic lives in
+modules/tunnel.py (stdlib only), which main.py also uses for
+AUTO_START_TUNNEL.
 
 Usage:
     python scripts/setup_tunnel.py check
@@ -39,21 +41,24 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_ENV_PATH = os.path.join(_ROOT, ".env")
+sys.path.insert(0, _ROOT)
+
+from modules.tunnel import (  # noqa: E402  (needs the path above)
+    QuickTunnel, find_cloudflared, read_env_var, set_env_var,
+)
+
 _TUNNEL_DIR = os.path.join(_ROOT, "data", "cloudflared")
 _CONFIG_PATH = os.path.join(_TUNNEL_DIR, "config.yml")
 
 # Lumi's remote-tier listener (constants.TUNNEL_PORT). Not imported, so
 # keep the two in sync.
-LOCAL_SERVICE = "http://127.0.0.1:5080"
+TUNNEL_PORT = 5080
+LOCAL_SERVICE = f"http://127.0.0.1:{TUNNEL_PORT}"
 DEFAULT_TUNNEL_NAME = "lumi"
-
-_QUICK_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -73,40 +78,8 @@ def fail(msg):
 
 
 # ─────────────────────────────────────────────────────────────
-# .env
-# ─────────────────────────────────────────────────────────────
-def set_env_var(name, value):
-    """Upsert (value=str) or remove (value=None) one key, keeping
-    every other line and comment as-is."""
-    lines = []
-    if os.path.exists(_ENV_PATH):
-        with open(_ENV_PATH, "r", encoding="utf-8") as f:
-            lines = f.read().splitlines()
-    pattern = re.compile(r"^\s*" + re.escape(name) + r"\s*=")
-    out = [ln for ln in lines if not pattern.match(ln)]
-    if value is not None:
-        out.append(f"{name}={value}")
-    with open(_ENV_PATH, "w", encoding="utf-8") as f:
-        f.write("\n".join(out) + "\n")
-
-
-# ─────────────────────────────────────────────────────────────
 # cloudflared
 # ─────────────────────────────────────────────────────────────
-def find_cloudflared():
-    exe = shutil.which("cloudflared")
-    if exe:
-        return exe
-    # winget installs here but the PATH update needs a new terminal.
-    for candidate in (
-        r"C:\Program Files (x86)\cloudflared\cloudflared.exe",
-        r"C:\Program Files\cloudflared\cloudflared.exe",
-    ):
-        if os.path.exists(candidate):
-            return candidate
-    return None
-
-
 def require_cloudflared():
     exe = find_cloudflared()
     if exe:
@@ -149,12 +122,7 @@ def cmd_check(_args):
          f"{'up' if lumi_is_up() else 'not running'}")
     info(f"Named tunnel config: "
          f"{_CONFIG_PATH if os.path.exists(_CONFIG_PATH) else 'none yet'}")
-    origins = ""
-    if os.path.exists(_ENV_PATH):
-        with open(_ENV_PATH, encoding="utf-8") as f:
-            for ln in f:
-                if ln.strip().startswith("LUMI_PUBLIC_ORIGINS="):
-                    origins = ln.split("=", 1)[1].strip()
+    origins = read_env_var("LUMI_PUBLIC_ORIGINS")
     info(f"LUMI_PUBLIC_ORIGINS: {origins or '(unset — local only)'}")
 
 
@@ -167,33 +135,25 @@ def cmd_quick(_args):
          "reaches Lumi's login page. Use `setup` for anything long-lived.")
     info("Starting quick tunnel (Ctrl+C to stop)…")
 
-    proc = subprocess.Popen(
-        [exe, "tunnel", "--no-autoupdate", "--url", LOCAL_SERVICE],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace",
-    )
-    origin = None
+    tunnel = QuickTunnel(
+        TUNNEL_PORT, exe=exe,
+        on_line=lambda ln: print(ln) if " ERR " in ln else None)
     try:
-        for line in proc.stdout:
-            if origin is None:
-                m = _QUICK_URL.search(line)
-                if m:
-                    origin = m.group(0)
-                    set_env_var("LUMI_PUBLIC_ORIGINS", origin)
-                    print()
-                    info(f"Lumi is reachable at  \033[1m{origin}\033[0m")
-                    info("Wrote LUMI_PUBLIC_ORIGINS to .env. It is removed "
-                         "again when you stop this script.")
-                    print()
-            elif "ERR" in line:
-                sys.stdout.write(line)
-        proc.wait()
+        origin = tunnel.start()
+    except (RuntimeError, ValueError) as e:
+        fail(str(e))
+    try:
+        print()
+        info(f"Lumi is reachable at  [1m{origin}[0m")
+        info("Wrote LUMI_PUBLIC_ORIGINS to .env. It is removed "
+             "again when you stop this script.")
+        print()
+        tunnel.proc.wait()
     except KeyboardInterrupt:
-        proc.terminate()
+        pass
     finally:
-        if origin:
-            set_env_var("LUMI_PUBLIC_ORIGINS", None)
-            info("Tunnel closed; removed LUMI_PUBLIC_ORIGINS.")
+        tunnel.stop()
+        info("Tunnel closed; removed LUMI_PUBLIC_ORIGINS.")
 
 
 def _tunnel_id(exe, name):

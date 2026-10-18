@@ -343,7 +343,9 @@ def test_tunnel_env_upsert_and_remove(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_text("# keep me\nFOO=1\nLUMI_PUBLIC_ORIGINS=https://old\n",
                    encoding="utf-8")
-    monkeypatch.setattr(mod, "_ENV_PATH", str(env))
+    # The .env helpers live in modules/tunnel.py; the script re-exports.
+    import modules.tunnel as tunnel_mod
+    monkeypatch.setattr(tunnel_mod, "ENV_PATH", str(env))
 
     mod.set_env_var("LUMI_PUBLIC_ORIGINS", PUBLIC)
     assert env.read_text(encoding="utf-8") == \

@@ -807,6 +807,17 @@ ALLOW_LAN_EXPOSURE = False
 # =======================================================
 TUNNEL_PORT = 5080
 REMOTE_ALLOW_REGISTRATION = False
+
+# AUTO_START_TUNNEL: main.py starts a Cloudflare quick tunnel to
+# TUNNEL_PORT on boot (needs cloudflared installed) and prints its
+# https://….trycloudflare.com URL in the banner. A new random URL every
+# start; anyone with it reaches the login page. Off by default so a
+# fresh clone never opens itself to the internet. The tunnel always
+# targets TUNNEL_PORT; modules/tunnel.py refuses port 5000 outright.
+# TUNNEL_METRICS_PORT: cloudflared's local metrics server, polled for
+# the URL (a free port is picked if it's taken).
+AUTO_START_TUNNEL = False
+TUNNEL_METRICS_PORT = 20241
 TRUST_CLOUDFLARE_ACCESS = False
 
 # =======================================================

@@ -8,7 +8,8 @@ import signal
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 from signals import Signals
-from constants import WORKSPACE_ROOT, STREAMING_ENABLED, TUNNEL_PORT
+from constants import (WORKSPACE_ROOT, STREAMING_ENABLED, TUNNEL_PORT,
+                       AUTO_START_TUNNEL, TUNNEL_METRICS_PORT)
 
 from modules.memory import Memory
 from modules.library_indexer import LibraryIndexer
@@ -27,6 +28,7 @@ from modules.ambient_perception import AmbientPerception
 from modules.log_hub import LogHub
 from modules.self_model import SelfModel
 from modules.obs_control import OBSControl
+from modules.tunnel import start_quick_tunnel
 
 from sdk.server import SDKServer
 
@@ -38,9 +40,22 @@ except ImportError:
 
 _global_signals = None
 _global_prompter = None
+_global_tunnel = None
 
 _shutdown_lock = threading.Lock()
 _shutdown_started = False
+
+
+def stop_tunnel():
+    """Kill cloudflared and drop its URL from .env. Safe to call twice."""
+    global _global_tunnel
+    tunnel, _global_tunnel = _global_tunnel, None
+    if tunnel is not None:
+        try:
+            tunnel.stop()
+            print("\033[90mTUNNEL: closed\033[0m")
+        except Exception as e:
+            print(f"\033[91mTUNNEL: shutdown failed — {e}\033[0m")
 
 
 def handle_exit(sig, frame):
@@ -66,6 +81,7 @@ def handle_exit(sig, frame):
     if _global_signals:
         _global_signals.terminate = True
 
+    stop_tunnel()
     time.sleep(3.0)
     os._exit(0)
 
@@ -90,6 +106,47 @@ def choose_audio_mode():
         elif choice == "3":
             return "both"
         print("Invalid choice. Please enter 1, 2, or 3.")
+
+
+def start_tunnel(sio_server):
+    """Start the quick tunnel if AUTO_START_TUNNEL is on. Blocks until
+    cloudflared publishes its URL (up to 30 s). Returns the URL, or None
+    when disabled or it failed."""
+    global _global_tunnel
+    if not AUTO_START_TUNNEL:
+        return None
+    # Only tunnel a port Lumi's remote-tier listener actually holds;
+    # otherwise whatever else bound it would be put on the internet.
+    if getattr(sio_server, "tunnel_port", None) != TUNNEL_PORT:
+        print(f"\033[91mTUNNEL: not started — Lumi's remote-tier "
+              f"listener isn't on port {TUNNEL_PORT}\033[0m")
+        return None
+    print(f"\033[90mTUNNEL: starting quick tunnel on port "
+          f"{TUNNEL_PORT}...\033[0m")
+    try:
+        _global_tunnel = start_quick_tunnel(
+            TUNNEL_PORT, metrics_port=TUNNEL_METRICS_PORT)
+    except Exception as e:
+        print(f"\033[91mTUNNEL: auto-start failed — {e}\033[0m")
+        _global_tunnel = None
+        return None
+    return _global_tunnel.url
+
+
+def print_banner(audio_mode, tunnel_url):
+    print("\n=======================================================")
+    print(f"  Lumi AI Ready — Audio routed to: {audio_mode.upper()}")
+    print(f"  Mic: active (press \\ to toggle mute)")
+    print(f"  Web client:  http://127.0.0.1:5000/")
+    print(f"  Remote tier: http://127.0.0.1:{TUNNEL_PORT}/  (what tunnel visitors get)")
+    print(f"  Diagnostics: http://127.0.0.1:5001/")
+    print(f"  SDK:         ws://127.0.0.1:5056/ws")
+    if tunnel_url:
+        print(f"  Public URL:  \033[96m{tunnel_url}\033[0m")
+    else:
+        print(f"  Public URL:  (not started — enable AUTO_START_TUNNEL "
+              f"or run scripts/setup_tunnel.py quick)")
+    print("=======================================================\n")
 
 
 def _build_module_map(modules_list):
@@ -170,14 +227,8 @@ def main():
 
     time.sleep(1.5)
 
-    print("\n=======================================================")
-    print(f"  Lumi AI Ready — Audio routed to: {selected_audio_mode.upper()}")
-    print(f"  Mic: active (press \\ to toggle mute)")
-    print(f"  Web client:  http://127.0.0.1:5000/")
-    print(f"  Tunnel port: http://127.0.0.1:{TUNNEL_PORT}/  (remote tier — point cloudflared here)")
-    print(f"  Diagnostics: http://127.0.0.1:5001/")
-    print(f"  SDK:         ws://127.0.0.1:5056/ws")
-    print("=======================================================\n")
+    tunnel_url = start_tunnel(sio_server)
+    print_banner(selected_audio_mode, tunnel_url)
 
     signals.system_ready = True
 
@@ -193,6 +244,7 @@ def main():
         except Exception as e:
             print(f"\033[91mSESSION: Shutdown save failed: {e}\033[0m")
         signals.terminate = True
+        stop_tunnel()
         time.sleep(3.0)
         os._exit(0)
 

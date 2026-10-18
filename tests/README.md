@@ -28,6 +28,8 @@ bypass services that are not running; `test_comprehensive.py` and
 | `test_cf_access.py` | Cloudflare Access JWT verification (signature, issuer, audience, expiry), sign-in only with `TRUST_CLOUDFLARE_ACCESS`, email header alone ignored |
 | `test_healthz.py` | `/healthz` answers without auth on both ports |
 | `test_tunnel_port_origin.py` | A browser opened directly at the tunnel port (`Origin: http://127.0.0.1:5080`) can sign in and connect socket.io, and still gets the remote tier; other loopback ports stay refused |
+| `test_tunnel_manager.py` | `modules/tunnel.py` with `cloudflared` faked: URL from log output and from the `/quicktunnel` metrics endpoint, missing binary, early exit, timeout cleanup, terminate→kill, port-5000 refusal, `.env` origin bookkeeping |
+| `test_main_banner.py` | `main.start_tunnel()` / `print_banner()`: public URL shown, "not started" on failure, off by default, no tunnel without Lumi's remote-tier listener |
 
 `conftest.py` provides `live_lumi`, which runs the real
 `SocketIOServer.start_sites()` on two free loopback ports (main and tunnel)
