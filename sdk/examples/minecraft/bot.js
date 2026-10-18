@@ -40,8 +40,8 @@ const GAME_NAME      = "MinecraftBot";
 const CLIENT_VERSION = "0.1.0";
 const RECONNECT_MS   = 5000;
 
-const MC_HOST     = process.env.MC_HOST     || "localhost";
-const MC_PORT     = parseInt(process.env.MC_PORT || "25565", 10);
+let   MC_HOST     = process.env.MC_HOST     || "localhost";
+let   MC_PORT     = parseInt(process.env.MC_PORT || "25565", 10);
 const MC_USERNAME = process.env.MC_USERNAME || "LumiBot";
 const MC_AUTH     = process.env.MC_AUTH     || "offline";
 const MC_VERSION       = process.env.MC_VERSION        || undefined;
@@ -419,6 +419,40 @@ const _controlServer = http.createServer((req, res) => {
   } else if (req.method === "GET" && url === "/events") {
     res.writeHead(200);
     res.end(JSON.stringify(_evLog.slice(-100)));
+
+  } else if (req.method === "GET" && url === "/config") {
+    res.writeHead(200);
+    res.end(JSON.stringify({ host: MC_HOST, port: MC_PORT, username: MC_USERNAME, auth: MC_AUTH }));
+
+  } else if (req.method === "POST" && url === "/config") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      let payload;
+      try { payload = JSON.parse(body); } catch (_) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, message: "bad JSON" }));
+        return;
+      }
+      const newHost = String(payload.host || "").trim();
+      const newPort = parseInt(payload.port, 10);
+      if (!newHost || isNaN(newPort) || newPort < 1 || newPort > 65535) {
+        res.writeHead(422);
+        res.end(JSON.stringify({ success: false, message: "host and a valid port (1–65535) are required" }));
+        return;
+      }
+      const changed = newHost !== MC_HOST || newPort !== MC_PORT;
+      MC_HOST = newHost;
+      MC_PORT = newPort;
+      _logEv("config", `server changed to ${MC_HOST}:${MC_PORT}`);
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, message: `server set to ${MC_HOST}:${MC_PORT}` }));
+      if (changed) {
+        // Reconnect the mineflayer bot with the new address.
+        console.log(`[mc] server updated to ${MC_HOST}:${MC_PORT} — reconnecting`);
+        createBot();
+      }
+    });
 
   } else if (req.method === "POST" && url === "/action") {
     let body = "";

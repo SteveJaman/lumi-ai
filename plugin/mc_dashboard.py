@@ -410,6 +410,42 @@ header h1 {
     </div>
   </div>
 
+  <!-- ── Server settings ───────────────────────────────────────── -->
+  <div class="panel" style="grid-column: 1 / -1">
+    <div class="panel-head">
+      Minecraft Server
+      <span class="badge" id="srv-badge">LAN</span>
+    </div>
+    <div class="panel-body" style="max-height:none">
+      <p style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
+        LAN worlds use a random port each launch. Enter the host and port shown
+        in Minecraft's <em>Open to LAN</em> screen and click Reconnect —
+        the bot reconnects immediately without restarting.
+      </p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text-dim)">
+          Host
+          <input id="srv-host" type="text" value="localhost"
+            style="background:var(--bg-inset);border:1px solid var(--border);color:var(--text);
+                   padding:6px 10px;border-radius:5px;font-family:inherit;font-size:13px;width:200px">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text-dim)">
+          Port
+          <input id="srv-port" type="number" min="1" max="65535" value="25565"
+            style="background:var(--bg-inset);border:1px solid var(--border);color:var(--text);
+                   padding:6px 10px;border-radius:5px;font-family:inherit;font-size:13px;width:110px">
+        </label>
+        <button id="srv-btn" onclick="applyServer()"
+          style="background:var(--accent);color:var(--bg);border:none;border-radius:5px;
+                 padding:7px 18px;font-family:inherit;font-size:13px;font-weight:700;
+                 cursor:pointer;align-self:flex-end">
+          Reconnect
+        </button>
+        <span id="srv-msg" style="font-size:12px;color:var(--text-dim);align-self:flex-end"></span>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Error tracker ─────────────────────────────────────────── -->
   <div class="panel" style="grid-column: 1 / -1">
     <div class="panel-head">
@@ -629,7 +665,50 @@ async function poll() {
   renderErrors();
 }
 
+// ── Server settings ───────────────────────────────────────────────
+async function loadServerConfig() {
+  const cfg = await fetchJson("http://127.0.0.1:5057/config");
+  if (!cfg) return;
+  document.getElementById("srv-host").value = cfg.host || "localhost";
+  document.getElementById("srv-port").value = cfg.port || 25565;
+  document.getElementById("srv-badge").textContent = `${cfg.host}:${cfg.port}`;
+}
+
+async function applyServer() {
+  const host = document.getElementById("srv-host").value.trim();
+  const port = parseInt(document.getElementById("srv-port").value, 10);
+  const msg  = document.getElementById("srv-msg");
+  const btn  = document.getElementById("srv-btn");
+  if (!host || isNaN(port)) { msg.textContent = "Enter a valid host and port."; return; }
+  btn.disabled = true;
+  btn.textContent = "Connecting…";
+  msg.style.color = "var(--text-dim)";
+  msg.textContent = "";
+  try {
+    const r = await fetch("http://127.0.0.1:5057/config", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ host, port }),
+    });
+    const data = await r.json();
+    if (data.success) {
+      msg.style.color = "var(--success)";
+      msg.textContent = data.message;
+      document.getElementById("srv-badge").textContent = `${host}:${port}`;
+    } else {
+      msg.style.color = "var(--error)";
+      msg.textContent = data.message || "Failed";
+    }
+  } catch (e) {
+    msg.style.color = "var(--error)";
+    msg.textContent = "Cannot reach bot.js control API (:5057) — is bot.js running?";
+  }
+  btn.disabled = false;
+  btn.textContent = "Reconnect";
+}
+
 poll();
+loadServerConfig();
 setInterval(poll, 2000);
 </script>
 </body>
