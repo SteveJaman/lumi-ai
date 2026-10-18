@@ -816,7 +816,7 @@ REMOTE_ALLOW_REGISTRATION = False
 # targets TUNNEL_PORT; modules/tunnel.py refuses port 5000 outright.
 # TUNNEL_METRICS_PORT: cloudflared's local metrics server, polled for
 # the URL (a free port is picked if it's taken).
-AUTO_START_TUNNEL = False
+AUTO_START_TUNNEL = True
 TUNNEL_METRICS_PORT = 20241
 TRUST_CLOUDFLARE_ACCESS = False
 
