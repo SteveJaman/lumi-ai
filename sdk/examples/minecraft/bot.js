@@ -67,7 +67,7 @@ let botReady = false;
 
 function createBot() {
   if (bot) {
-    try { bot.quit("reconnecting"); } catch (_) {}
+    try { bot.end("reconnecting"); } catch (_) {}
     bot      = null;
     botReady = false;
   }
@@ -585,7 +585,7 @@ process.on("SIGINT", () => {
   stopping = true;
   clearTimeout(reconnectTimer);
   if (ws)  ws.close();
-  if (bot) bot.quit();
+  if (bot) try { bot.end(); } catch (_) {}
   process.exit(0);
 });
 
