@@ -1,5 +1,5 @@
 """
-Lumi × Minecraft — Diagnostics dashboard (http://127.0.0.1:5002/).
+Lumi x Minecraft — Diagnostics dashboard (http://127.0.0.1:5002/).
 
 Standalone server — run separately from minecraft_bot.py:
     python plugin/mc_dashboard.py
