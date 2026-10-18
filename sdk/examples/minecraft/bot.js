@@ -23,8 +23,9 @@ const WebSocket = require("ws");
 const mineflayer = require("mineflayer");
 const { pathfinder, Movements, goals } = require("mineflayer-pathfinder");
 const { Vec3 } = require("vec3");
-const fs = require("fs");
+const fs   = require("fs");
 const path = require("path");
+const http = require("http");
 
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
@@ -43,7 +44,9 @@ const MC_HOST     = process.env.MC_HOST     || "localhost";
 const MC_PORT     = parseInt(process.env.MC_PORT || "25565", 10);
 const MC_USERNAME = process.env.MC_USERNAME || "LumiBot";
 const MC_AUTH     = process.env.MC_AUTH     || "offline";
-const MC_VERSION  = process.env.MC_VERSION  || undefined;
+const MC_VERSION       = process.env.MC_VERSION        || undefined;
+// Internal control API used by minecraft_bot.py — localhost only.
+const BOT_CONTROL_PORT = parseInt(process.env.BOT_CONTROL_PORT || "5057", 10);
 
 // ─── Token ─────────────────────────────────────────────────────────────────
 
@@ -123,6 +126,29 @@ function buildStatusText() {
     `Health: ${(bot.health ?? "?")}/20  Food: ${(bot.food ?? "?")}/20`,
     `Inventory: ${items}`,
   ].join("\n");
+}
+
+function buildStatusJson() {
+  if (!bot || !botReady) return { ready: false, username: MC_USERNAME };
+  const pos = bot.entity.position;
+  return {
+    ready:     true,
+    username:  bot.username,
+    server:    `${MC_HOST}:${MC_PORT}`,
+    position:  { x: +pos.x.toFixed(2), y: +pos.y.toFixed(2), z: +pos.z.toFixed(2) },
+    health:    bot.health   ?? null,
+    food:      bot.food     ?? null,
+    inventory: bot.inventory.items().map(i => ({ name: i.name, count: i.count })),
+  };
+}
+
+// ─── Event log (read by mc_dashboard.py via /events) ────────────────────────
+
+const _evLog = [];
+function _logEv(category, message) {
+  const e = { ts: Date.now() / 1000, time: new Date().toTimeString().slice(0, 8), category, message };
+  _evLog.push(e);
+  if (_evLog.length > 300) _evLog.shift();
 }
 
 // ─── Lumi SDK WebSocket ─────────────────────────────────────────────────────
@@ -375,7 +401,73 @@ const HANDLERS = {
   minecraft_execute_skill: handleExecuteSkill,
 };
 
+// ─── Local control API (127.0.0.1:BOT_CONTROL_PORT) ─────────────────────────
+// Used by minecraft_bot.py for Voyager-style autonomous control.
+//   GET  /status  → buildStatusJson()
+//   POST /action  → { action: "chat"|"move_to"|…, args: {} }
+//   GET  /events  → last 100 log entries
+
+const _controlServer = http.createServer((req, res) => {
+  const url = (req.url || "").split("?")[0];
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
+  if (req.method === "GET" && url === "/status") {
+    res.writeHead(200);
+    res.end(JSON.stringify(buildStatusJson()));
+
+  } else if (req.method === "GET" && url === "/events") {
+    res.writeHead(200);
+    res.end(JSON.stringify(_evLog.slice(-100)));
+
+  } else if (req.method === "POST" && url === "/action") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", async () => {
+      let payload;
+      try { payload = JSON.parse(body); } catch (_) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, message: "bad JSON" }));
+        return;
+      }
+      const key     = "minecraft_" + (payload.action || "");
+      const handler = HANDLERS[key];
+      _logEv("relay", `ctrl → ${key}`);
+      if (!handler) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ success: false, message: `unknown action: ${payload.action}` }));
+        return;
+      }
+      try {
+        const result  = await handler(payload.args || {});
+        const success = typeof result === "object" && result !== null
+          ? result.success !== false : Boolean(result);
+        const message = typeof result === "object" && result !== null
+          ? String(result.message || result.error || "") : String(result ?? "");
+        _logEv("relay", `ctrl ← ${key}: ${success ? "ok" : "fail"} ${message.slice(0, 80)}`);
+        res.writeHead(200);
+        res.end(JSON.stringify({ success, message }));
+      } catch (e) {
+        _logEv("error", `ctrl ${key}: ${e.message}`);
+        res.writeHead(500);
+        res.end(JSON.stringify({ success: false, message: e.message }));
+      }
+    });
+
+  } else {
+    res.writeHead(404);
+    res.end("{}");
+  }
+});
+
+_controlServer.listen(BOT_CONTROL_PORT, "127.0.0.1", () =>
+  console.log(`[ctrl] control API on 127.0.0.1:${BOT_CONTROL_PORT}`)
+);
+
+// ─── Dispatch ────────────────────────────────────────────────────────────────
+
 async function dispatchAction(invId, name, rawData) {
+  _logEv("sdk", `← action: ${name}`);
   let args;
   try {
     args = typeof rawData === "string" ? JSON.parse(rawData) : (rawData || {});
@@ -406,6 +498,7 @@ async function dispatchAction(invId, name, rawData) {
     ? String(result.message || result.error || "")
     : String(result ?? "");
 
+  _logEv(success ? "result" : "error", `→ ${name}: ${message.slice(0, 100)}`);
   sendJson({ command: "action/result", game: GAME_NAME,
              data: { id: invId, success, message } });
 
@@ -448,12 +541,14 @@ function connect() {
         const sess  = (msg.data || {}).session || {};
         const proto = (msg.data || {}).protocolVersion || "?";
         console.log(`[sdk] welcome — session=${sess.sessionId} protocol=${proto}`);
+        _logEv("sdk", `connected session=${sess.sessionId} proto=${proto}`);
         registerActions();
         pushBotContext();
         break;
       }
       case "actions/registered":
         console.log(`[sdk] registered: ${(msg.data || {}).action_name}`);
+        _logEv("sdk", `registered: ${(msg.data || {}).action_name}`);
         break;
       case "action":
         dispatchAction((msg.data || {}).id, (msg.data || {}).name, (msg.data || {}).data);
