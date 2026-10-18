@@ -105,11 +105,12 @@ chat only needs it for the badge.
 | Route | View function in `app.js` | What it does |
 |---|---|---|
 | `#/chat` | `renderChatView()` | Message list with Fish Audio tag chips, mood chip, thinking indicator, "↓ Latest" jump button, agent-mode toggle chip, voice controls (TTS chip and hold-to-talk), file upload by button, drag-and-drop, or paste, and an attachment chip strip above the input |
-| `#/dashboard` | `renderDashboard()` | Stat cards plus the event stream fetched from the log hub's `/events` at `127.0.0.1:5001` (refreshed by the Refresh button), filterable by category chip |
+| `#/dashboard` | `renderDashboard()` | Stat cards plus the event stream from `GET /api/log_events` (a session-authenticated proxy of the log hub; refreshed by the Refresh button), filterable by category chip. Remote sessions see the stats and a "Log events are local-only" note |
 | `#/memory` | `renderMemory()` | Table of stored facts with semantic search, sort (newest, oldest, importance), rows that expand to full metadata by click or Enter/Space, inline edit, delete, add through a modal, and export to JSON |
 | `#/persona` | `renderPersona()` | Form-based editor for `config/lumi.yaml` with a section sidebar, trait sliders, list and map editors, raw YAML mode, preview, revert, and save |
 | `#/models` | `renderModels()` | Four sections: currently loaded models with unload; installed models with filter and load/delete, plus pull progress; a provider registry (OpenAI, Anthropic, Gemini, Groq, OpenRouter) with API key config; and a routing form (main model, fast model, context sizes, keep-alive) |
-| `#/integrations` | `renderIntegrations()` | Cards for Ollama, VTube Studio, Discord, Fish Audio, and Browser, each with a status pill, a Configure modal for env-backed fields, a Test button, and a module toggle where applicable |
+| `#/integrations` | `renderIntegrations()` | Cards for Ollama, VTube Studio, Discord, Fish Audio, Browser, and OBS Studio, each with a status pill, a Configure modal for env-backed fields, a Test button, and a module toggle where applicable |
+| `#/stream` | `renderStream()` | **Hidden unless `STREAMING_ENABLED`.** Optional stream player embed, OBS card (status, scene buttons, Go live / Stop with confirmation), subtitle setup, and remote-access status. Polls `/api/stream/status` every 3 s while open; `stopStreamPolling()` runs on navigation |
 | `#/settings` | `renderSettings()` | Four sub-tabs: General (timezone, Ollama endpoint), Security (change password, active session list with revoke), Advanced (five reset targets: `history`, `session`, `self_model`, `logs`, `memory`), and About (version, uptime, modules loaded) |
 
 ### Agent mode toggle

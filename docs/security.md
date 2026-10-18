@@ -21,7 +21,7 @@ anything she reads or anything that connects to her.
 | Drive-by request to a local service | A web page you visit POSTs code to the Minecraft bot's control API on `:5057` | **None yet.** See [Minecraft bot control API](#minecraft-bot-control-api) |
 | Memory poisoning | A page plants a false "fact" in long-term memory | Poisoning guards, importance cap |
 | Secret leakage | An API key lands in a log or a screen description | Log scrubber, VLM output filter |
-| Network exposure | The web client is reachable from the LAN | Loopback binding, `ALLOW_LAN_EXPOSURE` gate |
+| Network exposure | The web client is reachable from the LAN or internet | Loopback binding, `ALLOW_LAN_EXPOSURE` gate; tunnel traffic on its own port with a reduced tier, no remote sign-up, optional Cloudflare Access ([remote-access.md](remote-access.md)) |
 | Discord abuse | A channel member floods or injects instructions | Rate limit, injection filter |
 | Runaway agent | Repeated or unusual tool calls | Anomaly detection |
 
@@ -116,7 +116,9 @@ These predate Phase 9 and still apply.
 | Binding | `127.0.0.1:5000` only, unless `ALLOW_LAN_EXPOSURE` is `True` |
 | Session cookie | `lumi_session`, `HttpOnly`, `SameSite=Lax`, 30-day lifetime; argon2id password hashes in `data/memories/users.db` |
 | Login throttle | 5 failed logins per username within 60 seconds blocks further attempts until the window passes (`user_auth.py:_rate_ok`) |
-| Origin check | Every state-changing HTTP route and the socket.io handshake reject an `Origin` outside `http://127.0.0.1:5000` / `http://localhost:5000` |
+| Origin check | Every state-changing HTTP route and the socket.io handshake reject an `Origin` outside `http://127.0.0.1:5000` / `http://localhost:5000` and the `https://` hosts in `LUMI_PUBLIC_ORIGINS` |
+| Remote tier | Requests on `TUNNEL_PORT` (5080), from non-loopback peers, or carrying Cloudflare/proxy headers are remote. They may only call the `/api/` routes in `_REMOTE_API_ALLOW` (chat, history, status, voice, uploads, model list), can't send chat commands, can't register, and get `Secure` cookies over HTTPS. See [remote-access.md](remote-access.md#what-remote-users-can-and-cannot-do) |
+| Cloudflare Access | Off by default. With `TRUST_CLOUDFLARE_ACCESS`, only a JWT signed by your Access team signs a visitor in; the email header alone is ignored (`modules/cf_access.py`) |
 | CSRF | Double-submit: the readable `lumi_csrf` cookie must match `X-CSRF-Token` (or a JSON `csrf` field), compared in constant time. Required on every POST/PUT/PATCH/DELETE under `/api/`, including the multipart routes `/api/chat/upload` and `/api/voice_message` |
 | Request size | JSON bodies capped at aiohttp's 1 MB default; uploads 25 MB; voice clips 10 MB; both multipart routes stream and stop at the cap |
 | Uploads | Extension allowlist, sanitized filenames, files written only under `data/library/{documents,images,text}/` |
@@ -225,4 +227,5 @@ opening a public issue.
 - [troubleshooting.md](troubleshooting.md): what to do when a guard blocks something
 - [known-limitations.md](known-limitations.md): open gaps
 - [roadmap.md](roadmap.md): phase status
+- [remote-access.md](remote-access.md): tunnel, access tiers, Cloudflare Access
 - [../sdk/README.md](../sdk/README.md): SDK protocol and capability tiers

@@ -1,6 +1,6 @@
 /* ============================================================
    Lumi web client — SPA router, chat, dashboard, memory,
-   persona editor, models + providers, integrations, settings,
+   persona editor, models + providers, integrations, stream, settings,
    voice in browser, chat file uploads.
    Polling-based; socket.io is best-effort for audio only.
    Login / register live on their own page (/login).
@@ -17,6 +17,10 @@ const state = {
   events:  [],
   status:  {},
   view:    'chat',
+  // Set from /auth/me. Remote (tunnel) sessions get a reduced UI; the
+  // server enforces the same tier independently.
+  isLocal:  true,
+  features: { stream: false },
   _agentToggling: false,
 };
 
@@ -120,6 +124,7 @@ const ICONS = {
   memory:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4v1H7a3 3 0 0 0 0 6v1a3 3 0 0 0 3 3h1v1a3 3 0 0 0 6 0v-1h1a3 3 0 0 0 3-3v-1a3 3 0 0 0 0-6V6a4 4 0 0 0-4-4h-1V1a3 3 0 0 0-6 0z" /></svg>',
   models:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/></svg>',
   plugs:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></svg>',
+  stream:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>',
   settings:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
 };
 
@@ -132,6 +137,8 @@ async function checkAuth() {
     state.user = me.user;
     state.csrf = me.csrf;
     state.host = me.host;
+    state.isLocal = me.is_local !== false;
+    state.features = me.features || { stream: false };
 
     showShell();
 
@@ -160,15 +167,25 @@ document.addEventListener('click', (e) => {
 /* --------------------------------------------------------------
    Shell
    -------------------------------------------------------------- */
+// hostOnly: hidden for remote (tunnel) sessions, whose API calls for
+// these pages are refused server-side. feature: hidden unless the
+// server reports that feature enabled.
 const NAV = [
   { id: 'chat',         label: 'Chat',         icon: 'chat' },
   { id: 'dashboard',    label: 'Dashboard',    icon: 'dashboard' },
-  { id: 'persona',      label: 'Persona',      icon: 'persona' },
-  { id: 'memory',       label: 'Memory',       icon: 'memory' },
-  { id: 'models',       label: 'Models',       icon: 'models' },
-  { id: 'integrations', label: 'Integrations', icon: 'plugs' },
-  { id: 'settings',     label: 'Settings',     icon: 'settings' },
+  { id: 'persona',      label: 'Persona',      icon: 'persona',  hostOnly: true },
+  { id: 'memory',       label: 'Memory',       icon: 'memory',   hostOnly: true },
+  { id: 'models',       label: 'Models',       icon: 'models',   hostOnly: true },
+  { id: 'integrations', label: 'Integrations', icon: 'plugs',    hostOnly: true },
+  { id: 'stream',       label: 'Stream',       icon: 'stream',   hostOnly: true, feature: 'stream' },
+  { id: 'settings',     label: 'Settings',     icon: 'settings', hostOnly: true },
 ];
+
+function visibleNav() {
+  return NAV.filter(n =>
+    (state.isLocal || !n.hostOnly) &&
+    (!n.feature || state.features?.[n.feature]));
+}
 
 function showShell() {
   $('#host-name').textContent = state.host?.name || 'Lumi';
@@ -182,7 +199,7 @@ function showShell() {
 
   const nav = $('#nav');
   nav.innerHTML = '';
-  for (const item of NAV) {
+  for (const item of visibleNav()) {
     // Real links: keyboard/focus/middle-click work for free, and the
     // hashchange listener does the routing.
     const el = document.createElement('a');
@@ -200,13 +217,14 @@ function showShell() {
 
 function viewFromHash() {
   const id = (location.hash || '').replace(/^#\/?/, '');
-  return NAV.some(n => n.id === id) ? id : 'chat';
+  return visibleNav().some(n => n.id === id) ? id : 'chat';
 }
 
 function navigate(view, replace = false) {
-  if (!NAV.some(n => n.id === view)) view = 'chat';
+  if (!visibleNav().some(n => n.id === view)) view = 'chat';
   state.view = view;
   if (view !== 'chat') stopChatPolling();
+  if (view !== 'stream') stopStreamPolling();
   if (view !== 'chat') resetMoodAccent();
 
   if (view !== 'models') {
@@ -558,6 +576,11 @@ function updateAgentChip() {
   const on = !!state.status.agent_mode;
   chip.classList.toggle('agent', on);
   chip.textContent = on ? '⚡ Agent mode: ON' : '⚡ Agent mode: OFF';
+  if (!state.isLocal) {
+    chip.disabled = true;
+    chip.title = 'Agent mode can only be changed on the host machine.';
+    return;
+  }
   chip.title = on
     ? 'Agent mode is ON — Lumi can use tools. Click to disable.'
     : 'Agent mode is OFF — conversation only. Click to enable.';
@@ -667,6 +690,7 @@ function render() {
     case 'persona':      return renderPersona(main);
     case 'models':       return renderModels(main);
     case 'integrations': return renderIntegrations(main);
+    case 'stream':       return renderStream(main);
     case 'settings':     return renderSettings(main);
   }
 }
@@ -1649,20 +1673,38 @@ async function renderDashboard(main) {
     </div>
   `;
 
-  const hubPort = state.status?.log_hub_port || 5001;
+  // Events come through the web server so this works from any device.
+  // Remote sessions can't read them (they can include window titles
+  // and file names from the host), so say so instead of showing an
+  // empty list.
   let events = [];
-  try {
-    const res = await fetch(`http://127.0.0.1:${hubPort}/events`,
-                            { cache: 'no-store' });
-    events = await res.json();
-  } catch {
-    events = [];
+  let eventsError = null;
+  if (state.isLocal) {
+    try {
+      const res = await api('/api/log_events');
+      events = res.events || [];
+    } catch (e) {
+      eventsError = `Couldn't load events: ${e.message}`;
+    }
+  } else {
+    eventsError = 'Log events are local-only. Open the dashboard on the ' +
+                  'host machine to see them.';
   }
   state.events = events;
 
   renderDashboardStats();
   renderEventFilters();
-  renderEvents(events);
+  if (eventsError) {
+    const el = $('#dash-events');
+    el.innerHTML = '';
+    const note = document.createElement('div');
+    note.className = 'empty';
+    note.style.padding = '24px';
+    note.textContent = eventsError;
+    el.appendChild(note);
+  } else {
+    renderEvents(events);
+  }
 
   $('#dash-refresh').addEventListener('click', () => renderDashboard(main));
 }
@@ -4285,6 +4327,285 @@ function openIntegrationModal(it) {
   const firstEmpty = it.fields.find(f => !f.is_set);
   if (firstEmpty && inputs[firstEmpty.key]) {
     setTimeout(() => inputs[firstEmpty.key].focus(), 50);
+  }
+}
+
+/* ==============================================================
+   STREAM — OBS control, avatar embed, remote access info
+   ============================================================== */
+
+const _streamState = {
+  data:      null,
+  fp:        null,
+  pollTimer: null,
+  busy:      false,
+};
+
+function stopStreamPolling() {
+  if (_streamState.pollTimer) clearInterval(_streamState.pollTimer);
+  _streamState.pollTimer = null;
+  _streamState.fp = null;
+}
+
+async function renderStream(main) {
+  main.innerHTML = `
+    <div class="page">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Stream</div>
+          <div class="page-sub">Control OBS and watch the avatar from anywhere.</div>
+        </div>
+        <button class="btn btn-sm" id="stream-refresh">Refresh</button>
+      </div>
+      <div class="page-scroll">
+        <div class="stream-layout" id="stream-body">
+          <div class="integration-empty">Loading…</div>
+        </div>
+      </div>
+    </div>
+  `;
+  $('#stream-refresh').addEventListener('click', () => loadStream(true));
+  await loadStream(true);
+  stopStreamPolling();
+  _streamState.pollTimer = setInterval(() => {
+    if (state.view === 'stream' && !document.hidden) loadStream(false);
+  }, 3000);
+}
+
+async function loadStream(force) {
+  if (_streamState.busy) return;
+  try {
+    const data = await api('/api/stream/status');
+    applyStreamData(data, force);
+  } catch (e) {
+    const body = $('#stream-body');
+    if (body) body.innerHTML = `<div class="integration-empty">
+      Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function applyStreamData(data, force = false) {
+  const fp = fingerprint(data);
+  if (!force && fp === _streamState.fp) return;
+  _streamState.data = data;
+  _streamState.fp = fp;
+  renderStreamBody();
+}
+
+function renderStreamBody() {
+  const body = $('#stream-body');
+  if (!body) return;
+  const d = _streamState.data;
+
+  // Keep the player iframe across redraws so a 3 s poll doesn't
+  // restart the video.
+  const oldPlayer = $('#stream-player', body);
+  const embed = d.embed_url ? withTwitchParent(d.embed_url) : '';
+  body.innerHTML = '';
+
+  if (embed) {
+    if (oldPlayer && oldPlayer.dataset.src === embed) {
+      body.appendChild(oldPlayer);
+    } else {
+      const wrap = document.createElement('div');
+      wrap.className = 'stream-player';
+      wrap.id = 'stream-player';
+      wrap.dataset.src = embed;
+      const frame = document.createElement('iframe');
+      frame.src = embed;
+      frame.title = 'Stream preview';
+      frame.allow = 'autoplay; fullscreen; picture-in-picture';
+      frame.allowFullscreen = true;
+      frame.referrerPolicy = 'no-referrer';
+      wrap.appendChild(frame);
+      body.appendChild(wrap);
+    }
+  }
+
+  const grid = document.createElement('div');
+  grid.className = 'integration-grid';
+  grid.appendChild(buildObsCard(d.obs || {}));
+  grid.appendChild(buildSubtitleCard(d.subtitles || {}, d.obs || {}));
+  grid.appendChild(buildRemoteCard(d));
+  if (!embed) grid.appendChild(buildEmbedHintCard());
+  body.appendChild(grid);
+}
+
+// Twitch's player refuses to load without parent=<embedding host>.
+function withTwitchParent(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'player.twitch.tv' && !u.searchParams.has('parent')) {
+      u.searchParams.set('parent', location.hostname);
+    }
+    return u.toString();
+  } catch {
+    return '';
+  }
+}
+
+function streamCard(title, stateClass, stateLabel) {
+  const card = document.createElement('div');
+  card.className = 'integration-card';
+  const header = document.createElement('div');
+  header.className = 'integration-header';
+  const wrap = document.createElement('div');
+  wrap.className = 'integration-title-wrap';
+  const name = document.createElement('div');
+  name.className = 'integration-name';
+  name.textContent = title;
+  wrap.appendChild(name);
+  if (stateLabel) {
+    const pill = document.createElement('span');
+    pill.className = `integration-status state-${stateClass}`;
+    pill.textContent = stateLabel;
+    wrap.appendChild(pill);
+  }
+  header.appendChild(wrap);
+  card.appendChild(header);
+  return card;
+}
+
+function streamText(card, text, cls = 'integration-desc') {
+  const el = document.createElement('div');
+  el.className = cls;
+  el.textContent = text;
+  card.appendChild(el);
+  return el;
+}
+
+function buildObsCard(obs) {
+  if (!obs.connected) {
+    const card = streamCard('OBS Studio', 'warn', 'disconnected');
+    streamText(card, obs.error || 'Not connected.', 'integration-message');
+    streamText(card,
+      'Enable Tools → WebSocket Server Settings in OBS, then set the ' +
+      'password on the Integrations page.');
+    const actions = document.createElement('div');
+    actions.className = 'integration-actions';
+    const link = document.createElement('a');
+    link.className = 'btn btn-sm';
+    link.href = '#/integrations';
+    link.textContent = 'Open Integrations';
+    actions.appendChild(link);
+    card.appendChild(actions);
+    return card;
+  }
+
+  const live = !!obs.streaming;
+  const card = streamCard(
+    'OBS Studio', live ? 'err' : 'off', live ? `live ${obs.timecode.split('.')[0]}` : 'offline',
+  );
+  streamText(card, `OBS ${obs.obs_version} · scene: ${obs.current_scene || '—'}`);
+
+  if (obs.scenes && obs.scenes.length) {
+    const label = streamText(card, 'Scenes', 'stream-label');
+    label.id = 'stream-scenes-label';
+    const scenes = document.createElement('div');
+    scenes.className = 'stream-scenes';
+    scenes.setAttribute('role', 'group');
+    scenes.setAttribute('aria-labelledby', 'stream-scenes-label');
+    for (const name of obs.scenes) {
+      const btn = document.createElement('button');
+      const on = name === obs.current_scene;
+      btn.className = 'btn btn-sm stream-scene' + (on ? ' active' : '');
+      btn.textContent = name;
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.addEventListener('click', () => {
+        if (!on) streamAction('/api/stream/scene', { scene: name }, btn);
+      });
+      scenes.appendChild(btn);
+    }
+    card.appendChild(scenes);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'integration-actions';
+  const go = document.createElement('button');
+  if (live) {
+    go.className = 'btn btn-danger';
+    go.textContent = 'Stop stream';
+    go.addEventListener('click', () => {
+      if (confirm('Stop the stream? Viewers will be disconnected.')) {
+        streamAction('/api/stream/stop', {}, go);
+      }
+    });
+  } else {
+    go.className = 'btn btn-primary';
+    go.textContent = 'Go live';
+    go.addEventListener('click', () => {
+      if (confirm('Start streaming? OBS will go live with the current scene.')) {
+        streamAction('/api/stream/start', {}, go);
+      }
+    });
+  }
+  actions.appendChild(go);
+  card.appendChild(actions);
+  return card;
+}
+
+function buildSubtitleCard(subs, obs) {
+  const card = streamCard(
+    'Subtitles', subs.enabled ? 'ok' : 'off', subs.enabled ? 'on' : 'off',
+  );
+  if (!subs.enabled) {
+    streamText(card, 'Turned off. Set OBS_SUBTITLES_ENABLED = True in constants.py.');
+    return card;
+  }
+  streamText(card,
+    'Each spoken line is written here in timed chunks. In OBS, add a ' +
+    'Text source and turn on "Read from file":');
+  streamText(card, subs.file, 'integration-message');
+  streamText(card, obs.subtitle_source
+    ? `Also pushed live to the "${obs.subtitle_source}" source.`
+    : 'Tip: set "Subtitle text source" on the Integrations page for ' +
+      'instant updates instead of OBS\'s file polling.');
+  return card;
+}
+
+function buildRemoteCard(d) {
+  const origins = d.public_origins || [];
+  const card = streamCard(
+    'Remote access', origins.length ? 'ok' : 'off',
+    origins.length ? 'configured' : 'local only',
+  );
+  if (origins.length) {
+    streamText(card, 'Lumi accepts sign-ins from:');
+    for (const o of origins) streamText(card, o, 'integration-message');
+    if (d.remote) streamText(card, 'You are connected through the tunnel.');
+  } else {
+    streamText(card,
+      'Only reachable from this computer. To reach Lumi from campus or ' +
+      'your phone, run this on the host:');
+    streamText(card, 'python scripts/setup_tunnel.py', 'integration-message');
+  }
+  return card;
+}
+
+function buildEmbedHintCard() {
+  const card = streamCard('Stream preview', 'off', 'not set');
+  streamText(card,
+    'Set "Stream embed URL" on the OBS Studio integration to watch the ' +
+    'avatar here, e.g. https://player.twitch.tv/?channel=yourname or ' +
+    'https://www.youtube.com/embed/live_stream?channel=CHANNEL_ID.');
+  return card;
+}
+
+async function streamAction(path, body, btn) {
+  if (_streamState.busy) return;
+  _streamState.busy = true;
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const res = await api(path, { method: 'POST', body, csrf: true });
+    applyStreamData({ ..._streamState.data, obs: res.obs }, true);
+  } catch (e) {
+    alert(e.message);
+    btn.disabled = false;
+    btn.textContent = prev;
+  } finally {
+    _streamState.busy = false;
   }
 }
 

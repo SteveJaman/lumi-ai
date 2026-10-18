@@ -8,7 +8,7 @@ import signal
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 from signals import Signals
-from constants import WORKSPACE_ROOT
+from constants import WORKSPACE_ROOT, STREAMING_ENABLED, TUNNEL_PORT
 
 from modules.memory import Memory
 from modules.library_indexer import LibraryIndexer
@@ -26,6 +26,7 @@ from modules.emotional_state import EmotionalStateModule
 from modules.ambient_perception import AmbientPerception
 from modules.log_hub import LogHub
 from modules.self_model import SelfModel
+from modules.obs_control import OBSControl
 
 from sdk.server import SDKServer
 
@@ -104,6 +105,8 @@ def _build_module_map(modules_list):
             mapping["multimodal"] = m
         elif cls == "Memory":
             mapping["memory"] = m
+        elif cls == "OBSControl":
+            mapping["obs"] = m
     return mapping
 
 
@@ -139,6 +142,8 @@ def main():
         SelfModel(signals, enabled=True),
         SDKServer(signals, enabled=True),
     ]
+    if STREAMING_ENABLED:
+        modules.append(OBSControl(signals, enabled=True))
 
     tts_module = TTS(signals, enabled=True, modules=modules,
                      audio_mode=selected_audio_mode)
@@ -169,6 +174,7 @@ def main():
     print(f"  Lumi AI Ready — Audio routed to: {selected_audio_mode.upper()}")
     print(f"  Mic: active (press \\ to toggle mute)")
     print(f"  Web client:  http://127.0.0.1:5000/")
+    print(f"  Tunnel port: http://127.0.0.1:{TUNNEL_PORT}/  (remote tier — point cloudflared here)")
     print(f"  Diagnostics: http://127.0.0.1:5001/")
     print(f"  SDK:         ws://127.0.0.1:5056/ws")
     print("=======================================================\n")

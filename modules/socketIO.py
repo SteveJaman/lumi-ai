@@ -29,6 +29,28 @@ File upload (new):
     prompter expands those into either content blocks (for images
     on models that support vision) or inlined text.
 
+Remote access (Cloudflare Tunnel):
+  - Two loopback listeners share one app: :5000 for the host's own
+    browser and TUNNEL_PORT (:5080) for cloudflared. cloudflared runs
+    on this PC, so the peer address of tunnel traffic is always
+    127.0.0.1 and can't tell local from remote. The listening port can.
+    Non-loopback peers and Cloudflare headers also count as remote;
+    every signal can only lower privilege, never raise it.
+  - Remote requests may only call the routes in _REMOTE_API_ALLOW;
+    everything else under /api/ is 403 (default-deny). Chat commands
+    (!agent_on, wipe memory, …) are refused for remote senders.
+  - Public origins come from LUMI_PUBLIC_ORIGINS in .env, re-read when
+    the file changes, and pass the same origin checks as localhost.
+  - Remote requests can't register accounts unless
+    REMOTE_ALLOW_REGISTRATION is set.
+  - With TRUST_CLOUDFLARE_ACCESS, a verified Access JWT signs the
+    visitor in (modules/cf_access.py).
+  - GET /healthz is public; GET /api/log_events proxies the log hub
+    for local sessions so the dashboard never talks to :5001 directly.
+
+Stream control (off unless STREAMING_ENABLED):
+  - GET  /api/stream/status, POST /api/stream/scene|start|stop.
+
 Security posture (Phase 10.17):
   - Bound strictly to 127.0.0.1
   - HttpOnly, SameSite=Lax session cookie
@@ -40,6 +62,7 @@ Security posture (Phase 10.17):
 
 import os
 import re
+import socket
 import time
 import base64
 import secrets
@@ -50,15 +73,113 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from aiohttp import web
+from dotenv import dotenv_values
 import socketio
 
-from constants import PATIENCE, HOST
+from constants import (PATIENCE, HOST, WORKSPACE_ROOT, LUMI_VERSION,
+                       TUNNEL_PORT, REMOTE_ALLOW_REGISTRATION,
+                       TRUST_CLOUDFLARE_ACCESS, STREAMING_ENABLED,
+                       OBS_SUBTITLES_ENABLED, OBS_SUBTITLE_FILE)
 from modules.user_auth import UserDB
 
-_ALLOWED_ORIGINS = {
+_LOCAL_ORIGINS = frozenset({
     "http://127.0.0.1:5000",
     "http://localhost:5000",
-}
+})
+
+_ENV_PATH = os.path.join(WORKSPACE_ROOT, ".env")
+_public_origins_cache = (object(), frozenset())
+
+
+def _public_origins():
+    """HTTPS origins from LUMI_PUBLIC_ORIGINS, re-parsed whenever .env
+    changes so a tunnel hostname added at runtime works without a
+    restart."""
+    global _public_origins_cache
+    try:
+        mtime = os.path.getmtime(_ENV_PATH)
+    except OSError:
+        mtime = None
+    if _public_origins_cache[0] == mtime:
+        return _public_origins_cache[1]
+
+    raw = ""
+    if mtime is not None:
+        raw = dotenv_values(_ENV_PATH).get("LUMI_PUBLIC_ORIGINS") or ""
+    raw = raw or os.environ.get("LUMI_PUBLIC_ORIGINS", "")
+
+    origins = set()
+    for item in raw.split(","):
+        item = item.strip().rstrip("/").lower()
+        if not item:
+            continue
+        # Origin only: scheme + host, no path. Plain http would send
+        # the session cookie in the clear across the internet.
+        if item.startswith("https://") and "/" not in item[len("https://"):]:
+            origins.add(item)
+        else:
+            print(f"\033[93mSOCKETIO: ignoring LUMI_PUBLIC_ORIGINS entry "
+                  f"{item!r} — expected https://host\033[0m")
+    _public_origins_cache = (mtime, frozenset(origins))
+    return _public_origins_cache[1]
+
+
+_LOOPBACK = frozenset({"127.0.0.1", "::1"})
+
+# Any of these means the request passed through Cloudflare (or some
+# other proxy). Their presence only ever downgrades a request.
+_PROXY_HEADERS = ("Cf-Connecting-Ip", "Cf-Ray", "X-Forwarded-For")
+
+# The only /api/ routes a remote request may call. Default-deny: a
+# route added later stays host-only until it is listed here.
+_REMOTE_API_ALLOW = frozenset({
+    ("GET",  "/api/status"),
+    ("GET",  "/api/history"),
+    ("POST", "/api/chat/send"),
+    ("POST", "/api/chat/upload"),
+    ("POST", "/api/voice_message"),
+    ("GET",  "/api/models"),          # list only; feeds the Ollama dot
+})
+
+_HOST_ONLY_MSG = "Only available on the host machine."
+
+# Per-request storage keys (aiohttp >= 3.10 prefers typed keys).
+if hasattr(web, "RequestKey"):
+    _IS_LOCAL = web.RequestKey("is_local", bool)
+    _ACCESS_USER = web.RequestKey("access_user", dict)
+    _ACCESS_CSRF = web.RequestKey("access_csrf", str)
+else:
+    _IS_LOCAL = "is_local"
+    _ACCESS_USER = "access_user"
+    _ACCESS_CSRF = "access_csrf"
+
+
+def _is_chat_command(text):
+    """Mirror of the prompter's command detection (prompter.run). These
+    reach settings, memory, and agent mode, so remote users can't send
+    them."""
+    t = (text or "").strip().lower()
+    return (t.startswith("!")
+            or t.startswith("set mood ")
+            or t.startswith("switch mood ")
+            or t in ("wipe memory", "clear memory", "reset memory"))
+
+
+def _local_port(request):
+    transport = request.transport
+    if transport is None:
+        return None
+    sockname = transport.get_extra_info("sockname")
+    return sockname[1] if sockname else None
+
+
+def _origin_allowed(origin, environ=None):
+    """Shared by HTTP handlers and the socket.io CORS check
+    (engine.io calls it as fn(origin, environ))."""
+    if not origin:
+        return False
+    origin = origin.rstrip("/").lower()
+    return origin in _LOCAL_ORIGINS or origin in _public_origins()
 
 _WEB_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web"
@@ -434,11 +555,15 @@ class SocketIOServer:
         self.user_db = UserDB()
         self.sio = socketio.AsyncServer(
             async_mode="aiohttp",
-            cors_allowed_origins=list(_ALLOWED_ORIGINS),
+            cors_allowed_origins=_origin_allowed,
             logger=False,
             engineio_logger=False,
         )
-        self.app = web.Application(middlewares=[_json_error_middleware])
+        # Set by start_sites(); requests arriving on this port are remote.
+        self.tunnel_port = None
+        self.app = web.Application(middlewares=[
+            _json_error_middleware, self._make_tier_middleware(),
+        ])
         self.sio.attach(self.app)
 
         # Memory/library calls (ChromaDB, embeddings, file parsing) are
@@ -555,7 +680,21 @@ class SocketIOServer:
         # Voice in browser — Phase 10.19
         r.add_post("/api/voice_message", self._handle_voice_message)
 
+        # Remote access support
+        r.add_get("/healthz",         self._handle_healthz)
+        r.add_get("/api/log_events",  self._handle_log_events)
+
+        # Stream control (OBS) — off unless STREAMING_ENABLED
+        if STREAMING_ENABLED:
+            r.add_get("/api/stream/status",  self._handle_stream_status)
+            r.add_post("/api/stream/scene",  self._handle_stream_scene)
+            r.add_post("/api/stream/start",  self._handle_stream_start)
+            r.add_post("/api/stream/stop",   self._handle_stream_stop)
+
     def _current_user(self, request):
+        # Signed in this request by Cloudflare Access (tier middleware).
+        if request.get(_ACCESS_USER):
+            return request[_ACCESS_USER]
         cookies = _parse_cookies(request.headers.get("Cookie", ""))
         token = cookies.get(_SESSION_COOKIE)
         return self.user_db.validate_session(token) if token else None
@@ -586,17 +725,111 @@ class SocketIOServer:
         origin = request.headers.get("Origin")
         if origin is None:
             return True
-        return origin in _ALLOWED_ORIGINS
+        return _origin_allowed(origin)
 
-    def _set_session_cookies(self, response, session_token, csrf_token):
+    def _is_local(self, request):
+        """Full-access (host) request? See the module docstring for why
+        the listening port, not the peer address, is the deciding
+        signal. The Origin header is not consulted: a remote user can
+        set it to anything."""
+        cached = request.get(_IS_LOCAL)
+        if cached is not None:
+            return cached
+        local = True
+        if self.tunnel_port is not None \
+                and _local_port(request) == self.tunnel_port:
+            local = False
+        elif request.remote not in _LOOPBACK:
+            local = False      # LAN peer (ALLOW_LAN_EXPOSURE)
+        elif any(h in request.headers for h in _PROXY_HEADERS):
+            local = False      # cloudflared pointed at :5000 by mistake
+        request[_IS_LOCAL] = local
+        return local
+
+    def _is_remote(self, request):
+        return not self._is_local(request)
+
+    @staticmethod
+    def _remote_allowed(request):
+        path = request.path
+        if not path.startswith("/api/"):
+            return True        # pages, /auth/*, static, socket.io, /healthz
+        return (request.method, path) in _REMOTE_API_ALLOW
+
+    def _make_tier_middleware(self):
+        @web.middleware
+        async def tier_middleware(request, handler):
+            if self._is_local(request):
+                return await handler(request)
+
+            new_session = None
+            if TRUST_CLOUDFLARE_ACCESS:
+                new_session = await self._access_sign_in(request)
+
+            if not self._remote_allowed(request):
+                return _json_error(403, _HOST_ONLY_MSG)
+
+            if new_session is None:
+                return await handler(request)
+            try:
+                response = await handler(request)
+            except web.HTTPException as e:   # page redirects
+                self._set_session_cookies(e, *new_session, secure=True)
+                raise
+            self._set_session_cookies(response, *new_session, secure=True)
+            return response
+        return tier_middleware
+
+    async def _access_sign_in(self, request):
+        """Sign a remote request in from its Cloudflare Access JWT if
+        it has no Lumi session yet. Returns (session, csrf) to set as
+        cookies, or None."""
+        cookies = _parse_cookies(request.headers.get("Cookie", ""))
+        if self.user_db.validate_session(cookies.get(_SESSION_COOKIE)):
+            return None
+        token = request.headers.get("Cf-Access-Jwt-Assertion")
+        if not token:
+            return None
+
+        from modules import cf_access
+        team, aud = cf_access.read_access_config()
+        loop = asyncio.get_running_loop()
+        try:
+            email = await loop.run_in_executor(
+                None, cf_access.verify_access_jwt, token, team, aud)
+        except cf_access.AccessError as e:
+            print(f"\033[93mAUTH: Cloudflare Access JWT rejected — "
+                  f"{e}\033[0m")
+            return None
+
+        user = await loop.run_in_executor(
+            None, self.user_db.get_or_create_external_user,
+            cf_access.username_for_email(email), email)
+        if not user:
+            return None
+        session = self.user_db.create_session(user["id"])
+        csrf = secrets.token_urlsafe(32)
+        request[_ACCESS_USER] = user
+        request[_ACCESS_CSRF] = csrf
+        print(f"\033[92mAUTH: Cloudflare Access sign-in for {email} "
+              f"as {user['username']}\033[0m")
+        return session, csrf
+
+    @staticmethod
+    def _is_https(request):
+        return (request.secure or
+                request.headers.get("X-Forwarded-Proto", "") == "https")
+
+    def _set_session_cookies(self, response, session_token, csrf_token,
+                             secure=False):
         response.set_cookie(
             _SESSION_COOKIE, session_token,
-            httponly=True, samesite="Lax", secure=False, path="/",
+            httponly=True, samesite="Lax", secure=secure, path="/",
             max_age=60 * 60 * 24 * 30,
         )
         response.set_cookie(
             _CSRF_COOKIE, csrf_token,
-            httponly=False, samesite="Lax", secure=False, path="/",
+            httponly=False, samesite="Lax", secure=secure, path="/",
             max_age=60 * 60 * 24 * 30,
         )
 
@@ -611,11 +844,17 @@ class SocketIOServer:
         return web.json_response({
             "needs_setup": not self.user_db.has_users(),
             "user_count":  self.user_db.user_count(),
+            "remote":      self._is_remote(request),
         })
 
     async def _handle_register(self, request):
         if not self._origin_ok(request):
             return _json_error(403, "Bad origin.")
+        if self._is_remote(request) and not REMOTE_ALLOW_REGISTRATION:
+            return _json_error(403, (
+                "Registration is disabled here. New accounts can only be "
+                "created on the host machine at http://127.0.0.1:5000."
+            ))
         try:
             body = await request.json()
         except Exception:
@@ -624,6 +863,9 @@ class SocketIOServer:
         username = (body.get("username") or "").strip()
         password = body.get("password") or ""
         display = (body.get("display_name") or "").strip() or None
+        if username.lower().startswith("cf-"):
+            # Reserved for Cloudflare Access accounts (cf_access.py).
+            return _json_error(400, "Usernames starting with cf- are reserved.")
 
         ok, payload = self.user_db.register(username, password, display)
         if not ok:
@@ -639,7 +881,8 @@ class SocketIOServer:
             "user": payload,
             "csrf": csrf_token,
         })
-        self._set_session_cookies(response, session_token, csrf_token)
+        self._set_session_cookies(response, session_token, csrf_token,
+                                  secure=self._is_https(request))
         return response
 
     async def _handle_login(self, request):
@@ -655,7 +898,14 @@ class SocketIOServer:
 
         ok, payload = self.user_db.authenticate(username, password)
         if not ok:
+            if self._is_remote(request):
+                print(f"\033[93mAUTH: remote login failed for "
+                      f"{username!r} — {payload}\033[0m")
             return _json_error(401, payload)
+        if self._is_remote(request):
+            print(f"\033[92mAUTH: remote login ok for {username!r} "
+                  f"(origin {request.headers.get('Origin')!r}, secure "
+                  f"cookie={self._is_https(request)})\033[0m")
 
         session_token = self.user_db.create_session(payload["id"])
         csrf_token = secrets.token_urlsafe(32)
@@ -667,7 +917,8 @@ class SocketIOServer:
             "user": payload,
             "csrf": csrf_token,
         })
-        self._set_session_cookies(response, session_token, csrf_token)
+        self._set_session_cookies(response, session_token, csrf_token,
+                                  secure=self._is_https(request))
         return response
 
     async def _handle_logout(self, request):
@@ -684,11 +935,13 @@ class SocketIOServer:
         if not user:
             return _json_error(401, "Not logged in.")
         cookies = _parse_cookies(request.headers.get("Cookie", ""))
-        csrf = cookies.get(_CSRF_COOKIE, "")
+        csrf = request.get(_ACCESS_CSRF) or cookies.get(_CSRF_COOKIE, "")
         return web.json_response({
             "user": user,
             "csrf": csrf,
             "host": {"name": HOST.name, "user_id": HOST.user_id},
+            "is_local": self._is_local(request),
+            "features": {"stream": STREAMING_ENABLED},
         })
 
     # ------------------------------------------------------------------
@@ -711,7 +964,30 @@ class SocketIOServer:
             "log_hub_port": getattr(
                 getattr(signals, "log_hub", None), "port", 5001
             ),
+            "is_local": self._is_local(request),
+            "features": {"stream": STREAMING_ENABLED},
         })
+
+    async def _handle_healthz(self, request):
+        """Public liveness probe for uptime checks and tunnel testing."""
+        return web.json_response({"ok": True, "version": LUMI_VERSION})
+
+    async def _handle_log_events(self, request):
+        """Dashboard events, proxied from the log hub so the browser
+        never has to reach :5001. Remote requests are refused by the
+        tier middleware before they get here."""
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        hub = getattr(self.signals, "log_hub", None)
+        if hub is None:
+            return web.json_response({"events": []})
+        try:
+            limit = int(request.query.get("limit", 400))
+        except ValueError:
+            limit = 400
+        limit = max(1, min(limit, 800))
+        return web.json_response({"events": hub.get_events(limit=limit)})
 
     async def _handle_history(self, request):
         user = self._current_user(request)
@@ -756,6 +1032,8 @@ class SocketIOServer:
 
         if not text and not attachments:
             return _json_error(400, "Empty message.")
+        if _is_chat_command(text) and self._is_remote(request):
+            return _json_error(403, "Commands only work on the host machine.")
 
         # Normalize attachments — only keep the fields we need, cap
         # the count, cap the injected text length.
@@ -2165,6 +2443,8 @@ class SocketIOServer:
             return _json_error(500, f"Transcription failed: {err}")
         if not text:
             return web.json_response({"ok": True, "text": ""})
+        if _is_chat_command(text) and self._is_remote(request):
+            return _json_error(403, "Commands only work on the host machine.")
 
         self.signals.history.append({"role": "user", "content": text})
         self.signals.new_message = True
@@ -2202,8 +2482,12 @@ class SocketIOServer:
         return await self._handle_login_page(request)
 
     async def _handle_setup_page(self, request):
-        # Always serve the wizard. The client decides which step to
-        # show based on auth + ?step=.
+        # The client decides which step to show based on auth + ?step=.
+        # Every step after the first account calls host-only APIs, and
+        # the first account can't be made remotely, so remote visitors
+        # go to the login page instead.
+        if self._is_remote(request):
+            raise web.HTTPFound("/login")
         return await self._serve_file(os.path.join(_WEB_ROOT, "setup.html"))
 
     # ------------------------------------------------------------------
@@ -2423,7 +2707,7 @@ class SocketIOServer:
             print(f"\033[90mSOCKETIO: connect attempt sid={sid} "
                   f"origin={origin!r} cookie_header={has_cookie_header}\033[0m")
 
-            if origin and origin not in _ALLOWED_ORIGINS:
+            if origin and not _origin_allowed(origin):
                 print(f"\033[91mSOCKETIO:   rejected — bad origin "
                       f"{origin!r}\033[0m")
                 raise ConnectionRefusedError("Bad origin.")
@@ -2438,8 +2722,11 @@ class SocketIOServer:
                       f"(cookie present: {has_session_cookie})\033[0m")
                 raise ConnectionRefusedError("Not authenticated.")
 
-            print(f"\033[92mSOCKETIO:   accepted as {user['username']}\033[0m")
-            await sio.save_session(sid, {"user": user})
+            req = environ.get("aiohttp.request")
+            is_local = self._is_local(req) if req is not None else False
+            print(f"\033[92mSOCKETIO:   accepted as {user['username']}"
+                  f"{'' if is_local else ' (remote)'}\033[0m")
+            await sio.save_session(sid, {"user": user, "is_local": is_local})
 
             await sio.emit("history", signals.history, to=sid)
             await sio.emit("patience_update", {
@@ -2484,6 +2771,8 @@ class SocketIOServer:
             text = (data or {}).get("text", "").strip()
             if not text:
                 return
+            if _is_chat_command(text) and not sess.get("is_local"):
+                return
             signals.history.append({"role": "user", "content": text})
             signals.new_message = True
             signals.last_message_time = time.time()
@@ -2498,7 +2787,7 @@ class SocketIOServer:
         @sio.event
         async def web_toggle_agent(sid):
             sess = await sio.get_session(sid)
-            if not sess or not sess.get("user"):
+            if not sess or not sess.get("user") or not sess.get("is_local"):
                 return
             if self.prompter:
                 self.prompter.agent_mode_enabled = \
@@ -2517,6 +2806,78 @@ class SocketIOServer:
                 self._tts_clients.add(sid)
             else:
                 self._tts_clients.discard(sid)
+
+    # ------------------------------------------------------------------
+    # Stream control (OBS)
+    # ------------------------------------------------------------------
+    async def _handle_stream_status(self, request):
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+
+        obs_mod = self.modules.get("obs")
+        if obs_mod is None:
+            obs_status = {"enabled": False, "connected": False,
+                          "error": "OBS module is not loaded."}
+        else:
+            loop = asyncio.get_running_loop()
+            obs_status = await loop.run_in_executor(None, obs_mod.status)
+
+        embed = (dotenv_values(_ENV_PATH).get("STREAM_EMBED_URL") or "").strip()
+        if not embed.lower().startswith("https://"):
+            embed = ""
+
+        return web.json_response({
+            "obs": obs_status,
+            "embed_url": embed,
+            "subtitles": {
+                "enabled": OBS_SUBTITLES_ENABLED,
+                "file": OBS_SUBTITLE_FILE,
+            },
+            "remote": self._is_remote(request),
+            "public_origins": sorted(_public_origins()),
+        })
+
+    async def _stream_action(self, request, action):
+        """Shared guard + dispatch for the POST stream routes. action
+        takes (obs_module, body) and runs on a worker thread."""
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        user = self._current_user(request)
+        if not user:
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        obs_mod = self.modules.get("obs")
+        if obs_mod is None:
+            return _json_error(503, "OBS module is not loaded.")
+
+        from modules.obs_control import OBSError
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, action, obs_mod, body)
+        except OBSError as e:
+            return _json_error(502, str(e))
+        status = await loop.run_in_executor(None, obs_mod.status)
+        return web.json_response({"ok": True, "obs": status})
+
+    async def _handle_stream_scene(self, request):
+        return await self._stream_action(
+            request, lambda m, body: m.switch_scene(body.get("scene")))
+
+    async def _handle_stream_start(self, request):
+        return await self._stream_action(
+            request, lambda m, body: m.start_stream())
+
+    async def _handle_stream_stop(self, request):
+        return await self._stream_action(
+            request, lambda m, body: m.stop_stream())
 
     # ==================================================================
     # Background: broadcast new history entries
@@ -2580,4 +2941,35 @@ class SocketIOServer:
                 f"{bind_host} (LAN exposure enabled)\033[0m"
             )
 
-        web.run_app(self.app, host=bind_host, port=5000, print=None)
+        async def _serve():
+            runner = await self.start_sites(bind_host, 5000, TUNNEL_PORT)
+            try:
+                while not self.signals.terminate:
+                    await asyncio.sleep(0.5)
+            finally:
+                await runner.cleanup()
+
+        asyncio.run(_serve())
+
+    async def start_sites(self, host="127.0.0.1", port=5000,
+                          tunnel_port=TUNNEL_PORT):
+        """Start the main listener and the loopback-only tunnel listener
+        on one app. Port 0 picks a free port (tests). Returns the runner;
+        the bound ports end up in self.port and self.tunnel_port."""
+        runner = web.AppRunner(self.app)
+        await runner.setup()
+
+        main_sock = socket.create_server((host, port))
+        await web.SockSite(runner, main_sock).start()
+        self.port = main_sock.getsockname()[1]
+
+        if tunnel_port is not None:
+            try:
+                tsock = socket.create_server(("127.0.0.1", tunnel_port))
+            except OSError as e:
+                print(f"\033[91mSOCKETIO: tunnel port {tunnel_port} "
+                      f"unavailable ({e}) — remote access disabled\033[0m")
+            else:
+                await web.SockSite(runner, tsock).start()
+                self.tunnel_port = tsock.getsockname()[1]
+        return runner

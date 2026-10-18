@@ -53,10 +53,18 @@ DISCORD_CHANNEL_ID=000000000000000000
 # GEMINI_RATE_LIMIT=off   disable throttling for this provider
 # LLM_MAX_TOOL_CHARS=6000 cap on each tool result sent to a throttled
 #                         OpenAI-compatible provider
+
+# --- Remote access (see remote-access.md) ---
+# LUMI_PUBLIC_ORIGINS=https://lumi.example.com   written by setup_tunnel.py
+# CF_ACCESS_TEAM_DOMAIN=yourteam.cloudflareaccess.com
+# CF_ACCESS_AUD=          Access application audience tag
+#                         (both only read with TRUST_CLOUDFLARE_ACCESS)
 ```
 
 `FISH_API_KEY` and `FISH_REFERENCE_ID` are required for voice output.
-Everything else is optional.
+Everything else is optional. The remote-access keys, and the
+`TUNNEL_PORT`, `REMOTE_ALLOW_REGISTRATION`, and `TRUST_CLOUDFLARE_ACCESS`
+constants, are covered in [remote-access.md](remote-access.md).
 
 The throttling keys work for any provider prefix (`OPENAI_`, `GROQ_`, …).
 Only Gemini has built-in defaults; other providers are unthrottled unless

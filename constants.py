@@ -775,6 +775,61 @@ SDK_VERSION = "0.10.14"
 ALLOW_LAN_EXPOSURE = False
 
 # =======================================================
+# Remote Access (tunnel)
+# -------------------------------------------------------
+# The web client listens on two loopback-only ports:
+#
+#   5000         your own browser — full access
+#   TUNNEL_PORT  where cloudflared forwards — remote tier
+#
+# cloudflared runs on this PC, so tunnel requests always
+# come from 127.0.0.1; the port they arrive on is what
+# marks them remote. Remote users get chat, history,
+# voice, and a read-only dashboard; settings, persona,
+# models, integrations, memory, agent mode, and chat
+# commands (!agent_on, wipe memory, …) are host-only.
+#
+# List the public hostname in .env as LUMI_PUBLIC_ORIGINS
+# (comma-separated, e.g. https://lumi.example.com) so
+# origin checks accept it. scripts/setup_tunnel.py writes
+# it for you.
+#
+# Remote requests can sign in but never create accounts
+# unless REMOTE_ALLOW_REGISTRATION is True. Leave it off:
+# a public sign-up form is an open door to Lumi.
+#
+# TRUST_CLOUDFLARE_ACCESS: when True, a remote request
+# carrying a valid Cloudflare Access JWT (signature checked
+# against your team's keys; CF_ACCESS_TEAM_DOMAIN and
+# CF_ACCESS_AUD in .env) is signed in as that email,
+# creating a remote-tier account on first visit. The plain
+# email header is never trusted on its own.
+# =======================================================
+TUNNEL_PORT = 5080
+REMOTE_ALLOW_REGISTRATION = False
+TRUST_CLOUDFLARE_ACCESS = False
+
+# =======================================================
+# OBS Streaming — DISABLED (kept for a future feature)
+# -------------------------------------------------------
+# STREAMING_ENABLED gates the whole feature: the OBS module,
+# the Stream page, its /api/stream/* routes, and the OBS
+# card on the Integrations page. Off, none of it loads.
+#
+# Connection settings (OBS_HOST, OBS_PORT, OBS_PASSWORD,
+# OBS_SUBTITLE_SOURCE, STREAM_EMBED_URL) live in .env.
+# Subtitles write each spoken line, in timed chunks, to
+# OBS_SUBTITLE_FILE and, if set, to OBS_SUBTITLE_SOURCE.
+# obsws-python is not in requirements.txt; install it by
+# hand before turning this on.
+# =======================================================
+STREAMING_ENABLED = False
+OBS_SUBTITLES_ENABLED = False
+OBS_SUBTITLE_FILE = os.path.join(WORKSPACE_ROOT, "data", "obs_subtitles.txt")
+OBS_SUBTITLE_MAX_CHARS = 90      # longest chunk shown at once
+OBS_SUBTITLE_HOLD_SECONDS = 2.5  # how long the last chunk stays up
+
+# =======================================================
 # Model Spec Parser
 # -------------------------------------------------------
 # Model names accept either a bare Ollama name ("lumi-qwen3") or

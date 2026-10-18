@@ -85,6 +85,14 @@ $('#auth-form').addEventListener('submit', async (e) => {
   try {
     const r = await fetch('/setup-status', { credentials: 'same-origin' });
     const data = await r.json();
+    if (data.needs_setup && data.remote) {
+      // The first account can only be created on the host machine.
+      updateUI();
+      $('#auth-submit').disabled = true;
+      showError('Lumi has not been set up yet. Create the first account ' +
+                'on the host machine at http://127.0.0.1:5000.');
+      return;
+    }
     if (data.needs_setup) {
       location.href = '/setup';
       return;

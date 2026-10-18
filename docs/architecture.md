@@ -494,9 +494,11 @@ message, level)`. That call:
 3. Appends a line to `data/logs/events.log`.
 
 A `ThreadingHTTPServer` on `127.0.0.1:5001` serves a dashboard page and
-`/events`. The hub's own page polls `/events` every 2 seconds; the web
-client's Dashboard page fetches it once per visit or Refresh. There is no
-push channel. `emit()` never blocks on a network
+`/events`. The hub's own page polls `/events` every 2 seconds. The web
+client's Dashboard page reads the same buffer through the web server's
+`GET /api/log_events` once per visit or Refresh, so it works from any
+device without reaching `:5001`; remote (tunnel) sessions are refused it.
+There is no push channel. `emit()` never blocks on a network
 call, which is why high-frequency loops (ambient sampling, heartbeat) use it
 instead of `print()`.
 

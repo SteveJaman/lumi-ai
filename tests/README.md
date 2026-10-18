@@ -20,6 +20,17 @@ bypass services that are not running; `test_comprehensive.py` and
 | `test_sdk_protocol.py` | Wire format builders, `ActionSpec` roundtrip |
 | `test_llm_providers.py` | `parse_model_spec`, `make_model_spec`, `mask_key` |
 | `test_agent_tools.py` | `_safe_path` sandbox — refuses escapes from `WORKSPACE_ROOT` |
+| `test_streaming.py` | Dormant streaming code (flag forced on): subtitle chunking and timing, OBS failure handling, `LUMI_PUBLIC_ORIGINS` parsing, `/api/stream/*` routes, `setup_tunnel.py` `.env` writer |
+| `test_remote_tiers.py` | Remote (tunnel-port) requests get 403 on every host-only route and on chat commands; local requests get 200; headers can't upgrade a remote request |
+| `test_registration_block.py` | Registration refused on the tunnel port even with `Origin: http://127.0.0.1:5000`, refused with Cloudflare headers, refused for non-loopback peers; `cf-` usernames reserved |
+| `test_remote_auth_flow.py` | Browser path through the tunnel port: `/` → `/login`, static assets, login cookie flags (`Secure; HttpOnly; SameSite=Lax; Path=/`), authenticated `/api/status`, a real socket.io connection, bad-origin handshake refused |
+| `test_log_events_proxy.py` | `/api/log_events` mirrors `log_hub.get_events()`, needs auth, refused for remote sessions |
+| `test_cf_access.py` | Cloudflare Access JWT verification (signature, issuer, audience, expiry), sign-in only with `TRUST_CLOUDFLARE_ACCESS`, email header alone ignored |
+| `test_healthz.py` | `/healthz` answers without auth on both ports |
+
+`conftest.py` provides `live_lumi`, which runs the real
+`SocketIOServer.start_sites()` on two free loopback ports (main and tunnel)
+against a temp user DB and `.env`.
 
 ### Standalone harnesses
 

@@ -90,6 +90,10 @@ data/outputs/
 # --- Minecraft agent telemetry, event log, skill library ---
 data/minecraft/
 
+# --- Streaming: generated tunnel config, live subtitle text ---
+data/cloudflared/
+data/obs_subtitles.txt
+
 # --- npm dependencies for the Node SDK examples ---
 node_modules/
 

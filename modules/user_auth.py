@@ -229,6 +229,34 @@ class UserDB:
             "display_name": row["display_name"] or row["username"],
         }
 
+    def get_or_create_external_user(self, username: str,
+                                    display_name: str):
+        """Look up, or create, an account that signs in through an
+        external identity (Cloudflare Access). Its password is random
+        and never shown, so it can't be used with the login form.
+        Returns the user dict, or None if username is invalid."""
+        username = (username or "").strip().lower()
+        if not _USERNAME_RE.match(username):
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, username, display_name FROM users "
+                "WHERE username = ?", (username,),
+            ).fetchone()
+        if row:
+            return {
+                "id": row["id"],
+                "username": row["username"],
+                "display_name": row["display_name"] or row["username"],
+            }
+        ok, payload = self.register(
+            username, secrets.token_urlsafe(32), display_name)
+        if not ok:
+            # Lost a race with a concurrent first request; re-read.
+            return self.get_or_create_external_user(username, display_name) \
+                if payload == "That username is taken." else None
+        return payload
+
     # ------------------------------------------------------------------
     # Sessions
     # ------------------------------------------------------------------

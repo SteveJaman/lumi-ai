@@ -12,6 +12,7 @@ in this folder. Pick the doc that matches your question.
 | [development.md](development.md) | Dev setup, module contract, web-server conventions, test suite, code conventions, adding providers, tools, and pages |
 | [models.md](models.md) | Ollama, two-path routing, local and cloud routing, retries and rate limits, TTS/STT, embeddings, vision |
 | [discord-voice.md](discord-voice.md) | DAVE receive, VAD, group awareness, diagnostics |
+| [remote-access.md](remote-access.md) | Cloudflare Tunnel, remote vs host access tiers, Cloudflare Access sign-in, verify-before-sharing checklist |
 | [security.md](security.md) | Threat model, Phase 9 guards, web client controls, incident response |
 | [roadmap.md](roadmap.md) | All ten phases, changelog, status, and what remains |
 | [known-limitations.md](known-limitations.md) | Architectural limitations, web client gaps, and behavior that is not a bug |
@@ -29,6 +30,7 @@ in this folder. Pick the doc that matches your question.
 - **See what's shipped and what's left.** [roadmap.md](roadmap.md).
 - **Decide what runs locally and what goes to the cloud.** [models.md](models.md#local-and-cloud-routing).
 - **Work on the browser UI.** [`../web/README.md`](../web/README.md) for client conventions, [architecture.md](architecture.md#web-server-modulessocketiopy) for the server side.
+- **Use Lumi from campus or share her with someone.** [remote-access.md](remote-access.md) covers the tunnel, what remote users can do, and Cloudflare Access.
 - **Write a plugin.** [`../sdk/README.md`](../sdk/README.md) for the protocol, then [`../plugin/README.md`](../plugin/README.md) for the reference plugin.
 - **Let Lumi play Minecraft.** [`../sdk/examples/minecraft/README.md`](../sdk/examples/minecraft/README.md) for the bot and its Voyager actions, [`../plugin/README.md`](../plugin/README.md) for the autonomous agent and the `:5002` dashboard. Read [security.md](security.md#minecraft-bot-control-api) first.
 

@@ -9,6 +9,7 @@ Lumi talks to:
     discord       — bot + voice bridge
     fish_audio    — TTS engine
     browser       — Playwright Firefox
+    obs           — OBS Studio over obs-websocket
 
 Each integration exposes:
   - probe(modules, signals) -> (state, message)
@@ -320,6 +321,37 @@ def _test_browser(modules, signals) -> Tuple[bool, str]:
 
 
 # ===============================================================
+# OBS
+# ===============================================================
+def _probe_obs(modules, signals) -> Tuple[str, str]:
+    mod = (modules or {}).get("obs")
+    if mod is None or not getattr(mod, "enabled", False):
+        return "off", "Module not loaded"
+    from modules.obs_control import HAS_OBSWS
+    if not HAS_OBSWS:
+        return "warn", "obsws-python not installed"
+    if mod.last_error:
+        return "warn", mod.last_error
+    env = _read_env()
+    where = (f"{env.get('OBS_HOST') or '127.0.0.1'}:"
+             f"{env.get('OBS_PORT') or '4455'}")
+    auth = "password set" if env.get("OBS_PASSWORD") else "no password"
+    return "ok", f"{where} · {auth} · click Test to connect"
+
+
+def _test_obs(modules, signals) -> Tuple[bool, str]:
+    mod = (modules or {}).get("obs")
+    if mod is None:
+        return False, "OBS module is not loaded."
+    st = mod.status()
+    if not st["connected"]:
+        return False, st["error"]
+    live = "live" if st["streaming"] else "offline"
+    return True, (f"Connected to OBS {st['obs_version']} — "
+                  f"{len(st['scenes'])} scene(s), stream {live}.")
+
+
+# ===============================================================
 # Registry
 # ===============================================================
 INTEGRATIONS: List[Dict[str, Any]] = [
@@ -425,6 +457,52 @@ INTEGRATIONS: List[Dict[str, Any]] = [
         "fields": [],
         "toggle": None,
     },
+    {
+        "id": "obs",
+        "label": "OBS Studio",
+        "emoji": "🎥",
+        "description": (
+            "Streaming control over obs-websocket: scene switching, "
+            "start/stop stream, and live subtitles. Enable it in OBS "
+            "under Tools → WebSocket Server Settings."
+        ),
+        "docs": "https://obsproject.com/kb/remote-control-guide",
+        "probe": _probe_obs,
+        "test": _test_obs,
+        "fields": [
+            {
+                "key": "OBS_HOST",
+                "label": "Host",
+                "secret": False,
+                "placeholder": "127.0.0.1",
+            },
+            {
+                "key": "OBS_PORT",
+                "label": "Port",
+                "secret": False,
+                "placeholder": "4455",
+            },
+            {
+                "key": "OBS_PASSWORD",
+                "label": "WebSocket password",
+                "secret": True,
+                "placeholder": "from OBS → Show Connect Info",
+            },
+            {
+                "key": "OBS_SUBTITLE_SOURCE",
+                "label": "Subtitle text source",
+                "secret": False,
+                "placeholder": "e.g. Lumi Subtitles (optional)",
+            },
+            {
+                "key": "STREAM_EMBED_URL",
+                "label": "Stream embed URL",
+                "secret": False,
+                "placeholder": "https://player.twitch.tv/?channel=…",
+            },
+        ],
+        "toggle": None,
+    },
 ]
 
 
@@ -443,7 +521,11 @@ def list_integrations(modules, signals) -> List[Dict[str, Any]]:
     env = _read_env()
     out: List[Dict[str, Any]] = []
 
+    from constants import STREAMING_ENABLED
+
     for spec in INTEGRATIONS:
+        if spec["id"] == "obs" and not STREAMING_ENABLED:
+            continue
         # Probe
         try:
             state, message = spec["probe"](modules, signals)

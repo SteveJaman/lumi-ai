@@ -10,6 +10,7 @@ Standalone utilities for Lumi. `main.py` does not import or run any of them. Run
 | `check_outputs.py` | Lists PyAudio output devices and their indices | `python scripts/check_outputs.py` |
 | `check_system.py` | Prints Python version, key package versions, GPU info, and port availability | `python scripts/check_system.py` |
 | `import_chat_history.py` | One-shot importer that backfills long-term memory from a chat log | `python scripts/import_chat_history.py --dry-run` |
+| `setup_tunnel.py` | Exposes the web client through a Cloudflare Tunnel (`check`, `quick`, `setup`, `run`). See [../docs/remote-access.md](../docs/remote-access.md) | `python scripts/setup_tunnel.py check` |
 | `reset_lumi_history.ps1` | Clears chat history and session state | `.\scripts\reset_lumi_history.ps1` |
 
 ## import_chat_history.py

@@ -9,6 +9,8 @@ import threading
 import array  # fallback RMS computation when numpy is absent
 from dotenv import load_dotenv
 
+from modules.subtitles import SubtitleWriter
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -87,6 +89,16 @@ class APIHandler:
         self.outer.stop()
 
 
+def _wav_duration(audio_bytes, text):
+    """Seconds of audio, for pacing subtitles. Falls back to a
+    speaking-rate estimate if the bytes aren't a readable WAV."""
+    try:
+        with wave.open(io.BytesIO(audio_bytes), 'rb') as wf:
+            return wf.getnframes() / float(wf.getframerate())
+    except Exception:
+        return max(1.0, len(text or "") / 15.0)
+
+
 class TTS:
     def __init__(self, signals, enabled=True, modules=None, audio_mode="both"):
         self.signals = signals
@@ -103,6 +115,10 @@ class TTS:
         self.API = APIHandler(self)
 
         self.signals.tts_instance = self
+
+        obs = next((m for m in self.modules
+                    if m.__class__.__name__ == "OBSControl"), None)
+        self.subtitles = SubtitleWriter(obs=obs)
 
         if self.enabled:
             self.init_engine()
@@ -262,6 +278,7 @@ class TTS:
     def play_audio(self, message, audio_bytes):
         """Physically plays the bytes and routes to Discord."""
         self.signals.sio_queue.put(("current_message", message))
+        self.subtitles.show(message, _wav_duration(audio_bytes, message))
 
         try:
             broadcast = getattr(self.signals, "broadcast_tts_audio", None)
@@ -394,6 +411,7 @@ class TTS:
                 pass
 
         self.signals.AI_speaking = False
+        self.subtitles.clear()
 
         # Close the mouth so a barge-in doesn't leave the avatar
         # frozen mid-syllable.
