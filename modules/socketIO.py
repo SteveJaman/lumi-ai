@@ -173,13 +173,22 @@ def _local_port(request):
     return sockname[1] if sockname else None
 
 
+# Loopback origins of the tunnel listener, so a browser opened directly
+# at http://127.0.0.1:5080 (testing the remote tier without cloudflared)
+# can sign in and connect socket.io. Filled by start_sites() with the
+# port actually bound. Accepting an origin grants nothing by itself:
+# the tier comes from the port the request arrives on, never Origin.
+_tunnel_origins = frozenset()
+
+
 def _origin_allowed(origin, environ=None):
     """Shared by HTTP handlers and the socket.io CORS check
     (engine.io calls it as fn(origin, environ))."""
     if not origin:
         return False
     origin = origin.rstrip("/").lower()
-    return origin in _LOCAL_ORIGINS or origin in _public_origins()
+    return (origin in _LOCAL_ORIGINS or origin in _tunnel_origins
+            or origin in _public_origins())
 
 _WEB_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web"
@@ -2972,4 +2981,9 @@ class SocketIOServer:
             else:
                 await web.SockSite(runner, tsock).start()
                 self.tunnel_port = tsock.getsockname()[1]
+                global _tunnel_origins
+                _tunnel_origins = frozenset({
+                    f"http://127.0.0.1:{self.tunnel_port}",
+                    f"http://localhost:{self.tunnel_port}",
+                })
         return runner

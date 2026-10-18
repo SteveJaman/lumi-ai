@@ -30,6 +30,7 @@ def env_file(tmp_path, monkeypatch):
     monkeypatch.setattr(sio_mod, "_ENV_PATH", str(path))
     monkeypatch.setattr(sio_mod, "_public_origins_cache",
                         (object(), frozenset()))
+    monkeypatch.setattr(sio_mod, "_tunnel_origins", frozenset())
     monkeypatch.delenv("LUMI_PUBLIC_ORIGINS", raising=False)
 
     def write(text):

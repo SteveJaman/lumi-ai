@@ -200,6 +200,14 @@ phone.
    item present.
 5. The Dashboard shows events.
 
+**Remote tier without a tunnel (on the host)**
+
+Open `http://127.0.0.1:5080` directly. That's the tunnel listener, so
+you get exactly what a remote visitor gets, with no `cloudflared` or
+second device needed. Steps 7–13 below all work here. Browsers share
+cookies across ports on the same host, so signing in or out on 5080
+does the same on 5000 in that browser; the tier still follows the port.
+
 **Remote (a phone on cellular, not campus Wi-Fi, or a friend's laptop)**
 
 6. The tunnel URL loads the login page.
