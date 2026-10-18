@@ -109,10 +109,13 @@ function createBot() {
 
   bot.on("error", (err) => console.error("[mc] error:", err.message));
 
+  const thisBot = bot;
   bot.on("end", (reason) => {
+    // Ignore ends from a bot already replaced by a /config reconnect.
+    if (bot !== thisBot) return;
     botReady = false;
-    console.log("[mc] disconnected:", reason);
-    setTimeout(createBot, 10000);
+    console.log(`[mc] disconnected from ${MC_HOST}:${MC_PORT}:`, reason);
+    setTimeout(() => { if (bot === thisBot) createBot(); }, 10000);
   });
 }
 
@@ -411,8 +414,15 @@ const _controlServer = http.createServer((req, res) => {
   const url = (req.url || "").split("?")[0];
   res.setHeader("Content-Type", "application/json");
   res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "GET" && url === "/status") {
+  // Browsers preflight JSON POSTs from the :5002 dashboard.
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+
+  } else if (req.method === "GET" && url === "/status") {
     res.writeHead(200);
     res.end(JSON.stringify(buildStatusJson()));
 
