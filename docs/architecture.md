@@ -415,7 +415,7 @@ local HTTP API:
 ```
  ┌──────────────────────────── Lumi (main.py) ────────────────────────────┐
  │ socketIO :5000 ─ /api/game/status, /api/game/toggle,                   │
- │                  /api/games/{game}/{directive,action,item,skin}        │
+ │            /api/games/{game}/{directive,action,item,skin,server}       │
  │ game_manager ── Popen, output → log hub "minecraft" + data/logs/       │
  │ prompter ◄──► sdk/server.py (:5056) ◄── status (silent) + events ──┐   │
  └──────────────────────┬─────────────────────────────────────────────┼───┘

@@ -1765,6 +1765,17 @@ function gameCardHtml() {
       In game, start a chat message with “Lumi,” to give her an order.
     </div>
     <div class="game-error" id="game-error" hidden></div>
+    <div class="game-label game-server-label">Server connection</div>
+    <form class="game-server" id="game-server" autocomplete="off">
+      <input class="input" id="game-server-host" placeholder="localhost" aria-label="Host">
+      <input class="input game-server-port" id="game-server-port" inputmode="numeric"
+             placeholder="port" aria-label="Port">
+      <button class="btn" type="submit" id="game-server-send">Reconnect</button>
+    </form>
+    <div class="game-lan" id="game-lan"></div>
+    <div class="game-hint" id="game-server-msg">
+      The port changes each time you open a world to LAN. Open worlds on this network show up here.
+    </div>
     <div class="game-live">
       <div class="game-viewer" id="game-viewer">
         <div class="empty">Live view appears here once the bot is in a world.</div>
@@ -1810,6 +1821,14 @@ function startGamePolling() {
     sendGameDirective();
   });
   bindMcHud();
+  $('#game-server').addEventListener('submit', (e) => {
+    e.preventDefault();
+    switchGameServer($('#game-server-host').value.trim() || 'localhost', $('#game-server-port').value.trim());
+  });
+  $('#game-lan').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-port]');
+    if (b) switchGameServer(b.dataset.host, b.dataset.port);
+  });
   refreshGameCard();
   _gameTimer = setInterval(refreshGameCard, 2000);
 }
@@ -1900,6 +1919,7 @@ function renderGameCard(s) {
   if (s.position) meta.push(`at ${Math.round(s.position.x)}, ${Math.round(s.position.y)}, ${Math.round(s.position.z)}`);
   $('#game-meta').textContent = meta.join(' · ');
   renderHud(s.hud);
+  renderGameServer(s.server);
   $('#game-order').textContent = !agent.running ? ''
     : s.mode === 'follow' ? 'Order: following you'
     : s.mode === 'stay' ? 'Order: staying put'
@@ -2145,6 +2165,51 @@ function loadMcSkin() {
   img.hidden = false;
   img.onerror = () => { img.hidden = true; };
   img.src = `/api/games/minecraft/skin?t=${Date.now()}`;
+}
+
+// ── Server connection ─────────────────────────────────────────────
+let _serverPrint = null;
+
+function renderGameServer(server) {
+  server = server || {};
+  const host = $('#game-server-host'), port = $('#game-server-port');
+  // Fill the fields from the current server, but never while someone types.
+  if (document.activeElement !== host && document.activeElement !== port) {
+    if (server.host && !host.value) host.value = server.host;
+    if (server.port && !port.value) port.value = server.port;
+  }
+  const print = fingerprint(server.lan_worlds || []);
+  if (print === _serverPrint) return;
+  _serverPrint = print;
+  const lan = $('#game-lan');
+  lan.innerHTML = (server.lan_worlds || []).map(w => `
+    <button type="button" class="btn btn-sm lan-world${w.current ? ' current' : ''}"
+            data-host="${escapeHtml(w.host)}" data-port="${escapeHtml(w.port)}"
+            title="${w.current ? 'Connected' : 'Connect to this world'}">
+      ${w.current ? '● ' : ''}${escapeHtml(w.name || 'LAN world')} · ${escapeHtml(w.host)}:${escapeHtml(w.port)}
+    </button>`).join('');
+}
+
+async function switchGameServer(host, port) {
+  const note = $('#game-server-msg');
+  const button = $('#game-server-send');
+  button.disabled = true;
+  note.classList.remove('error');
+  note.textContent = `Checking ${host}:${port}…`;
+  try {
+    const r = await api('/api/games/minecraft/server', {
+      method: 'POST', csrf: true, body: { host, port: Number(port) },
+    });
+    $('#game-server-host').value = host;
+    $('#game-server-port').value = port;
+    note.textContent = r.message || 'Reconnecting.';
+    refreshGameCard();
+  } catch (e) {
+    note.classList.add('error');
+    note.textContent = e.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 let _mcHandlersBound = false;

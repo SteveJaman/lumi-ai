@@ -44,6 +44,7 @@ from modules.log_hub import emit as hub_emit
 MC_DIR         = os.path.join(DATA_ROOT, "minecraft")
 AUTOPLAY_PATH  = os.path.join(MC_DIR, "autoplay.json")
 TELEMETRY_PATH = os.path.join(MC_DIR, "telemetry.json")
+SERVER_PATH    = os.path.join(MC_DIR, "server.json")   # read by bot.js at startup
 LOG_DIR        = os.path.join(DATA_ROOT, "logs", "minecraft")
 BOT_DIR        = os.path.join(WORKSPACE_ROOT, "sdk", "examples", "minecraft")
 AGENT_SCRIPT   = os.path.join(WORKSPACE_ROOT, "plugin", "minecraft_bot.py")
@@ -62,6 +63,7 @@ ITEM_NAME_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 # agent and Lumi's tools.
 HUD_ACTIONS = {"drop_item"}
 MAX_SKIN_BYTES = 64 * 1024
+HOST_RE = re.compile(r"^[A-Za-z0-9.:\[\]-]{1,253}$")
 
 # Chatty startup lines that would push real events out of the hub's buffer.
 _QUIET = re.compile(r"^\[sdk\] (registered:|connecting to)|^\[voyager\] running ")
@@ -237,6 +239,7 @@ class GameManager:
             "position": tel.get("position") if live else None,
             "viewer_port": self._viewer_port() if bot_up else None,
             "hud": _hud(bot_status),
+            "server": _server_info(bot_status, bot_up),
         }
 
     def send_directive(self, game: str, text: str) -> Dict[str, Any]:
@@ -293,6 +296,40 @@ class GameManager:
             return json.loads(e.read() or b"{}") or {"success": False, "message": f"bot.js said {e.code}"}
         except Exception:
             raise RuntimeError("Minecraft AI isn't running (bot.js isn't answering on :5057).")
+
+    def set_server(self, game: str, host: str, port: Any) -> Dict[str, Any]:
+        """Point the bot at another world. With bot.js running, it checks
+        the world answers and reconnects (POST /reconnect), keeping the
+        current connection if it doesn't. Without bot.js, the choice is
+        saved for the next start. Raises ValueError for a bad address or
+        an unreachable world."""
+        if game not in GAMES:
+            raise ValueError(f"unknown game: {game}")
+        host = str(host or "").strip()
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            port = 0
+        if not HOST_RE.match(host) or not 1 <= port <= 65535:
+            raise ValueError("Enter a host (like localhost) and a port from 1 to 65535.")
+        if not self._bot_api_up():
+            os.makedirs(MC_DIR, exist_ok=True)
+            with open(SERVER_PATH, "w", encoding="utf-8") as f:
+                json.dump({"host": host, "port": port}, f)
+            return {"success": True, "saved_only": True,
+                    "message": f"Saved {host}:{port}. The bot will join it when Minecraft AI starts."}
+        body = json.dumps({"host": host, "port": port}).encode()
+        req = urllib.request.Request(f"{BOT_API}/reconnect", data=body,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                result = json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            raise ValueError(json.loads(e.read() or b"{}").get("message") or f"bot.js said {e.code}")
+        except Exception as e:
+            raise ValueError(f"bot.js didn't answer: {e}")
+        hub_emit(self.signals, "minecraft", f"server switched from the Games page: {host}:{port}")
+        return result
 
     # ─── Skin ────────────────────────────────────────────────────
 
@@ -459,6 +496,18 @@ def _hud(bot_status: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return dict(base, online=True,
                 **{k: bot_status.get(k) for k in ("version", "health", "food", "armor",
                                                   "held_slot", "slots", "position")})
+
+
+def _server_info(bot_status: Optional[Dict[str, Any]], bot_up: bool) -> Dict[str, Any]:
+    """The server the bot uses (or will use), and LAN worlds bot.js has
+    heard announced."""
+    if bot_up:
+        lan = _get_json(f"{BOT_API}/lan") or {}
+        cur = lan.get("current") or {}
+        return {"host": cur.get("host"), "port": cur.get("port"),
+                "lan_worlds": lan.get("worlds") or [], "connected": bool((bot_status or {}).get("ready"))}
+    saved = _read_json(SERVER_PATH)
+    return {"host": saved.get("host"), "port": saved.get("port"), "lan_worlds": [], "connected": False}
 
 
 def texture_file(name: str, version: Optional[str] = None) -> Optional[str]:

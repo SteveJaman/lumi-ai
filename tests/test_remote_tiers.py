@@ -30,6 +30,7 @@ HOST_ONLY = [
     ("POST",   "/api/game/toggle"),
     ("POST",   "/api/games/minecraft/directive"),
     ("POST",   "/api/games/minecraft/action"),
+    ("POST",   "/api/games/minecraft/server"),
     ("GET",    "/api/games/minecraft/item/diamond.png"),
     ("GET",    "/api/games/minecraft/skin"),
     ("POST",   "/api/games/minecraft/skin"),
@@ -257,6 +258,36 @@ def test_local_game_hud_routes(live_lumi):
         r = await live.local.post("/api/games/minecraft/skin", data=form(PNG_SIG + b"x"),
                                   headers={"Origin": LOCAL})
         assert r.status == 403 and len(skins) == 1
+    live_lumi(scenario)
+
+
+def test_local_game_server_switch(live_lumi):
+    """The Server connection panel: forwarded to the game manager, which
+    reports an unreachable world as a 400 with its reason; CSRF-checked."""
+    async def scenario(live):
+        calls = []
+
+        class FakeGames:
+            def set_server(self, game, host, port):
+                if host == "nowhere":
+                    raise ValueError("Couldn't reach a Minecraft world at nowhere:1: nothing is listening there.")
+                calls.append((game, host, port))
+                return {"success": True, "message": f"Reconnecting to {host}:{port}"}
+
+        live.srv.signals.game_manager = FakeGames()
+        csrf = await live.register()
+        h = {"Origin": LOCAL, "X-CSRF-Token": csrf}
+
+        r = await live.local.post("/api/games/minecraft/server",
+                                  json={"host": "localhost", "port": 52518}, headers=h)
+        assert r.status == 200 and calls == [("minecraft", "localhost", 52518)]
+        r = await live.local.post("/api/games/minecraft/server",
+                                  json={"host": "nowhere", "port": 1}, headers=h)
+        assert r.status == 400
+        assert "nothing is listening" in (await r.json())["error"]
+        r = await live.local.post("/api/games/minecraft/server",
+                                  json={"host": "localhost", "port": 1}, headers={"Origin": LOCAL})
+        assert r.status == 403 and len(calls) == 1
     live_lumi(scenario)
 
 

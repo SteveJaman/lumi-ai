@@ -31,6 +31,8 @@ const fs   = require("fs");
 const path = require("path");
 const http = require("http");
 const net  = require("net");
+const os   = require("os");
+const dgram = require("dgram");
 
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
@@ -71,6 +73,24 @@ const MC_OWNER         = (process.env.MC_OWNER || "").trim();
 // Where the house site is remembered between runs.
 const HOUSE_PATH       = process.env.HOUSE_PATH
                        || path.join(__dirname, "../../../data/minecraft/house.json");
+const DATA_DIR         = path.dirname(HOUSE_PATH);
+// Where the bot last died, for getting its items back.
+const DEATH_PATH       = path.join(DATA_DIR, "death_location.json");
+// The server picked on the Games page; overrides MC_HOST/MC_PORT at startup.
+const SERVER_PATH      = path.join(DATA_DIR, "server.json");
+// Listen for "Open to LAN" announcements on the local network.
+const LAN_DISCOVERY    = (process.env.LAN_DISCOVERY || "true").toLowerCase() !== "false";
+// Dropped items despawn after 5 minutes; give up a little before that.
+const ITEM_DESPAWN_S   = 290;
+
+try {
+  const saved = JSON.parse(fs.readFileSync(SERVER_PATH, "utf8"));
+  if (saved.host && Number.isInteger(saved.port)) {
+    MC_HOST = saved.host;
+    MC_PORT = saved.port;
+    console.log(`[mc] using the server picked on the Games page: ${MC_HOST}:${MC_PORT}`);
+  }
+} catch (_) {}
 // First-person 3D view of what the bot sees (prismarine-viewer). 0 disables.
 const VIEWER_PORT      = parseInt(process.env.VIEWER_PORT || "3000", 10);
 // Chunks around the bot sent to each viewer browser. Each chunk is
@@ -276,6 +296,8 @@ function createBot() {
   });
 
   bot.on("death", () => {
+    rememberDeath();
+    endEmergency();
     botReady = false;
     defendTarget = null;
     console.log("[mc] bot died");
@@ -349,6 +371,7 @@ function createBot() {
   });
 
   bot.on("stoppedAttacking", () => { defendTarget = null; });
+  bot.on("physicsTick", onPhysicsTick);
 
   bot.on("chat", (username, message) => {
     if (username === bot.username) return;
@@ -476,14 +499,30 @@ async function equipWeapon() {
 // forests and up to logs in tree canopies.
 const PATH_THINK_MS = parseInt(process.env.PATH_THINK_MS || "10000", 10);
 
-function configurePathfinder() {
+// Movement rules for staying alive. The pathfinder already avoids lava and
+// fire; on top of that: never plan a drop of more than 3 blocks (4+ hurts),
+// don't treat any fall into water as safe, make water paths expensive (it
+// still swims when that's the only way, which is better than no path), and
+// keep off magma, berry bushes and powder snow.
+function survivalMovements() {
   const moves = new Movements(bot, mcData);
-  moves.canDig = true;            // dig through walls, including its own dirt hut
-  moves.allow1by1towers = true;   // pillar up with scaffolding blocks to reach logs
+  moves.canDig = true;            // dig out of holes and through walls
+  moves.allow1by1towers = true;   // pillar up out of caves and to reach logs
   moves.allowParkour = true;
   moves.allowSprinting = true;
-  moves.maxDropDown = 4;
-  bot.pathfinder.setMovements(moves);
+  moves.maxDropDown = 3;
+  moves.infiniteLiquidDropdownDistance = false;
+  moves.liquidCost = 40;
+  for (const name of ["magma_block", "sweet_berry_bush", "powder_snow", "campfire", "soul_campfire",
+                      "soul_fire", "wither_rose", "cactus"]) {
+    const b = mcData.blocksByName[name];
+    if (b) moves.blocksToAvoid.add(b.id);
+  }
+  return moves;
+}
+
+function configurePathfinder() {
+  bot.pathfinder.setMovements(survivalMovements());
   bot.pathfinder.thinkTimeout = PATH_THINK_MS;
 }
 
@@ -513,7 +552,8 @@ function nearbyBlock(name, maxDistance = 32) {
 const WAKE_RE = /^\s*(?:!lumi\b[\s,:]*|lumi\s*[,:!]\s*|lumi\s+)(.*)$/i;
 const MAX_DIRECTIVE = 200;
 let pendingDirective = null;   // { text, source, from, at }
-let interruptSeq = 0;          // bumped by each order; running skills watch it
+let interruptSeq = 0;          // bumped by each order or emergency; running skills watch it
+let interruptReason = "a new order";
 
 // The order after the wake word, "" for a bare "lumi", or null when the
 // message isn't addressed to the bot.
@@ -541,8 +581,9 @@ function setDirective(text, source, from = null) {
 
 // Abort the running skill so a new order takes effect now. A fight in
 // progress is left alone: survival comes first.
-function interruptCurrent() {
+function interruptCurrent(reason = "a new order") {
   interruptSeq++;
+  interruptReason = reason;
   if (!defendTarget) stopAllActivity();
 }
 
@@ -648,7 +689,8 @@ function inventorySlots() {
 
 function buildStatusJson() {
   if (!bot || !botReady) {
-    return { ready: false, username: MC_USERNAME, server: `${MC_HOST}:${MC_PORT}`, auth: MC_AUTH };
+    return { ready: false, username: MC_USERNAME, server: `${MC_HOST}:${MC_PORT}`, auth: MC_AUTH,
+             death: deathJson() };
   }
   const pos = bot.entity.position;
   return {
@@ -676,6 +718,9 @@ function buildStatusJson() {
     owner:     ownerInfo(),
     house:     house ? { origin: house.origin, material: house.material, complete: !!house.complete } : null,
     directive_pending: Boolean(pendingDirective),
+    environment: environmentJson(),
+    emergency: emergency ? emergency.kind : null,
+    death:     deathJson(),
     heap_mb:   Math.round(process.memoryUsage().heapUsed / 1048576),
   };
 }
@@ -1035,6 +1080,20 @@ function registerActions() {
           requires_confirm: false,
         },
         {
+          name: "minecraft_scan_environment",
+          description: "Danger sense: whether you're in a cave, the time of day, oxygen, and hazards nearby (hostile mobs within 8 blocks, lava, water).",
+          schema: { type: "object", properties: {} },
+          capabilities: ["read"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_retrieve_items",
+          description: "Go back to where the bot last died and pick up the dropped items (they despawn 5 minutes after death).",
+          schema: { type: "object", properties: {} },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
           name: "minecraft_give_item",
           description: "Walk to a player and toss them an item from the inventory. item_name can be loose, e.g. 'pickaxe' (gives the best one) or 'diamonds'.",
           schema: {
@@ -1271,6 +1330,404 @@ async function handleDropItem(a) {
   }
 }
 
+// ─── Survival overrides ─────────────────────────────────────────────────────
+// Checked every 500 ms (falls every physics tick). An emergency interrupts
+// whatever skill is running, reports itself in /status (the game agent
+// waits it out), and ends when the danger is gone. Fights are left alone.
+
+let emergency = null;          // { kind: "drowning" | "lava", since }
+let escaping = false;
+let fall = null;               // { startY, warned, bucketUsed }
+
+const isSolid = (b) => b && b.boundingBox === "block";
+const headPos = () => bot.entity.position.offset(0, bot.entity.height || 1.62, 0).floored();
+
+function startEmergency(kind, why) {
+  if (emergency && emergency.kind === kind) return;
+  emergency = { kind, since: Date.now() };
+  console.log(`[survival] ${why}`);
+  _logEv("survival", why);
+  interruptCurrent(kind === "drowning" ? "drowning" : "a lava escape");
+}
+
+function endEmergency() {
+  if (!emergency) return;
+  _logEv("survival", `${emergency.kind} over`);
+  emergency = null;
+  escaping = false;
+  try { bot.setControlState("jump", false); } catch (_) {}
+}
+
+// Lava (or fire) the bot could actually touch: the block it's in, or lava
+// within 2.5 blocks that has open air next to it. Lava sealed behind stone
+// doesn't count.
+function lavaDanger() {
+  const feet = bot.entity.position.floored();
+  for (const p of [feet, feet.offset(0, 1, 0)]) {
+    const b = bot.blockAt(p);
+    if (b && (b.name === "lava" || b.name === "fire" || b.name === "soul_fire")) return p;
+  }
+  const lava = mcData.blocksByName.lava.id;
+  for (const p of bot.findBlocks({ matching: lava, maxDistance: 3, count: 12 })) {
+    if (p.offset(0.5, 0.5, 0.5).distanceTo(bot.entity.position) > 2.5) continue;
+    if (SIDES.some(f => { const n = bot.blockAt(p.plus(f)); return n && n.boundingBox === "empty" && n.name !== "lava"; })) return p;
+  }
+  return null;
+}
+
+// The closest standable spot within 6 blocks with no lava within 3.
+function safeSpotAwayFrom(danger) {
+  const lava = mcData.blocksByName.lava.id;
+  const base = bot.entity.position.floored();
+  let best = null;
+  for (let dx = -6; dx <= 6; dx++) for (let dz = -6; dz <= 6; dz++) for (let dy = -2; dy <= 2; dy++) {
+    const p = base.offset(dx, dy, dz);
+    if (p.distanceTo(danger) < 3) continue;
+    const here = bot.blockAt(p), head = bot.blockAt(p.offset(0, 1, 0)), below = bot.blockAt(p.offset(0, -1, 0));
+    if (!here || here.boundingBox !== "empty" || here.name === "lava" || here.name === "water") continue;
+    if (!head || head.boundingBox !== "empty" || !isSolid(below) || below.name === "magma_block") continue;
+    if (bot.findBlocks({ point: p, matching: lava, maxDistance: 3, count: 1 }).length) continue;
+    const d = p.distanceTo(base);
+    if (!best || d < best.d) best = { p, d };
+  }
+  return best && best.p;
+}
+
+async function escapeLava(danger) {
+  if (escaping) return;
+  escaping = true;
+  try {
+    const spot = safeSpotAwayFrom(danger);
+    if (!spot) {
+      // Nowhere mapped as safe: back straight away from it.
+      const away = bot.entity.position.minus(danger);
+      await bot.lookAt(bot.entity.position.plus(away), true);
+      bot.setControlState("forward", true);
+      bot.setControlState("jump", true);
+      await sleep(1200);
+      bot.clearControlStates();
+      return;
+    }
+    await Promise.race([bot.pathfinder.goto(new goals.GoalBlock(spot.x, spot.y, spot.z)), sleep(8000)]);
+  } catch (_) {
+  } finally {
+    stopAllActivity();
+    escaping = false;
+  }
+}
+
+function survivalTick() {
+  if (!bot || !botReady || !bot.entity) return;
+  const head = bot.blockAt(headPos());
+  const headInWater = head && head.name === "water";
+  const oxygen = bot.oxygenLevel ?? 20;
+
+  if (headInWater && oxygen < 10) {
+    startEmergency("drowning", `Drowning! Oxygen ${oxygen}/20: swimming up`);
+  }
+  if (emergency && emergency.kind === "drowning") {
+    if (!headInWater || oxygen >= 18) { endEmergency(); return; }
+    bot.setControlState("jump", true);              // swim straight up
+    bot.look(bot.entity.yaw, Math.PI / 2, true).catch(() => {});
+    const above = bot.blockAt(headPos().offset(0, 1, 0));
+    if (isSolid(above) && above.name !== "bedrock" && !bot.targetDigBlock) {
+      bot.dig(above, true).catch(() => {});         // a ceiling: dig through it
+    }
+    return;
+  }
+
+  const danger = lavaDanger();
+  if (danger) {
+    startEmergency("lava", `Lava next to me at ${danger.x}, ${danger.y}, ${danger.z}: getting away`);
+    escapeLava(danger);
+  } else if (emergency && emergency.kind === "lava" && !escaping) {
+    endEmergency();
+  }
+}
+setInterval(survivalTick, 500);
+
+// Falling: log it, and with a water bucket, catch the landing ("MLG").
+function onPhysicsTick() {
+  if (!bot || !botReady || !bot.entity) return;
+  const e = bot.entity;
+  if (e.onGround || (e.velocity && e.velocity.y > -0.4)) {
+    if (fall && fall.bucketUsed) pickUpWater();
+    fall = null;
+    return;
+  }
+  fall = fall || { startY: e.position.y, warned: false, bucketUsed: false };
+  let ground = 0;
+  const feet = e.position.floored();
+  while (ground < 40 && !isSolid(bot.blockAt(feet.offset(0, -ground - 1, 0)))) ground++;
+  const below = bot.blockAt(feet.offset(0, -ground, 0));
+  const total = fall.startY - e.position.y + ground;
+  if (total <= 3 || (below && below.name === "water")) return;
+  if (!fall.warned) {
+    fall.warned = true;
+    console.log(`[survival] Falling! about ${Math.round(total)} blocks`);
+    _logEv("survival", `Falling! about ${Math.round(total)} blocks`);
+  }
+  const bucket = bot.inventory.items().find(i => i.name === "water_bucket");
+  if (bucket && !fall.bucketUsed && ground <= 3) {
+    fall.bucketUsed = true;
+    bot.equip(bucket, "hand")
+      .then(() => bot.look(e.yaw, -Math.PI / 2, true))
+      .then(() => bot.activateItem())
+      .catch(() => {});
+  }
+}
+
+// After a water-bucket landing, scoop the water back up.
+function pickUpWater() {
+  setTimeout(() => {
+    const water = bot.findBlock({ matching: mcData.blocksByName.water.id, maxDistance: 3 });
+    const bucket = bot.inventory.items().find(i => i.name === "bucket");
+    if (!water || !bucket) return;
+    bot.equip(bucket, "hand").then(() => bot.lookAt(water.position.offset(0.5, 0.5, 0.5), true))
+      .then(() => bot.activateItem()).catch(() => {});
+  }, 300);
+}
+
+// ─── Environment (danger sense) ─────────────────────────────────────────────
+
+const SEE_THROUGH = /leaves|glass|^air$|vine|torch/;
+
+function environmentJson() {
+  const head = headPos();
+  let covered = false;
+  for (let dy = 1; dy <= 24 && !covered; dy++) {
+    const b = bot.blockAt(head.offset(0, dy, 0));
+    if (b && b.boundingBox === "block" && !SEE_THROUGH.test(b.name)) covered = true;
+  }
+  const headBlock = bot.blockAt(head);
+  const sky = headBlock && typeof headBlock.skyLight === "number" ? headBlock.skyLight : null;
+  const inCave = covered && (sky === null ? bot.entity.position.y < 56 : sky <= 4);
+  const hazards = nearbyThreats(8).map(t => `${t.name} at ${Math.round(t.distance)} blocks`);
+  const lava = bot.findBlocks({ matching: mcData.blocksByName.lava.id, maxDistance: 6, count: 1 })[0];
+  if (lava) hazards.push(`lava ${Math.round(lava.distanceTo(bot.entity.position))} blocks away`);
+  if (headBlock && headBlock.name === "water") hazards.push("underwater");
+  const tod = bot.time ? bot.time.timeOfDay : null;
+  return {
+    in_cave: inCave,
+    covered,
+    sky_light: sky,
+    in_water: Boolean(headBlock && headBlock.name === "water"),
+    oxygen: bot.oxygenLevel ?? 20,
+    is_day: bot.time ? bot.time.isDay !== false : true,
+    time_of_day: tod,
+    hazards,
+    emergency: emergency ? emergency.kind : null,
+  };
+}
+
+function environmentText(env) {
+  const parts = [env.in_cave ? "You are in a cave." : env.covered ? "You are under cover." : "You are outdoors."];
+  parts.push(env.is_day ? "It's day." : "It's night.");
+  for (const h of env.hazards) parts.push(`${h[0].toUpperCase()}${h.slice(1)}.`);
+  if (env.oxygen < 20) parts.push(`Oxygen is ${env.oxygen}/20.`);
+  if (env.in_cave) parts.push("Pathfinding may be difficult.");
+  if (env.emergency) parts.push(`EMERGENCY: ${env.emergency}.`);
+  return `Environment: ${parts.join(" ")}`;
+}
+
+async function handleScanEnvironment(_args) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  return { success: true, message: environmentText(environmentJson()) };
+}
+
+// ─── Death memory and getting items back ────────────────────────────────────
+
+function rememberDeath() {
+  try {
+    const p = bot.entity.position;
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(DEATH_PATH, JSON.stringify({
+      x: +p.x.toFixed(1), y: +p.y.toFixed(1), z: +p.z.toFixed(1),
+      dimension: bot.game && bot.game.dimension, at: Date.now() / 1000,
+    }));
+  } catch (_) {}
+}
+
+function readDeath() {
+  try { return JSON.parse(fs.readFileSync(DEATH_PATH, "utf8")); } catch (_) { return null; }
+}
+
+function forgetDeath() {
+  try { fs.unlinkSync(DEATH_PATH); } catch (_) {}
+}
+
+function deathJson() {
+  const d = readDeath();
+  if (!d) return null;
+  const age = Math.round(Date.now() / 1000 - d.at);
+  return { x: d.x, y: d.y, z: d.z, age_s: age, recoverable: age < ITEM_DESPAWN_S };
+}
+
+const isItemEntity = (e) => e && (e.name === "item" || e.objectType === "Item" || e.displayName === "Item");
+
+async function handleRetrieveItems(_args) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  const d = readDeath();
+  if (!d) return { success: false, message: "I don't remember dying anywhere" };
+  const age = Date.now() / 1000 - d.at;
+  if (age > ITEM_DESPAWN_S) {
+    forgetDeath();
+    return { success: false, message: `My items have despawned (I died ${Math.round(age / 60)} minutes ago)` };
+  }
+  if (d.dimension && bot.game && bot.game.dimension && d.dimension !== bot.game.dimension) {
+    return { success: false, message: "I died in another dimension" };
+  }
+  const spot = new Vec3(d.x, d.y, d.z);
+  const at = bot.blockAt(spot.floored());
+  if (at && (at.name === "lava" || at.name === "fire")) {
+    forgetDeath();
+    return { success: false, message: "I died in lava; those items are gone" };
+  }
+  const seq = interruptSeq;
+  const deadline = Date.now() + 100_000;
+  let picked = 0;
+  const onCollect = (collector) => { if (collector === bot.entity) picked++; };
+  bot.on("playerCollect", onCollect);
+  try {
+    if (bot.entity.position.distanceTo(spot) > 10) {
+      await Promise.race([bot.pathfinder.goto(new goals.GoalNear(spot.x, spot.y, spot.z, 8)), sleep(60_000)]);
+    }
+    if (bot.entity.position.distanceTo(spot) > 12) {
+      forgetDeath();
+      return { success: false, message: "I couldn't get back to where I died" };
+    }
+    while (Date.now() < deadline && interruptSeq === seq) {
+      const item = bot.nearestEntity(e => isItemEntity(e) && e.position.distanceTo(spot) < 14);
+      if (!item) break;
+      const target = item.position.floored();
+      try {
+        await Promise.race([bot.pathfinder.goto(new goals.GoalBlock(target.x, target.y, target.z)), sleep(10_000)]);
+      } catch (_) {}
+      await sleep(400);
+      if (bot.entities[item.id]) {
+        delete bot.entities[item.id];   // couldn't reach it; don't loop on it
+      }
+    }
+  } catch (e) {
+    return { success: false, message: `Couldn't get my items: ${e.message}` };
+  } finally {
+    bot.removeListener("playerCollect", onCollect);
+    stopAllActivity();
+  }
+  if (interruptSeq !== seq) return { success: false, message: `interrupted by ${interruptReason}` };
+  forgetDeath();
+  return picked
+    ? { success: true, message: `Got my stuff back: picked up ${picked} stack${picked === 1 ? "" : "s"} where I died` }
+    : { success: false, message: "Nothing left where I died (despawned or picked up)" };
+}
+
+// ─── Server: reconnect and LAN discovery ────────────────────────────────────
+
+const HOST_RE = /^[A-Za-z0-9.:\[\]-]{1,253}$/;
+
+// Ask the server for its status. Resolves to {motd, version, players} or
+// throws a readable error.
+async function probeServer(host, port) {
+  const mc = require("minecraft-protocol");
+  try {
+    const r = await Promise.race([
+      mc.ping({ host, port, closeTimeout: 4000 }),
+      sleep(4500).then(() => { throw new Error("timeout"); }),
+    ]);
+    const motd = typeof r.description === "string" ? r.description
+               : (r.description && (r.description.text || "")) || "";
+    return { motd: motd.replace(/§./g, "").trim(), version: r.version && r.version.name,
+             players: r.players ? `${r.players.online}/${r.players.max}` : null };
+  } catch (e) {
+    // A refused connection on a dual-stack machine is an AggregateError
+    // with an empty message; the code is on the inner errors.
+    const code = [e.code, ...(e.errors || []).map(x => x.code), e.message].filter(Boolean).join(" ");
+    const why = /ECONNREFUSED/.test(code) ? "nothing is listening there"
+              : /ENOTFOUND|EAI_AGAIN/.test(code) ? "that host name doesn't resolve"
+              : /timeout|ETIMEDOUT/.test(code) ? "it didn't answer in time"
+              : code || "unknown error";
+    throw new Error(`Couldn't reach a Minecraft world at ${host}:${port}: ${why}. ` +
+                    "Open the world to LAN (or check the port) and try again.");
+  }
+}
+
+// Switch servers: check the new one answers first, so a typo leaves the
+// current connection alone. Remembered in data/minecraft/server.json.
+async function reconnectTo(hostIn, portIn) {
+  const host = String(hostIn || "").trim();
+  const port = parseInt(portIn, 10);
+  if (!HOST_RE.test(host) || !(port >= 1 && port <= 65535)) {
+    return { status: 422, success: false, message: "host and a valid port (1-65535) are required" };
+  }
+  let info;
+  try {
+    info = await probeServer(host, port);
+  } catch (e) {
+    _logEv("config", e.message);
+    return { status: 502, success: false, message: e.message };
+  }
+  MC_HOST = host;
+  MC_PORT = port;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(SERVER_PATH, JSON.stringify({ host, port }));
+  } catch (_) {}
+  _logEv("config", `server changed to ${host}:${port}`);
+  console.log(`[mc] reconnecting to ${host}:${port}`);
+  if (bot) {
+    stopViewer(bot);
+    try { bot.quit("switching servers"); } catch (_) {}
+  }
+  setTimeout(createBot, 2000);
+  const label = [info.motd && `"${info.motd}"`, info.version, info.players && `${info.players} players`]
+    .filter(Boolean).join(", ");
+  return { status: 200, success: true, message: `Reconnecting to ${host}:${port}${label ? ` (${label})` : ""}`,
+           server: { host, port, ...info } };
+}
+
+// Minecraft announces "Open to LAN" worlds every 1.5 s on 224.0.2.60:4445
+// as "[MOTD]name[/MOTD][AD]port[/AD]". Keep what was heard in the last 10 s.
+const lanWorlds = new Map();
+
+function localAddresses() {
+  return new Set(Object.values(os.networkInterfaces()).flat().filter(Boolean).map(i => i.address));
+}
+
+function startLanDiscovery() {
+  if (!LAN_DISCOVERY) return;
+  const sock = dgram.createSocket({ type: "udp4", reuseAddr: true });
+  sock.on("error", (e) => {
+    console.warn(`[lan] LAN world discovery off (${e.code || e.message})`);
+    try { sock.close(); } catch (_) {}
+  });
+  sock.on("message", (msg, rinfo) => {
+    const text = msg.toString("utf8");
+    const port = /\[AD\](\d{1,5})\[\/AD\]/.exec(text);
+    if (!port) return;
+    const motd = /\[MOTD\](.*?)\[\/MOTD\]/.exec(text);
+    const host = localAddresses().has(rinfo.address) ? "localhost" : rinfo.address;
+    lanWorlds.set(`${host}:${port[1]}`, {
+      name: motd ? motd[1].replace(/§./g, "") : "LAN world", host, port: +port[1], seen: Date.now(),
+    });
+  });
+  sock.bind(4445, () => {
+    try {
+      sock.addMembership("224.0.2.60");
+      console.log("[lan] listening for Open to LAN worlds");
+    } catch (e) {
+      console.warn(`[lan] LAN world discovery off (${e.message})`);
+    }
+  });
+}
+
+function lanWorldsJson() {
+  const now = Date.now();
+  for (const [k, w] of lanWorlds) if (now - w.seen > 10_000) lanWorlds.delete(k);
+  return [...lanWorlds.values()].map(({ name, host, port }) => ({
+    name, host, port, current: host === MC_HOST && port === MC_PORT,
+  }));
+}
+
 // ─── Shared helpers for the plain-mineflayer skills ─────────────────────────
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -1337,7 +1794,7 @@ async function ensureCraftingTable() {
 // Movements that never dig: while building, a path must not tunnel through
 // the walls just placed.
 function withoutDigging() {
-  const moves = new Movements(bot, mcData);
+  const moves = survivalMovements();
   moves.canDig = false;
   moves.allow1by1towers = false;   // no scaffold pillars inside the house
   bot.pathfinder.setMovements(moves);
@@ -1369,7 +1826,7 @@ async function handleReturnToPlayer(a) {
   const seq = interruptSeq;
   try {
     while (Date.now() < deadline) {
-      if (interruptSeq !== seq) return { success: false, message: "interrupted by a new order" };
+      if (interruptSeq !== seq) return { success: false, message: `interrupted by ${interruptReason}` };
       const ent = ownerEntity();
       if (!ent) {
         // Out of tracking range: no position to walk to.
@@ -1488,13 +1945,13 @@ async function handleBranchMine(a) {
     while (bot.entity.position.y > depth + 0.5) {
       if (Date.now() > deadline) { stopped = "time limit"; break; }
       if (lastHurtAt !== hurtAtStart) { stopped = "something attacked me"; break; }
-      if (interruptSeq !== seq) { stopped = "interrupted by a new order"; break; }
+      if (interruptSeq !== seq) { stopped = `interrupted by ${interruptReason}`; break; }
       await step(true);
     }
     while (!stopped && tunnel < length) {
       if (Date.now() > deadline) { stopped = "time limit"; break; }
       if (lastHurtAt !== hurtAtStart) { stopped = "something attacked me"; break; }
-      if (interruptSeq !== seq) { stopped = "interrupted by a new order"; break; }
+      if (interruptSeq !== seq) { stopped = `interrupted by ${interruptReason}`; break; }
       await step(false);
       tunnel++;
     }
@@ -1940,7 +2397,7 @@ async function runVoyager(code, label, timeoutMs = SKILL_TIMEOUT_MS) {
       }),
       new Promise((_, reject) => {
         watch = setInterval(() => {
-          if (interruptSeq !== seq) reject(new Error("interrupted by a new order"));
+          if (interruptSeq !== seq) reject(new Error(`interrupted by ${interruptReason}`));
         }, 250);
       }),
     ]);
@@ -2037,6 +2494,8 @@ const HANDLERS = {
   minecraft_mine_branch_tunnel: handleBranchMine,
   minecraft_build_house:        handleBuildHouse,
   minecraft_give_item:          handleGiveItem,
+  minecraft_scan_environment:   handleScanEnvironment,
+  minecraft_retrieve_items:     handleRetrieveItems,
   minecraft_craft_chest:        handleCraftChest,
   minecraft_place_chest:        handlePlaceChest,
   minecraft_deposit_items:      handleDepositItems,
@@ -2096,25 +2555,32 @@ const _controlServer = http.createServer((req, res) => {
         res.end(JSON.stringify({ success: false, message: "bad JSON" }));
         return;
       }
-      const newHost = String(payload.host || "").trim();
-      const newPort = parseInt(payload.port, 10);
-      if (!newHost || isNaN(newPort) || newPort < 1 || newPort > 65535) {
-        res.writeHead(422);
-        res.end(JSON.stringify({ success: false, message: "host and a valid port (1–65535) are required" }));
+      // Same as /reconnect: check the new server answers before switching.
+      reconnectTo(payload.host, payload.port).then(({ status, ...r }) => {
+        res.writeHead(status);
+        res.end(JSON.stringify(r));
+      });
+    });
+
+  } else if (req.method === "POST" && url === "/reconnect") {
+    let body = "";
+    req.on("data", c => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on("end", () => {
+      let payload;
+      try { payload = JSON.parse(body); } catch (_) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, message: "bad JSON" }));
         return;
       }
-      const changed = newHost !== MC_HOST || newPort !== MC_PORT;
-      MC_HOST = newHost;
-      MC_PORT = newPort;
-      _logEv("config", `server changed to ${MC_HOST}:${MC_PORT}`);
-      res.writeHead(200);
-      res.end(JSON.stringify({ success: true, message: `server set to ${MC_HOST}:${MC_PORT}` }));
-      if (changed) {
-        // Reconnect the mineflayer bot with the new address.
-        console.log(`[mc] server updated to ${MC_HOST}:${MC_PORT} — reconnecting`);
-        createBot();
-      }
+      reconnectTo(payload.host, payload.port).then(({ status, ...r }) => {
+        res.writeHead(status);
+        res.end(JSON.stringify(r));
+      });
     });
+
+  } else if (req.method === "GET" && url === "/lan") {
+    res.writeHead(200);
+    res.end(JSON.stringify({ worlds: lanWorldsJson(), current: { host: MC_HOST, port: MC_PORT } }));
 
   } else if (req.method === "GET" && url === "/directive") {
     // ?take=1 hands the order over and clears it (the game agent).
@@ -2327,5 +2793,6 @@ process.on("SIGINT", () => {
 });
 
 startSkinServer();
+startLanDiscovery();
 createBot();
 connect();

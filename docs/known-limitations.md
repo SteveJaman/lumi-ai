@@ -192,9 +192,16 @@ architectural.
 * **No bow combat.** `minecrafthawkeye` isn't installed, so `shoot()`
   and `killMob` with a bow in hand fail. Melee works.
 
-* **LAN ports are set by hand.** Minecraft picks a new port each time a
-  world is opened to LAN. Set it in `.env` or the `:5002` dashboard's
-  Minecraft Server panel; the bot does not discover it.
+* **LAN discovery needs the local network.** Worlds are found from
+  Minecraft's UDP announcement on `224.0.2.60:4445`. If that port is taken or
+  firewalled, or the world is on another network, type the host and port.
+
+* **Survival is best-effort.** Drowning and lava are handled within half a
+  second, but a lava escape needs a safe spot within 6 blocks, the water-bucket
+  landing needs a bucket in the inventory and some luck with timing, and
+  there's no handling for suffocation, starvation without food, or the void.
+  Dropped items despawn 5 minutes after death, so a far-away death may be
+  unrecoverable.
 
 * **One bot per `bot.js`.** Each process controls one account, and two
   processes need different `BOT_CONTROL_PORT` values.

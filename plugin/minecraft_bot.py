@@ -560,6 +560,9 @@ FREE_GOALS: Dict[str, Dict[str, Any]] = {
                        "when": lambda inv, st: (st.get("free_slots") or 36) <= 6,
                        "action": ("sort_inventory", {"place_if_missing": True})},
     # Never offered as options: chosen by an order or the proximity check.
+    "retrieve_items": {"desc": "Go back to where I died and pick up my items",
+                       "when": lambda inv, st: False,
+                       "action": ("retrieve_items", {})},
     "give_item":      {"desc": "Hand an item over to my player",
                        "when": lambda inv, st: False,
                        "action": ("give_item", {})},
@@ -1039,9 +1042,9 @@ class MinecraftAgent(LumiClient):
 
                 # 4. Execute
                 ok, msg = await self._execute_goal(goal_name, status)
-                if not ok and "interrupted by a new order" in msg:
-                    # Not a failure: the player changed their mind.
-                    self._record("agent", f"{goal_name} interrupted by a new order")
+                if not ok and "interrupted by" in msg:
+                    # Not a failure: a new order, or a survival emergency.
+                    self._record("agent", f"{goal_name} {msg}")
                     self._tel["current_goal"] = None
                     continue
                 self._remember_goal(goal_name, ok)
@@ -1068,6 +1071,9 @@ class MinecraftAgent(LumiClient):
                     if goal_name == "return_to_player":
                         self._project_until = 0.0
                         await self._push_status(status, force=True)
+                    if goal_name == "retrieve_items":
+                        await self._narrate(f"I went back to where I died and got my stuff back. {msg}",
+                                            major=True)
                     if goal_name == "mine_diamond" or (goal_name == "branch_mine" and "diamond" in msg):
                         await self._narrate("I just found and mined diamonds!", major=True)
                     elif goal_name in _TIERS:
@@ -1104,6 +1110,16 @@ class MinecraftAgent(LumiClient):
 
     async def _survive(self, status: Dict) -> bool:
         """Handle immediate danger and hunger. Returns True if it acted."""
+        # bot.js handles drowning and lava itself and reports it here; every
+        # goal waits until it's over.
+        emergency = status.get("emergency")
+        if emergency:
+            env = status.get("environment") or {}
+            self._tel["current_goal"], self._tel["goal_description"] = "survive", emergency
+            self._think(f"Swimming up for air! Oxygen {env.get('oxygen', '?')}/20." if emergency == "drowning"
+                        else "Lava! Getting away from it.")
+            await asyncio.sleep(1)
+            return True
         threats = [t for t in status.get("threats") or []
                    if t.get("distance", 99) <= DEFEND_RANGE and t.get("name") != "enderman"]
         if threats and not status.get("defending") and time.time() >= self._defend_backoff_until:
@@ -1174,6 +1190,14 @@ class MinecraftAgent(LumiClient):
         if self._override_goal:
             goal, self._override_goal = self._override_goal, None
             return goal, "Lumi", ""
+
+        # Items dropped on death despawn after 5 minutes: getting them back
+        # comes before everything else.
+        death = status.get("death") or {}
+        if death.get("recoverable") and self._available("retrieve_items", status):
+            return ("retrieve_items", "routine",
+                    f"I died at {death['x']:.0f}, {death['y']:.0f}, {death['z']:.0f} "
+                    f"{death['age_s']} s ago; my items are still there")
 
         inv = _inv(status)
         near = status.get("nearby") or {}
@@ -1507,6 +1531,7 @@ class MinecraftAgent(LumiClient):
             f"Current time: {'Day' if is_day else 'Night'}. "
             f"Health {_fmt(status.get('health'))}/20, hunger {_fmt(status.get('food'))}/20. "
             f"Hostiles nearby: {threats}.\n"
+            f"{_environment_text(status.get('environment'))}\n"
             f"{self._player_line(status)}"
             f"Recent goals (oldest first, with result): {self._recent_text(5)}.\n"
             + (f"Materials wanted for the house: "
@@ -1586,6 +1611,9 @@ class MinecraftAgent(LumiClient):
             f"hostiles nearby: {threats}.",
             f"Currently: {doing}",
         ]
+        env = status.get("environment") or {}
+        if env.get("in_cave") or env.get("hazards") or env.get("emergency") or env.get("oxygen", 20) < 20:
+            lines.append(_environment_text(env))
         owner = status.get("owner")
         if owner:
             d = _owner_distance(status)
@@ -1680,6 +1708,25 @@ _EDIBLE = ["bread", "apple", "baked_potato", "carrot", "potato", "beetroot", "me
            "sweet_berries", "cookie", "pumpkin_pie", "golden_carrot", "mushroom_stew",
            "cooked_beef", "cooked_porkchop", "cooked_chicken", "cooked_mutton",
            "cooked_rabbit", "cooked_cod", "cooked_salmon", *_MEAT]
+
+
+def _environment_text(env: Optional[Dict[str, Any]]) -> str:
+    """Danger sense in one line, mirroring bot.js's scan_environment:
+    "Environment: You are in a cave. Creeper at 4 blocks. Oxygen is 8/20.
+    Pathfinding may be difficult." """
+    if not env:
+        return "Environment: unknown."
+    parts = ["You are in a cave." if env.get("in_cave") else
+             "You are under cover." if env.get("covered") else "You are outdoors."]
+    parts.append("It's day." if env.get("is_day", True) else "It's night.")
+    parts += [f"{h[0].upper()}{h[1:]}." for h in env.get("hazards") or []]
+    if env.get("oxygen", 20) < 20:
+        parts.append(f"Oxygen is {env['oxygen']}/20.")
+    if env.get("in_cave"):
+        parts.append("Pathfinding may be difficult.")
+    if env.get("emergency"):
+        parts.append(f"EMERGENCY: {env['emergency']}.")
+    return "Environment: " + " ".join(parts)
 
 
 def _fmt(v: Any) -> str:

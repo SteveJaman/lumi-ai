@@ -228,7 +228,11 @@ crash's exit code and last lines), then the Dashboard's Event Stream with the
 |---|---|---|
 | `Cannot find module 'ws'` | npm packages not installed | `npm install` in `sdk/examples/minecraft` |
 | `[voyager] primitives not loaded` | The Voyager submodule wasn't fetched | `git submodule update --init plugin/voyager` |
-| `ECONNREFUSED ...:25565` repeating | No world on that port | Open the world to LAN and set its port as `MC_PORT` in `sdk/examples/minecraft/.env` (then switch Minecraft AI off and on), or in the `:5002` dashboard's Minecraft Server panel |
+| `ECONNREFUSED ...:25565` repeating | No world on that port | Open the world to LAN and pick it under **Server connection** on the Games page |
+| Reconnect: "nothing is listening there" | The world isn't open to LAN on that port | Open to LAN again; the port changes every time. Pick it from the detected list |
+| No LAN worlds listed | Discovery is off (UDP 4445 taken or firewalled) | Allow Node through Windows Firewall on private networks, or type the host and port |
+| She drops everything and swims up / walks away | A survival emergency (drowning, lava) | Intended; it ends by itself. See [minecraft.md](minecraft.md#staying-alive) |
+| She walks off right after respawning | Getting her items back before they despawn (5 minutes) | Intended |
 | Games page: "can't start bot.js: run `npm install`…" | Packages missing | `npm install` in `sdk/examples/minecraft` |
 | Games page: "Game agent crashed" | The agent exited with an error | The card shows the last lines; the full output is in `data/logs/minecraft/agent.log` |
 | `bot.js` crashed with `JavaScript heap out of memory` | The live viewer's per-browser buffers (most likely) | Close extra viewer tabs; check `[mem]` lines in `bot.log`. See [the bot's README](../sdk/examples/minecraft/README.md#memory) |

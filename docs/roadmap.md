@@ -25,6 +25,18 @@ iteration against real use, not new subsystems.
   Reverse chronological. What shipped, when, and why.
 
   2026-10-24
+    - Minecraft survival and world switching. bot.js survival
+      overrides (500 ms): drowning (swim up, dig the ceiling), lava
+      and fire (walk to a safe spot), falls (log, water-bucket
+      landing); emergencies interrupt skills and the agent waits.
+      Movement rules: drops of 3 max, costly water, more blocks
+      avoided. Danger sense (cave, hazards, oxygen) in /status, the
+      game model's prompt, Lumi's status and minecraft_scan_environment.
+      Death spot saved; retrieve_items goes back for dropped items
+      within 5 minutes. POST /reconnect pings a world before switching
+      and keeps the current one on failure; LAN worlds are discovered
+      from Minecraft's UDP announcements and listed on the Games page,
+      whose Server connection panel replaces editing .env.
     - Minecraft HUD on the Games page: connection line ("Connected as
       LumiBot (offline mode)"), pixel-art hearts, hunger and armor,
       the 27-slot inventory and hotbar with the held slot, local item

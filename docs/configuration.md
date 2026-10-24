@@ -294,13 +294,15 @@ configured with environment variables:
 
 | Process | Where to set | Variables |
 |---|---|---|
-| `sdk/examples/minecraft/bot.js` | `sdk/examples/minecraft/.env` | Connection: `MC_HOST`, `MC_PORT`, `MC_USERNAME`, `MC_AUTH`, `MC_VERSION`, `LUMI_HOST`, `LUMI_PORT`, `LUMI_TOKEN_PATH`. Behavior: `MC_OWNER`, `EVENT_REACTIONS`, `AUTO_DEFEND`, `SKILL_TIMEOUT_MS`, `PATH_THINK_MS`. Ports and paths: `BOT_CONTROL_PORT`, `VIEWER_PORT`, `VIEWER_DISTANCE`, `VIEWER_HEAP_LIMIT_MB`, `SKIN_PORT`, `SKIN_PATH`, `HOUSE_PATH`, `VOYAGER_DIR` |
+| `sdk/examples/minecraft/bot.js` | `sdk/examples/minecraft/.env` | Connection: `MC_HOST`, `MC_PORT`, `MC_USERNAME`, `MC_AUTH`, `MC_VERSION`, `LUMI_HOST`, `LUMI_PORT`, `LUMI_TOKEN_PATH`. Behavior: `MC_OWNER`, `EVENT_REACTIONS`, `AUTO_DEFEND`, `SKILL_TIMEOUT_MS`, `PATH_THINK_MS`, `LAN_DISCOVERY`. Ports and paths: `BOT_CONTROL_PORT`, `VIEWER_PORT`, `VIEWER_DISTANCE`, `VIEWER_HEAP_LIMIT_MB`, `SKIN_PORT`, `SKIN_PATH`, `HOUSE_PATH`, `VOYAGER_DIR` |
 | `plugin/minecraft_bot.py` | Shell environment (Lumi passes its own when it starts the agent) | `BOT_API`, `MC_LOOP_INTERVAL`, `MC_ACTION_TIMEOUT`, `MC_GOAL_PICKER`, `MC_GOAL_MODEL`, `MC_GOAL_KEEP_ALIVE`, `MC_STATUS_INTERVAL`, `MC_NARRATE`, `MC_NARRATE_COOLDOWN` |
 | `plugin/mc_dashboard.py` | Shell environment | `MC_DASH_PORT` |
 
 The game agent's model is `GAME_AGENT_MODEL` in `constants.py` (see
 [Model configuration](#model-configuration)); `MC_GOAL_MODEL` overrides it.
-The Games page switch is stored in `data/minecraft/autoplay.json`.
+The Games page switch is stored in `data/minecraft/autoplay.json`, and the
+world picked under **Server connection** in `data/minecraft/server.json`,
+which overrides `MC_HOST` and `MC_PORT` at the next start.
 
 Defaults and meanings are in [the Minecraft README](../sdk/examples/minecraft/README.md#configuration-env)
 and [plugin/README.md](../plugin/README.md#configuration).

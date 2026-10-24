@@ -1299,6 +1299,18 @@ html[data-theme="dark"] .msg.user .msg-avatar {
   .game-directive { flex-direction: column; }
 }
 .game-hint { margin-top: var(--s-2); font-size: var(--fs-sm); color: var(--text-dim); }
+.game-server-label { display: block; margin-top: var(--s-4); }
+.game-server { display: flex; gap: var(--s-2); margin-top: var(--s-2); }
+.game-server .input { flex: 1; min-width: 0; }
+.game-server .game-server-port { flex: 0 0 110px; }
+@media (max-width: 520px) {
+  .game-server { flex-wrap: wrap; }
+  .game-server .input { flex: 1 1 100%; }
+}
+.game-lan { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-2); }
+.game-lan:empty { display: none; }
+.lan-world.current { border-color: var(--accent); color: var(--accent); }
+.game-hint.error { color: var(--error-text); }
 .game-hint.error { color: var(--error-text); }
 .game-live {
   display: grid;

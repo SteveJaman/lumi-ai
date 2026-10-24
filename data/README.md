@@ -74,6 +74,8 @@ game manager. See [`../docs/minecraft.md`](../docs/minecraft.md#files-and-ports)
 | `data/minecraft/events.jsonl` | Append-only agent event log | Yes |
 | `data/minecraft/autoplay.json` | The Games page switch, `{"minecraft": true}`. Read by the agent every tick and by Lumi at boot | Yes (Minecraft AI stays off until switched on) |
 | `data/minecraft/house.json` | The house site, its material, and whether it's finished | Yes (she starts a new house next to wherever she is) |
+| `data/minecraft/server.json` | The world picked on the Games page, `{host, port}`. `bot.js` reads it at startup, ahead of `.env` | Yes (`.env`'s `MC_HOST`/`MC_PORT` apply again) |
+| `data/minecraft/death_location.json` | Where the bot last died, for getting its items back. Removed once they're back or gone | Yes |
 | `data/logs/minecraft/agent.log`, `bot.log` | Output of the processes Lumi started | Yes |
 
 `skills.json` from older versions is no longer read: progress comes from the

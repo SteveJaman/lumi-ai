@@ -31,13 +31,13 @@ running on the same PC.
    ollama pull qwen2.5:3b
    ```
 
-2. In Minecraft, open a world and choose **Open to LAN**. Note the port.
-   Set it as `MC_PORT` in `sdk/examples/minecraft/.env` (copy `.env.example`
-   first). The port changes each time you open to LAN. To change it while the
-   bot is running, use the **Minecraft Server** panel of the diagnostics page
-   (`python plugin/mc_dashboard.py`, then `http://127.0.0.1:5002/`).
+2. In Minecraft, open a world and choose **Open to LAN**.
 3. Start Lumi: `python main.py`.
 4. In Lumi's web UI on this PC, open **Games** and turn on **Minecraft AI**.
+5. Under **Server connection**, click your world. `bot.js` hears Minecraft's
+   LAN announcement, so it shows up by name with its port. You can also type a
+   host and port and press **Reconnect**. The choice is remembered for next
+   time.
 
 `LumiBot` joins your world within a few seconds. The Games page shows what
 she's thinking, a first-person live view, and a live HUD with her hearts,
@@ -95,19 +95,23 @@ Every tick the agent goes down this list and does the first thing that
 applies:
 
 1. **Take a new order**, if one arrived (see [Orders](#orders)).
-2. **Survive.** Fight a hostile mob within 6 blocks (not endermen); eat when
-   hunger is below 14. `bot.js` also fights back on its own when hit.
+2. **Survive.** If `bot.js` reports an emergency (drowning, or lava close by;
+   see [Staying alive](#staying-alive)), do nothing else until it's over.
+   Fight a hostile mob within 6 blocks (not endermen); eat when hunger is below
+   14. `bot.js` also fights back on its own when hit.
 3. **Hold a mode** from an order: stay put, or follow you closely.
-4. **Work on the current order.**
-5. **Come back to you** if you called, are out of sight, or are more than 25
+4. **Get her items back** if she died less than 5 minutes ago (dropped items
+   despawn after that).
+5. **Work on the current order.**
+6. **Come back to you** if you called, are out of sight, or are more than 25
    blocks away (64 while on a long project). See
    [Playing near you](#playing-near-you).
-6. **Tech tree basics.** Wood → crafting table → wooden pickaxe → cobblestone
+7. **Tech tree basics.** Wood → crafting table → wooden pickaxe → cobblestone
    → stone pickaxe, decided in code. Progress is read from the inventory, any
    wood type works, and the language model never chooses these steps.
-7. **Routines.** Go home at night once there's a finished house, and put
+8. **Routines.** Go home at night once there's a finished house, and put
    things away in a chest when the inventory is nearly full.
-8. **Free play.** The game model picks from whatever makes sense right now: the
+9. **Free play.** The game model picks from whatever makes sense right now: the
    next tool tier (furnace, iron, smelting, iron pickaxe, diamonds), chopping
    trees, hunting, cooking, exploring, mining coal, branch mining, crafting
    torches, building the house, a dirt hut at night, or waiting out the night.
@@ -156,6 +160,44 @@ giving up."
 
 The full table is in
 [the agent's README](../plugin/README.md#orders).
+
+---
+
+## Staying alive
+
+Survival runs inside `bot.js`, so it reacts within half a second, and it
+outranks everything: an emergency interrupts whatever skill is running (but
+never a fight), and the agent waits it out.
+
+| Danger | What she does |
+|---|---|
+| **Drowning**: head underwater and oxygen below 10/20 | Holds jump and looks up to swim straight up, digging through a block above her head if there is one, until she has air (oxygen 18+) |
+| **Lava or fire**: standing in it, or lava within 2.5 blocks with open air next to it | Walks to the nearest standable spot within 6 blocks that has no lava within 3; with none found, backs straight away. Lava sealed behind stone doesn't count, so mining near it doesn't cause panics |
+| **Falling** more than 3 blocks | Logs `[SURVIVAL] Falling!`. With a water bucket, places water just before landing ("MLG") and scoops it back up |
+
+Her paths avoid trouble in the first place. She never plans a drop of more than
+3 blocks, doesn't treat a fall into water as automatically safe, and avoids
+lava, fire, magma, berry bushes, powder snow, campfires and cactus. Water is
+expensive to path through, so she goes around it but can still swim when
+that's the only way. She can still dig and pillar her way out of holes and
+caves.
+
+**Danger sense.** Every status the agent reads includes an environment check:
+whether she's in a cave (rock overhead and little sky light), day or night,
+oxygen, and hazards (hostile mobs within 8 blocks, lava within 6, being
+underwater). The game model sees it as one line, and so does Lumi when
+something's notable:
+
+> Environment: You are in a cave. It's night. Creeper at 4 blocks. Oxygen is 8/20. Pathfinding may be difficult.
+
+Lumi can also call `minecraft_scan_environment` herself in agent mode.
+
+**After dying.** `bot.js` saves where she died in
+`data/minecraft/death_location.json`. Within the next 5 minutes, before dropped
+items despawn, the agent's first goal after respawning is
+`retrieve_items`. She walks back, picks up every item near the spot, and
+brags about it. If the spot is in lava, in another dimension, unreachable, or
+too old, she forgets it and moves on.
 
 ---
 
@@ -231,6 +273,7 @@ is open:
 | Item tooltip | Hover or focus a slot: display name, item id, count, durability |
 | Drop menu | Click a slot: **Drop 1** or **Drop stack**. She tosses it where she's looking |
 | Skin | A preview of her skin and **Change skin…** to upload a new one |
+| Server connection | Host and port with **Reconnect**, and buttons for the LAN worlds `bot.js` has heard announced (the current one is marked). See [Switching worlds](#switching-worlds) |
 
 Item icons are the textures bundled with the live viewer's package, served by
 Lumi, so nothing is fetched from the internet. A few items have none (a chest,
@@ -239,6 +282,28 @@ HUD says "Offline" and the inventory is cleared, so stale items never show.
 
 The HUD only reads. The one thing it can change in the game is dropping items,
 and Lumi passes only that action to the bot (`drop_item`), nothing else.
+
+---
+
+## Switching worlds
+
+Minecraft opens a world to LAN on a new random port each time. You don't
+have to edit anything:
+
+- **Pick it from the list.** `bot.js` listens for Minecraft's "Open to LAN"
+  announcements, the same broadcast the game's multiplayer screen uses (UDP
+  multicast `224.0.2.60:4445`). Every world open on this network appears on
+  the Games page by name, with its port. Click one to connect.
+- **Or type it.** Enter a host and port and press **Reconnect**.
+
+Before switching, `bot.js` asks the new address for its server status (a
+protocol ping). If nothing answers, the current connection is left alone and
+the page says why, for example "nothing is listening there. Open the world to
+LAN (or check the port) and try again." If the world answers, the bot leaves
+the old one, waits 2 seconds, and joins the new one with everything
+reattached: pathfinder, viewer, events, and the SDK. The choice is saved in
+`data/minecraft/server.json` and used at the next start, ahead of `MC_HOST`
+and `MC_PORT` in `.env`. With Minecraft AI off, **Reconnect** just saves it.
 
 ---
 
@@ -283,6 +348,8 @@ and Lumi passes only that action to the bot (`drop_item`), nothing else.
 | `data/minecraft/telemetry.json` | The agent's latest state, thought and order, read by the Games page |
 | `data/minecraft/events.jsonl` | The agent's event log |
 | `data/minecraft/house.json` | The house site and whether it's finished |
+| `data/minecraft/server.json` | The world picked on the Games page (overrides `.env`) |
+| `data/minecraft/death_location.json` | Where she last died, until her items are back or gone |
 | `sdk/examples/minecraft/lumi_skin.png` | Her skin (`SKIN_PATH` overrides it). The upload keeps the previous one as `lumi_skin.bak.png` |
 | `data/logs/minecraft/agent.log`, `bot.log` | Output of the two processes |
 
@@ -291,6 +358,7 @@ and Lumi passes only that action to the bot (`drop_item`), nothing else.
 | 5057 | `bot.js` control API | This PC only |
 | 3000 | Live viewer | All interfaces (prismarine-viewer can't be told otherwise) |
 | 3001 | Skin file | This PC only |
+| 4445/udp | Listens for "Open to LAN" announcements (receives only) | Your local network |
 | 5002 | Old diagnostics page (`python plugin/mc_dashboard.py`, optional) | This PC only |
 
 None of these go through the Cloudflare tunnel.
@@ -318,8 +386,10 @@ None of these go through the Cloudflare tunnel.
 - The order parser knows common phrasings. Unusual ones depend on a 3B model's
   judgment.
 - No diamond tools, enchanting, farming, the Nether, or bows.
-- LAN ports are set by hand.
 - `/tp` for getting unstuck needs cheats on.
+- Survival is best-effort: the water-bucket landing needs a bucket and good
+  timing; a lava escape needs somewhere safe within 6 blocks; dropped items
+  despawn after 5 minutes.
 
 See [known-limitations.md](known-limitations.md#minecraft) and
 [troubleshooting.md](troubleshooting.md#minecraft-bot-and-agent).

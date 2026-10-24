@@ -106,8 +106,14 @@ Other Minecraft surfaces:
   network who opens it. It's read-only. Windows asks about the firewall; deny
   it on public networks, or set `VIEWER_PORT=0`.
 - **Skin server (`:3001`)** is loopback-only and serves one PNG.
+- **LAN discovery (UDP `4445`)** only receives. It reads "Open to LAN"
+  announcements from the local network (a world name and a port) and lists
+  them; nothing is sent, and nothing is joined until you pick one. Turn it off
+  with `LAN_DISCOVERY=false`. The control API's `POST /reconnect` (and
+  `/config`) can point the bot at any address, like everything else on
+  `:5057`.
 - **Games page routes** (`/api/game/status`, `/api/game/toggle`, and
-  `/api/games/{game}/` `directive`, `action`, `item/{name}`, `skin`) start
+  `/api/games/{game}/` `directive`, `action`, `item/{name}`, `skin`, `server`) start
   processes, send orders, drop items and replace the skin, so they are
   host-only: the remote tier refuses them (covered by
   `tests/test_remote_tiers.py`). The ones that change anything need a session

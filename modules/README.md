@@ -85,7 +85,7 @@ Modules that act on a timer instead of a user message.
 |---|---|---|
 | `heartbeat.py` | Every 30 seconds, decides whether Lumi should speak unprompted | spawned |
 | `ambient_perception.py` | Samples the screen every 30 seconds; calls the VLM only on window or content change | spawned |
-| `game_manager.py` | Starts, watches and stops the Minecraft game processes (`bot.js`, `plugin/minecraft_bot.py`) for the Games page: output to the log hub and `data/logs/minecraft/`, crash reports, the `autoplay.json` switch, resume at boot, orders from the web, and a Windows job object so the children die with Lumi. Also backs the HUD: shapes `bot.js`'s `/status` into the HUD data, forwards the one allowed HUD action (`drop_item`), finds item textures (`texture_file()`), and validates and saves skin uploads. Created in `main.py`; see [docs/minecraft.md](../docs/minecraft.md) | imported |
+| `game_manager.py` | Starts, watches and stops the Minecraft game processes (`bot.js`, `plugin/minecraft_bot.py`) for the Games page: output to the log hub and `data/logs/minecraft/`, crash reports, the `autoplay.json` switch, resume at boot, orders from the web, and a Windows job object so the children die with Lumi. Also backs the HUD: shapes `bot.js`'s `/status` into the HUD data, forwards the one allowed HUD action (`drop_item`), finds item textures (`texture_file()`), validates and saves skin uploads, and switches the bot's server (`set_server()`: `bot.js` `/reconnect`, or `data/minecraft/server.json` when it isn't running), listing LAN worlds from `/lan`. Created in `main.py`; see [docs/minecraft.md](../docs/minecraft.md) | imported |
 
 ### Web client backend
 
@@ -93,7 +93,7 @@ The Python side of the browser UI. The frontend lives in `web/`.
 
 | File | Role | Status |
 |---|---|---|
-| `socketIO.py` | aiohttp and python-socketio server, and the largest backend file. Routes cover auth, chat, chat upload, agent toggle, memories, persona, models, providers, integrations, settings, voice, the Games page (`/api/game/*`, and `/api/games/{game}/` directive, HUD action, item textures and skin upload; all host-only), and static and SPA serving. A JSON error middleware wraps `/api/*` and `/auth/*`; memory and library calls run on a dedicated single-thread executor (`_run_mem()`) so they never block the event loop. See [Web server internals](#web-server-internals) | spawned |
+| `socketIO.py` | aiohttp and python-socketio server, and the largest backend file. Routes cover auth, chat, chat upload, agent toggle, memories, persona, models, providers, integrations, settings, voice, the Games page (`/api/game/*`, and `/api/games/{game}/` directive, HUD action, item textures, skin upload and server switching; all host-only), and static and SPA serving. A JSON error middleware wraps `/api/*` and `/auth/*`; memory and library calls run on a dedicated single-thread executor (`_run_mem()`) so they never block the event loop. See [Web server internals](#web-server-internals) | spawned |
 | `user_auth.py` | SQLite user store, argon2id hashing, session tokens, session listing and revocation | imported |
 | `persona_editor.py` | ruamel round-trip load, edit, and save of `config/lumi.yaml`, preserving comments | imported |
 | `settings_manager.py` | General settings (timezone, Ollama endpoint), About info, and the Advanced reset allowlist | imported |

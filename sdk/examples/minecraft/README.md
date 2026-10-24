@@ -91,7 +91,12 @@ For a LAN world, the port changes every launch. Set it from the dashboard's
 | `EVENT_REACTIONS` | `major` | Which game events Lumi reacts to out loud: `major` (deaths, boss kills, top-tier loot), `all` (also damage, mobs, hunger, kills, joining), or `off`. See [Context and events](#context-and-events) |
 | `AUTO_DEFEND` | `true` | Fight back when a hostile mob hits the bot. See [Self-defense](#self-defense) |
 | `MC_OWNER` | *(first other player online)* | The in-game name of the player Lumi plays near. See [Playing near you](#playing-near-you) |
-| `HOUSE_PATH` | `../../../data/minecraft/house.json` | Where the house site and its progress are remembered |
+| `HOUSE_PATH` | `../../../data/minecraft/house.json` | Where the house site and its progress are remembered. `death_location.json` and `server.json` go in the same folder |
+| `LAN_DISCOVERY` | `true` | Listen for "Open to LAN" announcements (UDP `224.0.2.60:4445`) and list them at `GET /lan` |
+
+`MC_HOST` and `MC_PORT` are only the starting point. A world picked on the
+Games page (or through `POST /reconnect`) is saved in
+`data/minecraft/server.json` and wins at the next start.
 | `VIEWER_PORT` | `3000` | Port for the first-person [live viewer](#live-viewer). `0` turns it off |
 | `VIEWER_DISTANCE` | `4` | Chunks the live viewer sends around the bot, to each browser watching. Its main memory cost |
 | `VIEWER_HEAP_LIMIT_MB` | `1536` | Pause the live viewer when the heap passes this. See [Memory](#memory) |
@@ -451,6 +456,8 @@ call again to continue.
 
 | Action | Parameters | What it does |
 |---|---|---|
+| `minecraft_scan_environment` | — | **Tier `read`.** Danger sense as one line: in a cave or not, day or night, hazards (hostile mobs within 8 blocks, lava within 6, underwater), oxygen, and any emergency |
+| `minecraft_retrieve_items` | — | Walks back to where the bot last died and picks up the dropped items. Fails, and forgets the spot, if it's over 5 minutes old (despawned), in lava, in another dimension, or unreachable |
 | `minecraft_give_item` | `item_name`, optional `count` (default 1), `username` (default the owner) | Walks within about 2 blocks of the player (30 s limit), looks at them and tosses the items their way. `item_name` can be loose: `pickaxe` gives the best pickaxe, `diamonds` the diamonds, `stone pickaxe` that one |
 | `minecraft_return_to_player` | optional `range` (default 4) | Follows the owner until within `range` blocks. The pathfinder digs through whatever is in the way. With no progress for 30 s, or the owner out of tracking range, it tries `/tp` (works only with cheats on in the LAN world), then gives up |
 | `minecraft_mine_branch_tunnel` | optional `depth` (default 12), `length` (default 20, max 64) | Digs a 1-wide staircase down to `depth`, then a 1x2 tunnel. Mines any ore within 2 to 3 blocks it can harvest with the pickaxe it has (it never breaks diamond with a stone pickaxe), places a torch every 5 blocks if it has torches, fills holes in the floor, and stops at lava or water, at bedrock, or when attacked. Keeps the same direction between calls. In 1.18+ diamonds are most common around y=-54 |
@@ -568,6 +575,37 @@ describe it, and answers using that plus the agent's current thought.
 - In chat mode (agent mode off) Lumi answers the same question from the
   silent status line instead.
 
+## Survival
+
+Checked every 500 ms (falls every physics tick). An emergency interrupts the
+running skill with `interrupted by drowning` (or `a lava escape`), shows in
+`/status` as `emergency`, and ends when the danger is gone. A fight in
+progress is never interrupted.
+
+| Danger | Trigger | Response |
+|---|---|---|
+| Drowning | Head in water and `bot.oxygenLevel` below 10 | Hold jump, look up; dig a solid block above the head. Over at oxygen 18+ or out of water |
+| Lava, fire | In lava or fire, or lava within 2.5 blocks with an air block next to it | Pathfind to the nearest standable spot within 6 blocks with no lava within 3 (8 s limit); with none, back away |
+| Falling | Off the ground, falling, more than 3 blocks to land | Log `[survival] Falling!`; with a `water_bucket`, place water when the ground is 3 blocks away, then scoop it back |
+
+Movement rules (`survivalMovements()`), used for every path:
+
+| Setting | Value | Why |
+|---|---|---|
+| `canDig` | `true` | Dig out of holes and through walls |
+| `allow1by1towers` | `true` | Pillar out of caves, reach logs |
+| `maxDropDown` | `3` | Falls of 4+ blocks hurt |
+| `infiniteLiquidDropdownDistance` | `false` | A fall into shallow water isn't safe |
+| `liquidCost` | `40` | Avoid water paths without forbidding them. Mineflayer-pathfinder has no `canSwim` switch, and forbidding water would leave no path out of some lakes |
+| `blocksToAvoid` | default (lava, fire, cobweb) + magma, berry bushes, powder snow, campfires, soul fire, wither roses, cactus | |
+
+`/status` also carries `environment`
+(`{in_cave, covered, sky_light, in_water, oxygen, is_day, time_of_day, hazards, emergency}`)
+and `death` (`{x, y, z, age_s, recoverable}` or `null`). The bot saves its
+death spot to `death_location.json` on every death.
+
+---
+
 ## Self-defense
 
 Once a second the bot scans for hostile mobs:
@@ -594,7 +632,9 @@ It doesn't go through Lumi, so it works whether or not Lumi is running.
 | `GET` | `/status` | `{ready, username, server, auth, version, position, health, food, armor, inventory, slots, held_slot, threats, is_day, busy, defending, held, nearby, free_slots, owner, house}`. While the bot isn't in a world it's just `{ready: false, username, server, auth}`. `inventory` is a flat list of stacks (what the agent reads); `slots` is the 36-slot layout for the Games page's HUD: 0–8 the hotbar, 9–35 the main inventory, each `{slot, name, display_name, count, durability?, max_durability?}` or `null`. `held_slot` is the selected hotbar slot (0–8), `armor` the armor bar's points (0–20). `nearby` says whether a crafting table and a furnace are within 32 blocks and a chest within 16. `owner` is described in [Playing near you](#playing-near-you), `house` is `{origin, material, complete}` or `null`. `heap_mb` is the bot process's heap |
 | `GET` | `/events` | Last 100 entries of the bot's event log |
 | `GET` | `/config` | `{host, port, username, auth, viewer_port, skin_port}`. `viewer_port` is `null` while the viewer isn't running |
-| `POST` | `/config` | `{host, port}`. Updates the target server and reconnects if it changed |
+| `POST` | `/reconnect` | `{host, port}`. Pings the new address first; if a Minecraft world answers, saves it to `server.json`, leaves the current world, waits 2 s and joins the new one, replying `Reconnecting to localhost:52518 ("New World", 1.19, 1/8 players)`. If nothing answers: 502 with the reason (nothing listening, host doesn't resolve, no answer in time), and the current connection is untouched. 422 for a bad host or port |
+| `POST` | `/config` | `{host, port}`. Same as `/reconnect` (kept for the `:5002` dashboard) |
+| `GET` | `/lan` | `{worlds: [{name, host, port, current}], current: {host, port}}`: "Open to LAN" worlds heard in the last 10 s. This PC's own worlds show as `localhost` |
 | `POST` | `/action` | `{action, args}`, where `action` is an action name without the `minecraft_` prefix (e.g. `mine_block`). Returns `{success, message}` |
 | `POST` | `/directive` | `{text, source?}`. Stores an order for the game agent (the latest one wins, up to 200 characters, control characters removed) and interrupts the running skill unless the bot is fighting. 422 for empty or non-string text |
 | `GET` | `/directive` | `{directive}`: the pending order `{text, source, from, at}`, or `null`. `?take=1` also clears it (the game agent does this). `/status` has `directive_pending` |
@@ -628,6 +668,20 @@ free-play goals (chop trees, hunt, explore, build a dirt hut at night). See
 ---
 
 ## Troubleshooting
+
+**Reconnect says "nothing is listening there".**
+The world isn't open to LAN on that port (the port changes every time), or it
+was closed. Open to LAN again and pick it from the list.
+
+**No LAN worlds show up.**
+Check the `bot.js` log for `[lan] listening for Open to LAN worlds`. If it
+says discovery is off, another program holds UDP port 4445, or Windows
+Firewall blocked Node: allow it on private networks. Typing the host and port
+still works.
+
+**She stops what she's doing and swims up / walks off.**
+A survival emergency (drowning or lava). Look for `[survival]` lines in
+`bot.log`. It ends by itself.
 
 **`bot.js` crashed with `JavaScript heap out of memory`.**
 See [Memory](#memory). Look for `[mem]` lines in `data/logs/minecraft/bot.log`

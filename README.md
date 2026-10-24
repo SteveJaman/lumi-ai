@@ -382,8 +382,9 @@ cd sdk/examples/minecraft; npm install; cd ../../..
 ollama pull qwen2.5:3b          # the game agent's model
 ```
 
-Open a world to LAN, put its port in `sdk/examples/minecraft/.env` as
-`MC_PORT`, then open **Games** in the web UI and turn on **Minecraft AI**.
+Open a world to LAN, then open **Games** in the web UI, turn on **Minecraft
+AI**, and pick your world under **Server connection** (open LAN worlds are
+detected automatically).
 Lumi starts the bot and the game agent in the background; no extra terminals.
 Give orders in game chat by starting with "Lumi," or from the Games page.
 The bot's control API on `:5057` has no authentication, so switch it off when

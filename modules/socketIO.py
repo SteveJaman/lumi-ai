@@ -645,6 +645,7 @@ class SocketIOServer:
         r.add_post("/api/game/toggle",  self._handle_game_toggle)
         r.add_post("/api/games/{game}/directive", self._handle_game_directive)
         r.add_post("/api/games/{game}/action",    self._handle_game_hud_action)
+        r.add_post("/api/games/{game}/server",    self._handle_game_server)
         r.add_get("/api/games/{game}/item/{name}", self._handle_game_item_texture)
         r.add_get("/api/games/{game}/skin",       self._handle_game_skin_get)
         r.add_post("/api/games/{game}/skin",      self._handle_game_skin_upload)
@@ -1531,6 +1532,33 @@ class SocketIOServer:
             return _json_error(400, str(e))
         except RuntimeError as e:
             return _json_error(503, str(e))
+        return web.json_response(data)
+
+    async def _handle_game_server(self, request):
+        """Switch the bot to another world (host and port) from the Games
+        page's Server connection panel."""
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+        games = getattr(self.signals, "game_manager", None)
+        if games is None:
+            return _json_error(503, "Game manager not available.")
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(
+                None, games.set_server, request.match_info["game"], body.get("host"), body.get("port"))
+        except ValueError as e:
+            return _json_error(400, str(e))
         return web.json_response(data)
 
     async def _handle_game_item_texture(self, request):
