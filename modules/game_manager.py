@@ -53,6 +53,16 @@ GAMES = ("minecraft",)
 TAIL_LINES = 40
 MAX_DIRECTIVE = 200
 
+# Item and block textures shipped with prismarine-viewer (the live viewer's
+# package), served to the Games page's HUD so it needs no outside CDN.
+TEXTURE_ROOT = os.path.join(BOT_DIR, "node_modules", "prismarine-viewer", "public", "textures")
+DEFAULT_TEXTURE_VERSION = "1.19"
+ITEM_NAME_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+# Actions the Games page may send to bot.js. Everything else stays with the
+# agent and Lumi's tools.
+HUD_ACTIONS = {"drop_item"}
+MAX_SKIN_BYTES = 64 * 1024
+
 # Chatty startup lines that would push real events out of the hub's buffer.
 _QUIET = re.compile(r"^\[sdk\] (registered:|connecting to)|^\[voyager\] running ")
 _ERRORISH = re.compile(r"\b(error|exception|traceback|crash|failed|fail)\b", re.I)
@@ -206,7 +216,8 @@ class GameManager:
             bot = self._children.get("bot")
             agent_info = agent.info() if agent else None
             bot_info = bot.info() if bot else None
-        bot_up = self._bot_api_up()
+        bot_status = _get_json(f"{BOT_API}/status")
+        bot_up = bot_status is not None
         tel = read_telemetry()
         live = bool(agent_info and agent_info["running"])
         return {
@@ -225,6 +236,7 @@ class GameManager:
             "food": tel.get("food") if live else None,
             "position": tel.get("position") if live else None,
             "viewer_port": self._viewer_port() if bot_up else None,
+            "hud": _hud(bot_status),
         }
 
     def send_directive(self, game: str, text: str) -> Dict[str, Any]:
@@ -255,6 +267,73 @@ class GameManager:
                                  "until Minecraft AI is switched on.")
         hub_emit(self.signals, "minecraft", f"order from the Games page: {clean}")
         return result
+
+    def hud_action(self, game: str, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run one of the few bot.js actions the Games page may send
+        (dropping items from the HUD). Raises ValueError for anything
+        else, RuntimeError when bot.js isn't running."""
+        if game not in GAMES:
+            raise ValueError(f"unknown game: {game}")
+        if action not in HUD_ACTIONS:
+            raise ValueError(f"'{action}' can't be sent from the Games page")
+        name = str(args.get("name") or "")
+        if not ITEM_NAME_RE.match(name):
+            raise ValueError("name must be an item id like cobblestone")
+        try:
+            count = max(1, min(int(args.get("count") or 1), 64 * 36))
+        except (TypeError, ValueError):
+            raise ValueError("count must be a number")
+        body = json.dumps({"action": action, "args": {"name": name, "count": count}}).encode()
+        req = urllib.request.Request(f"{BOT_API}/action", data=body,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return json.loads(e.read() or b"{}") or {"success": False, "message": f"bot.js said {e.code}"}
+        except Exception:
+            raise RuntimeError("Minecraft AI isn't running (bot.js isn't answering on :5057).")
+
+    # ─── Skin ────────────────────────────────────────────────────
+
+    def skin_path(self) -> str:
+        """Where bot.js reads the skin: SKIN_PATH in its .env, or
+        lumi_skin.png next to bot.js."""
+        configured = _read_env_value(os.path.join(BOT_DIR, ".env"), "SKIN_PATH")
+        if configured:
+            return configured if os.path.isabs(configured) else os.path.normpath(os.path.join(BOT_DIR, configured))
+        return os.path.join(BOT_DIR, "lumi_skin.png")
+
+    def save_skin(self, data: bytes) -> Dict[str, Any]:
+        """Replace the skin with an uploaded PNG after checking it's a
+        real 64x64 (or legacy 64x32) skin. The previous one is kept as
+        <name>.bak.png. Raises ValueError for anything else."""
+        if len(data) > MAX_SKIN_BYTES:
+            raise ValueError("That file is too big for a skin (64 KB max).")
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("A skin has to be a PNG file.")
+        try:
+            from PIL import Image
+            import io
+            with Image.open(io.BytesIO(data)) as img:
+                img.verify()
+            with Image.open(io.BytesIO(data)) as img:
+                size = img.size
+        except Exception:
+            raise ValueError("That PNG couldn't be read.")
+        if size not in ((64, 64), (64, 32)):
+            raise ValueError(f"A skin is 64x64 pixels (or 64x32); this one is {size[0]}x{size[1]}.")
+        path = self.skin_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path):
+            root_name, _ = os.path.splitext(path)
+            shutil.copyfile(path, root_name + ".bak.png")
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        hub_emit(self.signals, "minecraft", f"skin replaced from the Games page ({size[0]}x{size[1]})")
+        return {"success": True, "message": "Skin updated. bot.js serves the new one on :3001 right away."}
 
     def resume_if_enabled(self) -> None:
         """Called once at boot: restart games left switched on."""
@@ -367,6 +446,50 @@ class GameManager:
         port = cfg.get("viewer_port")
         self._viewer_cache = (time.time(), port)
         return port
+
+
+def _hud(bot_status: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """What the Games page's HUD shows. Inventory is cleared when the bot
+    isn't in a world, so a stale one never shows."""
+    if bot_status is None:
+        return {"online": False, "reason": "bot.js isn't running"}
+    base = {k: bot_status.get(k) for k in ("username", "server", "auth")}
+    if not bot_status.get("ready"):
+        return dict(base, online=False, reason="not in a world yet")
+    return dict(base, online=True,
+                **{k: bot_status.get(k) for k in ("version", "health", "food", "armor",
+                                                  "held_slot", "slots", "position")})
+
+
+def texture_file(name: str, version: Optional[str] = None) -> Optional[str]:
+    """The local PNG for an item: its item icon, or for blocks a face
+    texture (side, front, top). None if prismarine-viewer has none."""
+    if not ITEM_NAME_RE.match(name or ""):
+        return None
+    root = os.path.join(TEXTURE_ROOT, version or DEFAULT_TEXTURE_VERSION)
+    if not os.path.isdir(root):
+        root = os.path.join(TEXTURE_ROOT, DEFAULT_TEXTURE_VERSION)
+    # Blocks have no item icon: planks and logs use their block texture
+    # (bark for logs); a crafting table or furnace, its front.
+    candidates = [("items", name), ("blocks", name)]
+    candidates += [("blocks", f"{name}_{face}") for face in ("front", "side", "top")]
+    for folder, stem in candidates:
+        path = os.path.join(root, folder, stem + ".png")
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _read_env_value(path: str, key: str) -> Optional[str]:
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                k, sep, v = line.strip().partition("=")
+                if sep and k.strip() == key and not k.strip().startswith("#"):
+                    return v.strip().strip('"').strip("'") or None
+    except OSError:
+        pass
+    return None
 
 
 def _get_json(url: str) -> Optional[Dict[str, Any]]:

@@ -25,6 +25,16 @@ iteration against real use, not new subsystems.
   Reverse chronological. What shipped, when, and why.
 
   2026-10-24
+    - Minecraft HUD on the Games page: connection line ("Connected as
+      LumiBot (offline mode)"), pixel-art hearts, hunger and armor,
+      the 27-slot inventory and hotbar with the held slot, local item
+      textures from prismarine-viewer (no CDN), game-style tooltips,
+      a Drop 1 / Drop stack menu (only drop_item is forwarded), and
+      skin upload with PNG validation and a backup. bot.js /status
+      adds slots, held_slot, armor, auth and version without changing
+      the inventory list the agent reads; mc_agent_status reports
+      armor and the hotbar. A fake-profile skin stays impossible on
+      an offline LAN server; CustomSkinLoader still shows it.
     - Minecraft, from bridge to companion. The agent runs in the
       background under modules/game_manager.py, switched from a new
       Games page in the web UI; Lumi starts, watches and stops bot.js

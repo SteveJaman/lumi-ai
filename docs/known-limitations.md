@@ -178,7 +178,12 @@ architectural.
 
 * **A custom skin needs a client mod.** A vanilla LAN world can't receive a
   skin from an offline-mode bot. CustomSkinLoader shows it on your screen
-  only.
+  only, and other players need the mod and the file too.
+
+* **Some HUD items have no icon.** The HUD uses the textures bundled with
+  prismarine-viewer. Blocks without a flat item icon fall back to a face
+  texture, and a few (a chest, for example) show their name instead. The HUD
+  refreshes every 2 seconds, so it lags the game slightly.
 
 * **Long skills outrun Lumi's timeout.** Mining or exploring often
   takes longer than the SDK's 30 s, so Lumi reports a timeout while the

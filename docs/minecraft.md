@@ -40,8 +40,9 @@ running on the same PC.
 4. In Lumi's web UI on this PC, open **Games** and turn on **Minecraft AI**.
 
 `LumiBot` joins your world within a few seconds. The Games page shows what
-she's thinking, her health and goal, and a first-person live view. Try typing
-`Lumi, follow me` in Minecraft chat.
+she's thinking, a first-person live view, and a live HUD with her hearts,
+hunger, armor, hotbar and inventory. Try typing `Lumi, follow me` in Minecraft
+chat.
 
 To stop, turn the switch off. Lumi also stops both processes when she shuts
 down, and starts them again on the next boot while the switch stays on.
@@ -214,14 +215,47 @@ live viewer.
 
 ---
 
+## The Games page
+
+Everything on **Games → Minecraft AI**, refreshed every 2 seconds while the page
+is open:
+
+| Part | What it shows or does |
+|---|---|
+| Switch, thought, goal, order | On/off, what she's thinking and doing, and the current order |
+| AI directive / nudge | Sends an [order](#orders) |
+| Live viewer | A first-person 3D view of what `LumiBot` sees (also at `http://localhost:3000`) |
+| Connection | "Connected as LumiBot (offline mode) · localhost:52518 · 1.19", or "Offline" with the reason |
+| Bars | Hearts, hunger drumsticks and armor, drawn like the game's (ten icons, half icons for odd values; the armor bar only appears when she wears armor) |
+| Inventory | The 27-slot inventory and the 9-slot hotbar, with the held slot highlighted, stack counts and durability bars |
+| Item tooltip | Hover or focus a slot: display name, item id, count, durability |
+| Drop menu | Click a slot: **Drop 1** or **Drop stack**. She tosses it where she's looking |
+| Skin | A preview of her skin and **Change skin…** to upload a new one |
+
+Item icons are the textures bundled with the live viewer's package, served by
+Lumi, so nothing is fetched from the internet. A few items have none (a chest,
+for example) and show their name instead. When the bot isn't in a world, the
+HUD says "Offline" and the inventory is cleared, so stale items never show.
+
+The HUD only reads. The one thing it can change in the game is dropping items,
+and Lumi passes only that action to the bot (`drop_item`), nothing else.
+
+---
+
 ## Seeing her
 
 - **Live viewer.** A first-person 3D view of what `LumiBot` sees, at
-  `http://localhost:3000` and on the Games page.
-- **Skin.** A vanilla LAN world can't receive a custom skin from the bot.
-  Install the CustomSkinLoader mod in your client and copy
-  `sdk/examples/minecraft/lumi_skin.png` to
-  `%APPDATA%\.minecraft\CustomSkinLoader\LocalSkin\skins\LumiBot.png`. See
+  `http://localhost:3000` and on the Games page. It sends 4 chunks around her
+  (`VIEWER_DISTANCE`), down from 6, to keep memory in check.
+- **Skin.** A vanilla LAN world can't receive a custom skin from the bot:
+  offline-mode clients have no way to send one. Install the CustomSkinLoader
+  mod in your client and either copy `sdk/examples/minecraft/lumi_skin.png` to
+  `%APPDATA%\.minecraft\CustomSkinLoader\LocalSkin\skins\LumiBot.png`, or
+  point the mod at `bot.js`'s skin server. To change her skin, use
+  **Change skin…** on the Games page: it takes a 64x64 (or old-style 64x32)
+  PNG, keeps the previous one as `lumi_skin.bak.png`, and the skin server
+  serves the new one right away. If you copied the file into the mod's folder,
+  copy it again. See
   [the bot's README](../sdk/examples/minecraft/README.md#lumis-skin).
 
 ---
@@ -249,6 +283,7 @@ live viewer.
 | `data/minecraft/telemetry.json` | The agent's latest state, thought and order, read by the Games page |
 | `data/minecraft/events.jsonl` | The agent's event log |
 | `data/minecraft/house.json` | The house site and whether it's finished |
+| `sdk/examples/minecraft/lumi_skin.png` | Her skin (`SKIN_PATH` overrides it). The upload keeps the previous one as `lumi_skin.bak.png` |
 | `data/logs/minecraft/agent.log`, `bot.log` | Output of the two processes |
 
 | Port | What | Reachable from |

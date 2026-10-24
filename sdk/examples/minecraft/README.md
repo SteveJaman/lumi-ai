@@ -146,6 +146,12 @@ one of the following:
    "model": "default", "cape": "", "elytra": ""}
   ```
 
+**Changing the skin.** Upload a new one with **Change skin…** on the Games
+page in Lumi's web UI. Lumi checks that it's a real PNG of 64x64 (or 64x32)
+pixels, at most 64 KB, writes it to `SKIN_PATH` (the previous one becomes
+`lumi_skin.bak.png`), and the skin server serves it right away. With the
+copy-the-file option above, copy it again.
+
 The skin server only answers `/lumi_skin.png` and `/skins/<MC_USERNAME>.png`.
 Other players on the LAN still see the default skin unless they install the
 mod and the file too.
@@ -585,7 +591,7 @@ It doesn't go through Lumi, so it works whether or not Lumi is running.
 
 | Method | Path | Body / response |
 |---|---|---|
-| `GET` | `/status` | `{ready, username, server, position, health, food, inventory, threats, is_day, busy, defending, held, nearby, free_slots, owner, house}`. `nearby` says whether a crafting table and a furnace are within 32 blocks and a chest within 16. `owner` is described in [Playing near you](#playing-near-you), `house` is `{origin, material, complete}` or `null`. `heap_mb` is the bot process's heap |
+| `GET` | `/status` | `{ready, username, server, auth, version, position, health, food, armor, inventory, slots, held_slot, threats, is_day, busy, defending, held, nearby, free_slots, owner, house}`. While the bot isn't in a world it's just `{ready: false, username, server, auth}`. `inventory` is a flat list of stacks (what the agent reads); `slots` is the 36-slot layout for the Games page's HUD: 0–8 the hotbar, 9–35 the main inventory, each `{slot, name, display_name, count, durability?, max_durability?}` or `null`. `held_slot` is the selected hotbar slot (0–8), `armor` the armor bar's points (0–20). `nearby` says whether a crafting table and a furnace are within 32 blocks and a chest within 16. `owner` is described in [Playing near you](#playing-near-you), `house` is `{origin, material, complete}` or `null`. `heap_mb` is the bot process's heap |
 | `GET` | `/events` | Last 100 entries of the bot's event log |
 | `GET` | `/config` | `{host, port, username, auth, viewer_port, skin_port}`. `viewer_port` is `null` while the viewer isn't running |
 | `POST` | `/config` | `{host, port}`. Updates the target server and reconnects if it changed |

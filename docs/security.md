@@ -106,10 +106,20 @@ Other Minecraft surfaces:
   network who opens it. It's read-only. Windows asks about the firewall; deny
   it on public networks, or set `VIEWER_PORT=0`.
 - **Skin server (`:3001`)** is loopback-only and serves one PNG.
-- **Games page routes** (`/api/game/status`, `/api/game/toggle`,
-  `/api/games/{game}/directive`) start processes and send orders, so they are
+- **Games page routes** (`/api/game/status`, `/api/game/toggle`, and
+  `/api/games/{game}/` `directive`, `action`, `item/{name}`, `skin`) start
+  processes, send orders, drop items and replace the skin, so they are
   host-only: the remote tier refuses them (covered by
-  `tests/test_remote_tiers.py`), and they need a session and a CSRF token.
+  `tests/test_remote_tiers.py`). The ones that change anything need a session
+  and a CSRF token.
+- **The HUD's drop action** goes through Lumi, not straight from the browser
+  to `:5057`, and Lumi forwards only `drop_item` with a validated item id.
+  `execute_skill` and every other bot action are refused.
+- **Item textures** come from files bundled with prismarine-viewer. The name
+  must match `[a-z0-9_]`, so a request can't walk out of that folder.
+- **Skin uploads** must be real PNGs (checked by decoding them with Pillow) of
+  64x64 or 64x32 pixels, at most 64 KB. They're written only to `SKIN_PATH`,
+  and the previous file is kept.
 - **In-game orders** are accepted only from the owner (`MC_OWNER`, or the
   first other player), and only with a wake word. Other players' chat is
   passed to Lumi as data, never as an order.

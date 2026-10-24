@@ -350,7 +350,7 @@ The agent connects as `MinecraftAgent`. The allowlist entry needs
 
 | Action | Tier | What it does |
 |---|---|---|
-| `mc_agent_status` | `read` | Loop state, goal (and who picked it), recent goals, position, health, inventory, curriculum progress |
+| `mc_agent_status` | `read` | Loop state, goal (and who picked it), recent goals, current order, position, health, hunger, armor, the hotbar (with the held slot), inventory, tech progress |
 | `mc_agent_set_goal` | `write` | Run a specific curriculum tier or free-play goal next |
 | `mc_agent_pause` | `write` | Pause the loop |
 | `mc_agent_resume` | `write` | Resume the loop |

@@ -879,7 +879,8 @@ class MinecraftAgent(LumiClient):
         lines = [
             f'Loop: {t["loop_state"]}{" (paused)" if self._paused else ""}',
             f'Bot: {t["bot_status"]}  at {pos_str}',
-            f'Health: {t["health"] or "?"}/20  Food: {t["food"] or "?"}/20',
+            f'Health: {t["health"] or "?"}/20  Food: {t["food"] or "?"}/20  Armor: {t.get("armor") or 0}/20',
+            f'Hotbar: {self._hotbar_text()}',
             f'Goal: {t["current_goal"] or "none"} — {t["goal_description"] or ""}'
             + (f' (picked by {t["goal_source"]})' if t["goal_source"] else ""),
             f'Recent goals: {self._recent_text(5)}',
@@ -889,6 +890,14 @@ class MinecraftAgent(LumiClient):
             f'Tech progress: {self._progress}/{len(CURRICULUM)}',
         ]
         return True, "\n".join(lines)
+
+    def _hotbar_text(self) -> str:
+        """Hotbar slots 1-9 in order, with the held one marked."""
+        bar, held = self._tel.get("hotbar") or [], self._tel.get("held_slot")
+        if not bar:
+            return "unknown"
+        return ", ".join(f"{i + 1}:{name or '-'}{' (held)' if i == held else ''}"
+                         for i, name in enumerate(bar))
 
     async def _h_set_goal(self, args: Dict) -> tuple:
         name = str(args.get("goal") or "").strip()
@@ -981,6 +990,9 @@ class MinecraftAgent(LumiClient):
                     "health":      status.get("health"),
                     "food":        status.get("food"),
                     "inventory":   status.get("inventory", []),
+                    "armor":       status.get("armor"),
+                    "held_slot":   status.get("held_slot"),
+                    "hotbar":      [(s or {}).get("name") for s in (status.get("slots") or [])[:9]],
                     "last_update": time.strftime("%H:%M:%S"),
                     "loop_state":  "running",
                 })

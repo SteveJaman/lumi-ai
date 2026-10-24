@@ -1765,8 +1765,32 @@ function gameCardHtml() {
       In game, start a chat message with “Lumi,” to give her an order.
     </div>
     <div class="game-error" id="game-error" hidden></div>
-    <div class="game-viewer" id="game-viewer">
-      <div class="empty">Live view appears here once the bot is in a world.</div>
+    <div class="game-live">
+      <div class="game-viewer" id="game-viewer">
+        <div class="empty">Live view appears here once the bot is in a world.</div>
+      </div>
+      <section class="mc-hud" id="mc-hud" aria-label="Lumi's inventory">
+        <div class="mc-conn" id="mc-conn"><span class="dot"></span><span id="mc-conn-text">Offline</span></div>
+        <div class="mc-grid" id="mc-main"></div>
+        <div class="mc-bars">
+          <div class="mc-bar" id="mc-armor" hidden></div>
+          <div class="mc-bar-row">
+            <div class="mc-bar" id="mc-health"></div>
+            <div class="mc-bar mc-bar-right" id="mc-food"></div>
+          </div>
+        </div>
+        <div class="mc-grid mc-hotbar" id="mc-hotbar"></div>
+        <div class="game-hint" id="mc-hud-msg">Click an item to drop it.</div>
+        <div class="mc-skin">
+          <img id="mc-skin-img" alt="Lumi's skin" hidden>
+          <label class="btn btn-sm">Change skin…
+            <input type="file" id="mc-skin-file" accept="image/png" hidden>
+          </label>
+          <span class="game-hint" id="mc-skin-msg">64x64 PNG</span>
+        </div>
+        <div class="mc-tip" id="mc-tip" hidden></div>
+        <div class="mc-menu" id="mc-menu" hidden></div>
+      </section>
     </div>
   </div>
 `;
@@ -1785,8 +1809,9 @@ function startGamePolling() {
     e.preventDefault();
     sendGameDirective();
   });
+  bindMcHud();
   refreshGameCard();
-  _gameTimer = setInterval(refreshGameCard, 3000);
+  _gameTimer = setInterval(refreshGameCard, 2000);
 }
 
 function stopGamePolling() {
@@ -1856,7 +1881,8 @@ function renderGameCard(s) {
 
   let sub;
   if (agent.crashed) sub = 'Game agent crashed';
-  else if (agent.running) sub = `Running · ${s.loop_state || 'starting'}`;
+  else if (agent.running) sub = !s.loop_state || s.loop_state === 'running'
+    ? 'Running' : `Running · ${s.loop_state}`;
   else if (s.enabled) sub = 'Starting…';
   else sub = 'Off';
   const botState = bot.running ? 'bot.js started by Lumi'
@@ -1873,6 +1899,7 @@ function renderGameCard(s) {
   if (s.food != null) meta.push(`hunger ${s.food}/20`);
   if (s.position) meta.push(`at ${Math.round(s.position.x)}, ${Math.round(s.position.y)}, ${Math.round(s.position.z)}`);
   $('#game-meta').textContent = meta.join(' · ');
+  renderHud(s.hud);
   $('#game-order').textContent = !agent.running ? ''
     : s.mode === 'follow' ? 'Order: following you'
     : s.mode === 'stay' ? 'Order: staying put'
@@ -1905,6 +1932,243 @@ function renderGameCard(s) {
       viewer.appendChild(note);
     }
   }
+}
+
+/* --------------------------------------------------------------
+   Minecraft HUD — health, hunger, armor, hotbar and inventory,
+   from GET /api/game/status (bot.js's /status). Re-rendered only
+   when the data changes.
+   -------------------------------------------------------------- */
+const MC_PIXELS = {
+  // 9x9 pixel art. Letters index the palette; '.' is transparent.
+  heart:  ['.XX...XX.', 'XRRX.XRRX', 'XRWRXRRRX', 'XRRRRRRRX', 'XRRRRRRRX',
+           '.XRRRRRX.', '..XRRRX..', '...XRX...', '....X....'],
+  food:   ['......XX.', '.....XWWX', '....XWWX.', '..XXBXX..', '.XBBBBX..',
+           'XBBBBBX..', 'XBBBBX...', 'XBBBX....', '.XXX.....'],
+  armor:  ['XX.....XX', 'XGX...XGX', 'XGGXXXGGX', '.XGGGGGX.', '.XGGGGGX.',
+           '.XGGGGGX.', '.XGGGGGX.', '.XGGGGGX.', '..XXXXX..'],
+};
+const MC_PALETTES = {
+  heart: { full: { X: '#3b0000', R: '#e0262a', W: '#ffd5d5' }, empty: { X: '#3b0000', R: '#2b1214', W: '#2b1214' } },
+  food:  { full: { X: '#3b2410', B: '#b8672b', W: '#f1ece1' }, empty: { X: '#3b2410', B: '#2a2016', W: '#2a2016' } },
+  armor: { full: { X: '#4a4a4a', G: '#dcdcdc' },               empty: { X: '#4a4a4a', G: '#222' } },
+};
+
+function mcIconUrl(rows, palette) {
+  let rects = '';
+  rows.forEach((row, y) => [...row].forEach((c, x) => {
+    if (palette[c]) rects += `<rect x="${x}" y="${y}" width="1" height="1" fill="${palette[c]}"/>`;
+  }));
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9" shape-rendering="crispEdges">${rects}</svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+
+let _mcSpritesReady = false;
+function ensureMcSprites() {
+  if (_mcSpritesReady) return;
+  _mcSpritesReady = true;
+  const root = document.documentElement.style;
+  for (const kind of Object.keys(MC_PIXELS)) {
+    root.setProperty(`--mc-${kind}-full`, mcIconUrl(MC_PIXELS[kind], MC_PALETTES[kind].full));
+    root.setProperty(`--mc-${kind}-empty`, mcIconUrl(MC_PIXELS[kind], MC_PALETTES[kind].empty));
+  }
+}
+
+// Ten icons, two points each, like the game's bars.
+function mcBar(el, kind, value) {
+  const v = Math.max(0, Math.min(20, Number(value) || 0));
+  let html = '';
+  for (let i = 0; i < 10; i++) {
+    const fill = v >= 2 * i + 2 ? 100 : v >= 2 * i + 1 ? 50 : 0;
+    html += `<span class="mc-icon mc-${kind}"><i style="width:${fill}%"></i></span>`;
+  }
+  el.innerHTML = html;
+  el.setAttribute('aria-label', `${kind} ${Math.round(v * 10) / 10} of 20`);
+}
+
+let _hudPrint = null;
+let _hudVersion = '1.19';
+let _hudSlots = [];
+const _mcNoTexture = new Set();
+
+function mcSlotHtml(item, index, held) {
+  const cls = `mc-slot${held ? ' held' : ''}${item ? '' : ' is-empty'}`;
+  if (!item) return `<button type="button" class="${cls}" data-slot="${index}" tabindex="-1" aria-label="Empty slot"></button>`;
+  const art = _mcNoTexture.has(item.name)
+    ? `<span class="mc-label">${escapeHtml(item.display_name || item.name)}</span>`
+    : `<img alt="" draggable="false" data-name="${escapeHtml(item.name)}"
+            src="/api/games/minecraft/item/${encodeURIComponent(item.name)}.png?v=${encodeURIComponent(_hudVersion)}">`;
+  const count = item.count > 1 ? `<span class="mc-count">${item.count}</span>` : '';
+  let dur = '';
+  if (item.max_durability && item.durability < item.max_durability) {
+    const pct = Math.max(0, item.durability / item.max_durability);
+    dur = `<span class="mc-dur"><i style="width:${pct * 100}%;background:hsl(${Math.round(pct * 120)},80%,45%)"></i></span>`;
+  }
+  return `<button type="button" class="${cls}" data-slot="${index}"
+                  aria-label="${escapeHtml(item.display_name || item.name)} ×${item.count}">${art}${count}${dur}</button>`;
+}
+
+function renderHud(hud) {
+  hud = hud || { online: false };
+  const print = fingerprint(hud);
+  if (print === _hudPrint) return;
+  _hudPrint = print;
+  ensureMcSprites();
+
+  const box = $('#mc-hud');
+  if (!box) return;
+  const online = !!hud.online;
+  box.classList.toggle('offline', !online);
+  const conn = $('#mc-conn');
+  conn.classList.toggle('ok', online);
+  const mode = hud.auth === 'microsoft' ? 'Microsoft account' : 'offline mode';
+  $('#mc-conn-text').textContent = online
+    ? `Connected as ${hud.username || 'LumiBot'} (${mode}) · ${hud.server || ''}${hud.version ? ' · ' + hud.version : ''}`
+    : `Offline${hud.reason ? ': ' + hud.reason : ''}`;
+
+  if (hud.version) _hudVersion = hud.version;
+  mcBar($('#mc-health'), 'heart', online ? hud.health : 0);
+  mcBar($('#mc-food'), 'food', online ? hud.food : 0);
+  const armor = $('#mc-armor');
+  armor.hidden = !(online && hud.armor > 0);   // the game hides an empty armor bar
+  if (!armor.hidden) mcBar(armor, 'armor', hud.armor);
+
+  _hudSlots = online && Array.isArray(hud.slots) ? hud.slots : [];
+  const held = online ? hud.held_slot : -1;
+  let main = '', bar = '';
+  for (let i = 9; i < 36; i++) main += mcSlotHtml(_hudSlots[i], i, false);
+  for (let i = 0; i < 9; i++) bar += mcSlotHtml(_hudSlots[i], i, i === held);
+  $('#mc-main').innerHTML = main;
+  $('#mc-hotbar').innerHTML = bar;
+  // Items without a bundled texture show their name instead.
+  $$('#mc-hud .mc-slot img').forEach(img => img.addEventListener('error', () => {
+    _mcNoTexture.add(img.dataset.name);
+    const label = document.createElement('span');
+    label.className = 'mc-label';
+    const item = _hudSlots.find(s => s && s.name === img.dataset.name);
+    label.textContent = item ? (item.display_name || item.name) : img.dataset.name;
+    img.replaceWith(label);
+  }, { once: true }));
+  if (!online) closeMcMenu();
+}
+
+function mcSlotItem(el) {
+  const btn = el && el.closest('.mc-slot');
+  return btn ? { btn, item: _hudSlots[Number(btn.dataset.slot)] } : {};
+}
+
+function placeNear(el, anchor) {
+  const box = $('#mc-hud').getBoundingClientRect();
+  const r = anchor.getBoundingClientRect();
+  el.style.left = `${Math.max(0, Math.min(r.left - box.left, box.width - el.offsetWidth))}px`;
+  // Below the slot, or above it when that would run past the panel.
+  const below = r.bottom - box.top + 4;
+  el.style.top = below + el.offsetHeight > box.height
+    ? `${Math.max(0, r.top - box.top - el.offsetHeight - 4)}px` : `${below}px`;
+}
+
+function showMcTip(e) {
+  const { btn, item } = mcSlotItem(e.target);
+  const tip = $('#mc-tip');
+  if (!btn || !item || !tip) return;
+  let sub = item.count > 1 ? `×${item.count}` : '';
+  if (item.max_durability) sub += `${sub ? ' · ' : ''}Durability ${item.durability} / ${item.max_durability}`;
+  tip.innerHTML = `<div>${escapeHtml(item.display_name || item.name)}</div>` +
+                  `<div class="sub">${escapeHtml(item.name)}${sub ? ' · ' + escapeHtml(sub) : ''}</div>`;
+  tip.hidden = false;
+  placeNear(tip, btn);
+}
+
+function hideMcTip() { const t = $('#mc-tip'); if (t) t.hidden = true; }
+
+function closeMcMenu() { const m = $('#mc-menu'); if (m) m.hidden = true; }
+
+function openMcMenu(e) {
+  const { btn, item } = mcSlotItem(e.target);
+  if (!btn || !item) return;
+  hideMcTip();
+  const menu = $('#mc-menu');
+  menu.innerHTML = `
+    <div class="mc-menu-title">${escapeHtml(item.display_name || item.name)} ×${item.count}</div>
+    <button type="button" class="btn btn-sm" data-drop="1">Drop 1</button>
+    ${item.count > 1 ? `<button type="button" class="btn btn-sm" data-drop="${item.count}">Drop stack (${item.count})</button>` : ''}
+    <button type="button" class="btn btn-sm" data-drop="0">Cancel</button>`;
+  menu.hidden = false;
+  placeNear(menu, btn);
+  menu.onclick = async (ev) => {
+    const b = ev.target.closest('[data-drop]');
+    if (!b) return;
+    const count = Number(b.dataset.drop);
+    closeMcMenu();
+    if (!count) return;
+    const note = $('#mc-hud-msg');
+    try {
+      const r = await api('/api/games/minecraft/action', {
+        method: 'POST', csrf: true, body: { action: 'drop_item', args: { name: item.name, count } },
+      });
+      note.classList.toggle('error', !r.success);
+      note.textContent = r.message || (r.success ? 'Dropped.' : 'Failed.');
+      refreshGameCard();
+    } catch (err) {
+      note.classList.add('error');
+      note.textContent = err.message;
+    }
+  };
+  menu.querySelector('button')?.focus();
+}
+
+async function uploadMcSkin(file) {
+  const note = $('#mc-skin-msg');
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  note.classList.remove('error');
+  note.textContent = 'Uploading…';
+  try {
+    const res = await fetch('/api/games/minecraft/skin', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'X-CSRF-Token': state.csrf || '' }, body: fd,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    note.textContent = data.message || 'Skin updated.';
+    loadMcSkin();
+  } catch (e) {
+    note.classList.add('error');
+    note.textContent = e.message;
+  }
+}
+
+function loadMcSkin() {
+  const img = $('#mc-skin-img');
+  if (!img) return;
+  img.hidden = false;
+  img.onerror = () => { img.hidden = true; };
+  img.src = `/api/games/minecraft/skin?t=${Date.now()}`;
+}
+
+let _mcHandlersBound = false;
+function bindMcHud() {
+  const hud = $('#mc-hud');
+  hud.addEventListener('mouseover', showMcTip);
+  hud.addEventListener('focusin', showMcTip);
+  hud.addEventListener('mouseout', (e) => { if (!e.relatedTarget?.closest?.('.mc-slot')) hideMcTip(); });
+  hud.addEventListener('focusout', hideMcTip);
+  hud.addEventListener('click', (e) => { if (e.target.closest('.mc-slot')) openMcMenu(e); });
+  $('#mc-skin-file').addEventListener('change', (e) => {
+    uploadMcSkin(e.target.files[0]);
+    e.target.value = '';
+  });
+  if (!_mcHandlersBound) {
+    _mcHandlersBound = true;
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('#mc-menu') && !e.target.closest('.mc-slot')) closeMcMenu();
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMcMenu(); });
+  }
+  _hudPrint = null;
+  renderHud({ online: false, reason: 'loading' });
+  loadMcSkin();
 }
 
 function renderDashboardStats() {

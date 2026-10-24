@@ -606,8 +606,50 @@ function buildStatusText() {
   ].join("\n");
 }
 
+// ─── HUD data (the Games page's live inventory) ─────────────────────────────
+
+// Armor points per piece, as the game's armor bar counts them.
+const ARMOR_POINTS = {
+  leather: [1, 3, 2, 1], golden: [2, 5, 3, 1], chainmail: [2, 5, 4, 1],
+  iron: [2, 6, 5, 2], diamond: [3, 8, 6, 3], netherite: [3, 8, 6, 3],
+};
+const ARMOR_PIECES = ["helmet", "chestplate", "leggings", "boots"];   // window slots 5-8
+
+function armorPoints() {
+  let total = 0;
+  for (let i = 0; i < 4; i++) {
+    const item = bot.inventory.slots[5 + i];
+    if (!item) continue;
+    if (item.name === "turtle_helmet") { total += 2; continue; }
+    const [material, piece] = item.name.split("_");
+    if (piece === ARMOR_PIECES[i] && ARMOR_POINTS[material]) total += ARMOR_POINTS[material][i];
+  }
+  return total;
+}
+
+function slotJson(index, item) {
+  if (!item) return null;
+  const out = { slot: index, name: item.name, display_name: item.displayName, count: item.count };
+  if (item.maxDurability) {
+    out.max_durability = item.maxDurability;
+    out.durability = item.maxDurability - (item.durabilityUsed || 0);
+  }
+  return out;
+}
+
+// 36 entries: 0-8 the hotbar (window slots 36-44), 9-35 the main
+// inventory (window slots 9-35). null for an empty slot.
+function inventorySlots() {
+  const slots = [];
+  for (let i = 0; i < 9; i++) slots.push(slotJson(i, bot.inventory.slots[36 + i]));
+  for (let i = 9; i < 36; i++) slots.push(slotJson(i, bot.inventory.slots[i]));
+  return slots;
+}
+
 function buildStatusJson() {
-  if (!bot || !botReady) return { ready: false, username: MC_USERNAME };
+  if (!bot || !botReady) {
+    return { ready: false, username: MC_USERNAME, server: `${MC_HOST}:${MC_PORT}`, auth: MC_AUTH };
+  }
   const pos = bot.entity.position;
   return {
     ready:     true,
@@ -617,6 +659,12 @@ function buildStatusJson() {
     health:    bot.health   ?? null,
     food:      bot.food     ?? null,
     inventory: bot.inventory.items().map(i => ({ name: i.name, count: i.count })),
+    // For the HUD. `inventory` above stays the flat list the agent reads.
+    slots:     inventorySlots(),
+    held_slot: bot.quickBarSlot ?? 0,
+    armor:     armorPoints(),
+    auth:      MC_AUTH,
+    version:   bot.version,
     threats:   nearbyThreats(),
     is_day:    bot.time ? bot.time.isDay !== false : true,
     busy:      activeActions > 0,

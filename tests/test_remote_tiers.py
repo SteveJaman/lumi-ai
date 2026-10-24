@@ -29,6 +29,10 @@ HOST_ONLY = [
     ("GET",    "/api/game/status"),
     ("POST",   "/api/game/toggle"),
     ("POST",   "/api/games/minecraft/directive"),
+    ("POST",   "/api/games/minecraft/action"),
+    ("GET",    "/api/games/minecraft/item/diamond.png"),
+    ("GET",    "/api/games/minecraft/skin"),
+    ("POST",   "/api/games/minecraft/skin"),
     ("GET",    "/api/log_events"),
     ("GET",    "/api/some-future-route"),   # default-deny
 ]
@@ -192,6 +196,67 @@ def test_local_game_directive(live_lumi):
                                   json={"text": "follow me"}, headers=h)
         assert r.status == 503
         assert sent == ["get me 5 diamonds"]
+    live_lumi(scenario)
+
+
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def test_local_game_hud_routes(live_lumi):
+    """The Minecraft HUD: drop actions go through the game manager's
+    whitelist, textures refuse bad names, skin uploads need CSRF."""
+    async def scenario(live):
+        import aiohttp
+        calls, skins = [], []
+
+        class FakeGames:
+            def hud_action(self, game, action, args):
+                if action != "drop_item":
+                    raise ValueError(f"'{action}' can't be sent from the Games page")
+                calls.append((action, args))
+                return {"success": True, "message": "Dropped"}
+
+            def save_skin(self, data):
+                if not data.startswith(PNG_SIG):
+                    raise ValueError("A skin has to be a PNG file.")
+                skins.append(data)
+                return {"success": True, "message": "Skin updated."}
+
+            def skin_path(self):
+                return "/nonexistent/lumi_skin.png"
+
+        live.srv.signals.game_manager = FakeGames()
+        csrf = await live.register()
+        h = {"Origin": LOCAL, "X-CSRF-Token": csrf}
+
+        r = await live.local.post("/api/games/minecraft/action",
+                                  json={"action": "drop_item", "args": {"name": "dirt", "count": 3}}, headers=h)
+        assert r.status == 200 and calls == [("drop_item", {"name": "dirt", "count": 3})]
+        r = await live.local.post("/api/games/minecraft/action",
+                                  json={"action": "execute_skill", "args": {"code": "x"}}, headers=h)
+        assert r.status == 400
+        r = await live.local.post("/api/games/minecraft/action",
+                                  json={"action": "drop_item", "args": {"name": "dirt"}},
+                                  headers={"Origin": LOCAL})
+        assert r.status == 403
+        assert len(calls) == 1
+
+        r = await live.local.get("/api/games/minecraft/item/..%2Fsecret.png")
+        assert r.status == 404
+        r = await live.local.get("/api/games/minecraft/skin")
+        assert r.status == 404          # no skin file at the fake path
+
+        def form(data):
+            f = aiohttp.FormData()
+            f.add_field("file", data, filename="skin.png", content_type="image/png")
+            return f
+        r = await live.local.post("/api/games/minecraft/skin", data=form(PNG_SIG + b"fake"), headers=h)
+        assert r.status == 200 and skins == [PNG_SIG + b"fake"]
+        r = await live.local.post("/api/games/minecraft/skin", data=form(b"GIF89a"), headers=h)
+        assert r.status == 400
+        r = await live.local.post("/api/games/minecraft/skin", data=form(PNG_SIG + b"x"),
+                                  headers={"Origin": LOCAL})
+        assert r.status == 403 and len(skins) == 1
     live_lumi(scenario)
 
 
