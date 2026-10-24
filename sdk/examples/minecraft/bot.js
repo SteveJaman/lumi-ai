@@ -73,7 +73,11 @@ const HOUSE_PATH       = process.env.HOUSE_PATH
                        || path.join(__dirname, "../../../data/minecraft/house.json");
 // First-person 3D view of what the bot sees (prismarine-viewer). 0 disables.
 const VIEWER_PORT      = parseInt(process.env.VIEWER_PORT || "3000", 10);
-const VIEWER_DISTANCE  = parseInt(process.env.VIEWER_DISTANCE || "6", 10);
+// Chunks around the bot sent to each viewer browser. Each chunk is
+// serialized per browser, so this is the viewer's main memory cost.
+const VIEWER_DISTANCE  = parseInt(process.env.VIEWER_DISTANCE || "4", 10);
+// Pause the live viewer when the heap passes this (MB); see memoryWatch().
+const VIEWER_HEAP_LIMIT_MB = parseInt(process.env.VIEWER_HEAP_LIMIT_MB || "1536", 10);
 // Serves the bot's skin PNG for CustomSkinLoader. 0 disables.
 const SKIN_PORT        = parseInt(process.env.SKIN_PORT || "3001", 10);
 const SKIN_PATH        = process.env.SKIN_PATH || path.join(__dirname, "lumi_skin.png");
@@ -123,6 +127,39 @@ function stopViewer(b) {
   try { b.viewer.close(); } catch (_) {}
   viewerRunning = false;
 }
+
+// prismarine-viewer serializes every chunk for every connected browser, and
+// socket.io buffers what a slow or background tab hasn't read yet, with no
+// limit. A run that ended in "JavaScript heap out of memory" after 14 minutes
+// pointed here. The watchdog pauses the viewer above VIEWER_HEAP_LIMIT_MB
+// (closing its sockets frees the buffers) and brings it back later. It also
+// logs the heap every 5 minutes, so if memory keeps growing with the viewer
+// off, the log shows the leak is elsewhere.
+let viewerPausedUntil = 0;
+let lastMemLog = 0;
+function memoryWatch() {
+  const heapMb = Math.round(process.memoryUsage().heapUsed / 1048576);
+  if (Date.now() - lastMemLog > 300_000) {
+    lastMemLog = Date.now();
+    console.log(`[mem] heap ${heapMb} MB, live viewer ${viewerRunning ? "on" : "off"}`);
+  }
+  if (viewerRunning && heapMb > VIEWER_HEAP_LIMIT_MB) {
+    console.warn(`[mem] heap ${heapMb} MB is over ${VIEWER_HEAP_LIMIT_MB} MB: pausing the live viewer for 10 min`);
+    _logEv("error", `heap ${heapMb} MB: live viewer paused`);
+    stopViewer(bot);
+    viewerPausedUntil = Date.now() + 600_000;
+  } else if (!viewerRunning && viewerPausedUntil && Date.now() > viewerPausedUntil) {
+    if (heapMb < VIEWER_HEAP_LIMIT_MB / 2 && botReady) {
+      viewerPausedUntil = 0;
+      console.log(`[mem] heap ${heapMb} MB: restarting the live viewer`);
+      startViewer(bot);
+    } else {
+      console.warn(`[mem] heap still ${heapMb} MB with the viewer off; keeping it paused`);
+      viewerPausedUntil = Date.now() + 600_000;
+    }
+  }
+}
+setInterval(memoryWatch, 15_000);
 
 // ─── Skin server ───────────────────────────────────────────────────────────
 // A vanilla LAN server can't receive a skin from an offline-mode bot, so the
@@ -437,7 +474,7 @@ async function equipWeapon() {
 // abilities are explicit. What actually caused "Took to long to decide
 // path to goal!" is the 5 s planning budget, too short for paths through
 // forests and up to logs in tree canopies.
-const PATH_THINK_MS = parseInt(process.env.PATH_THINK_MS || "12000", 10);
+const PATH_THINK_MS = parseInt(process.env.PATH_THINK_MS || "10000", 10);
 
 function configurePathfinder() {
   const moves = new Movements(bot, mcData);
@@ -591,6 +628,7 @@ function buildStatusJson() {
     owner:     ownerInfo(),
     house:     house ? { origin: house.origin, material: house.material, complete: !!house.complete } : null,
     directive_pending: Boolean(pendingDirective),
+    heap_mb:   Math.round(process.memoryUsage().heapUsed / 1048576),
   };
 }
 
@@ -944,6 +982,21 @@ function registerActions() {
             properties: {
               material: { type: "string", description: "cobblestone or planks. Default: whichever there's more of." },
             },
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_give_item",
+          description: "Walk to a player and toss them an item from the inventory. item_name can be loose, e.g. 'pickaxe' (gives the best one) or 'diamonds'.",
+          schema: {
+            type: "object",
+            properties: {
+              item_name: { type: "string", description: "Item, e.g. stone_pickaxe, pickaxe, diamond." },
+              count:     { type: "integer", description: "How many. Default 1." },
+              username:  { type: "string", description: "Player to give it to. Default: the owner." },
+            },
+            required: ["item_name"],
           },
           capabilities: ["write"],
           requires_confirm: false,
@@ -1533,6 +1586,67 @@ async function handleBuildHouse(a) {
            message: `House in progress: ${doneCount}/${structural} blocks placed; run again to continue` };
 }
 
+// ─── Handing items to a player ──────────────────────────────────────────────
+
+const TOOL_WORDS = /^(pickaxe|axe|sword|shovel|hoe|helmet|chestplate|leggings|boots)$/;
+const MATERIAL_RANK = ["netherite", "diamond", "iron", "stone", "golden", "wooden", "leather"];
+const rankOf = (name) => {
+  const i = MATERIAL_RANK.findIndex(m => name.startsWith(m + "_"));
+  return i < 0 ? 99 : i;
+};
+
+// The inventory item a loose name like "pickaxe", "diamonds" or "iron
+// pickaxe" refers to. Tools pick the best material; anything else the
+// stack there's most of.
+function resolveItem(term) {
+  const t = String(term || "").toLowerCase().trim().replace(/\s+/g, "_");
+  const items = bot.inventory.items();
+  for (const cand of [t, t.replace(/s$/, ""), t.replace(/es$/, "")]) {
+    if (items.some(i => i.name === cand)) return cand;
+  }
+  const word = t.replace(/s$/, "");
+  const names = [...new Set(items.map(i => i.name).filter(n => n.includes(word)))];
+  if (!names.length) return null;
+  if (TOOL_WORDS.test(word)) names.sort((a, b) => rankOf(a) - rankOf(b));
+  else names.sort((a, b) => countItem(b) - countItem(a));
+  return names[0];
+}
+
+async function handleGiveItem(a) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  const term = String(a.item_name || "").trim();
+  if (!/^[a-z0-9_ ]{2,40}$/i.test(term)) return { success: false, message: "item_name must be an item like stone_pickaxe or diamond" };
+  const name = a.username ? String(a.username) : ownerName();
+  if (!name || !bot.players[name]) return { success: false, message: `${name || "No player"} isn't online` };
+  const item = resolveItem(term);
+  if (!item) return { success: false, message: `I don't have any ${term}` };
+  const have = countItem(item);
+  const n = Math.min(Math.max(parseInt(a.count ?? 1, 10) || 1, 1), have);
+
+  const ent = bot.players[name].entity;
+  if (!ent) return { success: false, message: `I can't see ${name} from here` };
+  try {
+    if (bot.entity.position.distanceTo(ent.position) > 3) {
+      await Promise.race([
+        bot.pathfinder.goto(new goals.GoalFollow(ent, 2)),
+        sleep(30_000).then(() => { throw new Error("couldn't reach them in 30 s"); }),
+      ]);
+    }
+  } catch (e) {
+    stopAllActivity();
+    if (bot.entity.position.distanceTo(ent.position) > 4) return { success: false, message: `Couldn't get to ${name}: ${e.message}` };
+  }
+  stopAllActivity();
+  try {
+    // Items are thrown where the bot looks, so look at them first.
+    await bot.lookAt(ent.position.offset(0, 1.2, 0), true);
+    await bot.toss(mcData.itemsByName[item].id, null, n);
+    return { success: true, message: `Gave ${n} ${item} to ${name}` };
+  } catch (e) {
+    return { success: false, message: `Couldn't hand it over: ${e.message}` };
+  }
+}
+
 // ─── Chests ─────────────────────────────────────────────────────────────────
 
 // What sort_inventory keeps: tools, weapons, armor, food, torches and
@@ -1874,6 +1988,7 @@ const HANDLERS = {
   minecraft_return_to_player:   handleReturnToPlayer,
   minecraft_mine_branch_tunnel: handleBranchMine,
   minecraft_build_house:        handleBuildHouse,
+  minecraft_give_item:          handleGiveItem,
   minecraft_craft_chest:        handleCraftChest,
   minecraft_place_chest:        handlePlaceChest,
   minecraft_deposit_items:      handleDepositItems,

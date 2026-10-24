@@ -304,7 +304,10 @@ class GameManager:
                      "can't start bot.js: run `npm install` in sdk/examples/minecraft first",
                      level="error")
             return
-        self._spawn("bot", [node, "bot.js"], cwd=BOT_DIR)
+        # An explicit heap ceiling: Node's default depends on the machine's
+        # RAM and can be as low as 2 GB. bot.js also pauses its live viewer
+        # well before this (VIEWER_HEAP_LIMIT_MB).
+        self._spawn("bot", [node, "--max-old-space-size=4096", "bot.js"], cwd=BOT_DIR)
 
     def _spawn(self, name: str, cmd, cwd: str) -> None:
         os.makedirs(LOG_DIR, exist_ok=True)

@@ -268,10 +268,11 @@ async function chopTrees(n) {
   const tree = look();
   if (!tree) throw new Error("No trees anywhere around here");
   const before = logCount();
-  await mineBlock(bot, tree.name, n);
+  let stopped = null;
+  try { await mineBlock(bot, tree.name, n); } catch (e) { stopped = e; }
   const got = logCount() - before;
-  if (got <= 0) throw new Error(`Couldn't get any ${tree.name}`);
-  return `Chopped ${got} ${tree.name}`;
+  if (got <= 0) throw stopped || new Error(`Couldn't get any ${tree.name}`);
+  return `Chopped ${got} ${tree.name}` + (stopped ? ` (stopped early: ${stopped.message})` : "");
 }
 async function craftAndCheck(name) {
   await craftItem(bot, name, 1);
@@ -281,10 +282,13 @@ async function craftAndCheck(name) {
 async function mineAndCheck(block, drops, count) {
   const have = () => drops.reduce((s, d) => s + countOf(d), 0);
   const before = have();
-  await mineBlock(bot, block, count);
+  // Mining several blocks can fail partway (an unreachable ore, a path that
+  // takes too long). Whatever was mined by then is progress, not a failure.
+  let stopped = null;
+  try { await mineBlock(bot, block, count); } catch (e) { stopped = e; }
   const got = have() - before;
-  if (got <= 0) throw new Error(`Mined no ${drops[0]}`);
-  return `Got ${got} ${drops[0]}`;
+  if (got <= 0) throw stopped || new Error(`Mined no ${drops[0]}`);
+  return `Got ${got} ${drops[0]}` + (stopped ? ` (stopped early: ${stopped.message})` : "");
 }
 """
 
@@ -555,7 +559,10 @@ FREE_GOALS: Dict[str, Dict[str, Any]] = {
     "organize_inventory": {"desc": "Put excess stuff away in a chest",
                        "when": lambda inv, st: (st.get("free_slots") or 36) <= 6,
                        "action": ("sort_inventory", {"place_if_missing": True})},
-    # Never offered as an option: chosen by the proximity check.
+    # Never offered as options: chosen by an order or the proximity check.
+    "give_item":      {"desc": "Hand an item over to my player",
+                       "when": lambda inv, st: False,
+                       "action": ("give_item", {})},
     "return_to_player": {"desc": "Head back to my player",
                        "when": lambda inv, st: False,
                        "action": ("return_to_player", {"range": 4})},
@@ -589,6 +596,19 @@ FAIL_COOLDOWN_S = 300
 # /directive inbox. Common orders are parsed here; anything else goes to the
 # game model as an override. Checked in this order, so "forget diamonds,
 # come back to me" is a "come back".
+
+# "give me the pickaxe", "bring me 5 diamonds", "hand over your sword"
+GIVE_RE = re.compile(r"\b(?:give|hand|toss|pass|bring)\b(?:\s+(?:me|us|over|it))*\s+(.*)$")
+GIVE_FILLER = re.compile(r"\b(the|a|an|some|your|my|of|please|pls|now|here|back|to me|over)\b")
+# "make an iron pickaxe", "smelt it into an iron pickaxe"
+TOOL_RE = re.compile(r"\b(wood(?:en)?|stone|iron)\s+pick(?:axe)?\b")
+TOOL_TIER = {"wood": 1, "wooden": 1, "stone": 2, "iron": 3}
+TOOL_NAME = {1: "wooden", 2: "stone", 3: "iron"}
+# Collect orders that ask for delivery ("get me", "bring me", "for me").
+DELIVER_RE = re.compile(r"\b(?:get|bring|give|fetch|grab)\s+me\b|\bfor me\b")
+# What to hand over at the end of a collect order, as a loose item name.
+DELIVER_ITEM = {"diamonds": "diamond", "iron": "iron", "coal": "coal", "wood": "log",
+                "cobblestone": "cobblestone"}
 
 ORDER_MODES = [
     (r"\b(stop|quit|don'?t) follow", "resume"),
@@ -629,15 +649,67 @@ def _parse_order(text: str) -> Optional[Dict[str, Any]]:
     for pattern, mode in ORDER_MODES:
         if re.search(pattern, t):
             return {"kind": mode}
+    deliver = bool(DELIVER_RE.search(t))
+    give = GIVE_RE.search(t)
+    if give:
+        rest = give.group(1)
+        n = re.search(r"\b(\d{1,3})\b", rest)
+        item = " ".join(GIVE_FILLER.sub(" ", re.sub(r"\b\d{1,3}\b", " ", rest)).split())
+        if item:
+            return {"kind": "give", "item": item,
+                    "count": min(max(int(n.group(1)), 1), 64) if n else None}
+    tool = TOOL_RE.search(t)
+    if tool:
+        return {"kind": "tool", "tier": TOOL_TIER[tool.group(1)], "deliver": deliver,
+                "label": f"{TOOL_NAME[TOOL_TIER[tool.group(1)]]} pickaxe"}
     for pattern, label, items, default in ORDER_COLLECT:
         if re.search(pattern, t):
             n = re.search(r"\b(\d{1,3})\b", t)
-            return {"kind": "collect", "label": label, "items": items,
+            return {"kind": "collect", "label": label, "items": items, "deliver": deliver,
                     "amount": min(max(int(n.group(1)), 1), 64) if n else default}
     for pattern, goal in ORDER_TASKS:
         if re.search(pattern, t):
             return {"kind": "house"} if goal == "build_house" else {"kind": "once", "goal": goal}
     return None
+
+
+def _held_item(inv: Dict[str, int], term: str) -> Optional[str]:
+    """The inventory item a loose name refers to (mirrors bot.js's
+    resolveItem), or None."""
+    t = "_".join(term.lower().split())
+    for cand in (t, t[:-1] if t.endswith("s") else t, t[:-2] if t.endswith("es") else t):
+        if inv.get(cand):
+            return cand
+    word = t[:-1] if t.endswith("s") else t
+    names = [n for n in inv if word in n]
+    return max(names, key=lambda n: inv[n]) if names else None
+
+
+def _give_fallback(item: str, deliver_count: Optional[int]) -> Optional[Dict[str, Any]]:
+    """An order to get an item she doesn't have yet, then hand it over."""
+    tool = TOOL_RE.search(item)
+    if tool or re.search(r"\bpick(axe)?\b", item):
+        tier = TOOL_TIER[tool.group(1)] if tool else 2
+        return {"kind": "tool", "tier": tier, "deliver": True, "label": f"{TOOL_NAME[tier]} pickaxe"}
+    for pattern, label, items, default in ORDER_COLLECT:
+        if re.search(pattern, item):
+            return {"kind": "collect", "label": label, "items": items, "deliver": True,
+                    "amount": deliver_count or default}
+    return None
+
+
+# When an order's next step is resting after failures, try this instead.
+ORDER_ALTERNATIVE = {"mine_iron_ore": "branch_mine", "mine_coal": "branch_mine",
+                     "gather_cobblestone": "branch_mine", "mine_stone": "branch_mine",
+                     "chop_trees": "explore", "collect_wood": "explore"}
+
+
+def _tool_step(tier: int, inv: Dict[str, int], near: Dict[str, bool]) -> Optional[str]:
+    """The next goal toward a pickaxe of this tier."""
+    tech = _tech_goal(inv, near)
+    if tech or tier <= 2:
+        return tech
+    return _progress_goal(inv, near) or "mine_iron_ore"
 
 
 def _collect_step(label: str, inv: Dict[str, int], near: Dict[str, bool]) -> Optional[str]:
@@ -1044,6 +1116,13 @@ class MinecraftAgent(LumiClient):
         return False
 
     async def _execute_goal(self, goal: str, status: Dict) -> Tuple[bool, str]:
+        if goal == "give_item":
+            give = dict((self._order or {}).get("give") or {})
+            if not give:
+                return False, "Nothing to give"
+            self._record("skill", f"Executing: give_item ({give})")
+            r = await self._bot_action("give_item", give)
+            return bool(r.get("success")), r.get("message", "")
         spec = FREE_GOALS.get(goal, {}).get("action")
         if spec:
             # A plain bot.js action (house, branch mine, chests, return).
@@ -1154,6 +1233,24 @@ class MinecraftAgent(LumiClient):
             self._record("warn", f"didn't understand the order: {text}")
             return
 
+        if order["kind"] == "give":
+            inv = _inv(status)
+            item = _held_item(inv, order["item"])
+            if item:
+                # A number wins; "the diamonds" (plural) means all of them;
+                # otherwise one.
+                plural = order["item"].endswith("s") and not item.endswith("s")
+                count = order["count"] or (inv[item] if plural else 1)
+                order = {"kind": "once", "goal": "give_item",
+                         "give": {"item_name": item, "count": min(count, inv[item])}}
+            else:
+                fallback = _give_fallback(order["item"], order["count"])
+                if fallback is None:
+                    await self._bot_action("chat", {"message": f"I don't have any {order['item']}."})
+                    self._record("warn", f"can't give {order['item']}: not in inventory")
+                    return
+                order = fallback
+
         kind = order["kind"]
         if kind == "resume":
             self._order, self._mode = None, None
@@ -1170,7 +1267,18 @@ class MinecraftAgent(LumiClient):
             self._order = order
             if kind == "collect":
                 order["start"] = sum(_inv(status).get(i, 0) for i in order["items"])
-                ack = f"I'm going to get {order['amount']} {order['label']}"
+                ack = f"I'm going to get {order['amount']} {order['label']}" + \
+                      (" and bring them over" if order.get("deliver") else "")
+                if order.get("deliver"):
+                    order["give"] = {"item_name": DELIVER_ITEM[order["label"]], "count": order["amount"]}
+            elif kind == "tool":
+                ack = f"I'm going to make {'an' if order['label'][0] in 'aeiou' else 'a'} {order['label']}" + \
+                      (" and hand it over" if order.get("deliver") else "")
+                if order.get("deliver"):
+                    order["give"] = {"item_name": f"{TOOL_NAME[order['tier']]}_pickaxe", "count": 1}
+            elif kind == "once" and order["goal"] == "give_item":
+                g = order["give"]
+                ack = f"Here, I'll bring over {g['count']} {g['item_name'].replace('_', ' ')}"
             elif kind == "house":
                 ack = "I'm going to build a house"
             else:
@@ -1192,7 +1300,8 @@ class MinecraftAgent(LumiClient):
         prompt = (
             f"The user has given you a new direct order: '{text}'. You must prioritize "
             "this above all current goals.\n"
-            f"Current inventory: {', '.join(f'{n}×{c}' for n, c in _inv(status).items()) or 'empty'}.\n"
+            f"Your inventory contains: {', '.join(f'{n}×{c}' for n, c in _inv(status).items()) or 'nothing'}. "
+            "If the order is about something you already have, don't gather or craft it again.\n"
             "Goals:\n" + "\n".join(f"- {k}: {v}" for k, v in options.items()) + "\n- none: not an order"
         )
         loop = asyncio.get_running_loop()
@@ -1224,6 +1333,8 @@ class MinecraftAgent(LumiClient):
             return None
         if o["kind"] == "once":
             return o["goal"]
+        if o.get("delivering"):
+            return "give_item"
         if o["kind"] == "house":
             if _house(status).get("complete"):
                 self._finish_order_later("the house is built")
@@ -1233,11 +1344,23 @@ class MinecraftAgent(LumiClient):
             if self._wanted.get("oak_planks") or self._wanted.get("planks"):
                 return "chop_trees"
             return "build_house"
-        have = sum(inv.get(i, 0) for i in o["items"]) - o["start"]
-        if have >= o["amount"]:
-            self._finish_order_later(f"got {o['amount']} {o['label']}")
+        near = status.get("nearby") or {}
+        if o["kind"] == "tool":
+            reached, what = _pickaxe(inv) >= o["tier"], f"made {o['label']}"
+            step = None if reached else _tool_step(o["tier"], inv, near)
+        else:
+            reached = sum(inv.get(i, 0) for i in o["items"]) - o["start"] >= o["amount"]
+            what = f"got {o['amount']} {o['label']}"
+            step = None if reached else _collect_step(o["label"], inv, near)
+        if reached:
+            if o.get("deliver"):
+                o["delivering"] = True       # one more step: hand it over
+                return "give_item"
+            self._finish_order_later(what)
             return None
-        return _collect_step(o["label"], inv, status.get("nearby") or {})
+        if step and not self._available(step, status):
+            step = ORDER_ALTERNATIVE.get(step, step)
+        return step
 
     def _finish_order_later(self, what: str) -> None:
         """Mark the order done; the brag goes out from the loop."""
@@ -1250,16 +1373,18 @@ class MinecraftAgent(LumiClient):
         o = self._order
         if not o:
             return
-        if o["kind"] == "once" and ok:
-            self._finish_order_later(_goal_desc(goal).lower())
-        elif not ok:
+        if ok:
+            o["fails"] = 0          # three failures in a row, not in total
+            if o["kind"] == "once" or goal == "give_item":
+                self._finish_order_later(msg if goal == "give_item" else _goal_desc(goal).lower())
+        else:
             o["fails"] += 1
             if o["fails"] >= FAIL_STREAK:
                 self._record("warn", f"giving up on the order: {o['text']}")
                 self._order = None
                 self._tel["current_order"] = None
-                await self._narrate(f"I couldn't carry out the order \"{o['text']}\": {msg[:140]}",
-                                    major=True)
+                await self._narrate(f"I failed my order: \"{o['text']}\". I am giving up. "
+                                    f"(Last problem: {msg[:140]})", major=True)
         await self._announce_done_order()
 
     async def _announce_done_order(self) -> None:

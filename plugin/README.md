@@ -251,7 +251,9 @@ diamonds, come back to me" means "come back":
 | Follow | "follow me", "stay close", "come with me" | Follow mode: stays within about 5 blocks of you until told otherwise |
 | Come back | "come here", "come back", "where are you" | `return_to_player` once, then free play |
 | Stay | "stay", "wait here", "stop", "don't move" | Stay mode: does nothing but survive until told otherwise |
-| Collect | "get me 5 diamonds", "get some wood", "mine for iron", "coal", "cobblestone" | An objective: N more than she has now (defaults: 3 diamonds, 6 iron, 8 coal, 16 logs, 32 cobblestone). She works through the tech tree first when she needs a better pickaxe (diamonds need iron), then branch-mines, chops or mines until she has them |
+| Give | "give me the pickaxe", "bring me 5 diamonds", "hand over your sword" | If she has it: walks over and tosses it to you (`give_item`; a loose name like "pickaxe" means her best one, a plural like "the diamonds" means all of them). If not, and it's a pickaxe or something she can collect, she gets or makes it first and then hands it over. Otherwise she says she doesn't have any |
+| Tool | "make an iron pickaxe", "…smelt it into an iron pickaxe" | Works through the tech tree until she has a pickaxe of that tier (wooden, stone or iron). Checked before Collect, so "collect some iron and smelt it into an iron pickaxe" is about the pickaxe, not just the iron |
+| Collect | "get me 5 diamonds", "get some wood", "mine for iron", "coal", "cobblestone" | An objective: N more than she has now (defaults: 3 diamonds, 6 iron, 8 coal, 16 logs, 32 cobblestone). She works through the tech tree first when she needs a better pickaxe (diamonds need iron), then branch-mines, chops or mines until she has them. With "get **me**", "bring me" or "for me" she hands them over at the end |
 | House | "build a house" | Builds the house, gathering what it's missing, until it's done |
 | Task | "go home", "make torches", "sort your stuff", "hunt", "cook", "make a shelter", "make a furnace", "go mining", "explore" | That goal, once |
 
@@ -261,7 +263,16 @@ goals."), which picks one goal or says it isn't an order. If it isn't
 understood, she says so in chat and keeps her current order.
 
 An order outranks free play and the leash, but survival still comes first.
-Orders give up after 3 real failures or 20 minutes. Lumi's chat model hears
+A mining or chopping step that gets some of what it went for before failing
+(an unreachable ore, a path that takes too long) counts as a success with what
+it got, so progress is kept and isn't mistaken for failure. When an order's
+next step is resting after 3 failures, the order tries an alternative: branch
+mining instead of `mine_iron_ore`, `mine_coal` or mining stone, exploring
+instead of chopping.
+
+Orders give up after 3 failures in a row (any success resets the count) or
+20 minutes, with "I failed my order: … I am giving up." and the last
+problem. Lumi's chat model hears
 about each order (a spoken event, so she acknowledges it: "Alright, I'll go
 find some diamonds. Don't wander too far."), sees it in her silent status
 line, and hears when it's done or given up.

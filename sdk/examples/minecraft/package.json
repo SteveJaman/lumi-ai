@@ -1,10 +1,10 @@
 {
   "name": "lumi-minecraft-bot",
   "version": "0.1.0",
-  "description": "Lumi SDK × Minecraft bridge — exposes mineflayer bot controls as Lumi SDK actions.",
+  "description": "Lumi SDK \u00d7 Minecraft bridge \u2014 exposes mineflayer bot controls as Lumi SDK actions.",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node --max-old-space-size=4096 bot.js"
   },
   "engines": {
     "node": ">=18"

@@ -37,7 +37,7 @@ git submodule update --init plugin/voyager   # Voyager's control primitives
 cd sdk/examples/minecraft
 npm install
 cp .env.example .env        # then edit .env with your server details
-node bot.js
+npm start                   # node --max-old-space-size=4096 bot.js
 ```
 
 Expected output:
@@ -77,14 +77,15 @@ For a LAN world, the port changes every launch. Set it from the dashboard's
 | `MC_VERSION` | *(auto)* | Pin a Minecraft version string, e.g. `1.20.1` |
 | `BOT_CONTROL_PORT` | `5057` | Port for the local control API |
 | `SKILL_TIMEOUT_MS` | `120000` | Time limit for one skill run (the most a caller can ask for) |
-| `PATH_THINK_MS` | `12000` | How long the pathfinder may plan one path. Mineflayer's default of 5000 caused "Took to long to decide path to goal!" in forests |
+| `PATH_THINK_MS` | `10000` | How long the pathfinder may plan one path. Mineflayer's default of 5000 caused "Took to long to decide path to goal!" in forests |
 | `VOYAGER_DIR` | `../../../plugin/voyager/voyager` | Where to load Voyager's primitives from |
 | `EVENT_REACTIONS` | `major` | Which game events Lumi reacts to out loud: `major` (deaths, boss kills, top-tier loot), `all` (also damage, mobs, hunger, kills, joining), or `off`. See [Context and events](#context-and-events) |
 | `AUTO_DEFEND` | `true` | Fight back when a hostile mob hits the bot. See [Self-defense](#self-defense) |
 | `MC_OWNER` | *(first other player online)* | The in-game name of the player Lumi plays near. See [Playing near you](#playing-near-you) |
 | `HOUSE_PATH` | `../../../data/minecraft/house.json` | Where the house site and its progress are remembered |
 | `VIEWER_PORT` | `3000` | Port for the first-person [live viewer](#live-viewer). `0` turns it off |
-| `VIEWER_DISTANCE` | `6` | Chunks the live viewer renders around the bot |
+| `VIEWER_DISTANCE` | `4` | Chunks the live viewer sends around the bot, to each browser watching. Its main memory cost |
+| `VIEWER_HEAP_LIMIT_MB` | `1536` | Pause the live viewer when the heap passes this. See [Memory](#memory) |
 | `SKIN_PORT` | `3001` | Port for the [skin server](#lumis-skin). `0` turns it off |
 | `SKIN_PATH` | `lumi_skin.png` next to `bot.js` | The skin PNG the skin server sends |
 
@@ -154,6 +155,26 @@ The viewer is optional. If the package doesn't load (for example, `canvas`,
 an optional native dependency, failed to install) or port 3000 is taken,
 `bot.js` logs a warning and the bot plays normally without it. It stops on
 disconnect and starts again after the bot reconnects and spawns.
+
+### Memory
+
+One run ended after 14 minutes with `JavaScript heap out of memory` at 4 GB.
+The likely cause is the viewer: it serializes every chunk around the bot for
+**each** connected browser, and socket.io keeps whatever a slow or background
+tab hasn't read yet in memory, with no limit. Two viewers open (the Games page
+and the old diagnostics page, say) double it.
+
+- Every 15 s a watchdog checks the heap. Above `VIEWER_HEAP_LIMIT_MB` it
+  pauses the viewer, which disconnects its browsers and frees their buffers,
+  for 10 minutes. It restarts the viewer once the heap is below half the
+  limit.
+- `[mem] heap … MB, live viewer on/off` is logged every 5 minutes, and
+  `/status` has `heap_mb`. If the heap keeps climbing with the viewer off,
+  the leak is somewhere else; that line is what to look at.
+- Lumi starts `bot.js` with `--max-old-space-size=4096`, and so does
+  `npm start`. Node's default heap ceiling depends on the machine's RAM.
+- `VIEWER_DISTANCE` defaults to 4 chunks, down from 6: about half the data
+  per browser.
 
 ---
 
@@ -415,6 +436,7 @@ call again to continue.
 
 | Action | Parameters | What it does |
 |---|---|---|
+| `minecraft_give_item` | `item_name`, optional `count` (default 1), `username` (default the owner) | Walks within about 2 blocks of the player (30 s limit), looks at them and tosses the items their way. `item_name` can be loose: `pickaxe` gives the best pickaxe, `diamonds` the diamonds, `stone pickaxe` that one |
 | `minecraft_return_to_player` | optional `range` (default 4) | Follows the owner until within `range` blocks. The pathfinder digs through whatever is in the way. With no progress for 30 s, or the owner out of tracking range, it tries `/tp` (works only with cheats on in the LAN world), then gives up |
 | `minecraft_mine_branch_tunnel` | optional `depth` (default 12), `length` (default 20, max 64) | Digs a 1-wide staircase down to `depth`, then a 1x2 tunnel. Mines any ore within 2 to 3 blocks it can harvest with the pickaxe it has (it never breaks diamond with a stone pickaxe), places a torch every 5 blocks if it has torches, fills holes in the floor, and stops at lava or water, at bedrock, or when attacked. Keeps the same direction between calls. In 1.18+ diamonds are most common around y=-54 |
 | `minecraft_build_house` | optional `material`: `cobblestone` or `planks` | Builds the [7x7 house](#the-house) next to the bot, or continues the unfinished one. Fails with `Missing materials: cobblestone×65 (have 100, need 165 of 165)` when short |
@@ -554,7 +576,7 @@ It doesn't go through Lumi, so it works whether or not Lumi is running.
 
 | Method | Path | Body / response |
 |---|---|---|
-| `GET` | `/status` | `{ready, username, server, position, health, food, inventory, threats, is_day, busy, defending, held, nearby, free_slots, owner, house}`. `nearby` says whether a crafting table and a furnace are within 32 blocks and a chest within 16. `owner` is described in [Playing near you](#playing-near-you), `house` is `{origin, material, complete}` or `null` |
+| `GET` | `/status` | `{ready, username, server, position, health, food, inventory, threats, is_day, busy, defending, held, nearby, free_slots, owner, house}`. `nearby` says whether a crafting table and a furnace are within 32 blocks and a chest within 16. `owner` is described in [Playing near you](#playing-near-you), `house` is `{origin, material, complete}` or `null`. `heap_mb` is the bot process's heap |
 | `GET` | `/events` | Last 100 entries of the bot's event log |
 | `GET` | `/config` | `{host, port, username, auth, viewer_port, skin_port}`. `viewer_port` is `null` while the viewer isn't running |
 | `POST` | `/config` | `{host, port}`. Updates the target server and reconnects if it changed |
@@ -591,6 +613,11 @@ free-play goals (chop trees, hunt, explore, build a dirt hut at night). See
 ---
 
 ## Troubleshooting
+
+**`bot.js` crashed with `JavaScript heap out of memory`.**
+See [Memory](#memory). Look for `[mem]` lines in `data/logs/minecraft/bot.log`
+before the crash. If the heap grows with the viewer off, report it. To rule
+the viewer out, set `VIEWER_PORT=0`. Close extra viewer tabs.
 
 **`[viewer] live view disabled (Cannot find module 'canvas')`.**
 `canvas` is an optional native dependency, so `npm install` carries on without
