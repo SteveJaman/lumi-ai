@@ -76,7 +76,8 @@ For a LAN world, the port changes every launch. Set it from the dashboard's
 | `MC_AUTH` | `offline` | `offline` or `microsoft` |
 | `MC_VERSION` | *(auto)* | Pin a Minecraft version string, e.g. `1.20.1` |
 | `BOT_CONTROL_PORT` | `5057` | Port for the local control API |
-| `SKILL_TIMEOUT_MS` | `120000` | Time limit for one skill run |
+| `SKILL_TIMEOUT_MS` | `120000` | Time limit for one skill run (the most a caller can ask for) |
+| `PATH_THINK_MS` | `12000` | How long the pathfinder may plan one path. Mineflayer's default of 5000 caused "Took to long to decide path to goal!" in forests |
 | `VOYAGER_DIR` | `../../../plugin/voyager/voyager` | Where to load Voyager's primitives from |
 | `EVENT_REACTIONS` | `major` | Which game events Lumi reacts to out loud: `major` (deaths, boss kills, top-tier loot), `all` (also damage, mobs, hunger, kills, joining), or `off`. See [Context and events](#context-and-events) |
 | `AUTO_DEFEND` | `true` | Fight back when a hostile mob hits the bot. See [Self-defense](#self-defense) |
@@ -328,6 +329,12 @@ agent (`plugin/minecraft_bot.py`) waits the full 120 s.
 |---|---|---|---|
 | `code` | string | yes | Async JavaScript code |
 | `description` | string | no | Human-readable label (logged, not executed) |
+| `timeout_ms` | integer | no | Time limit, 5000–120000 ms. Default `SKILL_TIMEOUT_MS` |
+
+When a skill fails or times out, `bot.js` stops everything it may have
+started (pathfinding, block collection, digging, fighting, movement keys).
+The skill's own code can't be cancelled, so without this a timed-out skill
+would keep fighting the next one for the pathfinder.
 
 #### Examples
 
@@ -428,9 +435,10 @@ bot's event log (`GET /events`) only.
 | Getting hungry | Hunger falls to 6 or below | `all` only | 2 min |
 | Killed a mob | A mob the bot was fighting dies | `all` only | 10 s |
 
-Lumi's SDK server applies one more limit on top: it ignores events while Lumi
-is thinking or speaking, and allows at most one event turn every 12 s per
-client. Events it drops are logged, not queued. Set `EVENT_REACTIONS=off` to
+Lumi's SDK server applies one more limit on top: at most one event turn every
+12 s per client. An event that arrives while Lumi is thinking or speaking is
+held (the latest one per client) and delivered when she's free, or dropped if
+she's still busy after 20 s. Drops are logged. Set `EVENT_REACTIONS=off` to
 turn events off, or `all` for the full Neuro-style commentary.
 
 ## Running from Lumi's dashboard
@@ -480,7 +488,7 @@ It doesn't go through Lumi, so it works whether or not Lumi is running.
 
 | Method | Path | Body / response |
 |---|---|---|
-| `GET` | `/status` | `{ready, username, server, position, health, food, inventory, threats, is_day, busy, defending}` |
+| `GET` | `/status` | `{ready, username, server, position, health, food, inventory, threats, is_day, busy, defending, held, nearby}`. `nearby` says whether a crafting table and a furnace are within 32 blocks |
 | `GET` | `/events` | Last 100 entries of the bot's event log |
 | `GET` | `/config` | `{host, port, username, auth, viewer_port, skin_port}`. `viewer_port` is `null` while the viewer isn't running |
 | `POST` | `/config` | `{host, port}`. Updates the target server and reconnects if it changed |

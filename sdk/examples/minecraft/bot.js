@@ -221,8 +221,7 @@ function createBot() {
 
   bot.once("spawn", () => {
     mcData = require("minecraft-data")(bot.version);
-    const moves = new Movements(bot, mcData);
-    bot.pathfinder.setMovements(moves);
+    configurePathfinder();
     botReady   = true;
     lastHealth = bot.health;
     lastFood   = bot.food;
@@ -244,8 +243,7 @@ function createBot() {
 
   bot.on("respawn", () => {
     mcData = require("minecraft-data")(bot.version);
-    const moves = new Movements(bot, mcData);
-    bot.pathfinder.setMovements(moves);
+    configurePathfinder();
     botReady   = true;
     lastHealth = bot.health;
     lastFood   = bot.food;
@@ -413,6 +411,41 @@ async function equipWeapon() {
   return null;
 }
 
+// canDig, allow1by1towers and maxDropDown 4 are already
+// mineflayer-pathfinder's defaults; they're set here so the bot's
+// abilities are explicit. What actually caused "Took to long to decide
+// path to goal!" is the 5 s planning budget, too short for paths through
+// forests and up to logs in tree canopies.
+const PATH_THINK_MS = parseInt(process.env.PATH_THINK_MS || "12000", 10);
+
+function configurePathfinder() {
+  const moves = new Movements(bot, mcData);
+  moves.canDig = true;            // dig through walls, including its own dirt hut
+  moves.allow1by1towers = true;   // pillar up with scaffolding blocks to reach logs
+  moves.allowParkour = true;
+  moves.allowSprinting = true;
+  moves.maxDropDown = 4;
+  bot.pathfinder.setMovements(moves);
+  bot.pathfinder.thinkTimeout = PATH_THINK_MS;
+}
+
+// Stop everything a skill may have started. A timed-out skill's code keeps
+// running in the background, so without this it fights the next skill for
+// the pathfinder ("Digging aborted", "Took to long to decide path").
+function stopAllActivity() {
+  try { bot.pathfinder.stop(); } catch (_) {}
+  try { bot.pathfinder.setGoal(null); } catch (_) {}
+  try { bot.pvp.stop(); } catch (_) {}
+  try { bot.collectBlock.cancelTask(); } catch (_) {}
+  try { if (bot.targetDigBlock) bot.stopDigging(); } catch (_) {}
+  try { bot.clearControlStates(); } catch (_) {}
+}
+
+function nearbyBlock(name, maxDistance = 32) {
+  const b = mcData && mcData.blocksByName[name];
+  return Boolean(b && bot.findBlock({ matching: b.id, maxDistance }));
+}
+
 function buildStatusText() {
   if (!bot || !botReady) return "[MinecraftBot] Not connected to Minecraft server.";
   const pos     = bot.entity.position;
@@ -445,6 +478,7 @@ function buildStatusJson() {
     busy:      activeActions > 0,
     defending: Boolean(defendTarget),
     held:      bot.heldItem ? bot.heldItem.name : null,
+    nearby:    { crafting_table: nearbyBlock("crafting_table"), furnace: nearbyBlock("furnace") },
   };
 }
 
@@ -636,6 +670,7 @@ function registerActions() {
             properties: {
               code:        { type: "string", description: "Async JavaScript body, e.g. `await mineBlock(bot, \"oak_log\", 3);`" },
               description: { type: "string", description: "Short label for the skill (logged, not executed)." },
+              timeout_ms:  { type: "integer", description: "Optional time limit in ms (5000-120000). Default 120000." },
             },
             required: ["code"],
           },
@@ -1029,7 +1064,7 @@ const FAIL_COUNTERS =
 // Runs skill code the way Voyager does: primitives + code in one async body.
 // The primitives report progress through bot.chat, so those lines become the
 // result message Lumi (or minecraft_bot.py) sees.
-async function runVoyager(code, label) {
+async function runVoyager(code, label, timeoutMs = SKILL_TIMEOUT_MS) {
   if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
   if (!voyagerPrograms) return { success: false, message: "Voyager primitives not loaded" };
 
@@ -1052,14 +1087,14 @@ async function runVoyager(code, label) {
     const result = await Promise.race([
       fn(bot, mcData, Vec3, Movements, goals, ...GOAL_NAMES.map(n => goals[n])),
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`timed out after ${SKILL_TIMEOUT_MS / 1000} s`)),
-                           SKILL_TIMEOUT_MS);
+        timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs / 1000} s`)),
+                           timeoutMs);
       }),
     ]);
     const parts = [result !== undefined ? String(result) : "Skill completed.", ...chatLog.slice(-8)];
     return { success: true, message: parts.join(" | ") };
   } catch (e) {
-    try { bot.pathfinder.stop(); bot.pvp.stop(); } catch (_) {}
+    stopAllActivity();
     const feedback = chatLog.length ? " | " + chatLog.slice(-8).join(" | ") : "";
     return { success: false, message: `Skill error: ${e.message}${feedback}` };
   } finally {
@@ -1071,7 +1106,11 @@ async function runVoyager(code, label) {
 async function handleExecuteSkill(args) {
   const code = String(args.code || "").trim();
   if (!code) return { success: false, message: "code cannot be empty" };
-  return runVoyager(code, args.description || "custom skill");
+  // Optional shorter limit, e.g. 60 s for chopping trees, so a stuck
+  // pathfinder fails fast and the agent can pick something else.
+  const t = parseInt(args.timeout_ms, 10);
+  const timeoutMs = Number.isFinite(t) ? Math.min(Math.max(t, 5000), SKILL_TIMEOUT_MS) : SKILL_TIMEOUT_MS;
+  return runVoyager(code, args.description || "custom skill", timeoutMs);
 }
 
 // Item/block/mob names are interpolated into skill code, so restrict them to

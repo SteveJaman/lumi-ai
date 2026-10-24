@@ -155,12 +155,16 @@ class SDKClient:
     context_priority: int = 150
     allow_reactions: bool = True
     last_reaction: float = 0.0
+    pending_reaction: Optional[Tuple[str, float]] = None   # (text, received at)
 
 
 # Minimum gap between event turns one client can trigger. Events that
-# arrive sooner, or while Lumi is mid-turn, are dropped: a reaction to
-# something that happened a minute ago reads worse than no reaction.
+# arrive sooner are dropped. One that arrives while Lumi is mid-turn is
+# held (the latest per client) for up to REACTION_HOLD_S and delivered
+# when she's free: a slow reply shouldn't swallow a death or a diamond,
+# but a reaction to something from a minute ago reads worse than none.
 REACTION_COOLDOWN_S = 12.0
+REACTION_HOLD_S = 20.0
 MAX_REACTION_CHARS = 600
 
 
@@ -226,11 +230,13 @@ class SDKServer(Module):
                  f"(protocol v{SDK_PROTOCOL_VERSION}, sdk v{SDK_VERSION})")
 
         ping_task = asyncio.create_task(self._ping_loop())
+        reaction_task = asyncio.create_task(self._reaction_loop())
         try:
             while not self.signals.terminate:
                 await asyncio.sleep(1.0)
         finally:
             ping_task.cancel()
+            reaction_task.cancel()
             try:
                 await self._runner.cleanup()
             except Exception:
@@ -524,14 +530,24 @@ class SDKServer(Module):
         text = text.strip()[:MAX_REACTION_CHARS]
         if not text or not client.approved or not client.allow_reactions:
             return
+        if time.time() - client.last_reaction < REACTION_COOLDOWN_S:
+            return
+        if self._lumi_busy():
+            if client.pending_reaction is not None:
+                hub_emit(self.signals, "sdk",
+                         f"{client.game_name} event replaced while Lumi is busy")
+            client.pending_reaction = (text, time.time())
+            return
+        self._deliver_reaction(client, text)
+
+    def _lumi_busy(self) -> bool:
         s = self.signals
-        now = time.time()
-        if now - client.last_reaction < REACTION_COOLDOWN_S:
-            return
-        if s.new_message or s.AI_thinking or s.AI_speaking:
-            hub_emit(s, "sdk", f"{client.game_name} event dropped (Lumi busy)")
-            return
-        client.last_reaction = now
+        return bool(s.new_message or s.AI_thinking or s.AI_speaking)
+
+    def _deliver_reaction(self, client: SDKClient, text: str):
+        s = self.signals
+        client.last_reaction = time.time()
+        client.pending_reaction = None
         s.history.append({
             "role": "user",
             "content": f"[FROM SDK: {client.game_name}]\n{text}\n[END FROM SDK]",
@@ -539,6 +555,23 @@ class SDKServer(Module):
         })
         s.new_message = True
         hub_emit(s, "sdk", f"{client.game_name} event → turn: {text[:80]}")
+
+    async def _reaction_loop(self):
+        """Deliver held events once Lumi is free, or drop them once stale."""
+        while not self.signals.terminate:
+            await asyncio.sleep(0.5)
+            for client in list(self.clients.values()):
+                held = client.pending_reaction
+                if held is None:
+                    continue
+                text, since = held
+                if time.time() - since > REACTION_HOLD_S:
+                    client.pending_reaction = None
+                    hub_emit(self.signals, "sdk",
+                             f"{client.game_name} event dropped (Lumi busy for "
+                             f"{REACTION_HOLD_S:.0f} s): {text[:60]}")
+                elif not self._lumi_busy():
+                    self._deliver_reaction(client, text)
 
     def _handle_action_result(self, client: SDKClient, data: Dict[str, Any]):
         payload = data.get("data") if isinstance(data.get("data"), dict) else data

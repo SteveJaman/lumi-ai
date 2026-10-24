@@ -186,48 +186,61 @@ Every `MC_LOOP_INTERVAL` seconds the agent:
 0. Checks `data/minecraft/autoplay.json`. While `"minecraft"` is `false` it stands by and does nothing else. A missing file counts as `true`, so running it by hand just works.
 1. Reads the bot's position, health, hunger, inventory, nearby threats and time of day from `GET /status`, and every `MC_STATUS_INTERVAL` seconds pushes Lumi's silent status line.
 2. **Survives.** If a hostile other than an enderman is within 6 blocks, it calls `defend`. If hunger is below 14 and there is food, it calls `eat_food`. Either one uses up the step.
-3. **Picks a goal.** A goal set through `mc_agent_set_goal` comes first. Otherwise the options are the next curriculum tier plus every free-play goal that can run now. The game model (`MC_GOAL_MODEL`, default `GAME_AGENT_MODEL` from `constants.py`) picks one from a status summary and the recent goal history. If the model isn't pulled (the agent checks at startup and logs the `ollama pull` command) or its call fails, a weighted random pick takes over: shelter at night, food when hungry, and the curriculum tier 70% of the time.
+3. **Picks a goal.** A goal set through `mc_agent_set_goal` comes first. Then the [tech tree](#tech-tree) decides, in code, until there's a stone pickaxe. After that the options are the next later tier that can run plus every free-play goal whose gate passes and that isn't resting. The game model (`MC_GOAL_MODEL`, default `GAME_AGENT_MODEL` from `constants.py`) picks one from the exact inventory, day or night, and the recent goals with their results. If the model isn't pulled (the agent checks at startup and logs the `ollama pull` command) or its call fails, a weighted random pick takes over: shelter at night, food when hungry, and the tool tier 70% of the time.
 4. **Narrates, if it's big.** With the default `MC_NARRATE=major`, only mining diamonds becomes a spoken `[MINECRAFT EVENT]`. With `MC_NARRATE=all` it also announces each new goal, each finished curriculum tier and a goal failing three times in a row, at most one every `MC_NARRATE_COOLDOWN` seconds.
-5. **Executes** the goal's skill through `POST /action` as `execute_skill`. If Voyager's primitives aren't loaded, it runs the goal's plain-action fallback instead (for example `mine_block` then `craft_item`), when the goal has one.
-6. On success, a curriculum tier is marked verified in `data/minecraft/skills.json`. A goal that fails three times in a row is left out of the options until it succeeds again, unless nothing else can run.
+5. **Executes** the goal's skill through `POST /action` as `execute_skill`, with a per-goal time limit (`GOAL_TIMEOUT_S`: 60 s for chopping and exploring, 90 s for mining stone and the hut, 120 s otherwise) so a stuck pathfinder fails fast. If Voyager's primitives aren't loaded, it runs the goal's plain-action fallback instead (for example `mine_block` then `craft_item`), when the goal has one.
+6. **Rests goals.** After `build_dirt_hut` succeeds it isn't offered again that night, nor for 10 minutes. A goal that fails three times in a row is rested for 5 minutes, and the agent does something else meanwhile.
 
 All HTTP and LLM calls run in executor threads, so a two-minute skill never blocks the SDK websocket.
 
 ### Free-play goals
 
-Defined in `FREE_GOALS`. They can repeat and are never marked verified.
+Defined in `FREE_GOALS`. They can repeat. Each gate is checked in code, so the
+model is never offered something that makes no sense right now.
 
-| Goal | Available | What it does |
+| Goal | Offered when | What it does |
 |---|---|---|
-| `chop_trees` | Always | Mines 4 logs of whatever tree is closest (any wood type), exploring if none are in sight |
+| `chop_trees` | Fewer than 10 logs | Mines 4 logs of whatever tree is closest (any wood type), exploring if none are in sight |
 | `hunt_food` | Always | Finds a cow, pig, sheep or chicken and kills it |
-| `cook_meat` | Raw meat and coal or planks in inventory | Smelts up to 6 raw meat, placing a furnace if needed |
+| `cook_meat` | Raw meat, and coal or wood | Smelts up to 6 raw meat, placing a furnace if needed |
 | `explore` | Always | Explores in a random direction for 45 s |
 | `mine_coal` | Any pickaxe | Explores until coal ore is in sight, mines 5 |
-| `build_dirt_hut` | Always | Digs 25 dirt and seals itself in a 3×3 dirt box. The random picker builds one at the start of each night |
+| `build_dirt_hut` | Night, and not built yet tonight | Digs 25 dirt and seals itself in a 3×3 dirt box |
 | `wait_out_night` | Night | Waits up to 100 s for morning |
 
-### Curriculum
+### Tech tree
 
-Defined in `CURRICULUM`:
+Defined in `CURRICULUM`. Progress is read from the inventory, plus a crafting
+table or furnace placed within 32 blocks (from `GET /status`). It never
+depends on which goal last succeeded, so 40 logs from `chop_trees` count as
+wood, and any wood type works.
 
-| Tier | Needs | Skill |
+The first five tiers are decided in code (`_tech_goal`), in this order, and
+the model never sees them:
+
+| Tier | Chosen when | Skill |
 |---|---|---|
-| `collect_wood` | — | `mineBlock(bot, "oak_log", 5)` |
-| `craft_planks` | 5 oak logs | `craftItem(bot, "oak_planks", 5)` |
-| `craft_workbench` | 4 planks | `craftItem(bot, "crafting_table", 1)` |
-| `craft_wood_pickaxe` | crafting table, 7 planks | Place the table, craft sticks and a wooden pickaxe |
-| `mine_stone` | wooden pickaxe | `mineBlock(bot, "stone", 11)` |
-| `craft_stone_pickaxe` | 3 cobblestone, 2 sticks | Stone pickaxe at a crafting table |
-| `craft_furnace` | 8 cobblestone | Furnace at a crafting table |
-| `mine_iron_ore` | stone pickaxe | Explore until iron ore is in sight, mine 3 |
-| `smelt_iron` | 3 raw iron | Place the furnace if needed, smelt with planks |
-| `craft_iron_pickaxe` | 3 iron ingots, 2 sticks | Iron pickaxe at a crafting table |
-| `mine_diamond` | iron pickaxe | Explore downward until diamond ore is in sight, mine 1 |
+| `collect_wood` | Not enough wood for what's next (a table, sticks and a pickaxe come to 9 planks) | Chops 5 logs of the nearest tree |
+| `craft_workbench` | Enough wood, no crafting table in inventory or nearby | Planks from whichever logs there are most of, then a crafting table |
+| `craft_wood_pickaxe` | Has a crafting table | Places the table on a free spot if needed, then sticks and a wooden pickaxe |
+| `mine_stone` | Wooden pickaxe, fewer than 3 cobblestone | Explores until stone is in sight, mines 8 |
+| `craft_stone_pickaxe` | Wooden pickaxe and 3 cobblestone | Sticks if needed, then a stone pickaxe |
 
-If the next tier lacks materials, for example because a previous run used them
-up, the agent re-runs the closest earlier tier that can run instead of stopping.
-The skills use oak, so start the bot near oak trees.
+With a stone pickaxe, the next of these is offered to the model as the
+"tool progress" option, as soon as its inputs are on hand:
+
+| Tier | Ready when | Skill |
+|---|---|---|
+| `craft_furnace` | 8 cobblestone | Furnace at a crafting table |
+| `mine_iron_ore` | Stone pickaxe | Explore until iron ore is in sight, mine 3 |
+| `smelt_iron` | 3 raw iron, and a furnace or 8 cobblestone | Smelts with coal, or planks if there's no coal |
+| `craft_iron_pickaxe` | 3 iron ingots | Iron pickaxe at a crafting table |
+| `mine_diamond` | Iron pickaxe | Explore downward until diamond ore is in sight, mine 1 |
+
+Every tier checks its own result and fails if nothing changed. So mining stone
+with none in reach is a failure, and rests after three, instead of a
+"success" that repeats forever. The dashboard's progress count is the number
+of tiers already done according to the inventory.
 
 ## SDK actions
 
@@ -261,7 +274,6 @@ The agent connects as `MinecraftAgent`. The allowlist entry needs
 |---|---|
 | `data/minecraft/telemetry.json` | Latest bot state, loop state and `current_thought`, read by the dashboard |
 | `data/minecraft/events.jsonl` | Append-only event log |
-| `data/minecraft/skills.json` | Verified tiers. Delete it to restart the curriculum |
 | `data/minecraft/autoplay.json` | Written by the dashboard switch, read by the agent and by Lumi at boot |
 | `data/logs/minecraft/agent.log`, `bot.log` | Output of the processes Lumi started |
 

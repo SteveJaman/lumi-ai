@@ -32,7 +32,6 @@ when it imports; otherwise the agent runs without it.
 Data written at runtime:
     data/minecraft/telemetry.json  — live bot state (read by mc_dashboard.py)
     data/minecraft/events.jsonl    — agent event log (read by mc_dashboard.py)
-    data/minecraft/skills.json     — verified skill library
 """
 
 from __future__ import annotations
@@ -67,7 +66,6 @@ except Exception:
 # ─── Paths ────────────────────────────────────────────────────────────────────
 DATA_ROOT      = os.path.join(_ROOT, "data")
 MC_DIR         = os.path.join(DATA_ROOT, "minecraft")
-SKILLS_PATH    = os.path.join(MC_DIR, "skills.json")
 TELEMETRY_PATH = os.path.join(MC_DIR, "telemetry.json")
 EVENTS_PATH    = os.path.join(MC_DIR, "events.jsonl")
 AUTOPLAY_PATH  = os.path.join(MC_DIR, "autoplay.json")
@@ -92,34 +90,162 @@ STATUS_EVERY   = float(os.environ.get("MC_STATUS_INTERVAL", "30"))  # silent sta
 EAT_BELOW_FOOD = 14   # eat when hunger drops below this and food is on hand
 DEFEND_RANGE   = 6    # proactively fight hostiles this close (blocks)
 
-# ─── Voyager curriculum ───────────────────────────────────────────────────────
-# Each tier fires once its required items are in inventory. Quantities are
-# sized so each tier leaves enough material for the next ones.
+# ─── Tech tree ────────────────────────────────────────────────────────────────
+# Progress is read from the inventory (plus a crafting table or furnace placed
+# within 32 blocks), never from which goal last succeeded: 40 logs from
+# chop_trees count as having wood just as much as logs from collect_wood.
+# The first five tiers are a fixed if/else chain (_tech_goal) the model never
+# sees; after that the model chooses between free-play goals and the next of
+# the later tiers.
+
+_LOGS = ["oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log",
+         "dark_oak_log", "mangrove_log"]
+_STONE_MATS = ["cobblestone", "cobbled_deepslate", "blackstone"]
+_PICKAXE_TIER = {"wooden_pickaxe": 1, "stone_pickaxe": 2, "iron_pickaxe": 3,
+                 "diamond_pickaxe": 4, "netherite_pickaxe": 5}
+
+
+def _logs(inv: Dict[str, int]) -> int:
+    return sum(inv.get(n, 0) for n in _LOGS)
+
+
+def _wood(inv: Dict[str, int]) -> int:
+    """Wood on hand, counted in planks (one log makes four)."""
+    return _logs(inv) * 4 + sum(c for n, c in inv.items() if n.endswith("_planks"))
+
+
+def _cobble(inv: Dict[str, int]) -> int:
+    return sum(inv.get(n, 0) for n in _STONE_MATS)
+
+
+def _pickaxe(inv: Dict[str, int]) -> int:
+    return max((t for n, t in _PICKAXE_TIER.items() if inv.get(n)), default=0)
+
+
+def _has_table(inv: Dict[str, int], near: Dict[str, bool]) -> bool:
+    return bool(inv.get("crafting_table") or near.get("crafting_table"))
+
+
+def _has_furnace(inv: Dict[str, int], near: Dict[str, bool]) -> bool:
+    return bool(inv.get("furnace") or near.get("furnace"))
+
+
 CURRICULUM: List[Dict[str, Any]] = [
-    {"goal": "collect_wood",        "requires": {},                                    "desc": "Collect oak logs"},
-    {"goal": "craft_planks",        "requires": {"oak_log": 5},                        "desc": "Craft wooden planks"},
-    {"goal": "craft_workbench",     "requires": {"oak_planks": 4},                     "desc": "Craft a crafting table"},
-    {"goal": "craft_wood_pickaxe",  "requires": {"crafting_table": 1, "oak_planks": 7}, "desc": "Craft sticks and a wooden pickaxe"},
-    {"goal": "mine_stone",          "requires": {"wooden_pickaxe": 1},                 "desc": "Mine cobblestone"},
-    {"goal": "craft_stone_pickaxe", "requires": {"cobblestone": 3, "stick": 2},        "desc": "Craft a stone pickaxe"},
-    {"goal": "craft_furnace",       "requires": {"cobblestone": 8},                    "desc": "Craft a furnace"},
-    {"goal": "mine_iron_ore",       "requires": {"stone_pickaxe": 1},                  "desc": "Find and mine iron ore"},
-    {"goal": "smelt_iron",          "requires": {"raw_iron": 3},                       "desc": "Smelt iron ingots"},
-    {"goal": "craft_iron_pickaxe",  "requires": {"iron_ingot": 3, "stick": 2},         "desc": "Craft an iron pickaxe"},
-    {"goal": "mine_diamond",        "requires": {"iron_pickaxe": 1},                   "desc": "Find and mine diamonds"},
+    # Basics, chosen by _tech_goal in this order.
+    {"goal": "collect_wood",        "desc": "Collect logs",
+     "done": lambda inv, near: _pickaxe(inv) >= 1 or _wood(inv) >= 12},
+    {"goal": "craft_workbench",     "desc": "Craft a crafting table",
+     "done": lambda inv, near: _has_table(inv, near) or _pickaxe(inv) >= 1},
+    {"goal": "craft_wood_pickaxe",  "desc": "Craft a wooden pickaxe",
+     "done": lambda inv, near: _pickaxe(inv) >= 1},
+    {"goal": "mine_stone",          "desc": "Mine cobblestone",
+     "done": lambda inv, near: _cobble(inv) >= 3 or _pickaxe(inv) >= 2},
+    {"goal": "craft_stone_pickaxe", "desc": "Craft a stone pickaxe",
+     "done": lambda inv, near: _pickaxe(inv) >= 2},
+    # Later tiers, offered to the model once ready.
+    {"goal": "craft_furnace",       "desc": "Craft a furnace",
+     "done": lambda inv, near: _has_furnace(inv, near),
+     "ready": lambda inv, near: _cobble(inv) >= 8},
+    {"goal": "mine_iron_ore",       "desc": "Find and mine iron ore",
+     "done": lambda inv, near: inv.get("raw_iron", 0) >= 3 or inv.get("iron_ingot", 0) >= 3
+                               or _pickaxe(inv) >= 3,
+     "ready": lambda inv, near: _pickaxe(inv) >= 2},
+    {"goal": "smelt_iron",          "desc": "Smelt iron ingots",
+     "done": lambda inv, near: inv.get("iron_ingot", 0) >= 3 or _pickaxe(inv) >= 3,
+     "ready": lambda inv, near: inv.get("raw_iron", 0) >= 3
+                                and (_has_furnace(inv, near) or _cobble(inv) >= 8)},
+    {"goal": "craft_iron_pickaxe",  "desc": "Craft an iron pickaxe",
+     "done": lambda inv, near: _pickaxe(inv) >= 3,
+     "ready": lambda inv, near: inv.get("iron_ingot", 0) >= 3},
+    {"goal": "mine_diamond",        "desc": "Find and mine diamonds",
+     "done": lambda inv, near: inv.get("diamond", 0) >= 1 or _pickaxe(inv) >= 4,
+     "ready": lambda inv, near: _pickaxe(inv) >= 3},
 ]
+_TIERS = {t["goal"]: t for t in CURRICULUM}
+
+
+def _tech_goal(inv: Dict[str, int], near: Dict[str, bool]) -> Optional[str]:
+    """The basics, decided in code: wood → crafting table → wooden pickaxe →
+    cobblestone → stone pickaxe. None once there's a stone pickaxe."""
+    pick = _pickaxe(inv)
+    if pick >= 2:
+        return None
+    wood = _wood(inv)
+    table = _has_table(inv, near)
+    sticks_cost = 0 if inv.get("stick", 0) >= 2 else 2   # planks for two sticks
+    table_cost = 0 if table else 4
+    if pick == 1:
+        if _cobble(inv) < 3:
+            return "mine_stone"
+        return "collect_wood" if wood < sticks_cost + table_cost else "craft_stone_pickaxe"
+    if wood < 3 + sticks_cost + table_cost:
+        return "collect_wood"
+    return "craft_workbench" if not table else "craft_wood_pickaxe"
+
+
+def _progress_goal(inv: Dict[str, int], near: Dict[str, bool]) -> Optional[str]:
+    """The next later tier that can run now, for the model to consider."""
+    for tier in CURRICULUM[5:]:
+        if not tier["done"](inv, near) and tier["ready"](inv, near):
+            return tier["goal"]
+    if _pickaxe(inv) >= 2 and not _has_furnace(inv, near) and _cobble(inv) < 8:
+        return "mine_stone"      # a furnace needs eight
+    return None
+
+
+def _progress_count(inv: Dict[str, int], near: Dict[str, bool]) -> int:
+    return sum(1 for t in CURRICULUM if t["done"](inv, near))
+
 
 # Helpers shared by the skills below. Everything else they call (mineBlock,
 # craftItem, placeItem, smeltItem, killMob, exploreUntil) is a Voyager
-# control primitive that bot.js puts in scope from plugin/voyager.
+# control primitive that bot.js puts in scope from plugin/voyager. Skills
+# check their own result and throw when nothing changed, so "mine stone"
+# with no stone around is a failure, not a success that repeats forever.
 _PRELUDE = """
+const LOGS = """ + json.dumps(_LOGS) + """;
+function countOf(name) {
+  return bot.inventory.items().filter(i => i.name === name).reduce((s, i) => s + i.count, 0);
+}
+function countWhere(pred) {
+  return bot.inventory.items().filter(i => pred(i.name)).reduce((s, i) => s + i.count, 0);
+}
+const logCount = () => countWhere(n => LOGS.includes(n));
+const plankCount = () => countWhere(n => n.endsWith("_planks"));
+// An empty cell on solid ground next to the bot, for placing a table or
+// furnace without hitting a wall (e.g. inside a dirt hut).
+function freeSpot() {
+  const base = bot.entity.position.floored();
+  for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1],[2,0],[0,2],[-2,0],[0,-2]]) {
+    const p = base.offset(dx, 0, dz);
+    const here = bot.blockAt(p), below = bot.blockAt(p.offset(0, -1, 0));
+    if (here && here.boundingBox === "empty" && below && below.boundingBox === "block") return p;
+  }
+  return base.offset(1, 0, 0);
+}
+async function ensurePlanks(n) {
+  if (plankCount() >= n) return;
+  const log = bot.inventory.items().filter(i => LOGS.includes(i.name)).sort((a, b) => b.count - a.count)[0];
+  if (!log) throw new Error("No logs to make planks from");
+  await craftItem(bot, log.name.replace(/_log$/, "_planks"), Math.ceil((n - plankCount()) / 4));
+  if (plankCount() < n) throw new Error(`Only ${plankCount()} planks, need ${n}`);
+}
+async function ensureSticks(n) {
+  if (countOf("stick") >= n) return;
+  await ensurePlanks(2);
+  await craftItem(bot, "stick", Math.ceil((n - countOf("stick")) / 4));
+  if (countOf("stick") < n) throw new Error("Couldn't craft sticks");
+}
 async function ensureNear(blockName) {
   const id = mcData.blocksByName[blockName].id;
   if (bot.findBlock({ matching: id, maxDistance: 32 })) return;
-  if (!bot.inventory.items().find(i => i.name === blockName)) {
+  if (!countOf(blockName)) {
+    if (blockName === "crafting_table") await ensurePlanks(4);
+    else await ensureNear("crafting_table");
     await craftItem(bot, blockName, 1);
+    if (!countOf(blockName)) throw new Error(`Couldn't craft a ${blockName}`);
   }
-  await placeItem(bot, blockName, bot.entity.position.offset(1, 0, 0));
+  await placeItem(bot, blockName, freeSpot());
 }
 async function findOrExplore(blockName, direction) {
   const id = mcData.blocksByName[blockName].id;
@@ -129,48 +255,85 @@ async function findOrExplore(blockName, direction) {
     throw new Error(`No ${blockName} found after exploring`);
   }
 }
-function countOf(name) {
-  return bot.inventory.items().filter(i => i.name === name).reduce((s, i) => s + i.count, 0);
+async function chopTrees(n) {
+  const ids = LOGS.map(name => mcData.blocksByName[name]).filter(Boolean).map(b => b.id);
+  const look = () => bot.findBlock({ matching: ids, maxDistance: 32 });
+  if (!look()) await exploreUntil(bot, new Vec3(1, 0, 1), 40, look);
+  const tree = look();
+  if (!tree) throw new Error("No trees anywhere around here");
+  const before = logCount();
+  await mineBlock(bot, tree.name, n);
+  const got = logCount() - before;
+  if (got <= 0) throw new Error(`Couldn't get any ${tree.name}`);
+  return `Chopped ${got} ${tree.name}`;
+}
+async function craftAndCheck(name) {
+  await craftItem(bot, name, 1);
+  if (!countOf(name)) throw new Error(`Couldn't craft a ${name}`);
+  return `Crafted a ${name}`;
+}
+async function mineAndCheck(block, drops, count) {
+  const have = () => drops.reduce((s, d) => s + countOf(d), 0);
+  const before = have();
+  await mineBlock(bot, block, count);
+  const got = have() - before;
+  if (got <= 0) throw new Error(`Mined no ${drops[0]}`);
+  return `Got ${got} ${drops[0]}`;
 }
 """
 
 BUILTIN_SKILLS: Dict[str, str] = {
     name: _PRELUDE + body for name, body in {
-        "collect_wood":        'await mineBlock(bot, "oak_log", 5);',
-        "craft_planks":        'await craftItem(bot, "oak_planks", 5);',
-        "craft_workbench":     'await craftItem(bot, "crafting_table", 1);',
+        "collect_wood":        'return await chopTrees(5);',
+        "craft_workbench":     'await ensurePlanks(4);\n'
+                               'return await craftAndCheck("crafting_table");',
         "craft_wood_pickaxe":  'await ensureNear("crafting_table");\n'
-                               'await craftItem(bot, "stick", 2);\n'
-                               'await craftItem(bot, "wooden_pickaxe", 1);',
-        "mine_stone":          'await mineBlock(bot, "stone", 11);',
+                               'await ensureSticks(2);\n'
+                               'await ensurePlanks(3);\n'
+                               'return await craftAndCheck("wooden_pickaxe");',
+        "mine_stone":          'await findOrExplore("stone", new Vec3(1, -1, 1));\n'
+                               'return await mineAndCheck("stone", ["cobblestone", "cobbled_deepslate"], 8);',
         "craft_stone_pickaxe": 'await ensureNear("crafting_table");\n'
-                               'await craftItem(bot, "stone_pickaxe", 1);',
+                               'await ensureSticks(2);\n'
+                               'return await craftAndCheck("stone_pickaxe");',
         "craft_furnace":       'await ensureNear("crafting_table");\n'
-                               'await craftItem(bot, "furnace", 1);',
+                               'return await craftAndCheck("furnace");',
         "mine_iron_ore":       'await findOrExplore("iron_ore", new Vec3(1, -1, 1));\n'
-                               'await mineBlock(bot, "iron_ore", 3);',
+                               'return await mineAndCheck("iron_ore", ["raw_iron"], 3);',
         "smelt_iron":          'await ensureNear("furnace");\n'
-                               'await smeltItem(bot, "raw_iron", "oak_planks", 3);',
+                               'let fuel = "coal";\n'
+                               'if (!countOf("coal")) {\n'
+                               '  await ensurePlanks(4);\n'
+                               '  fuel = bot.inventory.items().find(i => i.name.endsWith("_planks")).name;\n'
+                               '}\n'
+                               'const before = countOf("iron_ingot");\n'
+                               'await smeltItem(bot, "raw_iron", fuel, Math.min(countOf("raw_iron"), 3));\n'
+                               'if (countOf("iron_ingot") <= before) throw new Error("Smelted no iron");\n'
+                               'return `Have ${countOf("iron_ingot")} iron ingots`;',
         "craft_iron_pickaxe":  'await ensureNear("crafting_table");\n'
-                               'await craftItem(bot, "iron_pickaxe", 1);',
+                               'await ensureSticks(2);\n'
+                               'return await craftAndCheck("iron_pickaxe");',
         "mine_diamond":        'await findOrExplore("diamond_ore", new Vec3(1, -1, 0));\n'
-                               'await mineBlock(bot, "diamond_ore", 1);',
+                               'return await mineAndCheck("diamond_ore", ["diamond"], 1);',
     }.items()
 }
 
 # Plain bot.js actions to run when Voyager's primitives aren't loaded. Those
-# actions fall back to raw mineflayer inside bot.js. Tiers that need
-# exploring or smelting have no fallback.
-Step = Tuple[str, Dict[str, Any]]
+# actions fall back to raw mineflayer inside bot.js. They assume oak, and
+# tiers that need exploring or smelting have no fallback. A third element
+# of True marks a step whose failure is ignored.
+Step = Tuple[Any, ...]
 CURRICULUM_STEPS: Dict[str, List[Step]] = {
     "collect_wood":        [("mine_block", {"name": "oak_log", "count": 5})],
-    "craft_planks":        [("craft_item", {"name": "oak_planks", "count": 5})],
-    "craft_workbench":     [("craft_item", {"name": "crafting_table", "count": 1})],
-    "craft_wood_pickaxe":  [("place_block", {"name": "crafting_table"}),
-                            ("craft_item", {"name": "stick", "count": 2}),
+    "craft_workbench":     [("craft_item", {"name": "oak_planks", "count": 1}),
+                            ("craft_item", {"name": "crafting_table", "count": 1})],
+    "craft_wood_pickaxe":  [("place_block", {"name": "crafting_table"}, True),
+                            ("craft_item", {"name": "oak_planks", "count": 2}),
+                            ("craft_item", {"name": "stick", "count": 1}),
                             ("craft_item", {"name": "wooden_pickaxe", "count": 1})],
-    "mine_stone":          [("mine_block", {"name": "stone", "count": 11})],
-    "craft_stone_pickaxe": [("craft_item", {"name": "stone_pickaxe", "count": 1})],
+    "mine_stone":          [("mine_block", {"name": "stone", "count": 8})],
+    "craft_stone_pickaxe": [("craft_item", {"name": "stick", "count": 1}, True),
+                            ("craft_item", {"name": "stone_pickaxe", "count": 1})],
     "craft_furnace":       [("craft_item", {"name": "furnace", "count": 1})],
     "craft_iron_pickaxe":  [("craft_item", {"name": "iron_pickaxe", "count": 1})],
 }
@@ -181,7 +344,6 @@ CURRICULUM_STEPS: Dict[str, List[Step]] = {
 # the status), and optional plain-action `steps` for when Voyager is missing.
 
 _DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)]
-_LOGS = ["oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log", "dark_oak_log", "mangrove_log"]
 _MEAT = ["beef", "porkchop", "chicken", "mutton"]
 _PICKAXES = ["wooden_pickaxe", "stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "netherite_pickaxe"]
 
@@ -200,15 +362,7 @@ def _explore_steps(status: Dict) -> List[Step]:
                          "z": p.get("z", 0) + dz * 30, "range": 6})]
 
 
-_CHOP_TREES = f"""
-const ids = {json.dumps(_LOGS)}.map(n => mcData.blocksByName[n]).filter(Boolean).map(b => b.id);
-const look = () => bot.findBlock({{ matching: ids, maxDistance: 32 }});
-if (!look()) await exploreUntil(bot, new Vec3(1, 0, 1), 60, look);
-const tree = look();
-if (!tree) throw new Error("No trees anywhere around here");
-await mineBlock(bot, tree.name, 4);
-return `Chopped ${{tree.name}}`;
-"""
+_CHOP_TREES = "return await chopTrees(4);"
 
 _HUNT_FOOD = f"""
 const prey = {json.dumps(["cow", "pig", "sheep", "chicken"])};
@@ -224,7 +378,11 @@ return `Hunted a ${{target.name}}`;
 _COOK_MEAT = f"""
 const raw = {json.dumps(_MEAT)}.find(n => countOf(n) > 0);
 if (!raw) throw new Error("No raw meat to cook");
-const fuel = countOf("coal") > 0 ? "coal" : "oak_planks";
+let fuel = "coal";
+if (!countOf("coal")) {{
+  await ensurePlanks(4);
+  fuel = bot.inventory.items().find(i => i.name.endsWith("_planks")).name;
+}}
 await ensureNear("furnace");
 await smeltItem(bot, raw, fuel, Math.min(countOf(raw), 6));
 return `Cooked ${{raw}}`;
@@ -276,9 +434,11 @@ def _has(inv: Dict[str, int], names: List[str]) -> bool:
     return any(inv.get(n, 0) > 0 for n in names)
 
 
+# Each gate is checked in code, so the model is never offered a goal that
+# makes no sense right now (a hut at noon, more trees with a full stack).
 FREE_GOALS: Dict[str, Dict[str, Any]] = {
     "chop_trees":     {"desc": "Chop down some trees for wood",
-                       "when": lambda inv, st: True,
+                       "when": lambda inv, st: _logs(inv) < 10,
                        "code": _CHOP_TREES,
                        "steps": [("mine_block", {"name": "oak_log", "count": 4})]},
     "hunt_food":      {"desc": "Hunt an animal for food",
@@ -286,7 +446,7 @@ FREE_GOALS: Dict[str, Dict[str, Any]] = {
                        "code": _HUNT_FOOD,
                        "steps": [("kill_mob", {"name": "cow"})]},
     "cook_meat":      {"desc": "Cook raw meat in a furnace",
-                       "when": lambda inv, st: _has(inv, _MEAT) and _has(inv, ["coal", "oak_planks"]),
+                       "when": lambda inv, st: _has(inv, _MEAT) and (inv.get("coal", 0) or _wood(inv) >= 4),
                        "code": _COOK_MEAT},
     "explore":        {"desc": "Wander off and explore the area",
                        "when": lambda inv, st: True,
@@ -295,8 +455,8 @@ FREE_GOALS: Dict[str, Dict[str, Any]] = {
     "mine_coal":      {"desc": "Find and mine coal for torches and fuel",
                        "when": lambda inv, st: _has(inv, _PICKAXES),
                        "code": _MINE_COAL},
-    "build_dirt_hut": {"desc": "Build a dirt hut to hide in",
-                       "when": lambda inv, st: True,
+    "build_dirt_hut": {"desc": "Build a dirt hut to hide in for the night",
+                       "when": lambda inv, st: not st.get("is_day", True),
                        "code": _DIRT_HUT},
     "wait_out_night": {"desc": "Hide and wait for the sun to come up",
                        "when": lambda inv, st: not st.get("is_day", True),
@@ -306,10 +466,19 @@ FREE_GOALS: Dict[str, Dict[str, Any]] = {
 PICKER_SYSTEM = (
     "You choose the next goal for a Minecraft survival player. Think like a "
     "streamer playing for fun: make progress, stay alive, and vary what you do. "
-    "Prefer shelter at night, food when hunger is low, and tools before deep "
-    "mining. Do not repeat a goal that just failed. Reply with JSON only: "
-    '{"goal": "<one of the listed names>", "reason": "<one short sentence>"}'
+    "Prefer the tool-progress goal when one is listed, shelter at night, and "
+    "food when hunger is low. Pick only from the listed goal names. Reply with "
+    'JSON only: {"goal": "<one of the listed names>", "reason": "<one short sentence>"}'
 )
+
+# Goal time limits (s), shorter than bot.js's 120 s default where a stuck
+# pathfinder is the usual failure, so the agent moves on sooner.
+GOAL_TIMEOUT_S = {"collect_wood": 60, "chop_trees": 60, "explore": 60,
+                  "build_dirt_hut": 90, "hunt_food": 75, "mine_stone": 90}
+# After success, don't offer a goal again for this long (s).
+SUCCESS_COOLDOWN_S = {"build_dirt_hut": 600}
+FAIL_STREAK = 3          # failures in a row before a goal is rested
+FAIL_COOLDOWN_S = 300
 
 
 # ─── Agent ────────────────────────────────────────────────────────────────────
@@ -326,12 +495,14 @@ class MinecraftAgent(LumiClient):
             reconnect_delay=5.0,
         )
         os.makedirs(MC_DIR, exist_ok=True)
-        self._skills: Dict[str, Any] = self._load_skills()
         self._paused = False
         self._override_goal: Optional[str] = None
         self._loop_task: Optional[asyncio.Task] = None
-        self._recent_goals: List[str] = []           # last few goals, newest last
-        self._failures: Dict[str, int] = {}          # consecutive failures per goal
+        self._recent_goals: List[Tuple[str, bool]] = []   # (goal, succeeded), newest last
+        self._failures: Dict[str, int] = {}                # consecutive failures per goal
+        self._cooldown_until: Dict[str, float] = {}        # goal -> time it may run again
+        self._hut_this_night = False
+        self._progress = 0
         self._last_narration = 0.0
         self._last_status_push = 0.0
         self._last_done: Optional[str] = None
@@ -443,9 +614,10 @@ class MinecraftAgent(LumiClient):
             f'Health: {t["health"] or "?"}/20  Food: {t["food"] or "?"}/20',
             f'Goal: {t["current_goal"] or "none"} — {t["goal_description"] or ""}'
             + (f' (picked by {t["goal_source"]})' if t["goal_source"] else ""),
-            f'Recent goals: {", ".join(self._recent_goals[-5:]) or "none"}',
+            f'Recent goals: {self._recent_text(5)}',
+            f'Resting: {self._cooldown_text()}',
             f'Inventory: {inv}',
-            f'Skills verified: {t["skills_verified"]}/{len(CURRICULUM)}',
+            f'Tech progress: {self._progress}/{len(CURRICULUM)}',
         ]
         return True, "\n".join(lines)
 
@@ -543,6 +715,9 @@ class MinecraftAgent(LumiClient):
                     "last_update": time.strftime("%H:%M:%S"),
                     "loop_state":  "running",
                 })
+                if status.get("is_day", True):
+                    self._hut_this_night = False
+                self._progress = _progress_count(_inv(status), status.get("nearby") or {})
                 self._flush_telemetry()
                 await self._push_status(status)
 
@@ -573,7 +748,7 @@ class MinecraftAgent(LumiClient):
 
                 # 4. Execute
                 ok, msg = await self._execute_goal(goal_name, status)
-                self._remember_goal(goal_name)
+                self._remember_goal(goal_name, ok)
 
                 # 5. Verify and record
                 if ok:
@@ -581,18 +756,24 @@ class MinecraftAgent(LumiClient):
                     self._record("result", f"OK {goal_name}: {msg}")
                     self._think(f"Done: {desc.lower()}. What next?")
                     self._last_done = desc
-                    if goal_name in BUILTIN_SKILLS:
-                        self._save_skill(goal_name, BUILTIN_SKILLS[goal_name])
-                        if goal_name == "mine_diamond":
-                            await self._narrate("I just found and mined diamonds!", major=True)
-                        else:
-                            await self._narrate(f"I just finished a milestone: {desc.lower()}.")
+                    if goal_name in SUCCESS_COOLDOWN_S:
+                        self._cooldown_until[goal_name] = time.time() + SUCCESS_COOLDOWN_S[goal_name]
+                    if goal_name == "build_dirt_hut":
+                        self._hut_this_night = True
+                    if goal_name == "mine_diamond":
+                        await self._narrate("I just found and mined diamonds!", major=True)
+                    elif goal_name in _TIERS:
+                        await self._narrate(f"I just finished a milestone: {desc.lower()}.")
                     self._tel["current_goal"] = None
                 else:
                     n = self._failures[goal_name] = self._failures.get(goal_name, 0) + 1
                     self._record("error", f"FAIL {goal_name} (x{n}): {msg}")
                     self._think(f"That didn't work ({desc.lower()}): {msg[:120]}")
-                    if n == 3:
+                    if n >= FAIL_STREAK:
+                        self._failures.pop(goal_name, None)
+                        self._cooldown_until[goal_name] = time.time() + FAIL_COOLDOWN_S
+                        self._record("warn", f"{goal_name} failed {n} times in a row — "
+                                             f"resting it for {FAIL_COOLDOWN_S // 60} min")
                         await self._narrate(f"I keep failing at this: {desc.lower()}. "
                                             f"The game says: {msg[:160]}")
                     # Back off before retrying
@@ -635,11 +816,14 @@ class MinecraftAgent(LumiClient):
         return False
 
     async def _execute_goal(self, goal: str, status: Dict) -> Tuple[bool, str]:
-        code = self._get_skill_code(goal, status)
+        code = _skill_code(goal, status)
         if not code:
             return False, f"No skill code for '{goal}'"
         self._record("skill", f"Executing: {goal}")
-        result = await self._bot_action("execute_skill", {"code": code, "description": goal})
+        args = {"code": code, "description": goal}
+        if goal in GOAL_TIMEOUT_S:
+            args["timeout_ms"] = GOAL_TIMEOUT_S[goal] * 1000
+        result = await self._bot_action("execute_skill", args)
         msg = result.get("message", "")
         if result.get("success") or "primitives not loaded" not in msg:
             return bool(result.get("success")), msg
@@ -650,10 +834,10 @@ class MinecraftAgent(LumiClient):
             return False, f"{msg} (no mineflayer fallback for {goal})"
         self._record("skill", f"Voyager unavailable — running {goal} as {len(steps)} plain action(s)")
         out = []
-        for name, args in steps:
-            r = await self._bot_action(name, args)
+        for name, step_args, *optional in steps:
+            r = await self._bot_action(name, step_args)
             out.append(r.get("message", ""))
-            if not r.get("success"):
+            if not r.get("success") and not optional:
                 return False, " | ".join(out)
         return True, " | ".join(out)
 
@@ -666,19 +850,23 @@ class MinecraftAgent(LumiClient):
             return goal, "Lumi", ""
 
         inv = _inv(status)
-        tier = self._pick_tier(status.get("inventory", []))
+        near = status.get("nearby") or {}
+
+        # The basics are never left to the model.
+        tech = _tech_goal(inv, near)
+        if tech and self._available(tech, status):
+            return tech, "tech tree", _TECH_REASON[tech]
+
         options: Dict[str, str] = {}
-        if tier and self._failures.get(tier["goal"], 0) < 3:
-            options[tier["goal"]] = f'{tier["desc"]} (next step toward better tools)'
+        progress = _progress_goal(inv, near)
+        if progress and self._available(progress, status):
+            options[progress] = f"{_goal_desc(progress)} (next step toward better tools)"
         for name, g in FREE_GOALS.items():
             try:
-                if g["when"](inv, status):
+                if g["when"](inv, status) and self._available(name, status):
                     options[name] = g["desc"]
             except Exception:
                 pass
-        # Let a goal that keeps failing rest unless it's the only option.
-        rested = {k: v for k, v in options.items() if self._failures.get(k, 0) < 3}
-        options = rested or options
         if not options:
             return None
 
@@ -686,33 +874,47 @@ class MinecraftAgent(LumiClient):
             picked = await self._llm_pick(status, options)
             if picked:
                 return picked[0], "llm", picked[1]
-        return self._random_pick(status, options, tier), "random", ""
+        return self._random_pick(status, options, progress), "random", ""
 
-    def _random_pick(self, status: Dict, options: Dict[str, str], tier: Optional[Dict]) -> str:
+    def _available(self, goal: str, status: Dict) -> bool:
+        """Not resting after a success or a failure streak, and (for the
+        hut) not already built tonight."""
+        if time.time() < self._cooldown_until.get(goal, 0):
+            return False
+        if goal == "build_dirt_hut" and self._hut_this_night:
+            return False
+        return True
+
+    def _random_pick(self, status: Dict, options: Dict[str, str], progress: Optional[str]) -> str:
         if not status.get("is_day", True):
-            if "build_dirt_hut" not in self._recent_goals[-6:] and "build_dirt_hut" in options:
-                return "build_dirt_hut"
-            if "wait_out_night" in options:
-                return "wait_out_night"
+            for night_goal in ("build_dirt_hut", "wait_out_night"):
+                if night_goal in options:
+                    return night_goal
         if (status.get("food") or 20) < EAT_BELOW_FOOD and "hunt_food" in options:
             return "hunt_food"
-        if tier and tier["goal"] in options and random.random() < 0.7:
-            return tier["goal"]
+        if progress in options and random.random() < 0.7:
+            return progress
         weights = {"chop_trees": 3, "explore": 2, "hunt_food": 1, "mine_coal": 2,
-                   "cook_meat": 2, "build_dirt_hut": 0.3, "wait_out_night": 0}
-        names = [n for n in options if n not in self._recent_goals[-2:]] or list(options)
-        return random.choices(names, weights=[weights.get(n, 1) for n in names])[0]
+                   "cook_meat": 2, "build_dirt_hut": 0, "wait_out_night": 0}
+        just_did = {g for g, _ in self._recent_goals[-2:]}
+        names = [n for n in options if n not in just_did] or list(options)
+        return random.choices(names, weights=[weights.get(n, 1) or 0.1 for n in names])[0]
 
     async def _llm_pick(self, status: Dict, options: Dict[str, str]) -> Optional[Tuple[str, str]]:
-        inv = ", ".join(f'{i["name"]}×{i["count"]}' for i in status.get("inventory", [])[:20]) or "empty"
+        inv = _inv(status)
+        inv_text = ", ".join(f"{n}×{c}" for n, c in sorted(inv.items(), key=lambda kv: -kv[1])[:20]) or "empty"
         threats = ", ".join(f'{t["name"]} at {t["distance"]}' for t in status.get("threats") or []) or "none"
-        failing = ", ".join(f"{k} (failed {v}x)" for k, v in self._failures.items() if v) or "none"
+        is_day = status.get("is_day", True)
         prompt = (
-            f"Health {status.get('health')}/20, hunger {status.get('food')}/20, "
-            f"{'daytime' if status.get('is_day', True) else 'NIGHT'}.\n"
-            f"Inventory: {inv}\nHostiles nearby: {threats}\n"
-            f"Recent goals (oldest first): {', '.join(self._recent_goals[-5:]) or 'none'}\n"
-            f"Failing goals: {failing}\n\nGoals you can pick:\n"
+            f"Current inventory: {inv_text} (logs: {_logs(inv)}).\n"
+            f"Current time: {'Day' if is_day else 'Night'}. "
+            f"Health {_fmt(status.get('health'))}/20, hunger {_fmt(status.get('food'))}/20. "
+            f"Hostiles nearby: {threats}.\n"
+            f"Recent goals (oldest first, with result): {self._recent_text(5)}.\n"
+            "Rules: Do not pick build_dirt_hut if it is Day. Do not pick chop_trees if "
+            "you already have 10+ logs. Do not repeat a goal that just succeeded unless "
+            "nothing else makes sense.\n\n"
+            "Goals you can pick:\n"
             + "\n".join(f"- {k}: {v}" for k, v in options.items())
         )
         messages = [{"role": "system", "content": PICKER_SYSTEM},
@@ -794,50 +996,18 @@ class MinecraftAgent(LumiClient):
             self._record("agent", f"autoplay {'on' if allowed else 'off'}")
         return allowed
 
-    def _remember_goal(self, goal: str) -> None:
-        self._recent_goals.append(goal)
+    def _remember_goal(self, goal: str, ok: bool) -> None:
+        self._recent_goals.append((goal, ok))
         self._recent_goals = self._recent_goals[-10:]
 
-    # ─── Curriculum helpers ────────────────────────────────────────
+    def _recent_text(self, n: int) -> str:
+        return ", ".join(f"{g} ({'succeeded' if ok else 'failed'})"
+                         for g, ok in self._recent_goals[-n:]) or "none"
 
-    def _pick_tier(self, inventory: List[Dict]) -> Optional[Dict]:
-        inv = {i["name"]: i["count"] for i in inventory}
-
-        def ready(tier: Dict) -> bool:
-            return all(inv.get(k, 0) >= v for k, v in tier["requires"].items())
-
-        for idx, tier in enumerate(CURRICULUM):
-            if self._skills.get(tier["goal"], {}).get("verified"):
-                continue
-            if ready(tier):
-                return tier
-            # The frontier tier lacks materials: redo the closest earlier tier
-            # that can run (e.g. chop more logs) instead of stalling.
-            return next((t for t in reversed(CURRICULUM[:idx]) if ready(t)), None)
-        return None
-
-    def _get_skill_code(self, goal: str, status: Dict) -> Optional[str]:
-        if goal in FREE_GOALS:
-            code: Code = FREE_GOALS[goal]["code"]
-            return _PRELUDE + (code(status) if callable(code) else code)
-        return BUILTIN_SKILLS.get(goal) or self._skills.get(goal, {}).get("code")
-
-    def _save_skill(self, goal: str, code: str) -> None:
-        self._skills[goal] = {"code": code, "verified": True, "ts": time.time()}
-        try:
-            with open(SKILLS_PATH, "w", encoding="utf-8") as f:
-                json.dump(self._skills, f, indent=2)
-        except Exception as e:
-            self._record("error", f"Failed to save skill: {e}")
-
-    def _load_skills(self) -> Dict:
-        try:
-            if os.path.exists(SKILLS_PATH):
-                with open(SKILLS_PATH, encoding="utf-8") as f:
-                    return json.load(f)
-        except Exception:
-            pass
-        return {}
+    def _cooldown_text(self) -> str:
+        now = time.time()
+        return ", ".join(f"{g} ({int(t - now)} s)" for g, t in self._cooldown_until.items()
+                         if t > now) or "nothing"
 
     # ─── Telemetry helpers ─────────────────────────────────────────
 
@@ -866,9 +1036,7 @@ class MinecraftAgent(LumiClient):
         self._flush_telemetry()
 
     def _flush_telemetry(self) -> None:
-        self._tel["skills_verified"] = sum(
-            1 for s in self._skills.values() if s.get("verified")
-        )
+        self._tel["skills_verified"] = self._progress
         try:
             with open(TELEMETRY_PATH, "w", encoding="utf-8") as f:
                 json.dump(self._tel, f, indent=2)
@@ -919,6 +1087,22 @@ def _goal_desc(goal: str) -> str:
     if goal in FREE_GOALS:
         return FREE_GOALS[goal]["desc"]
     return next((t["desc"] for t in CURRICULUM if t["goal"] == goal), goal)
+
+
+_TECH_REASON = {
+    "collect_wood":        "need wood for a crafting table and tools",
+    "craft_workbench":     "need a crafting table for tools",
+    "craft_wood_pickaxe":  "need a pickaxe to mine stone",
+    "mine_stone":          "need cobblestone for a stone pickaxe",
+    "craft_stone_pickaxe": "upgrading to a stone pickaxe",
+}
+
+
+def _skill_code(goal: str, status: Dict) -> Optional[str]:
+    if goal in FREE_GOALS:
+        code: Code = FREE_GOALS[goal]["code"]
+        return _PRELUDE + (code(status) if callable(code) else code)
+    return BUILTIN_SKILLS.get(goal)
 
 
 def _goal_steps(goal: str, status: Dict) -> List[Step]:
