@@ -407,31 +407,47 @@ reconnecting the client is enough.
 
 ### External Minecraft processes
 
-The Minecraft integration is three processes outside Lumi. They talk to
-Lumi only through the SDK, and to each other over a local HTTP API:
+The Minecraft integration is two processes outside Lumi's own. Lumi starts
+and stops them through `modules/game_manager.py` when the Games page switch
+is flipped. They talk to Lumi only through the SDK, and to each other over a
+local HTTP API:
 
 ```
-                    ┌──────────────── Lumi (main.py) ────────────────┐
-                    │  prompter ◄──► sdk/server.py (:5056)           │
-                    └──────────▲──────────────────────▲──────────────┘
-                               │ SDK websocket         │ SDK websocket
-                               │ client MinecraftBot   │ client MinecraftAgent
-   ┌───────────────────────────┴───────┐     ┌─────────┴───────────────────┐
-   │ sdk/examples/minecraft/bot.js     │     │ plugin/minecraft_bot.py     │
-   │  mineflayer bot + plugins         │◄────│  curriculum skill loop      │
-   │  Voyager primitives (submodule)   │HTTP │  data/minecraft/*.json      │
-   │  control API :5057                │     └─────────────────────────────┘
-   └──────┬────────────────────▲───────┘
-          │ Minecraft protocol │ HTTP (browser)
-          ▼                    │
-     Minecraft world    plugin/mc_dashboard.py (:5002)
+ ┌──────────────────────────── Lumi (main.py) ────────────────────────────┐
+ │ socketIO :5000 ─ /api/game/status, /api/game/toggle,                   │
+ │                  /api/games/{game}/directive  (host-only)              │
+ │ game_manager ── Popen, output → log hub "minecraft" + data/logs/       │
+ │ prompter ◄──► sdk/server.py (:5056) ◄── status (silent) + events ──┐   │
+ └──────────────────────┬─────────────────────────────────────────────┼───┘
+                        │ spawns (Windows job object: die with Lumi)  │ SDK websocket
+          ┌─────────────┴────────────┐                                │
+          ▼                          ▼                                │
+ plugin/minecraft_bot.py ──HTTP──► sdk/examples/minecraft/bot.js ─────┘
+  "MinecraftAgent": goal loop      "MinecraftBot": mineflayer, Voyager
+  GAME_AGENT_MODEL picks goals     primitives, self-defense, events,
+  data/minecraft/*.json            order inbox, control API :5057
+                                    │ Minecraft protocol  ├─ viewer :3000
+                                    ▼                     └─ skin :3001
+                              Minecraft world
 ```
 
-If Lumi is not running, the bot and the agent keep playing and reconnect
-to `:5056` when it starts. Skill code runs inside `bot.js` with
-[Voyager](https://github.com/MineDojo/Voyager)'s control primitives in
-scope; see [../sdk/examples/minecraft/README.md](../sdk/examples/minecraft/README.md).
-The control API is unauthenticated; see
+Lumi's chat model hears about the game two ways. Standing context
+(`silent: true`) is replaced in her prompt on every turn. The agent sends a
+status line every 30 s. Events (`silent: false`), such as a death, diamonds, a
+finished house or a new order, each start a short reaction turn. The SDK server
+holds an event that arrives while she's busy for up to 20 s (see
+[SDK bridge](#sdk-bridge)).
+
+Orders reach the agent through `bot.js`'s inbox (`POST`/`GET /directive`).
+They come from the owner's wake-word chat messages, or from the Games page
+through `game_manager.send_directive()`. A new order interrupts the running
+skill.
+
+Either process can also be started by hand. If Lumi is not running, they
+keep playing and reconnect to `:5056` when she starts. Skill code runs inside
+`bot.js` with [Voyager](https://github.com/MineDojo/Voyager)'s control
+primitives in scope. The whole feature is described in
+[minecraft.md](minecraft.md). The control API is unauthenticated; see
 [security.md](security.md#minecraft-bot-control-api).
 
 ### Web server (`modules/socketIO.py`)

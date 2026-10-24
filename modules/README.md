@@ -15,7 +15,7 @@ This README is a map of the folder: which file does what, and where it sits in a
 | [Input](#input) | `console_input.py`, `mic_input.py`, `local_input.py` | Terminal and microphone |
 | [Output](#output) | `tts.py`, `audioPlayer.py`, `multimodal.py`, `browser_controller.py`, `doc_manager.py` | Speech, screen description, web browsing, document reading |
 | [Avatar](#avatar) | `vtubeStudio.py`, `vts_manager.py`, `params.json` | VTube Studio control |
-| [Background loops](#background-loops) | `heartbeat.py`, `ambient_perception.py` | Behavior that runs without a user message |
+| [Background loops](#background-loops) | `heartbeat.py`, `ambient_perception.py`, `game_manager.py` | Behavior that runs without a user message |
 | [Web client backend](#web-client-backend) | `socketIO.py`, `user_auth.py`, `persona_editor.py`, `settings_manager.py`, `model_manager.py`, `integrations.py`, `llm_providers.py` | Everything the browser UI talks to |
 | [Discord](#discord) | `discordClient.py`, `streamingSink.py`, `discord_audio_bot.js` | Discord text and voice |
 | [Utilities](#utilities) | `log_hub.py`, `moods.py`, `stt.py`, `customPrompt.py` | Logging, mood profiles, shared helpers |
@@ -63,7 +63,7 @@ Everything Lumi uses to speak, look, browse, and read.
 |---|---|---|
 | `tts.py` | Fish Audio client with emotion-tag handling; routes audio to speakers, Discord, and browser tabs | spawned |
 | `audioPlayer.py` | Earlier audio playback helper | legacy |
-| `multimodal.py` | On-demand screen capture and VLM description for "look at my screen" questions | spawned |
+| `multimodal.py` | On-demand screen capture and VLM description for "look at my screen" questions, and the Minecraft window capture behind the `look_at_minecraft` tool | spawned |
 | `browser_controller.py` | Playwright Firefox navigation; powers the `browse_url` tool | spawned |
 | `doc_manager.py` | Reads PDF, DOCX, TXT, MD, and JSON from the document library | imported |
 
@@ -85,6 +85,7 @@ Modules that act on a timer instead of a user message.
 |---|---|---|
 | `heartbeat.py` | Every 30 seconds, decides whether Lumi should speak unprompted | spawned |
 | `ambient_perception.py` | Samples the screen every 30 seconds; calls the VLM only on window or content change | spawned |
+| `game_manager.py` | Starts, watches and stops the Minecraft game processes (`bot.js`, `plugin/minecraft_bot.py`) for the Games page: output to the log hub and `data/logs/minecraft/`, crash reports, the `autoplay.json` switch, resume at boot, orders from the web, and a Windows job object so the children die with Lumi. Created in `main.py`; see [docs/minecraft.md](../docs/minecraft.md) | imported |
 
 ### Web client backend
 
@@ -92,7 +93,7 @@ The Python side of the browser UI. The frontend lives in `web/`.
 
 | File | Role | Status |
 |---|---|---|
-| `socketIO.py` | aiohttp and python-socketio server, and the largest backend file. Routes cover auth, chat, chat upload, agent toggle, memories, persona, models, providers, integrations, settings, voice, and static and SPA serving. A JSON error middleware wraps `/api/*` and `/auth/*`; memory and library calls run on a dedicated single-thread executor (`_run_mem()`) so they never block the event loop. See [Web server internals](#web-server-internals) | spawned |
+| `socketIO.py` | aiohttp and python-socketio server, and the largest backend file. Routes cover auth, chat, chat upload, agent toggle, memories, persona, models, providers, integrations, settings, voice, the Games page (`/api/game/*`, `/api/games/{game}/directive`, host-only), and static and SPA serving. A JSON error middleware wraps `/api/*` and `/auth/*`; memory and library calls run on a dedicated single-thread executor (`_run_mem()`) so they never block the event loop. See [Web server internals](#web-server-internals) | spawned |
 | `user_auth.py` | SQLite user store, argon2id hashing, session tokens, session listing and revocation | imported |
 | `persona_editor.py` | ruamel round-trip load, edit, and save of `config/lumi.yaml`, preserving comments | imported |
 | `settings_manager.py` | General settings (timezone, Ollama endpoint), About info, and the Advanced reset allowlist | imported |

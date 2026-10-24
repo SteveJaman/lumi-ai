@@ -267,8 +267,10 @@ after toggling. Nothing warns you if you flip it — the exposure is
 intentional and silent on the assumption that you meant it.
 
 The Minecraft tools are separate processes that do not read this flag.
-`plugin/mc_dashboard.py` (`:5002`) and the `bot.js` control API (`:5057`)
-always bind to `127.0.0.1`.
+`plugin/mc_dashboard.py` (`:5002`), the `bot.js` control API (`:5057`) and
+its skin server (`:3001`) always bind to `127.0.0.1`. The live viewer
+(`:3000`, prismarine-viewer) binds to all interfaces and can't be configured
+otherwise. Set `VIEWER_PORT=0` to turn it off.
 
 ### SDK server
 
@@ -292,9 +294,13 @@ configured with environment variables:
 
 | Process | Where to set | Variables |
 |---|---|---|
-| `sdk/examples/minecraft/bot.js` | `sdk/examples/minecraft/.env` | `MC_HOST`, `MC_PORT`, `MC_USERNAME`, `MC_AUTH`, `MC_VERSION`, `LUMI_HOST`, `LUMI_PORT`, `LUMI_TOKEN_PATH`, `BOT_CONTROL_PORT`, `SKILL_TIMEOUT_MS`, `VOYAGER_DIR` |
-| `plugin/minecraft_bot.py` | Shell environment | `BOT_API`, `MC_LOOP_INTERVAL`, `MC_ACTION_TIMEOUT` |
+| `sdk/examples/minecraft/bot.js` | `sdk/examples/minecraft/.env` | Connection: `MC_HOST`, `MC_PORT`, `MC_USERNAME`, `MC_AUTH`, `MC_VERSION`, `LUMI_HOST`, `LUMI_PORT`, `LUMI_TOKEN_PATH`. Behavior: `MC_OWNER`, `EVENT_REACTIONS`, `AUTO_DEFEND`, `SKILL_TIMEOUT_MS`, `PATH_THINK_MS`. Ports and paths: `BOT_CONTROL_PORT`, `VIEWER_PORT`, `VIEWER_DISTANCE`, `VIEWER_HEAP_LIMIT_MB`, `SKIN_PORT`, `SKIN_PATH`, `HOUSE_PATH`, `VOYAGER_DIR` |
+| `plugin/minecraft_bot.py` | Shell environment (Lumi passes its own when it starts the agent) | `BOT_API`, `MC_LOOP_INTERVAL`, `MC_ACTION_TIMEOUT`, `MC_GOAL_PICKER`, `MC_GOAL_MODEL`, `MC_GOAL_KEEP_ALIVE`, `MC_STATUS_INTERVAL`, `MC_NARRATE`, `MC_NARRATE_COOLDOWN` |
 | `plugin/mc_dashboard.py` | Shell environment | `MC_DASH_PORT` |
+
+The game agent's model is `GAME_AGENT_MODEL` in `constants.py` (see
+[Model configuration](#model-configuration)); `MC_GOAL_MODEL` overrides it.
+The Games page switch is stored in `data/minecraft/autoplay.json`.
 
 Defaults and meanings are in [the Minecraft README](../sdk/examples/minecraft/README.md#configuration-env)
 and [plugin/README.md](../plugin/README.md#configuration).
@@ -381,7 +387,8 @@ user's facts; a cross-user wipe needs the full reset above.
 | Clear the uploaded library | `Remove-Item data\library -Recurse` |
 | Force memory re-import from seed | Delete `data\memories\chroma.db\`, place `memoryinit.json` at `data\memories\memoryinit.json`, restart |
 | Wipe user accounts | `Remove-Item data\memories\users.db` |
-| Restart the Minecraft curriculum | `Remove-Item data\minecraft\skills.json` (stop `minecraft_bot.py` first) |
+| Start a new Minecraft house | `Remove-Item data\minecraft\house.json` (turn Minecraft AI off first) |
+| Stop Minecraft AI starting at boot | Turn it off on the Games page, or set `"minecraft": false` in `data\minecraft\autoplay.json` |
 
 After any of those, restart Lumi — the affected module regenerates its
 state on next boot.

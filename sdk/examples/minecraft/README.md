@@ -1,19 +1,28 @@
 # Lumi × Minecraft SDK
 
-A [mineflayer](https://github.com/PrismarineJS/mineflayer) bot that connects to
-Lumi's SDK server and exposes Minecraft controls as Lumi actions. Lumi can chat
-in-game, navigate, mine, craft, smelt, place blocks, fight mobs, and run
-[Voyager](https://github.com/MineDojo/Voyager)-style JavaScript skills, all
-through her normal agent tool-use path. The bot also serves a local control API
-that the autonomous agent ([`plugin/minecraft_bot.py`](../../../plugin/README.md))
-and the diagnostics page use.
+The body of Lumi's Minecraft "other half": a
+[mineflayer](https://github.com/PrismarineJS/mineflayer) bot that joins your
+world as `LumiBot`. It walks, mines, crafts, smelts, builds, branch-mines,
+fights, defends itself, hands you items, and runs
+[Voyager](https://github.com/MineDojo/Voyager)-style JavaScript skills. It
+connects to Lumi's SDK server, so Lumi can call its actions as tools, and it
+pushes status and events she reacts to. A local control API serves the game
+agent ([`plugin/minecraft_bot.py`](../../../plugin/README.md)), the order
+inbox, and the diagnostics page.
+
+**New here?** Start with [docs/minecraft.md](../../../docs/minecraft.md),
+which explains the whole feature. This file is the reference for `bot.js`.
+Normally Lumi starts `bot.js` for you from the Games page; the steps below
+also work by hand.
 
 ```
-Lumi agent ─ sdk__minecraft_mine_block ─► SDK server (:5056) ─┐
-                                                              ▼
-plugin/minecraft_bot.py ─ POST /action ─────────────────► bot.js ─► mineflayer ─► Minecraft
-plugin/mc_dashboard.py  ─ GET /status, /events, /config ─►   │      (Voyager primitives
-                                                       (:5057)       in skill scope)
+Lumi agent ─ sdk__minecraft_* ─► SDK server (:5056) ─────┐
+                                                         ▼
+plugin/minecraft_bot.py ─ /status /action /directive ─► bot.js ─► mineflayer ─► Minecraft
+plugin/mc_dashboard.py  ─ /status /events /config ────►   │  (:5057)
+owner's chat "Lumi, …" ─────────────────────────────────► │  order inbox
+                                                          ├─► live viewer :3000
+                                                          └─► skin server :3001
 ```
 
 ---
@@ -602,7 +611,7 @@ before running the bot on a machine where you browse untrusted sites.
 | Plugins: pathfinder, tool, collectblock, pvp | Yes | Installed from npm in this folder |
 | `minecrafthawkeye` (bow aiming) | No | Only `shoot()` and `killMob` while holding a bow need it |
 | `env/mineflayer/index.js` (Voyager's Node server) | No | `bot.js` replaces it, so only one bot joins the world |
-| Python LLM agents (curriculum, action, critic) | No | They require the OpenAI API. `plugin/minecraft_bot.py` uses the same primitives with a fixed curriculum plus free-play goals, and asks Lumi's own model which goal to run |
+| Python LLM agents (curriculum, action, critic) | No | They require the OpenAI API. `plugin/minecraft_bot.py` uses the same primitives with an inventory-based tech tree plus free-play goals, and asks a small local model (`GAME_AGENT_MODEL`) which goal to run |
 
 The curriculum in `plugin/minecraft_bot.py` goes logs → planks →
 crafting table → wooden pickaxe → stone → stone pickaxe → furnace → iron →

@@ -139,13 +139,14 @@ for the pipeline.
   [docs/architecture.md](docs/architecture.md#diagnostics-telemetry).
 - **External SDK.** Third-party apps connect over a local websocket, register
   their own actions, and push context. See [sdk/README.md](sdk/README.md).
-- **Minecraft.** A mineflayer bot gives Lumi in-game actions: move, chat,
-  mine, craft, smelt, place, and fight. Skills run with
-  [Voyager](https://github.com/MineDojo/Voyager)'s control primitives. An
-  autonomous agent can play on its own from wood to diamonds, without Lumi
-  running, and a diagnostics page on `:5002` shows what it's doing. See
-  [sdk/examples/minecraft/README.md](sdk/examples/minecraft/README.md) and
-  [plugin/README.md](plugin/README.md).
+- **Minecraft.** Lumi's "other half" plays in your world as `LumiBot`,
+  switched on from the web UI's **Games** page. It works up the tech tree to
+  an iron pickaxe, defends itself, builds a house, branch-mines, organizes
+  chests, and stays near you. Orders come from in-game chat ("Lumi, get me 5
+  diamonds") or the Games page, and Lumi reacts out loud to the big moments.
+  Goals are picked by a small separate model, so chat stays responsive.
+  Skills run on [Voyager](https://github.com/MineDojo/Voyager)'s control
+  primitives. See [docs/minecraft.md](docs/minecraft.md).
 
 ### Architecture
 
@@ -375,20 +376,18 @@ session state, self-model, and memory under **Settings, then Advanced**. See
 
 ### Minecraft (optional)
 
-Open a single-player world to LAN, or use a server, then run each in its own
-terminal:
-
 ```powershell
-cd sdk/examples/minecraft; npm install; node bot.js   # the bot
-python plugin/minecraft_bot.py                        # autonomous agent
-python plugin/mc_dashboard.py                         # http://127.0.0.1:5002/
+git submodule update --init plugin/voyager
+cd sdk/examples/minecraft; npm install; cd ../../..
+ollama pull qwen2.5:3b          # the game agent's model
 ```
 
-Enter the LAN port in the dashboard's **Minecraft Server** panel. With Lumi
-also running, approve `MinecraftBot` and `MinecraftAgent` in
-`data/memories/sdk_allowlist.json`, and Lumi can drive the bot from chat
-("mine 3 oak logs"). The bot's control API on `:5057` has no
-authentication, so stop `bot.js` when you're done. See
+Open a world to LAN, put its port in `sdk/examples/minecraft/.env` as
+`MC_PORT`, then open **Games** in the web UI and turn on **Minecraft AI**.
+Lumi starts the bot and the game agent in the background; no extra terminals.
+Give orders in game chat by starting with "Lumi," or from the Games page.
+The bot's control API on `:5057` has no authentication, so switch it off when
+you're done. See [docs/minecraft.md](docs/minecraft.md) and
 [docs/security.md](docs/security.md#minecraft-bot-control-api).
 
 ---

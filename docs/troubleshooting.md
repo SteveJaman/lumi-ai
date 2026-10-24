@@ -217,23 +217,32 @@ winget install Gyan.FFmpeg
 
 ## Minecraft bot and agent
 
-Three processes are involved: `sdk/examples/minecraft/bot.js` (the bot and
-its control API on `:5057`), `plugin/minecraft_bot.py` (the autonomous
-agent), and `plugin/mc_dashboard.py` (diagnostics on `:5002`). None of
-them need Lumi to be running. The dashboard's relay and error panels are
-the first place to look.
+Two processes do the playing: `sdk/examples/minecraft/bot.js` (the bot and
+its control API on `:5057`) and `plugin/minecraft_bot.py` (the game agent).
+Lumi starts them from the Games page; `plugin/mc_dashboard.py` (`:5002`) is
+an optional diagnostics page. Look first at the Games page card (it shows a
+crash's exit code and last lines), then the Dashboard's Event Stream with the
+`minecraft` filter, then `data/logs/minecraft/agent.log` and `bot.log`.
 
 | Symptom | Cause | Resolution |
 |---|---|---|
 | `Cannot find module 'ws'` | npm packages not installed | `npm install` in `sdk/examples/minecraft` |
 | `[voyager] primitives not loaded` | The Voyager submodule wasn't fetched | `git submodule update --init plugin/voyager` |
-| `ECONNREFUSED ...:25565` repeating | No world on that port | Open the world to LAN and enter its port in the dashboard's Minecraft Server panel |
+| `ECONNREFUSED ...:25565` repeating | No world on that port | Open the world to LAN and set its port as `MC_PORT` in `sdk/examples/minecraft/.env` (then switch Minecraft AI off and on), or in the `:5002` dashboard's Minecraft Server panel |
+| Games page: "can't start bot.js: run `npm install`…" | Packages missing | `npm install` in `sdk/examples/minecraft` |
+| Games page: "Game agent crashed" | The agent exited with an error | The card shows the last lines; the full output is in `data/logs/minecraft/agent.log` |
+| `bot.js` crashed with `JavaScript heap out of memory` | The live viewer's per-browser buffers (most likely) | Close extra viewer tabs; check `[mem]` lines in `bot.log`. See [the bot's README](../sdk/examples/minecraft/README.md#memory) |
+| Agent log: `game model qwen2.5:3b is not installed` | The game model isn't pulled | `ollama pull qwen2.5:3b`. Until then goals are picked at random |
+| `Took to long to decide path to goal!` | The pathfinder couldn't plan a path in time | Expected now and then. The step keeps what it got and the agent tries something else |
+| She keeps walking back to you | You're more than 25 blocks away, out of sight, or you said "come here" | Intended. See [minecraft.md](minecraft.md#playing-near-you) |
+| An in-game order is ignored | Not the owner, or no wake word | Start with `Lumi,`; set `MC_OWNER` to your name if others are on the LAN |
+| Lumi's chat is slow while the game runs | Ollama swapping models in and out of VRAM | Keep `GAME_AGENT_MODEL` small; consider `FAST_MODEL_NAME = MODEL_NAME`. See [minecraft.md](minecraft.md#performance) |
 | `[sdk] Lumi is not running (127.0.0.1:5056)` | `main.py` isn't running | Expected. The bot plays anyway and attaches when Lumi starts |
 | Dashboard: "Cannot reach bot.js control API" | `bot.js` stopped, or an old process without the API | Restart `bot.js`; look for `[ctrl] control API on 127.0.0.1:5057` |
 | Agent stuck on `waiting for bot` | `bot.js` not running, or not spawned in a world | Start `bot.js` first, then check it printed `bot spawned and ready` |
-| Skill fails with `No oak_log nearby, please explore first` | Voyager primitive feedback: the resource isn't within range | Move the bot near oak trees. The curriculum only uses oak |
+| Skill fails with `No … nearby, please explore first` | Voyager primitive feedback: the resource isn't within range | The agent explores after repeated failures; any wood type works |
 | Lumi reports `action timed out` but the bot keeps working | SDK invocations time out after 30 s | Expected for long skills; see [known-limitations.md](known-limitations.md#minecraft) |
-| Curriculum restarts from logs | `data/minecraft/skills.json` was deleted, or tiers are being redone for materials | Intended. Delete `skills.json` to force a full restart |
+| She crafts a pickaxe she "already made" | Tools wear out; progress is read from the inventory | Intended: the tech tree rebuilds what's missing |
 
 Full reference: [../sdk/examples/minecraft/README.md](../sdk/examples/minecraft/README.md#troubleshooting).
 

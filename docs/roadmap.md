@@ -24,6 +24,27 @@ iteration against real use, not new subsystems.
 ================================================================
   Reverse chronological. What shipped, when, and why.
 
+  2026-10-24
+    - Minecraft, from bridge to companion. The agent runs in the
+      background under modules/game_manager.py, switched from a new
+      Games page in the web UI; Lumi starts, watches and stops bot.js
+      and plugin/minecraft_bot.py, and kills them if she exits.
+      Goal picking moved to GAME_AGENT_MODEL (qwen2.5:3b) so chat
+      models stay in VRAM. The fixed curriculum became an inventory-
+      based tech tree (any wood type) with free-play goals, cooldowns
+      and failure rests. bot.js gained self-defense, game events
+      (spoken only for deaths, bosses and top loot by default), a
+      7x7 house builder, branch mining, chests, give_item, a live
+      viewer, a skin server, and an order inbox. Owner chat starting
+      with "Lumi," and the Games page's directive box send orders
+      that interrupt the current skill. The agent stays near the
+      owner (25-block leash, 64 on projects). SDK events with
+      silent:false now start a short spoken turn, held up to 20 s
+      while Lumi is busy; SDK context finally reaches the prompt.
+      Agent-mode tool look_at_minecraft captures the game window.
+      A heap watchdog pauses the viewer after a 4 GB out-of-memory
+      crash. Guide: docs/minecraft.md.
+
   2026-10-17
     - Minecraft integration. sdk/examples/minecraft/bot.js is a
       mineflayer bot registered as SDK client MinecraftBot with 13

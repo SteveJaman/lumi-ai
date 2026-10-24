@@ -465,7 +465,24 @@ To add a Minecraft action, add a handler to `HANDLERS` in
 The control API exposes it automatically at `POST /action`, under its
 name without the `minecraft_` prefix. If it interpolates an item or
 block name into skill code, validate the name first, as the existing
-`badId()` handlers do.
+`badId()` handlers do. A long-running handler should stop itself after about
+105 s (the agent waits 135 s) and check `interruptSeq` in its loop, so a new
+order can interrupt it.
+
+To give the game agent a new goal, add it to `FREE_GOALS` in
+`plugin/minecraft_bot.py`, with either Voyager `code` or an `action`
+(a `bot.js` action and its arguments), and a `when(inv, status)` gate that
+only lets it run when it makes sense. A new order phrase goes in
+`ORDER_MODES`, `ORDER_COLLECT` or `ORDER_TASKS`. The decision logic is plain
+Python: test it by calling `_pick_goal()` with a crafted status dict (the
+same shape as `bot.js`'s `GET /status`). Voyager skill code can be
+compiled without a server by joining it with the primitives in an
+`AsyncFunction`, the way `runVoyager()` does.
+
+The house layout is `sdk/examples/minecraft/house_blueprint.js`, a pure
+function you can run with plain `node`. Lumi's side of the feature is
+`modules/game_manager.py` (processes, autoplay flag, orders from the web) and
+the `/api/game*` routes in `modules/socketIO.py`.
 
 ### Working with the Voyager submodule
 

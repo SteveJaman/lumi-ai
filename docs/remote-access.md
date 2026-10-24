@@ -158,8 +158,9 @@ After that, start `run` alongside `python main.py`, in either order. If
 `:5080` and tells you.
 
 Only the web client goes through the tunnel. Never add the log hub
-(`:5001`), SDK (`:5056`), or Minecraft bot API (`:5057`) to the config.
-None of them has a login.
+(`:5001`), SDK (`:5056`), Minecraft bot API (`:5057`), live viewer (`:3000`)
+or skin server (`:3001`) to the config. None of them has a login. Remote
+users don't see the Games page either: its routes are host-only.
 
 ### Put Cloudflare Access in front
 

@@ -70,11 +70,13 @@ confirmation in the terminal unless the client has
 ### Minecraft bot control API
 
 `sdk/examples/minecraft/bot.js` serves an HTTP control API on
-`127.0.0.1:5057` for the autonomous agent and the diagnostics page.
+`127.0.0.1:5057` for the game agent and the diagnostics page.
 **It has no authentication and sends `Access-Control-Allow-Origin: *`.**
 `POST /action` with `execute_skill` runs arbitrary JavaScript inside the
-Node process, with your user's permissions. The SDK allowlist and the
-`y/n` gate do not apply, because the request never passes through Lumi.
+Node process, with your user's permissions. `POST /directive` gives the
+agent an order (for example, to hand items to whoever is nearby). The SDK
+allowlist and the `y/n` gate do not apply, because the request never passes
+through Lumi.
 
 So while `bot.js` is running, any local process, and potentially any web
 page open in your browser, can run code on your machine. A plain-text
@@ -84,7 +86,8 @@ and browsers do not reliably block public sites from reaching
 
 Until the API requires a token:
 
-- Run `bot.js` only while you are using it, and stop it afterwards.
+- Run `bot.js` only while you are using it: turn **Minecraft AI** off on the
+  Games page when you're done (Lumi stops the process).
 - Don't browse untrusted sites in the same session.
 - Keep `BOT_CONTROL_PORT` on loopback. `bot.js` binds to `127.0.0.1`
   and ignores `ALLOW_LAN_EXPOSURE`.
@@ -95,6 +98,24 @@ dashboard on `:5002` proxy its requests server-side.
 
 The Minecraft dashboard on `127.0.0.1:5002` is read-only apart from
 forwarding the server address, and serves only Minecraft telemetry.
+
+Other Minecraft surfaces:
+
+- **Live viewer (`:3000`)** binds to all interfaces (prismarine-viewer offers
+  no host setting) and shows the world around the bot to anyone on your
+  network who opens it. It's read-only. Windows asks about the firewall; deny
+  it on public networks, or set `VIEWER_PORT=0`.
+- **Skin server (`:3001`)** is loopback-only and serves one PNG.
+- **Games page routes** (`/api/game/status`, `/api/game/toggle`,
+  `/api/games/{game}/directive`) start processes and send orders, so they are
+  host-only: the remote tier refuses them (covered by
+  `tests/test_remote_tiers.py`), and they need a session and a CSRF token.
+- **In-game orders** are accepted only from the owner (`MC_OWNER`, or the
+  first other player), and only with a wake word. Other players' chat is
+  passed to Lumi as data, never as an order.
+- **Spawned processes** run with your user's permissions. On Windows they're
+  in a kill-on-close job object, so a crash of Lumi doesn't leave a bot
+  logged into your world.
 
 ## Earlier layers
 

@@ -377,16 +377,19 @@ Registered actions and their handlers survive a reconnect: the client re-registe
 
 - `examples/system_stats.py` — Python client that exposes system stats (uses `psutil`).
 - `examples/minecraft/bot.js` — Node.js mineflayer bot, connecting as client
-  `MinecraftBot`. Registers 13 actions: movement, chat, status, digging, and
-  combat, plus five that wrap [Voyager](https://github.com/MineDojo/Voyager)'s
-  control primitives (`minecraft_mine_block`, `minecraft_craft_item`,
-  `minecraft_smelt_item`, `minecraft_place_item`, `minecraft_kill_mob`).
-  `minecraft_execute_skill` runs Voyager-style JavaScript with those
-  primitives in scope. See [`examples/minecraft/README.md`](examples/minecraft/README.md).
+  `MinecraftBot`. Registers movement, chat, status, digging and combat
+  actions; five wrappers around [Voyager](https://github.com/MineDojo/Voyager)'s
+  control primitives; `minecraft_execute_skill` for Voyager-style JavaScript;
+  and survival and companion actions (defend, eat, give items, return to the
+  player, branch mine, build a house, chests). It pushes a silent status
+  snapshot and `silent: false` events for the big moments, the best working
+  example of both. See [`examples/minecraft/README.md`](examples/minecraft/README.md).
 - [`../plugin/minecraft_bot.py`](../plugin/minecraft_bot.py) — Python client
-  `MinecraftAgent`. Runs an autonomous skill loop against `bot.js` and
-  registers status and control actions. It keeps playing when Lumi is not
-  running. See [`../plugin/README.md`](../plugin/README.md).
+  `MinecraftAgent`. Runs the autonomous goal loop against `bot.js`, pushes a
+  silent status line every 30 s, and registers status and control actions.
+  Lumi starts it from the Games page, and it keeps playing when Lumi is not
+  running. See [`../plugin/README.md`](../plugin/README.md) and
+  [`../docs/minecraft.md`](../docs/minecraft.md).
 
 ## Debugging
 

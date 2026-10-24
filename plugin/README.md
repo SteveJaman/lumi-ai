@@ -5,8 +5,11 @@ External apps that connect to Lumi through the [SDK](../sdk/README.md). None of 
 | Path | What it is |
 |---|---|
 | `plugin.py` | Reference plugin: screenshot and note actions. Start here when writing your own |
-| `minecraft_bot.py` | Autonomous Minecraft agent (SDK client `MinecraftAgent`) |
-| `mc_dashboard.py` | Minecraft diagnostics page at `http://127.0.0.1:5002/` |
+| `minecraft_bot.py` | Lumi's Minecraft game agent (SDK client `MinecraftAgent`). Started by Lumi from the Games page |
+| `mc_dashboard.py` | Optional Minecraft diagnostics page at `http://127.0.0.1:5002/`. The Games page in Lumi's web UI covers day-to-day use |
+
+For an overview of the Minecraft feature, start with
+[`../docs/minecraft.md`](../docs/minecraft.md).
 | `voyager/` | Git submodule of [MineDojo/Voyager](https://github.com/MineDojo/Voyager). Read-only; do not edit |
 
 ---

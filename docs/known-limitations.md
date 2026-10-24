@@ -149,13 +149,36 @@ architectural.
   [security.md](security.md#minecraft-bot-control-api).
 
 * **No LLM-written skills.** Voyager's curriculum, action and critic
-  agents are not used, because they need the OpenAI API. The autonomous
-  agent follows a fixed curriculum from logs to diamonds, and it does not
-  learn new skills.
+  agents are not used, because they need the OpenAI API. The game agent
+  chooses among fixed, hand-written skills (the tech tree, free-play goals,
+  house, branch mine). It does not learn new ones.
 
-* **The curriculum assumes oak.** Every wood tier uses `oak_log` and
-  `oak_planks`. In a biome without oak, `collect_wood` keeps failing with
-  Voyager's `No oak_log nearby` message.
+* **Pathfinding gives up on hard paths.** Mineflayer's pathfinder plans for at
+  most `PATH_THINK_MS` (10 s) and then reports "Took to long to decide path to
+  goal!", typically for ores behind solid rock or logs high in a canopy. Such
+  steps keep whatever they collected, and the agent falls back to branch
+  mining or exploring, but a specific block may stay out of reach.
+
+* **Orders are parsed, not understood.** Common phrasings ("get me 5
+  diamonds", "follow me", "give me the pickaxe") are handled in code;
+  anything else depends on a 3B model's judgment. Diamond tools,
+  enchanting, farming and the Nether aren't supported.
+
+* **`/tp` needs cheats.** Getting unstuck on the way back to you, or
+  returning when you're out of tracking range, uses `/tp`, which a LAN world
+  only allows with cheats on.
+
+* **`look_at_minecraft` shows your client.** It captures the Minecraft window
+  on this PC, which is *your* view, and the small vision model embellishes.
+  LumiBot's own view is the live viewer.
+
+* **The live viewer is memory-hungry.** It serializes every chunk for each
+  open browser. A watchdog pauses it above `VIEWER_HEAP_LIMIT_MB`; with
+  several viewer tabs open it pauses often.
+
+* **A custom skin needs a client mod.** A vanilla LAN world can't receive a
+  skin from an offline-mode bot. CustomSkinLoader shows it on your screen
+  only.
 
 * **Long skills outrun Lumi's timeout.** Mining or exploring often
   takes longer than the SDK's 30 s, so Lumi reports a timeout while the
@@ -165,8 +188,8 @@ architectural.
   and `killMob` with a bow in hand fail. Melee works.
 
 * **LAN ports are set by hand.** Minecraft picks a new port each time a
-  world is opened to LAN. Set it in the dashboard; the bot does not
-  discover it.
+  world is opened to LAN. Set it in `.env` or the `:5002` dashboard's
+  Minecraft Server panel; the bot does not discover it.
 
 * **One bot per `bot.js`.** Each process controls one account, and two
   processes need different `BOT_CONTROL_PORT` values.

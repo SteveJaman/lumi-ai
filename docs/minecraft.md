@@ -1,0 +1,290 @@
+# Lumi plays Minecraft
+
+Lumi has an "other half": a character in a Minecraft world that plays on its
+own while Lumi keeps chatting. It gathers wood, works its way up to an iron
+pickaxe, fights mobs, builds a house, branch-mines, and keeps you in sight like
+a kid playing near a parent. You can give it orders from the web UI or in game
+chat, and Lumi talks about what her other half is doing.
+
+This page explains the whole feature. The per-folder READMEs have the
+reference details:
+
+| Read | For |
+|---|---|
+| [`../sdk/examples/minecraft/README.md`](../sdk/examples/minecraft/README.md) | `bot.js`: every action, the control API, events, self-defense, the skin, the live viewer, memory |
+| [`../plugin/README.md`](../plugin/README.md#minecraft-agent-minecraft_botpy) | The game agent: its loop, the tech tree, free-play goals, orders, playing near you |
+| [`../web/README.md`](../web/README.md) | The Games page |
+| [security.md](security.md#minecraft-bot-control-api) | What the bot's local API exposes. Read before running it |
+
+---
+
+## Quick start
+
+You need Node.js 18+, Minecraft Java Edition 1.19 (Fabric works), and Lumi
+running on the same PC.
+
+1. Once: fetch Voyager and the bot's packages, and pull the small game model.
+
+   ```powershell
+   git submodule update --init plugin/voyager
+   cd sdk/examples/minecraft; npm install; cd ../../..
+   ollama pull qwen2.5:3b
+   ```
+
+2. In Minecraft, open a world and choose **Open to LAN**. Note the port.
+   Set it as `MC_PORT` in `sdk/examples/minecraft/.env` (copy `.env.example`
+   first). The port changes each time you open to LAN. To change it while the
+   bot is running, use the **Minecraft Server** panel of the diagnostics page
+   (`python plugin/mc_dashboard.py`, then `http://127.0.0.1:5002/`).
+3. Start Lumi: `python main.py`.
+4. In Lumi's web UI on this PC, open **Games** and turn on **Minecraft AI**.
+
+`LumiBot` joins your world within a few seconds. The Games page shows what
+she's thinking, her health and goal, and a first-person live view. Try typing
+`Lumi, follow me` in Minecraft chat.
+
+To stop, turn the switch off. Lumi also stops both processes when she shuts
+down, and starts them again on the next boot while the switch stays on.
+
+---
+
+## How it fits together
+
+```
+ ┌──────────────────────────── Lumi (python main.py) ─────────────────────────────┐
+ │  web server :5000 ── Games page ── /api/game/* , /api/games/{game}/directive    │
+ │       │                                                                        │
+ │  game manager (modules/game_manager.py) ── starts, stops, watches ──┐          │
+ │  prompter (chat model) ◄── SDK server :5056 ◄── status + events ────┼───┐      │
+ └─────────────────────────────────────────────────────────────────────┼───┼──────┘
+                                                                       │   │
+          ┌────────────────────────────────────────────────────────────┘   │
+          ▼                                                                │
+ plugin/minecraft_bot.py  (the game agent: "MinecraftAgent")  ─────────────┤
+   decides what to do each tick, picks goals with GAME_AGENT_MODEL         │
+          │ HTTP :5057 (/status, /action, /directive)                      │
+          ▼                                                                │
+ sdk/examples/minecraft/bot.js  (the body: "MinecraftBot")  ───────────────┘
+   mineflayer + Voyager primitives, self-defense, events, order inbox
+          │ Minecraft protocol            ├── :3000 live viewer (prismarine-viewer)
+          ▼                               └── :3001 skin file for CustomSkinLoader
+   your Minecraft world
+```
+
+- **`bot.js` is the body.** It joins the world as `LumiBot` and does the
+  physical work: walking, mining, crafting, building, fighting. It defends
+  itself, reports events (a death, a boss kill, diamonds), takes orders from
+  your chat, and serves a local control API on `127.0.0.1:5057`.
+- **`plugin/minecraft_bot.py` is the mind.** Every 4 seconds it reads the
+  bot's state and decides what to do next. It picks goals with its own small
+  model (`GAME_AGENT_MODEL`), so Lumi's chat model is never kept busy.
+- **The game manager** in Lumi starts both as background processes when you
+  flip the switch. It sends their output to the Dashboard's Event Stream and
+  to `data/logs/minecraft/`, and reports a crash with its last lines. On
+  Windows the processes are tied to Lumi's, so they can't outlive her.
+- **Lumi herself** (the chat model) hears about her other half through the
+  SDK: a silent status line every 30 seconds, and spoken events for the big
+  moments.
+
+---
+
+## How she decides what to do
+
+Every tick the agent goes down this list and does the first thing that
+applies:
+
+1. **Take a new order**, if one arrived (see [Orders](#orders)).
+2. **Survive.** Fight a hostile mob within 6 blocks (not endermen); eat when
+   hunger is below 14. `bot.js` also fights back on its own when hit.
+3. **Hold a mode** from an order: stay put, or follow you closely.
+4. **Work on the current order.**
+5. **Come back to you** if you called, are out of sight, or are more than 25
+   blocks away (64 while on a long project). See
+   [Playing near you](#playing-near-you).
+6. **Tech tree basics.** Wood → crafting table → wooden pickaxe → cobblestone
+   → stone pickaxe, decided in code. Progress is read from the inventory, any
+   wood type works, and the language model never chooses these steps.
+7. **Routines.** Go home at night once there's a finished house, and put
+   things away in a chest when the inventory is nearly full.
+8. **Free play.** The game model picks from whatever makes sense right now: the
+   next tool tier (furnace, iron, smelting, iron pickaxe, diamonds), chopping
+   trees, hunting, cooking, exploring, mining coal, branch mining, crafting
+   torches, building the house, a dirt hut at night, or waiting out the night.
+   Goals that make no sense are never offered: no hut in daylight, no more
+   trees with 10+ logs, no house while down a mine. Without the model,
+   a weighted random pick stands in.
+
+Each skill checks its own result. A step that changed nothing counts as a
+failure, while a step that got *some* of what it went for counts as progress.
+A goal that fails three times in a row rests for 5 minutes. A goal that just
+succeeded can have a cooldown too: the dirt hut runs once per night.
+
+---
+
+## Orders
+
+Two ways to tell her what to do:
+
+- **In Minecraft chat**, as the owner, start with a wake word: `Lumi,`, `Lumi:`,
+  `!lumi`, or just `Lumi ` followed by the order. She answers `Got it. …`.
+- **On the Games page**, type into **AI directive / nudge** and press
+  **Send command**.
+
+A new order interrupts whatever she's doing, unless she's in the middle of a
+fight. Common orders are understood without the model:
+
+| You say | She does |
+|---|---|
+| `follow me` · `stay close` | Follows you until told otherwise |
+| `come here` · `come back` | Comes back once, then plays on her own |
+| `stay` · `wait here` · `stop` | Stays put (still defends herself) |
+| `go play` · `do your thing` · `stop following` | Back to playing on her own |
+| `get me 5 diamonds` · `get some wood` · `mine for iron` | Gets that many *more*. Upgrades her pickaxe first if she has to (diamonds need iron), and with "get **me**" hands them over at the end |
+| `make an iron pickaxe` | Works up the tech tree to that pickaxe |
+| `give me the pickaxe` · `bring me 5 diamonds` | Walks over and tosses it to you, getting it first if she doesn't have it |
+| `build a house` | Builds the house, gathering what's missing |
+| `go home` · `make torches` · `sort your stuff` · `go mining` · `explore` | That task, once |
+
+When combined, the come-back, follow and stay kinds win: "forget the diamonds,
+come back to me" brings her back. Anything else goes to the game model with
+"The user has given you a new direct order: '…'. You must prioritize this above
+all current goals." The model may also decide it isn't an order at all, and
+then she says in chat that she doesn't know how. An order gives up after three
+failures in a row or 20 minutes, and says so: "I failed my order: … I am
+giving up."
+
+The full table is in
+[the agent's README](../plugin/README.md#orders).
+
+---
+
+## Playing near you
+
+Lumi treats one player as hers: `MC_OWNER` in `sdk/examples/minecraft/.env`,
+or the first other player online. Distances are horizontal, so mining straight
+below you still counts as nearby.
+
+| Distance | What she does |
+|---|---|
+| Under 10 blocks | Plays right next to you; glances at you when you move |
+| 10–25 blocks | Roams on her own; exploring drifts back toward you |
+| Over 25, or out of sight | Comes back |
+| On a project (branch mine, house, ore hunting) | Leash stretches to 64 blocks for 3 minutes |
+| You say "come here" / "follow me" in chat | Comes back (the call counts for a minute) |
+
+If she's stuck for 30 seconds on the way back, she tries `/tp` (only works with
+cheats on in the LAN world). Survival always comes first: a creeper gets dealt
+with before she walks back.
+
+---
+
+## Building and mining
+
+- **House.** A 7x7 house: a floor, 3-high walls, a door gap with a door if she
+  can craft one, three glass windows if she has glass, a flat roof, and
+  torches inside and out. It takes 165 blocks of cobblestone or planks. If she's
+  short, the build stops with the exact shortfall, and she gathers it next.
+  Building spreads over several runs, and the site is remembered in
+  `data/minecraft/house.json`.
+- **Branch mine.** A staircase down to y=12 (or y=-54 for diamonds once she has
+  an iron pickaxe), then a 24-block tunnel. She mines every ore she can
+  harvest, places a torch every 5 blocks, and stops at lava or water.
+- **Chests.** When her inventory is nearly full she crafts and places a chest
+  and puts away bulk items, keeping her tools, food, torches and a working
+  stock of cobblestone, dirt, logs and planks.
+
+---
+
+## What Lumi says about it
+
+| Channel | When | Lumi's reaction |
+|---|---|---|
+| Silent status | Every 30 s, and right away when her distance from you changes band | None. It updates her context, so if you ask what she's doing in Minecraft she answers from it |
+| Spoken event | Deaths, boss kills, diamonds and other top loot, a finished house, each new order, an order done or abandoned | Lumi takes a short turn and reacts in character ("Alright, I'll go find some diamonds. Don't wander too far.") |
+
+Spoken events are deliberately rare, because each one is a turn of Lumi's chat
+model. If one arrives while she's mid-reply, it's delivered as soon as she
+finishes, or dropped if she's still busy after 20 seconds. `EVENT_REACTIONS=all` (in `bot.js`'s `.env`) and `MC_NARRATE=all`
+bring back the full play-by-play: every hit, every mob, every new goal.
+
+In agent mode Lumi can also call `look_at_minecraft`: she captures the
+Minecraft window, even when it's behind other windows, and a small vision model
+(`moondream`) describes it. That shows *your* game client. Her own view is the
+live viewer.
+
+---
+
+## Seeing her
+
+- **Live viewer.** A first-person 3D view of what `LumiBot` sees, at
+  `http://localhost:3000` and on the Games page.
+- **Skin.** A vanilla LAN world can't receive a custom skin from the bot.
+  Install the CustomSkinLoader mod in your client and copy
+  `sdk/examples/minecraft/lumi_skin.png` to
+  `%APPDATA%\.minecraft\CustomSkinLoader\LocalSkin\skins\LumiBot.png`. See
+  [the bot's README](../sdk/examples/minecraft/README.md#lumis-skin).
+
+---
+
+## Performance
+
+- **Models.** Goal picking uses `GAME_AGENT_MODEL` (`qwen2.5:3b`, about 2 GB),
+  small enough to stay loaded next to Lumi's chat model on an 11 GB GPU. A
+  bigger game model would push the chat model out of VRAM and slow her replies.
+  If chat replies take 10+ seconds, Ollama is probably swapping models: setting
+  `FAST_MODEL_NAME` to the same model as `MODEL_NAME` frees one slot.
+- **Memory.** One session ended with `bot.js` out of memory at 4 GB. The live
+  viewer is the likely cause: it sends every chunk to each open browser. A
+  watchdog now pauses the viewer above 1.5 GB of heap and brings it back later,
+  and `[mem] heap … MB` in `data/logs/minecraft/bot.log` shows the trend. Keep
+  one viewer open (the Games page *or* the old `:5002` diagnostics page).
+
+---
+
+## Files and ports
+
+| Path | What it is |
+|---|---|
+| `data/minecraft/autoplay.json` | The Games page switch. The agent checks it every tick |
+| `data/minecraft/telemetry.json` | The agent's latest state, thought and order, read by the Games page |
+| `data/minecraft/events.jsonl` | The agent's event log |
+| `data/minecraft/house.json` | The house site and whether it's finished |
+| `data/logs/minecraft/agent.log`, `bot.log` | Output of the two processes |
+
+| Port | What | Reachable from |
+|---|---|---|
+| 5057 | `bot.js` control API | This PC only |
+| 3000 | Live viewer | All interfaces (prismarine-viewer can't be told otherwise) |
+| 3001 | Skin file | This PC only |
+| 5002 | Old diagnostics page (`python plugin/mc_dashboard.py`, optional) | This PC only |
+
+None of these go through the Cloudflare tunnel.
+
+---
+
+## Safety
+
+- The `bot.js` control API on `:5057` has **no authentication**. Anything on
+  this PC, including a web page in your browser, could run code in `bot.js`
+  or give her orders. Turn Minecraft AI off when you aren't using it. Details
+  and the planned fix are in [security.md](security.md#minecraft-bot-control-api).
+- The Games page routes that start processes and send orders are host-only:
+  someone using Lumi through the tunnel can't reach them.
+- In game, only the owner's wake-word messages are orders. Other players'
+  chat is just chat.
+
+---
+
+## Limitations
+
+- Mineflayer's pathfinder sometimes can't plan a path ("Took to long to decide
+  path to goal!"). Such steps fail fast, keep whatever they got, and fall back
+  to branch mining or exploring.
+- The order parser knows common phrasings. Unusual ones depend on a 3B model's
+  judgment.
+- No diamond tools, enchanting, farming, the Nether, or bows.
+- LAN ports are set by hand.
+- `/tp` for getting unstuck needs cheats on.
+
+See [known-limitations.md](known-limitations.md#minecraft) and
+[troubleshooting.md](troubleshooting.md#minecraft-bot-and-agent).

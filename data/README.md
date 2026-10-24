@@ -65,13 +65,19 @@ Deleting `data/library/` loses your uploaded documents.
 
 ### Minecraft
 
-Written by `plugin/minecraft_bot.py`. See [`../plugin/README.md`](../plugin/README.md#files-it-writes).
+Written by the game agent (`plugin/minecraft_bot.py`), `bot.js` and Lumi's
+game manager. See [`../docs/minecraft.md`](../docs/minecraft.md#files-and-ports).
 
 | Path | Contents | Safe to delete? |
 |---|---|---|
-| `data/minecraft/telemetry.json` | Latest bot and loop state, read by the dashboard on `:5002` | Yes, rewritten every loop step |
+| `data/minecraft/telemetry.json` | Latest bot and loop state, thought and current order, read by the Games page and the `:5002` dashboard | Yes, rewritten every loop step |
 | `data/minecraft/events.jsonl` | Append-only agent event log | Yes |
-| `data/minecraft/skills.json` | Curriculum tiers the agent has completed | Yes (the curriculum starts over) |
+| `data/minecraft/autoplay.json` | The Games page switch, `{"minecraft": true}`. Read by the agent every tick and by Lumi at boot | Yes (Minecraft AI stays off until switched on) |
+| `data/minecraft/house.json` | The house site, its material, and whether it's finished | Yes (she starts a new house next to wherever she is) |
+| `data/logs/minecraft/agent.log`, `bot.log` | Output of the processes Lumi started | Yes |
+
+`skills.json` from older versions is no longer read: progress comes from the
+inventory.
 
 ## Resetting
 
@@ -104,7 +110,7 @@ On the next boot Lumi recreates the folders it needs, generates a fresh SDK toke
 | Clear the uploaded library | Delete `data/library/`. Chunks are pruned on the next `LibraryIndexer` scan. |
 | Force memory re-import from seed | Delete `data/memories/chroma.db/`, place `memoryinit.json` at `data/memories/memoryinit.json`, and restart |
 | Reset all SDK client approvals | Delete `data/memories/sdk_allowlist.json` |
-| Restart the Minecraft curriculum | Delete `data/minecraft/skills.json` |
+| Start a new Minecraft house | Delete `data/minecraft/house.json` |
 
 ## Gitignore
 

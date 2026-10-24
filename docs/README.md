@@ -17,6 +17,7 @@ in this folder. Pick the doc that matches your question.
 | [roadmap.md](roadmap.md) | All ten phases, changelog, status, and what remains |
 | [known-limitations.md](known-limitations.md) | Architectural limitations, web client gaps, and behavior that is not a bug |
 | [troubleshooting.md](troubleshooting.md) | Common failures, security refusals, web client, voice, memory, uploads |
+| [minecraft.md](minecraft.md) | Lumi's Minecraft "other half": setup, how she decides, orders, playing near you, building and mining, what Lumi says, performance, safety |
 
 ## Where to look if you want to...
 
@@ -32,7 +33,7 @@ in this folder. Pick the doc that matches your question.
 - **Work on the browser UI.** [`../web/README.md`](../web/README.md) for client conventions, [architecture.md](architecture.md#web-server-modulessocketiopy) for the server side.
 - **Use Lumi from campus or share her with someone.** [remote-access.md](remote-access.md) covers the tunnel, what remote users can do, and Cloudflare Access.
 - **Write a plugin.** [`../sdk/README.md`](../sdk/README.md) for the protocol, then [`../plugin/README.md`](../plugin/README.md) for the reference plugin.
-- **Let Lumi play Minecraft.** [`../sdk/examples/minecraft/README.md`](../sdk/examples/minecraft/README.md) for the bot and its Voyager actions, [`../plugin/README.md`](../plugin/README.md) for the autonomous agent and the `:5002` dashboard. Read [security.md](security.md#minecraft-bot-control-api) first.
+- **Let Lumi play Minecraft.** [minecraft.md](minecraft.md) for the whole feature, then [`../sdk/examples/minecraft/README.md`](../sdk/examples/minecraft/README.md) for the bot and [`../plugin/README.md`](../plugin/README.md) for the game agent. Read [security.md](security.md#minecraft-bot-control-api) first.
 
 ## Conventions
 
