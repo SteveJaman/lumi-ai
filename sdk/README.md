@@ -63,7 +63,7 @@ Third-party developers need four files: `protocol.py`, `actions.py`, `client.py`
   └──────────────────────────┘                  └──────────────────────┘
 ```
 
-The server binds to `127.0.0.1:5056` only. The client connects, authenticates, and registers actions. On each agent turn, Lumi adds the registered actions to the model's tool list as `sdk__<name>`. When the model calls one, the server sends an `action` message to the client that registered it, waits for an `action/result`, and returns the result to the model. Context the client pushes is injected into Lumi's prompt as `[EXTERNAL CONTEXT]` on every turn. Every Lumi reply is broadcast back to connected clients as `speech_finished`.
+The server binds to `127.0.0.1:5056` only. The client connects, authenticates, and registers actions. On each agent turn, Lumi adds the registered actions to the model's tool list as `sdk__<name>`. When the model calls one, the server sends an `action` message to the client that registered it, waits for an `action/result`, and returns the result to the model. Context the client pushes is injected into Lumi's prompt between `[FROM SDK]` markers on every turn. A context message sent with `silent: false` is an event instead: it starts a turn so Lumi reacts to it out loud (see [context](#context)). Every Lumi reply is broadcast back to connected clients as `speech_finished`.
 
 ## Authentication
 
@@ -205,6 +205,15 @@ An action whose capabilities exceed the client's ceiling is refused with an `err
 {"command": "context", "game": "My App",
  "data": {"message": "Player is at 12 HP.", "silent": true}}
 ```
+
+`silent` decides what the message is:
+
+| `silent` | Meaning |
+|---|---|
+| `true` (default) | Standing context. Replaces this client's previous context and is shown to Lumi, as data, on every turn until replaced or cleared. |
+| `false` | One-shot event. Starts a turn so Lumi reacts to it out loud, and leaves the standing context unchanged. |
+
+Event turns are spoken reactions only. They run in conversational mode with no tools, even when agent mode is on, and the event text reaches the model as data between `[FROM SDK: <game>]` markers. The server drops an event, rather than queueing it, when Lumi is already thinking or speaking, or when the same client sent an event less than 12 s earlier. Only approved clients can send events. To stop one client starting turns, set `"allow_reactions": false` on its allowlist entry.
 
 ### speech_finished
 

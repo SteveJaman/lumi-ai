@@ -1003,6 +1003,31 @@ EXTRA_TOOL_SCHEMAS = [
 ]
 
 
+# Injected while a Minecraft SDK client (bot.js or plugin/minecraft_bot.py)
+# is connected and approved.
+MINECRAFT_GAMER_NOTE = (
+    "=== MINECRAFT — YOU ARE PLAYING RIGHT NOW ===\n"
+    "You are currently playing Minecraft. The character in the world is you: "
+    "its health, hunger, and inventory are yours, and the [FROM SDK] status "
+    "block shows them. In agent mode, use the sdk__minecraft_ tools to act "
+    "(sdk__minecraft_get_status for health, hunger, position, and nearby threats; "
+    "sdk__minecraft_defend to fight off whatever is attacking you). An "
+    "autonomous loop also plays on its own, so you do not have to micromanage it.\n"
+    "A message that starts with [FROM SDK: Minecraft...] and contains "
+    "[MINECRAFT EVENT] is something that just happened to you in the game, "
+    "not the user talking. React to it out loud the way a streamer would, in "
+    "one or two short sentences and in your own voice: if you take damage, "
+    "complain about it; if a creeper or zombie shows up, call it out; if you "
+    "die, be dramatic about it; if you find a diamond or anything rare, brag. "
+    "When the event says you are starting a goal, narrate it casually ('Alright, "
+    "I'm building a dirt hut here. Don't judge me.'). Never read the event text "
+    "back verbatim, never mention SDKs, bots, tools, or events, and do not "
+    "break character. An event is not a request, so answer it with words, not "
+    "tool calls; your character already defends itself.\n"
+    "=== END MINECRAFT ==="
+)
+
+
 MOOD_PROFILES = {
     "default": {
         "label": "Onee-san (Classic Older Sister)",
@@ -1511,6 +1536,18 @@ class Prompter:
                 self_inj = self.signals.self_model.get_injection()
                 if self_inj:
                     injections.append(self_inj)
+            except Exception:
+                pass
+
+        # ─── SDK context — standing status pushed by connected apps ───
+        sdk = getattr(self.signals, "sdk", None)
+        if sdk is not None:
+            try:
+                for text in sdk.get_context_injections():
+                    injections.append(f"[FROM SDK]\n{text}\n[END FROM SDK]")
+                if any(c.approved and c.game_name.startswith("Minecraft")
+                       for c in list(sdk.clients.values())):
+                    injections.append(MINECRAFT_GAMER_NOTE)
             except Exception:
                 pass
 
@@ -2441,7 +2478,11 @@ class Prompter:
                     stripped = latest_user_text.strip()
                     stripped_lower = stripped.lower()
 
-                    if hasattr(self.signals, "emotional_state"):
+                    # Game events pushed through the SDK are not the user
+                    # speaking, so they skip the user-message bookkeeping.
+                    is_sdk_event = self.signals.history[-1].get("source") == "sdk_event"
+
+                    if hasattr(self.signals, "emotional_state") and not is_sdk_event:
                         try:
                             is_command = (
                                 stripped_lower.startswith("!")
@@ -2879,19 +2920,22 @@ class Prompter:
                     # ─────────────────────────────────────────────────
                     # Normal turn (agent or conversational)
                     # ─────────────────────────────────────────────────
-                    if force_agent or self.agent_mode_enabled:
+                    # SDK events are spoken reactions, never tool turns.
+                    use_agent = (force_agent or self.agent_mode_enabled) and not is_sdk_event
+
+                    if use_agent:
                         mode_tag = f"{GRAY}[agent{RESET}{GRAY}]{RESET}"
                     else:
                         mode_tag = f"{GRAY}[chat{RESET}{GRAY}]{RESET}"
 
                     print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {mode_tag} ", end="", flush=True)
 
-                    if force_agent or self.agent_mode_enabled:
+                    if use_agent:
                         raw_reply = await self.run_agent_turn(latest_user_text)
                     else:
                         raw_reply = await self.run_conversational(latest_user_text)
 
-                    if force_agent or self.agent_mode_enabled:
+                    if use_agent:
                         display_reply = _strip_emoji(
                             _strip_non_canonical_tags(raw_reply)
                         )

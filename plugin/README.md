@@ -105,7 +105,7 @@ Lumi calls `sdk__screenshot_primary_monitor`, the plugin captures the display, a
 - **Subclassing `LumiClient`.** The plugin is one class on top of the SDK's base client. Connection, handshake, and reconnection come from the base class.
 - **Registering actions in `setup()`.** Each action is built with the SDK's `action()` builder and bound to a handler method.
 - **Returning `(success, message)` tuples.** Handlers report the outcome as a tuple. The message is what Lumi's model sees as the tool result, so write it as a plain sentence.
-- **Pushing context.** The plugin sends context to Lumi after connecting, which Lumi injects into its prompt as `[EXTERNAL CONTEXT]`.
+- **Pushing context.** The plugin sends context to Lumi after connecting, which Lumi injects into its prompt between `[FROM SDK]` markers.
 - **Handling `on_lumi_message`.** The plugin receives Lumi's replies (the `speech_finished` broadcast) through this callback and prints them.
 
 ## Adapting it
@@ -151,18 +151,40 @@ python plugin/mc_dashboard.py
 ```
 
 Start `bot.js` first. Until it answers, the agent reports `waiting for bot`.
-The agent uses only the standard library plus the SDK's `websockets`.
+The agent needs only the standard library plus the SDK's `websockets`. Goal
+picking also uses Lumi's `modules/llm_providers.py` when it can import it.
+Run the agent from Lumi's Python environment to get it.
 
-## The skill loop
+## The loop
 
 Every `MC_LOOP_INTERVAL` seconds the agent:
 
-1. Reads the bot's position, health, food and inventory from `GET /status`.
-2. Picks the first unfinished curriculum tier whose required items are in the inventory.
-3. Sends that tier's skill to `POST /action` as `execute_skill`.
-4. On success, marks the tier verified in `data/minecraft/skills.json` and tells Lumi.
+1. Reads the bot's position, health, hunger, inventory, nearby threats and time of day from `GET /status`.
+2. **Survives.** If a hostile other than an enderman is within 6 blocks, it calls `defend`. If hunger is below 14 and there is food, it calls `eat_food`. Either one uses up the step.
+3. **Picks a goal.** A goal set through `mc_agent_set_goal` comes first. Otherwise the options are the next curriculum tier plus every free-play goal that can run now. Lumi's model (`MC_GOAL_MODEL`, default `MODEL_NAME`) picks one from a status summary and the recent goal history. If the model is missing or its call fails, a weighted random pick takes over: shelter at night, food when hungry, and the curriculum tier 70% of the time.
+4. **Narrates.** It pushes a `[MINECRAFT EVENT]` saying what it's starting, so Lumi says it out loud in character. It also pushes one when a curriculum tier finishes and when a goal fails three times in a row. Narration is limited to one every `MC_NARRATE_COOLDOWN` seconds, except for the iron pickaxe, diamonds, and repeated failures.
+5. **Executes** the goal's skill through `POST /action` as `execute_skill`. If Voyager's primitives aren't loaded, it runs the goal's plain-action fallback instead (for example `mine_block` then `craft_item`), when the goal has one.
+6. On success, a curriculum tier is marked verified in `data/minecraft/skills.json`. A goal that fails three times in a row is left out of the options until it succeeds again, unless nothing else can run.
 
-The curriculum, defined in `CURRICULUM`:
+All HTTP and LLM calls run in executor threads, so a two-minute skill never blocks the SDK websocket.
+
+### Free-play goals
+
+Defined in `FREE_GOALS`. They can repeat and are never marked verified.
+
+| Goal | Available | What it does |
+|---|---|---|
+| `chop_trees` | Always | Mines 4 logs of whatever tree is closest (any wood type), exploring if none are in sight |
+| `hunt_food` | Always | Finds a cow, pig, sheep or chicken and kills it |
+| `cook_meat` | Raw meat and coal or planks in inventory | Smelts up to 6 raw meat, placing a furnace if needed |
+| `explore` | Always | Explores in a random direction for 45 s |
+| `mine_coal` | Any pickaxe | Explores until coal ore is in sight, mines 5 |
+| `build_dirt_hut` | Always | Digs 25 dirt and seals itself in a 3×3 dirt box. The random picker builds one at the start of each night |
+| `wait_out_night` | Night | Waits up to 100 s for morning |
+
+### Curriculum
+
+Defined in `CURRICULUM`:
 
 | Tier | Needs | Skill |
 |---|---|---|
@@ -189,8 +211,8 @@ The agent connects as `MinecraftAgent`. The allowlist entry needs
 
 | Action | Tier | What it does |
 |---|---|---|
-| `mc_agent_status` | `read` | Loop state, goal, position, health, inventory, curriculum progress |
-| `mc_agent_set_goal` | `write` | Run a specific curriculum tier next |
+| `mc_agent_status` | `read` | Loop state, goal (and who picked it), recent goals, position, health, inventory, curriculum progress |
+| `mc_agent_set_goal` | `write` | Run a specific curriculum tier or free-play goal next |
 | `mc_agent_pause` | `write` | Pause the loop |
 | `mc_agent_resume` | `write` | Resume the loop |
 
@@ -201,6 +223,10 @@ The agent connects as `MinecraftAgent`. The allowlist entry needs
 | `BOT_API` | `http://127.0.0.1:5057` | `bot.js` control API |
 | `MC_LOOP_INTERVAL` | `4` | Seconds between loop steps |
 | `MC_ACTION_TIMEOUT` | `135` | Seconds to wait for a skill. Keep it above `bot.js`'s 120 s `SKILL_TIMEOUT_MS` |
+| `MC_GOAL_PICKER` | `llm` | `llm` asks Lumi's model to pick goals, `random` skips the model |
+| `MC_GOAL_MODEL` | `MODEL_NAME` from `constants.py` | Model spec for goal picking, in the same format as Lumi's other model settings |
+| `MC_NARRATE` | `true` | Push "starting X" events for Lumi to say out loud |
+| `MC_NARRATE_COOLDOWN` | `75` | Minimum seconds between narration events |
 
 ## Files it writes
 

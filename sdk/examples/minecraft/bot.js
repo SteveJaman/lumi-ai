@@ -50,6 +50,14 @@ const MC_AUTH     = process.env.MC_AUTH     || "offline";
 const MC_VERSION       = process.env.MC_VERSION        || undefined;
 // Internal control API used by minecraft_bot.py — localhost only.
 const BOT_CONTROL_PORT = parseInt(process.env.BOT_CONTROL_PORT || "5057", 10);
+// Push game events (damage, mobs, deaths, rare loot) for Lumi to react to.
+const EVENT_REACTIONS  = (process.env.EVENT_REACTIONS || "true").toLowerCase() !== "false";
+// Fight back automatically when a hostile mob hits the bot.
+const AUTO_DEFEND      = (process.env.AUTO_DEFEND || "true").toLowerCase() !== "false";
+const DEFEND_RADIUS    = 5;   // blocks: look at / fight hostiles this close
+const THREAT_RADIUS    = 10;  // blocks: announce hostiles this close
+// While a skill runs, auto-defend only interrupts it at or below this health.
+const DEFEND_INTERRUPT_HEALTH = 12;
 
 // ─── Voyager control primitives (plugin/voyager submodule) ─────────────────
 
@@ -86,6 +94,17 @@ function loadToken() {
 
 let bot      = null;
 let botReady = false;
+let mcData   = null;   // minecraft-data for the connected server's version
+
+// Survival/event state, reset on each new bot.
+let lastHealth    = null;
+let lastFood      = null;
+let lastHurtAt    = 0;
+let lastAttacker  = null;  // name of the hostile nearest when we last took damage
+let activeActions = 0;     // actions currently running (skills, SDK/ctrl calls)
+let defendTarget  = null;
+let lastFoughtId  = null;  // last entity we fought, for the kill announcement
+const announcedThreats = new Set();
 
 function createBot() {
   if (bot) {
@@ -105,29 +124,89 @@ function createBot() {
   // Adds bot.save / bot.inventoryUsed and the chatEvent hook the primitives use.
   if (voyagerInject) voyagerInject(bot);
 
+  lastHealth = lastFood = defendTarget = lastAttacker = lastFoughtId = null;
+  lastHurtAt = 0;
+  announcedThreats.clear();
+
   bot.once("spawn", () => {
-    const mcData = require("minecraft-data")(bot.version);
-    const moves  = new Movements(bot, mcData);
+    mcData = require("minecraft-data")(bot.version);
+    const moves = new Movements(bot, mcData);
     bot.pathfinder.setMovements(moves);
-    botReady = true;
+    botReady   = true;
+    lastHealth = bot.health;
+    lastFood   = bot.food;
     console.log("[mc] bot spawned and ready");
     pushBotContext();
+    pushEvent("spawn", `I just joined the world. Health ${fmtHp(bot.health)}/20, ` +
+                       `hunger ${bot.food}/20, carrying: ${inventorySummary()}.`);
   });
 
   bot.on("death", () => {
     botReady = false;
+    defendTarget = null;
     console.log("[mc] bot died");
     pushBotContext();
+    const cause = lastAttacker && Date.now() - lastHurtAt < 10_000 ? ` A ${lastAttacker} got me.` : "";
+    pushEvent("death", `I just died!${cause} I dropped everything I was carrying.`);
   });
 
   bot.on("respawn", () => {
-    const mcData = require("minecraft-data")(bot.version);
-    const moves  = new Movements(bot, mcData);
+    mcData = require("minecraft-data")(bot.version);
+    const moves = new Movements(bot, mcData);
     bot.pathfinder.setMovements(moves);
-    botReady = true;
+    botReady   = true;
+    lastHealth = bot.health;
+    lastFood   = bot.food;
+    announcedThreats.clear();
     console.log("[mc] bot respawned");
     pushBotContext();
   });
+
+  // Fires on any health or food change.
+  bot.on("health", () => {
+    if (!botReady) return;
+    const hp = bot.health, food = bot.food;
+    if (lastHealth !== null && hp < lastHealth - 0.01 && hp > 0) {
+      lastHurtAt = Date.now();
+      const t = nearestHostile(DEFEND_RADIUS + 3);
+      lastAttacker = t ? mobName(t.entity) : null;
+      const who = t ? ` A ${lastAttacker} is ${t.dist.toFixed(0)} blocks away.` : "";
+      const urgency = hp <= 6 ? " I'm about to die!" : "";
+      pushEvent("hurt", `I just took damage! Health is ${fmtHp(hp)}/20.${who}${urgency}`);
+      maybeAutoDefend();
+    }
+    if (lastFood !== null && food <= 6 && lastFood > 6) {
+      pushEvent("hunger", `I'm getting really hungry (hunger ${food}/20).` +
+                          (pickFood() ? "" : " And I have no food on me."));
+    }
+    lastHealth = hp;
+    lastFood   = food;
+  });
+
+  bot.on("entityHurt", (entity) => {
+    if (entity === bot.entity) maybeAutoDefend();
+  });
+
+  bot.on("entityDead", (entity) => {
+    if (entity.id === lastFoughtId) {
+      pushEvent("kill", `I killed the ${mobName(entity)} that was after me.`);
+      lastFoughtId = null;
+      defendTarget = null;
+    }
+  });
+
+  bot.on("playerCollect", (collector, collected) => {
+    if (collector !== bot.entity) return;
+    let item = null;
+    try { item = collected.getDroppedItem && collected.getDroppedItem(); } catch (_) {}
+    if (!item) return;
+    _logEv("collect", `${item.name}×${item.count}`);
+    if (RARE_ITEMS.has(item.name)) {
+      pushEvent(`collect:${item.name}`, `I just picked up ${item.count} ${item.name.replace(/_/g, " ")}!`);
+    }
+  });
+
+  bot.on("stoppedAttacking", () => { defendTarget = null; });
 
   bot.on("chat", (username, message) => {
     if (username === bot.username) return;
@@ -146,14 +225,97 @@ function createBot() {
   });
 }
 
+// ─── World helpers ──────────────────────────────────────────────────────────
+
+const HOSTILE_MOBS = new Set([
+  "zombie", "skeleton", "creeper", "spider", "enderman", "witch",
+  "slime", "cave_spider", "blaze", "ghast", "zombie_pigman",
+  "wither_skeleton", "phantom", "drowned", "husk", "stray", "pillager",
+  "vindicator", "ravager", "hoglin", "zoglin", "piglin_brute",
+  "zombie_villager", "silverfish", "evoker", "vex", "magma_cube", "warden",
+]);
+
+// Pickups worth bragging about.
+const RARE_ITEMS = new Set([
+  "diamond", "diamond_ore", "deepslate_diamond_ore", "emerald", "raw_gold",
+  "gold_ingot", "ancient_debris", "netherite_scrap", "enchanted_golden_apple",
+  "golden_apple", "ender_pearl", "lapis_lazuli", "name_tag", "saddle",
+]);
+
+const WEAPONS = [
+  "netherite_sword", "diamond_sword", "iron_sword", "stone_sword", "golden_sword", "wooden_sword",
+  "netherite_axe", "diamond_axe", "iron_axe", "stone_axe", "golden_axe", "wooden_axe",
+];
+
+const fmtHp = (v) => (v == null ? "?" : (Math.round(v * 2) / 2).toString());
+const mobName = (e) => (e.name || e.mobType || e.displayName || "mob").toLowerCase().replace(/\s+/g, "_");
+
+function inventorySummary(limit = 12) {
+  return bot.inventory.items().slice(0, limit).map(i => `${i.name}×${i.count}`).join(", ") || "nothing";
+}
+
+// Nearest mob matching `filter` (a mob id) or, with no filter, the nearest hostile.
+function nearestMob(maxDist, filter = null) {
+  if (!bot || !bot.entity) return null;
+  let best = null;
+  for (const e of Object.values(bot.entities)) {
+    if (e === bot.entity || !e.position) continue;
+    // mineflayer reports "mob" on older data and hostile/animal/passive/... on newer.
+    if (["player", "object", "orb", "global", "projectile", "other"].includes(e.type)) continue;
+    const name = mobName(e);
+    if (filter ? name !== filter : !HOSTILE_MOBS.has(name)) continue;
+    const dist = bot.entity.position.distanceTo(e.position);
+    if (dist <= maxDist && (!best || dist < best.dist)) best = { entity: e, dist };
+  }
+  return best;
+}
+const nearestHostile = (maxDist) => nearestMob(maxDist);
+
+function nearbyThreats(maxDist = 16) {
+  if (!bot || !bot.entity) return [];
+  const out = [];
+  for (const e of Object.values(bot.entities)) {
+    if (e === bot.entity || !e.position || e.type === "player" || !HOSTILE_MOBS.has(mobName(e))) continue;
+    const dist = bot.entity.position.distanceTo(e.position);
+    if (dist <= maxDist) out.push({ name: mobName(e), distance: +dist.toFixed(1) });
+  }
+  return out.sort((a, b) => a.distance - b.distance);
+}
+
+// Best food in the inventory by hunger restored.
+function pickFood(preferred = null) {
+  if (!mcData) return null;
+  const foods = mcData.foodsByName || {};
+  const avoid = new Set(["rotten_flesh", "spider_eye", "poisonous_potato", "pufferfish", "chorus_fruit", "chicken"]);
+  let best = null;
+  for (const item of bot.inventory.items()) {
+    if (preferred ? item.name !== preferred : (!foods[item.name] || avoid.has(item.name))) continue;
+    const pts = foods[item.name] ? foods[item.name].foodPoints : 1;
+    if (!best || pts > best.pts) best = { item, pts };
+  }
+  return best ? best.item : null;
+}
+
+async function equipWeapon() {
+  for (const name of WEAPONS) {
+    const item = bot.inventory.items().find(i => i.name === name);
+    if (item) { try { await bot.equip(item, "hand"); } catch (_) {} return name; }
+  }
+  return null;
+}
+
 function buildStatusText() {
   if (!bot || !botReady) return "[MinecraftBot] Not connected to Minecraft server.";
-  const pos   = bot.entity.position;
-  const items = bot.inventory.items().map(i => `${i.name}×${i.count}`).join(", ") || "empty";
+  const pos     = bot.entity.position;
+  const items   = bot.inventory.items().map(i => `${i.name}×${i.count}`).join(", ") || "empty";
+  const threats = nearbyThreats().slice(0, 5).map(t => `${t.name} (${t.distance} blocks)`).join(", ") || "none";
+  const held    = bot.heldItem ? bot.heldItem.name : "nothing";
+  const tod     = bot.time && bot.time.isDay === false ? "night" : "day";
   return [
     `[MinecraftBot] ${bot.username} on ${MC_HOST}:${MC_PORT}`,
-    `Position: ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}`,
-    `Health: ${(bot.health ?? "?")}/20  Food: ${(bot.food ?? "?")}/20`,
+    `Position: ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}  Time: ${tod}`,
+    `Health: ${fmtHp(bot.health)}/20  Hunger: ${(bot.food ?? "?")}/20  Holding: ${held}`,
+    `Nearby threats: ${threats}`,
     `Inventory: ${items}`,
   ].join("\n");
 }
@@ -169,6 +331,10 @@ function buildStatusJson() {
     health:    bot.health   ?? null,
     food:      bot.food     ?? null,
     inventory: bot.inventory.items().map(i => ({ name: i.name, count: i.count })),
+    threats:   nearbyThreats(),
+    is_day:    bot.time ? bot.time.isDay !== false : true,
+    busy:      activeActions > 0,
+    defending: Boolean(defendTarget),
   };
 }
 
@@ -198,6 +364,68 @@ function pushBotContext(extra = null) {
   sendJson({ command: "context", game: GAME_NAME, data: { message: text, silent: true } });
 }
 
+// Per-kind cooldowns so a fight doesn't become a wall of reactions. Lumi's
+// SDK server adds its own per-client cooldown on top.
+const EVENT_COOLDOWN_MS = { hurt: 20_000, threat: 25_000, hunger: 120_000, collect: 15_000, kill: 10_000 };
+const _lastEventAt = {};
+
+// silent:false makes Lumi take a turn and react out loud.
+function pushEvent(kind, text) {
+  _logEv("event", text);
+  if (!EVENT_REACTIONS) return;
+  const now = Date.now();
+  const cooldown = EVENT_COOLDOWN_MS[kind.split(":")[0]] ?? 0;
+  if (now - (_lastEventAt[kind] || 0) < cooldown) return;
+  _lastEventAt[kind] = now;
+  sendJson({ command: "context", game: GAME_NAME,
+             data: { message: `[MINECRAFT EVENT] ${text}`, silent: false } });
+}
+
+// ─── Self-defense ───────────────────────────────────────────────────────────
+
+function startDefend(entity) {
+  if (!entity || (defendTarget && defendTarget.id === entity.id)) return;
+  defendTarget = entity;
+  lastFoughtId = entity.id;
+  _logEv("defend", `fighting ${mobName(entity)}`);
+  equipWeapon().finally(() => {
+    if (defendTarget === entity) bot.pvp.attack(entity);
+  });
+}
+
+// Called when the bot is hurt. Fights back if a hostile is in range, but
+// only interrupts a running skill when health is getting low.
+function maybeAutoDefend() {
+  if (!AUTO_DEFEND || !botReady || defendTarget) return;
+  const t = nearestHostile(DEFEND_RADIUS);
+  if (!t) return;
+  if (activeActions > 0 && bot.health > DEFEND_INTERRUPT_HEALTH) return;
+  startDefend(t.entity);
+}
+
+// Once a second: announce new hostiles and keep an eye on close ones.
+function threatTick() {
+  if (!bot || !botReady) return;
+  for (const id of announcedThreats) if (!bot.entities[id]) announcedThreats.delete(id);
+
+  const t = nearestHostile(THREAT_RADIUS);
+  if (!t) return;
+  if (!announcedThreats.has(t.entity.id)) {
+    announcedThreats.add(t.entity.id);
+    const name = mobName(t.entity);
+    const warn = name === "creeper" ? " It's going to blow up!" : "";
+    pushEvent("threat", `A ${name} is ${t.dist.toFixed(0)} blocks away from me.${warn}`);
+  }
+  if (t.dist > DEFEND_RADIUS || defendTarget || activeActions > 0) return;
+  // Idle: face the threat, and fight it if it has hit us recently.
+  // Looking at an enderman provokes it, so leave those alone.
+  const e = t.entity;
+  if (mobName(e) === "enderman" && Date.now() - lastHurtAt > 5_000) return;
+  bot.lookAt(e.position.offset(0, e.height ?? 1.6, 0)).catch(() => {});
+  if (AUTO_DEFEND && Date.now() - lastHurtAt < 5_000) startDefend(e);
+}
+setInterval(threatTick, 1000);
+
 function registerActions() {
   sendJson({
     command: "actions/register",
@@ -206,7 +434,7 @@ function registerActions() {
       actions: [
         {
           name: "minecraft_get_status",
-          description: "Return the Minecraft bot's current position, health, food level, and inventory.",
+          description: "Return your Minecraft character's health, hunger, position, held item, nearby hostile mobs, and inventory.",
           schema: { type: "object", properties: {} },
           capabilities: ["read"],
           requires_confirm: false,
@@ -375,6 +603,67 @@ function registerActions() {
           capabilities: ["write"],
           requires_confirm: false,
         },
+        {
+          name: "minecraft_defend",
+          description: "Fight off hostile mobs within 8 blocks of the Minecraft bot until none are left (up to 30 s). Equips the best weapon first.",
+          schema: { type: "object", properties: {} },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_attack_entity",
+          description: "Chase and fight one mob until it dies (up to 30 s). Targets the nearest hostile unless a mob id is given.",
+          schema: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Optional mob id, e.g. zombie, cow. Nearest hostile if omitted." },
+            },
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_eat_food",
+          description: "Eat food from the Minecraft bot's inventory. Picks the most filling food unless one is named.",
+          schema: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Optional food item id, e.g. bread, cooked_beef." },
+            },
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_place_block",
+          description: "Place a block from the Minecraft bot's inventory at x,y,z (or beside the bot) using plain mineflayer placement.",
+          schema: {
+            type: "object",
+            properties: {
+              name: { type: "string",  description: "Block item id, e.g. dirt, cobblestone, torch." },
+              x:    { type: "integer", description: "Optional target X." },
+              y:    { type: "integer", description: "Optional target Y." },
+              z:    { type: "integer", description: "Optional target Z." },
+            },
+            required: ["name"],
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_drop_item",
+          description: "Drop (toss) items from the Minecraft bot's inventory on the ground.",
+          schema: {
+            type: "object",
+            properties: {
+              name:  { type: "string",  description: "Item id, e.g. dirt, rotten_flesh." },
+              count: { type: "integer", description: "How many to drop. Default: all of that item." },
+            },
+            required: ["name"],
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
       ],
     },
   });
@@ -417,29 +706,177 @@ async function handleLookAt(args) {
   return { success: true, message: `Looking at (${x}, ${y}, ${z})` };
 }
 
-const HOSTILE_MOBS = new Set([
-  "zombie", "skeleton", "creeper", "spider", "enderman", "witch",
-  "slime", "cave_spider", "blaze", "ghast", "zombie_pigman",
-  "wither_skeleton", "phantom", "drowned", "husk", "stray", "pillager",
-  "vindicator", "ravager", "hoglin", "zoglin", "piglin_brute",
-]);
-
 async function handleAttackNearest(args) {
   if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
   const filter = args.mob_type ? String(args.mob_type).toLowerCase() : null;
+  const t = nearestMob(Infinity, filter);
+  if (!t) return { success: false, message: `No ${filter || "hostile mob"} found nearby` };
+  bot.attack(t.entity);
+  return { success: true, message: `Attacking ${mobName(t.entity)} at distance ${t.dist.toFixed(1)}` };
+}
 
-  let nearest = null, minDist = Infinity;
-  for (const entity of Object.values(bot.entities)) {
-    if (entity === bot.entity || entity.type !== "mob") continue;
-    const name = (entity.name || entity.mobType || "").toLowerCase().replace(/\s+/g, "_");
-    if (filter ? name !== filter : !HOSTILE_MOBS.has(name)) continue;
-    const dist = bot.entity.position.distanceTo(entity.position);
-    if (dist < minDist) { minDist = dist; nearest = entity; }
+// Fight one entity with mineflayer-pvp until it dies, leaves, or time runs out.
+async function fightUntilDead(entity, timeoutMs = 30_000) {
+  const name = mobName(entity);
+  startDefend(entity);
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    await new Promise(r => setTimeout(r, 250));
+    if (!botReady) return { success: false, message: `Died fighting the ${name}` };
+    if (!bot.entities[entity.id] || entity.isValid === false) {
+      return { success: true, message: `Killed the ${name}. Health ${fmtHp(bot.health)}/20` };
+    }
+    if (!defendTarget) startDefend(entity);  // pvp gave up (lost sight); re-engage
   }
+  try { bot.pvp.stop(); } catch (_) {}
+  defendTarget = null;
+  return { success: false, message: `Gave up on the ${name} after ${timeoutMs / 1000} s` };
+}
 
-  if (!nearest) return { success: false, message: `No ${filter || "hostile mob"} found nearby` };
-  bot.attack(nearest);
-  return { success: true, message: `Attacking ${nearest.name || nearest.mobType} at distance ${minDist.toFixed(1)}` };
+async function handleAttackEntity(args) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  const filter = args.name ? String(args.name).toLowerCase() : null;
+  if (filter && badId(filter)) return { success: false, message: "name must be a mob id like zombie" };
+  const t = nearestMob(32, filter);
+  if (!t) return { success: false, message: `No ${filter || "hostile mob"} within 32 blocks` };
+  return fightUntilDead(t.entity);
+}
+
+async function handleDefend(_args) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  const start = Date.now(), killed = [];
+  while (Date.now() - start < 30_000) {
+    const t = nearestHostile(8);
+    if (!t) break;
+    const r = await fightUntilDead(t.entity, 30_000 - (Date.now() - start));
+    if (!r.success) return { success: false, message: [...killed.map(k => `killed ${k}`), r.message].join(", ") };
+    killed.push(mobName(t.entity));
+  }
+  if (!killed.length) {
+    const far = nearbyThreats()[0];
+    return { success: true, message: far ? `No hostiles within 8 blocks (nearest: ${far.name} at ${far.distance})`
+                                         : "No hostile mobs nearby" };
+  }
+  return { success: true, message: `Defended: killed ${killed.join(", ")}. Health ${fmtHp(bot.health)}/20` };
+}
+
+async function handleEatFood(args) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  const wanted = args.name ? String(args.name) : null;
+  if (wanted && badId(wanted)) return { success: false, message: "name must be a food id like bread" };
+  if (bot.food >= 20 && wanted !== "golden_apple") return { success: true, message: "Not hungry (hunger 20/20)" };
+  const food = pickFood(wanted);
+  if (!food) return { success: false, message: wanted ? `No ${wanted} in inventory` : "No food in inventory" };
+  try {
+    await bot.equip(food, "hand");
+    await bot.consume();
+    return { success: true, message: `Ate ${food.name}. Hunger ${bot.food}/20, health ${fmtHp(bot.health)}/20` };
+  } catch (e) {
+    return { success: false, message: `Eating failed: ${e.message}` };
+  }
+}
+
+const FACES = [[0, -1, 0], [0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]].map(f => new Vec3(...f));
+
+// Plain mineflayer placement: find a solid neighbour of the target cell and
+// place against it. Used directly and as the fallback for placeItem.
+async function rawPlaceBlock(name, pos) {
+  const item = bot.inventory.items().find(i => i.name === name);
+  if (!item) return { success: false, message: `No ${name} in inventory` };
+  const target = pos ? pos.floored() : bot.entity.position.floored().offset(1, 0, 0);
+  const here = bot.blockAt(target);
+  if (here && here.boundingBox !== "empty") {
+    return { success: false, message: `(${target.x}, ${target.y}, ${target.z}) is occupied by ${here.name}` };
+  }
+  for (const f of FACES) {
+    const ref = bot.blockAt(target.plus(f));
+    if (!ref || ref.boundingBox !== "block") continue;
+    try {
+      if (bot.entity.position.distanceTo(target) > 4) {
+        await bot.pathfinder.goto(new goals.GoalNear(target.x, target.y, target.z, 3));
+      }
+      await bot.equip(item, "hand");
+      await bot.placeBlock(ref, f.scaled(-1));
+      return { success: true, message: `Placed ${name} at (${target.x}, ${target.y}, ${target.z})` };
+    } catch (e) {
+      return { success: false, message: `Place failed: ${e.message}` };
+    }
+  }
+  return { success: false, message: `Nothing solid next to (${target.x}, ${target.y}, ${target.z}) to place against` };
+}
+
+async function handlePlaceBlock(a) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  if (badId(a.name)) return { success: false, message: "name must be a block id like dirt" };
+  const xyz = [a.x, a.y, a.z].map(Number);
+  return rawPlaceBlock(a.name, xyz.every(Number.isFinite) ? new Vec3(...xyz) : null);
+}
+
+async function handleDropItem(a) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  if (badId(a.name)) return { success: false, message: "name must be an item id like dirt" };
+  const have = bot.inventory.items().filter(i => i.name === a.name).reduce((s, i) => s + i.count, 0);
+  if (!have) return { success: false, message: `No ${a.name} in inventory` };
+  const n = a.count == null ? have : Math.min(Math.max(parseInt(a.count, 10) || 1, 1), have);
+  try {
+    await bot.toss(mcData.itemsByName[a.name].id, null, n);
+    return { success: true, message: `Dropped ${n} ${a.name}` };
+  } catch (e) {
+    return { success: false, message: `Drop failed: ${e.message}` };
+  }
+}
+
+// ─── Raw mineflayer fallbacks for the Voyager wrappers ──────────────────────
+
+async function rawMineBlock(name, n) {
+  const block = mcData.blocksByName[name];
+  if (!block) return { success: false, message: `Unknown block ${name}` };
+  const found = bot.findBlocks({ matching: block.id, maxDistance: 32, count: n });
+  if (!found.length) return { success: false, message: `No ${name} within 32 blocks, explore first` };
+  try {
+    await bot.collectBlock.collect(found.map(p => bot.blockAt(p)).filter(Boolean));
+    return { success: true, message: `Mined ${found.length} ${name} (mineflayer fallback)` };
+  } catch (e) {
+    return { success: false, message: `Mining failed: ${e.message}` };
+  }
+}
+
+async function rawCraftItem(name, n) {
+  const item = mcData.itemsByName[name];
+  if (!item) return { success: false, message: `Unknown item ${name}` };
+  const tableId = mcData.blocksByName.crafting_table.id;
+  const table   = bot.findBlock({ matching: tableId, maxDistance: 32 });
+  const recipe  = bot.recipesFor(item.id, null, 1, table)[0];
+  if (!recipe) {
+    return { success: false, message: `Can't craft ${name}: missing materials${table ? "" : " or a crafting table nearby"}` };
+  }
+  try {
+    if (recipe.requiresTable && table && bot.entity.position.distanceTo(table.position) > 3) {
+      await bot.pathfinder.goto(new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2));
+    }
+    await bot.craft(recipe, n, recipe.requiresTable ? table : null);
+    return { success: true, message: `Crafted ${name}×${n} (mineflayer fallback)` };
+  } catch (e) {
+    return { success: false, message: `Crafting failed: ${e.message}` };
+  }
+}
+
+async function rawKillMob(name) {
+  const t = nearestMob(32, name);
+  if (!t) return { success: false, message: `No ${name} within 32 blocks` };
+  return fightUntilDead(t.entity, 60_000);
+}
+
+// Run the Voyager primitive; if the primitives aren't loaded or it errored
+// (other than timing out), retry with plain mineflayer.
+async function voyagerOr(code, label, fallback) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  if (!voyagerPrograms) return fallback();
+  const r = await runVoyager(code, label);
+  if (r.success || /timed out/.test(r.message)) return r;
+  console.log(`[voyager] ${label} failed, trying mineflayer fallback`);
+  const fb = await fallback();
+  return fb.success ? fb : { success: false, message: `${r.message} | fallback: ${fb.message}` };
 }
 
 async function handleStop(_args) {
@@ -537,32 +974,38 @@ const count = (v, def = 1) => {
 
 async function handleMineBlock(a) {
   if (badId(a.name)) return { success: false, message: "name must be a block id like oak_log" };
-  return runVoyager(`await mineBlock(bot, "${a.name}", ${count(a.count)});`, `mineBlock ${a.name}`);
+  const n = count(a.count);
+  return voyagerOr(`await mineBlock(bot, "${a.name}", ${n});`, `mineBlock ${a.name}`,
+                   () => rawMineBlock(a.name, n));
 }
 
 async function handleCraftItem(a) {
   if (badId(a.name)) return { success: false, message: "name must be an item id like wooden_pickaxe" };
-  return runVoyager(`await craftItem(bot, "${a.name}", ${count(a.count)});`, `craftItem ${a.name}`);
+  const n = count(a.count);
+  return voyagerOr(`await craftItem(bot, "${a.name}", ${n});`, `craftItem ${a.name}`,
+                   () => rawCraftItem(a.name, n));
 }
 
 async function handleSmeltItem(a) {
   const fuel = a.fuel || "coal";
   if (badId(a.name) || badId(fuel)) return { success: false, message: "name and fuel must be item ids" };
+  // No plain-mineflayer smelting fallback: furnace windows need Voyager's primitive.
   return runVoyager(`await smeltItem(bot, "${a.name}", "${fuel}", ${count(a.count)});`, `smeltItem ${a.name}`);
 }
 
 async function handlePlaceItem(a) {
   if (badId(a.name)) return { success: false, message: "name must be an item id like crafting_table" };
   const xyz = [a.x, a.y, a.z].map(Number);
-  const pos = xyz.every(n => Number.isFinite(n))
-    ? `new Vec3(${xyz.map(Math.floor).join(", ")})`
-    : "bot.entity.position.offset(1, 0, 0)";
-  return runVoyager(`await placeItem(bot, "${a.name}", ${pos});`, `placeItem ${a.name}`);
+  const has = xyz.every(n => Number.isFinite(n));
+  const pos = has ? `new Vec3(${xyz.map(Math.floor).join(", ")})` : "bot.entity.position.offset(1, 0, 0)";
+  return voyagerOr(`await placeItem(bot, "${a.name}", ${pos});`, `placeItem ${a.name}`,
+                   () => rawPlaceBlock(a.name, has ? new Vec3(...xyz) : null));
 }
 
 async function handleKillMob(a) {
   if (badId(a.name)) return { success: false, message: "name must be a mob id like zombie" };
-  return runVoyager(`await killMob(bot, "${a.name}", 60);`, `killMob ${a.name}`);
+  return voyagerOr(`await killMob(bot, "${a.name}", 60);`, `killMob ${a.name}`,
+                   () => rawKillMob(a.name));
 }
 
 // ─── Dispatch ────────────────────────────────────────────────────────────────
@@ -581,7 +1024,23 @@ const HANDLERS = {
   minecraft_smelt_item:    handleSmeltItem,
   minecraft_place_item:    handlePlaceItem,
   minecraft_kill_mob:      handleKillMob,
+  minecraft_defend:        handleDefend,
+  minecraft_attack_entity: handleAttackEntity,
+  minecraft_eat_food:      handleEatFood,
+  minecraft_place_block:   handlePlaceBlock,
+  minecraft_drop_item:     handleDropItem,
 };
+
+// Every handler call goes through here so auto-defend knows when the bot
+// is busy with something it shouldn't interrupt.
+async function runHandler(handler, args) {
+  activeActions++;
+  try {
+    return await handler(args);
+  } finally {
+    activeActions--;
+  }
+}
 
 // ─── Local control API (127.0.0.1:BOT_CONTROL_PORT) ─────────────────────────
 // Used by minecraft_bot.py for Voyager-style autonomous control.
@@ -662,7 +1121,7 @@ const _controlServer = http.createServer((req, res) => {
         return;
       }
       try {
-        const result  = await handler(payload.args || {});
+        const result  = await runHandler(handler, payload.args || {});
         const success = typeof result === "object" && result !== null
           ? result.success !== false : Boolean(result);
         const message = typeof result === "object" && result !== null
@@ -709,7 +1168,7 @@ async function dispatchAction(invId, name, rawData) {
 
   let result;
   try {
-    result = await handler(args);
+    result = await runHandler(handler, args);
   } catch (e) {
     result = { success: false, message: `handler error: ${e.message}` };
   }

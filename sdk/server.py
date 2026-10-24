@@ -153,6 +153,15 @@ class SDKClient:
     pending_invocations: Dict[str, asyncio.Future] = field(default_factory=dict)
     context_text: str = ""
     context_priority: int = 150
+    allow_reactions: bool = True
+    last_reaction: float = 0.0
+
+
+# Minimum gap between event turns one client can trigger. Events that
+# arrive sooner, or while Lumi is mid-turn, are dropped: a reaction to
+# something that happened a minute ago reads worse than no reaction.
+REACTION_COOLDOWN_S = 12.0
+MAX_REACTION_CHARS = 600
 
 
 # ─── Server ───────────────────────────────────────────────────────
@@ -254,6 +263,7 @@ class SDKServer(Module):
                 "approved": False,
                 "capability_ceiling": ["read"],
                 "auto_approve_writes": False,
+                "allow_reactions": False,
             }
         approved = bool(entry.get("approved", False))
         ceiling = entry.get("capability_ceiling") or ["read"]
@@ -266,6 +276,7 @@ class SDKServer(Module):
             "approved": approved,
             "capability_ceiling": ceiling,
             "auto_approve_writes": bool(entry.get("auto_approve_writes", False)),
+            "allow_reactions": bool(entry.get("allow_reactions", True)),
         }
 
     def _record_seen_client(self, game_name: str, client_version: str):
@@ -324,6 +335,7 @@ class SDKServer(Module):
                 approved=bool(policy["approved"]),
                 capability_ceiling=tuple(policy["capability_ceiling"]),
                 auto_approve_writes=bool(policy["auto_approve_writes"]),
+                allow_reactions=bool(policy["allow_reactions"]),
             )
             self.clients[client_id] = client
 
@@ -498,10 +510,35 @@ class SDKServer(Module):
     def _handle_context(self, client: SDKClient, data: Dict[str, Any]):
         payload = data.get("data") if isinstance(data.get("data"), dict) else data
         text = str(payload.get("message") or data.get("text") or "")
+        # silent=false is a one-shot event for Lumi to react to. It
+        # starts a turn and leaves the client's standing context alone.
+        if payload.get("silent", True) is False:
+            self._trigger_reaction(client, text)
+            return
         client.context_text = text
         priority = payload.get("priority")
         if isinstance(priority, int):
             client.context_priority = priority
+
+    def _trigger_reaction(self, client: SDKClient, text: str):
+        text = text.strip()[:MAX_REACTION_CHARS]
+        if not text or not client.approved or not client.allow_reactions:
+            return
+        s = self.signals
+        now = time.time()
+        if now - client.last_reaction < REACTION_COOLDOWN_S:
+            return
+        if s.new_message or s.AI_thinking or s.AI_speaking:
+            hub_emit(s, "sdk", f"{client.game_name} event dropped (Lumi busy)")
+            return
+        client.last_reaction = now
+        s.history.append({
+            "role": "user",
+            "content": f"[FROM SDK: {client.game_name}]\n{text}\n[END FROM SDK]",
+            "source": "sdk_event",
+        })
+        s.new_message = True
+        hub_emit(s, "sdk", f"{client.game_name} event → turn: {text[:80]}")
 
     def _handle_action_result(self, client: SDKClient, data: Dict[str, Any]):
         payload = data.get("data") if isinstance(data.get("data"), dict) else data
@@ -556,7 +593,7 @@ class SDKServer(Module):
     def get_context_injections(self) -> List[str]:
         items = []
         for c in self.clients.values():
-            if c.context_text.strip():
+            if c.approved and c.context_text.strip():
                 items.append((c.context_priority, c.context_text))
         items.sort(key=lambda x: x[0])
         return [text for _, text in items]
