@@ -148,6 +148,7 @@ choice is made per path rather than per request.
 |---|---|---|
 | Main path (complex turns, agent turns, attachments) | Ollama, or any cloud `provider:model` | `MODEL_NAME` |
 | Fast path and background tasks (reflection, summaries, heartbeat) | Ollama, or any cloud `provider:model` | `FAST_MODEL_NAME` |
+| Background game agents (Minecraft goal picking) | Ollama, or any cloud `provider:model` | `GAME_AGENT_MODEL` |
 | Upload image analysis, ambient and on-demand screen descriptions | Local Ollama VLM | `VISION_MODEL_NAME`, `moondream` |
 | Speech-to-text | Local faster-whisper | — |
 | Embeddings | Local, inside ChromaDB | — |

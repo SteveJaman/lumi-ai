@@ -26,6 +26,11 @@ LLM_ENDPOINT = "http://localhost:11434"
 MODEL_NAME = "qwen3:8b"
 FAST_MODEL_NAME = "dolphin3:8b"
 VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached this turn
+# GAME_AGENT_MODEL picks goals for background game agents (plugin/
+# minecraft_bot.py) so they never queue behind or evict the chat models.
+# Keep it small: it has to fit in VRAM next to MODEL_NAME (an 8B model in
+# ~6 GB on an 11 GB card), and goal picking is a short JSON choice.
+GAME_AGENT_MODEL = "qwen2.5:3b"
 
 # =======================================================
 # Local Timezone

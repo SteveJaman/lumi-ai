@@ -52,7 +52,13 @@ const MC_VERSION       = process.env.MC_VERSION        || undefined;
 // Internal control API used by minecraft_bot.py — localhost only.
 const BOT_CONTROL_PORT = parseInt(process.env.BOT_CONTROL_PORT || "5057", 10);
 // Push game events (damage, mobs, deaths, rare loot) for Lumi to react to.
-const EVENT_REACTIONS  = (process.env.EVENT_REACTIONS || "true").toLowerCase() !== "false";
+// "major" (default): deaths, boss kills, top-tier loot. "all": also damage,
+// nearby mobs, hunger, kills, joining. "off": none. Every spoken event costs
+// a turn of Lumi's chat model, so "major" keeps her chat responsive.
+const EVENT_REACTIONS  = (() => {
+  const v = (process.env.EVENT_REACTIONS || "major").toLowerCase();
+  return v === "true" ? "all" : v === "false" ? "off" : v;
+})();
 // Fight back automatically when a hostile mob hits the bot.
 const AUTO_DEFEND      = (process.env.AUTO_DEFEND || "true").toLowerCase() !== "false";
 const DEFEND_RADIUS    = 5;   // blocks: look at / fight hostiles this close
@@ -233,7 +239,7 @@ function createBot() {
     console.log("[mc] bot died");
     pushBotContext();
     const cause = lastAttacker && Date.now() - lastHurtAt < 10_000 ? ` A ${lastAttacker} got me.` : "";
-    pushEvent("death", `I just died!${cause} I dropped everything I was carrying.`);
+    pushEvent("death", `I just died!${cause} I dropped everything I was carrying.`, true);
   });
 
   bot.on("respawn", () => {
@@ -274,8 +280,16 @@ function createBot() {
   });
 
   bot.on("entityDead", (entity) => {
+    const name = mobName(entity);
+    const near = entity.position && bot.entity && bot.entity.position.distanceTo(entity.position) < 32;
+    if (BOSSES.has(name) && near) {
+      pushEvent("boss", entity.id === lastFoughtId
+        ? `I just killed the ${name.replace(/_/g, " ")}! A boss!`
+        : `The ${name.replace(/_/g, " ")} just died right next to me!`, true);
+    } else if (entity.id === lastFoughtId) {
+      pushEvent("kill", `I killed the ${name} that was after me.`);
+    }
     if (entity.id === lastFoughtId) {
-      pushEvent("kill", `I killed the ${mobName(entity)} that was after me.`);
       lastFoughtId = null;
       defendTarget = null;
     }
@@ -288,7 +302,8 @@ function createBot() {
     if (!item) return;
     _logEv("collect", `${item.name}×${item.count}`);
     if (RARE_ITEMS.has(item.name)) {
-      pushEvent(`collect:${item.name}`, `I just picked up ${item.count} ${item.name.replace(/_/g, " ")}!`);
+      pushEvent(`collect:${item.name}`, `I just picked up ${item.count} ${item.name.replace(/_/g, " ")}!`,
+                MAJOR_LOOT.has(item.name));
     }
   });
 
@@ -327,7 +342,14 @@ const RARE_ITEMS = new Set([
   "diamond", "diamond_ore", "deepslate_diamond_ore", "emerald", "raw_gold",
   "gold_ingot", "ancient_debris", "netherite_scrap", "enchanted_golden_apple",
   "golden_apple", "ender_pearl", "lapis_lazuli", "name_tag", "saddle",
+  "netherite_ingot", "totem_of_undying", "elytra", "nether_star", "dragon_egg",
 ]);
+// The subset Lumi reacts to out loud even with EVENT_REACTIONS=major.
+const MAJOR_LOOT = new Set([
+  "diamond", "emerald", "ancient_debris", "netherite_scrap", "netherite_ingot",
+  "enchanted_golden_apple", "totem_of_undying", "elytra", "nether_star", "dragon_egg",
+]);
+const BOSSES = new Set(["ender_dragon", "wither", "elder_guardian", "warden"]);
 
 const WEAPONS = [
   "netherite_sword", "diamond_sword", "iron_sword", "stone_sword", "golden_sword", "wooden_sword",
@@ -422,6 +444,7 @@ function buildStatusJson() {
     is_day:    bot.time ? bot.time.isDay !== false : true,
     busy:      activeActions > 0,
     defending: Boolean(defendTarget),
+    held:      bot.heldItem ? bot.heldItem.name : null,
   };
 }
 
@@ -456,10 +479,11 @@ function pushBotContext(extra = null) {
 const EVENT_COOLDOWN_MS = { hurt: 20_000, threat: 25_000, hunger: 120_000, collect: 15_000, kill: 10_000 };
 const _lastEventAt = {};
 
-// silent:false makes Lumi take a turn and react out loud.
-function pushEvent(kind, text) {
+// silent:false makes Lumi take a turn and react out loud. Only `major`
+// events are sent unless EVENT_REACTIONS=all; the rest are just logged.
+function pushEvent(kind, text, major = false) {
   _logEv("event", text);
-  if (!EVENT_REACTIONS) return;
+  if (EVENT_REACTIONS === "off" || (EVENT_REACTIONS !== "all" && !major)) return;
   const now = Date.now();
   const cooldown = EVENT_COOLDOWN_MS[kind.split(":")[0]] ?? 0;
   if (now - (_lastEventAt[kind] || 0) < cooldown) return;

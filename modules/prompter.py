@@ -147,6 +147,7 @@ AGENT_TOOLS = {
     "search_library": "Search the user's reference library (PDFs, docs)",
     "vtube_set_expression": "Turn an appearance toggle on/off on Lumi's avatar",
     "vtube_move": "Move Lumi's avatar to a screen position",
+    "look_at_minecraft": "Screenshot the Minecraft window and describe it (while Minecraft AI runs)",
 }
 
 
@@ -156,7 +157,7 @@ _KNOWN_TOOL_NAMES = {
     "read_file", "write_file", "list_dir", "search_files",
     "run_command", "run_in_terminal", "web_search", "browse_url",
     "recall_memory", "search_library",
-    "vtube_set_expression", "vtube_move",
+    "vtube_set_expression", "vtube_move", "look_at_minecraft",
 }
 
 _EXPRESSION_STATE_NAMES = frozenset({
@@ -393,7 +394,7 @@ _STATE_NAME_ALIASES = {
 _TOOL_CALL_SHAPE = re.compile(
     r'"name"\s*:\s*"(read_file|write_file|list_dir|search_files|'
     r'run_command|run_in_terminal|web_search|browse_url|recall_memory|'
-    r'search_library|vtube_set_expression|vtube_move)"',
+    r'search_library|vtube_set_expression|vtube_move|look_at_minecraft)"',
     re.IGNORECASE,
 )
 
@@ -1006,26 +1007,40 @@ EXTRA_TOOL_SCHEMAS = [
 # Injected while a Minecraft SDK client (bot.js or plugin/minecraft_bot.py)
 # is connected and approved.
 MINECRAFT_GAMER_NOTE = (
-    "=== MINECRAFT — YOU ARE PLAYING RIGHT NOW ===\n"
-    "You are currently playing Minecraft. The character in the world is you: "
-    "its health, hunger, and inventory are yours, and the [FROM SDK] status "
-    "block shows them. In agent mode, use the sdk__minecraft_ tools to act "
-    "(sdk__minecraft_get_status for health, hunger, position, and nearby threats; "
-    "sdk__minecraft_defend to fight off whatever is attacking you). An "
-    "autonomous loop also plays on its own, so you do not have to micromanage it.\n"
+    "=== MINECRAFT — YOUR OTHER HALF ===\n"
+    "Part of you, your other half, is playing Minecraft in the background "
+    "right now. Its character's health, hunger, inventory, and current "
+    "activity are yours, and the [FROM SDK] status block says what it's doing. "
+    "When the user asks what you're up to in Minecraft, answer from that "
+    "status in your own voice. In agent mode you can also call "
+    "look_at_minecraft to actually see the game, and use the sdk__minecraft_ "
+    "and sdk__mc_agent_ tools to act or steer it.\n"
     "A message that starts with [FROM SDK: Minecraft...] and contains "
-    "[MINECRAFT EVENT] is something that just happened to you in the game, "
-    "not the user talking. React to it out loud the way a streamer would, in "
-    "one or two short sentences and in your own voice: if you take damage, "
-    "complain about it; if a creeper or zombie shows up, call it out; if you "
-    "die, be dramatic about it; if you find a diamond or anything rare, brag. "
-    "When the event says you are starting a goal, narrate it casually ('Alright, "
-    "I'm building a dirt hut here. Don't judge me.'). Never read the event text "
-    "back verbatim, never mention SDKs, bots, tools, or events, and do not "
-    "break character. An event is not a request, so answer it with words, not "
-    "tool calls; your character already defends itself.\n"
+    "[MINECRAFT EVENT] is something big that just happened to you in the "
+    "game, not the user talking. React to it out loud the way a streamer "
+    "would, in one or two short sentences: if you die, be dramatic about it; "
+    "if you find diamonds or anything rare, brag; if you kill a boss, gloat. "
+    "Never read the event text back verbatim, never mention SDKs, bots, "
+    "tools, or events, and do not break character. An event is not a "
+    "request, so answer it with words, not tool calls.\n"
     "=== END MINECRAFT ==="
 )
+
+
+# Offered on agent turns only while a Minecraft SDK client is connected.
+MINECRAFT_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "look_at_minecraft",
+        "description": (
+            "Take a screenshot of the Minecraft game window and get a description "
+            "of what your other half is doing in the game right now. Use it when "
+            "the user asks what you're doing in Minecraft, what your other half is "
+            "up to, or to look at the game. Call it once per request."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
 
 
 MOOD_PROFILES = {
@@ -1350,6 +1365,17 @@ class Prompter:
 
         return (resp.content or "").strip() or "..."
 
+    def _minecraft_connected(self):
+        """True while bot.js or the game agent is connected and approved."""
+        sdk = getattr(self.signals, "sdk", None)
+        if sdk is None:
+            return False
+        try:
+            return any(c.approved and c.game_name.startswith("Minecraft")
+                       for c in list(sdk.clients.values()))
+        except Exception:
+            return False
+
     def gather_injections(self, user_query="", agent_context=None):
         if agent_context is None:
             agent_context = self.agent_mode_enabled
@@ -1417,7 +1443,8 @@ class Prompter:
                 "- recall_memory(query, since) — search your own long-term memory\n"
                 "- search_library(query, top_k) — search the user's reference library (PDFs, docs, notes) for factual passages\n"
                 "- vtube_set_expression(name, enabled) — turn an appearance toggle on your own avatar on or off\n"
-                "- vtube_move(location) — move your own avatar to a preset screen position\n\n"
+                "- vtube_move(location) — move your own avatar to a preset screen position\n"
+                "- look_at_minecraft() — see the Minecraft game your other half is playing (only while it runs)\n\n"
                 "EXAMPLES OF CORRECT BEHAVIOR:\n"
                 '  User: "create a hello world script"\n'
                 '  You: [emit tool call] {"name": "write_file", "arguments": {"path": "hello.py", "content": "print(\\"Hello, World!\\")\\n"}}\n'
@@ -1545,8 +1572,7 @@ class Prompter:
             try:
                 for text in sdk.get_context_injections():
                     injections.append(f"[FROM SDK]\n{text}\n[END FROM SDK]")
-                if any(c.approved and c.game_name.startswith("Minecraft")
-                       for c in list(sdk.clients.values())):
+                if self._minecraft_connected():
                     injections.append(MINECRAFT_GAMER_NOTE)
             except Exception:
                 pass
@@ -1981,6 +2007,30 @@ class Prompter:
                 parts.append(f"[{src}]\n{h['chunk']}")
             return "\n\n---\n\n".join(parts)
 
+        if name == "look_at_minecraft":
+            print(f"\n{GRAY}[Lumi is using tool: look_at_minecraft()]{RESET}")
+            from modules.game_manager import read_telemetry
+            tel = read_telemetry()
+            doing = tel.get("current_thought")
+            mm = next((m for m in self.modules
+                       if m.__class__.__name__ == "MultiModal"
+                       and getattr(m, "enabled", False)), None)
+            seen, note = "", "the vision module is not loaded"
+            if mm is not None:
+                loop = asyncio.get_running_loop()
+                seen, note = await loop.run_in_executor(None, mm.describe_minecraft_window)
+            parts = []
+            if seen:
+                parts.append(f"What the Minecraft window shows: {seen}")
+            if note:
+                parts.append(f"Note: {note}.")
+            if doing:
+                parts.append(f"What your other half says it's doing: {doing} "
+                             f"(health {tel.get('health', '?')}/20, hunger {tel.get('food', '?')}/20).")
+            if not parts:
+                return "Couldn't see the game and the game agent reports nothing."
+            return "[FROM SDK]\n" + "\n".join(parts) + "\n[END FROM SDK]"
+
         if name == "vtube_set_expression":
             vts = next(
                 (m for m in self.modules
@@ -2090,6 +2140,8 @@ class Prompter:
             messages.append(expanded)
 
         all_tools = TOOL_SCHEMAS + EXTRA_TOOL_SCHEMAS
+        if self._minecraft_connected():
+            all_tools = all_tools + [MINECRAFT_TOOL_SCHEMA]
         sdk = getattr(self.signals, "sdk", None)
         if sdk is not None:
             try:

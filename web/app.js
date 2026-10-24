@@ -225,6 +225,7 @@ function navigate(view, replace = false) {
   state.view = view;
   if (view !== 'chat') stopChatPolling();
   if (view !== 'stream') stopStreamPolling();
+  if (view !== 'dashboard') stopGamePolling();
   if (view !== 'chat') resetMoodAccent();
 
   if (view !== 'models') {
@@ -1665,6 +1666,7 @@ async function renderDashboard(main) {
       </div>
       <div class="page-scroll">
         <div class="stat-grid" id="dash-stats"></div>
+        ${state.isLocal ? gameCardHtml() : ''}
         <div class="event-stream">
           <div class="event-stream-header" id="dash-filters"></div>
           <div class="event-list" id="dash-events"></div>
@@ -1707,6 +1709,138 @@ async function renderDashboard(main) {
   }
 
   $('#dash-refresh').addEventListener('click', () => renderDashboard(main));
+  if (state.isLocal) startGamePolling();
+}
+
+/* --------------------------------------------------------------
+   Minecraft AI card — Lumi's background game agent
+   (modules/game_manager.py). Host-only: the routes it calls are
+   refused for remote sessions, so remote dashboards don't show it.
+   -------------------------------------------------------------- */
+function gameCardHtml() {
+  return `
+  <div class="card game-card" id="game-card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Minecraft AI</div>
+        <div class="game-sub" id="game-sub">Loading…</div>
+      </div>
+      <label class="switch" title="Let Lumi's other half play Minecraft">
+        <input type="checkbox" id="game-toggle" aria-label="Minecraft AI">
+        <span class="switch-slider"></span>
+      </label>
+    </div>
+    <div class="game-label">Current thought</div>
+    <div class="game-thought" id="game-thought">—</div>
+    <div class="game-meta" id="game-meta"></div>
+    <div class="game-error" id="game-error" hidden></div>
+    <div class="game-viewer" id="game-viewer">
+      <div class="empty">Live view appears here once the bot is in a world.</div>
+    </div>
+  </div>
+`;
+}
+
+let _gameTimer = null;
+let _gameViewerUrl = null;
+let _gameBusy = false;
+
+function startGamePolling() {
+  stopGamePolling();
+  const toggle = $('#game-toggle');
+  if (!toggle) return;
+  toggle.addEventListener('change', () => onGameToggle(toggle.checked));
+  refreshGameCard();
+  _gameTimer = setInterval(refreshGameCard, 3000);
+}
+
+function stopGamePolling() {
+  if (_gameTimer) { clearInterval(_gameTimer); _gameTimer = null; }
+  _gameViewerUrl = null;
+}
+
+async function refreshGameCard() {
+  if (!$('#game-card')) { stopGamePolling(); return; }
+  if (_gameBusy) return;
+  try {
+    renderGameCard(await api('/api/game/status?game=minecraft'));
+  } catch (e) {
+    $('#game-sub').textContent = `Unavailable: ${e.message}`;
+  }
+}
+
+async function onGameToggle(enabled) {
+  const toggle = $('#game-toggle');
+  _gameBusy = true;
+  toggle.disabled = true;
+  $('#game-sub').textContent = enabled ? 'Starting…' : 'Stopping…';
+  try {
+    const s = await api('/api/game/toggle', {
+      method: 'POST', csrf: true, body: { game: 'minecraft', enabled },
+    });
+    renderGameCard(s);
+  } catch (e) {
+    toggle.checked = !enabled;
+    const err = $('#game-error');
+    err.hidden = false;
+    err.textContent = `Couldn't ${enabled ? 'start' : 'stop'} Minecraft AI: ${e.message}`;
+  } finally {
+    toggle.disabled = false;
+    _gameBusy = false;
+  }
+}
+
+function renderGameCard(s) {
+  const agent = s.agent || {};
+  const bot = s.bot || {};
+  $('#game-toggle').checked = !!s.enabled;
+
+  let sub;
+  if (agent.crashed) sub = 'Game agent crashed';
+  else if (agent.running) sub = `Running · ${s.loop_state || 'starting'}`;
+  else if (s.enabled) sub = 'Starting…';
+  else sub = 'Off';
+  const botState = bot.running ? 'bot.js started by Lumi'
+    : s.bot_external ? 'bot.js already running'
+    : bot.crashed ? 'bot.js crashed'
+    : s.enabled ? 'bot.js not reachable' : '';
+  $('#game-sub').textContent = botState ? `${sub} · ${botState}` : sub;
+
+  $('#game-thought').textContent = s.thought || (agent.running ? 'Thinking…' : '—');
+
+  const meta = [];
+  if (s.goal) meta.push(`goal: ${s.goal}`);
+  if (s.health != null) meta.push(`health ${s.health}/20`);
+  if (s.food != null) meta.push(`hunger ${s.food}/20`);
+  if (s.position) meta.push(`at ${Math.round(s.position.x)}, ${Math.round(s.position.y)}, ${Math.round(s.position.z)}`);
+  $('#game-meta').textContent = meta.join(' · ');
+
+  const crashed = [agent, bot].filter(c => c.crashed);
+  const err = $('#game-error');
+  err.hidden = crashed.length === 0;
+  err.textContent = crashed.map(c =>
+    `Exited with code ${c.exit_code}. See ${c.log}\n` + (c.last_output || []).join('\n')
+  ).join('\n\n');
+
+  // Only rebuild the iframe when the URL changes, so the 3D scene
+  // isn't reloaded on every poll.
+  const url = s.viewer_port ? `http://localhost:${s.viewer_port}/` : null;
+  if (url !== _gameViewerUrl) {
+    _gameViewerUrl = url;
+    const viewer = $('#game-viewer');
+    viewer.innerHTML = '';
+    if (url) {
+      const frame = document.createElement('iframe');
+      frame.src = url;
+      frame.title = "Lumi's first-person view in Minecraft";
+      viewer.appendChild(frame);
+    } else {
+      const note = document.createElement('div');
+      note.className = 'empty';
+      note.textContent = 'Live view appears here once the bot is in a world.';
+      viewer.appendChild(note);
+    }
+  }
 }
 
 function renderDashboardStats() {
@@ -1729,7 +1863,7 @@ function renderDashboardStats() {
 
 function renderEventFilters() {
   const cats = ['all','ambient','heartbeat','memory','emotional',
-                'mic','vts','discord','system'];
+                'mic','vts','discord','minecraft','system'];
   const el = $('#dash-filters');
   el.innerHTML = cats.map((c, i) =>
     `<button class="filter-chip ${i === 0 ? 'active' : ''}"

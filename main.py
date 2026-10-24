@@ -29,6 +29,7 @@ from modules.log_hub import LogHub
 from modules.self_model import SelfModel
 from modules.obs_control import OBSControl
 from modules.tunnel import start_quick_tunnel
+from modules.game_manager import GameManager
 
 from sdk.server import SDKServer
 
@@ -41,6 +42,7 @@ except ImportError:
 _global_signals = None
 _global_prompter = None
 _global_tunnel = None
+_global_games = None
 
 _shutdown_lock = threading.Lock()
 _shutdown_started = False
@@ -56,6 +58,16 @@ def stop_tunnel():
             print("\033[90mTUNNEL: closed\033[0m")
         except Exception as e:
             print(f"\033[91mTUNNEL: shutdown failed — {e}\033[0m")
+
+
+def stop_games():
+    """Stop background game agents (bot.js, minecraft_bot.py). The
+    autoplay flag is left as is, so they restart on the next boot."""
+    if _global_games is not None:
+        try:
+            _global_games.shutdown()
+        except Exception as e:
+            print(f"\033[91mGAMES: shutdown failed: {e}\033[0m")
 
 
 def handle_exit(sig, frame):
@@ -81,6 +93,7 @@ def handle_exit(sig, frame):
     if _global_signals:
         _global_signals.terminate = True
 
+    stop_games()
     stop_tunnel()
     time.sleep(3.0)
     os._exit(0)
@@ -168,7 +181,7 @@ def _build_module_map(modules_list):
 
 
 def main():
-    global _global_signals, _global_prompter
+    global _global_signals, _global_prompter, _global_games
     selected_audio_mode = choose_audio_mode()
 
     signals = Signals()
@@ -215,6 +228,9 @@ def main():
     prompter = Prompter(signals, modules)
     _global_prompter = prompter
 
+    # Background game agents, toggled from the web dashboard.
+    _global_games = GameManager(signals)
+
     sio_server = SocketIOServer(
         signals,
         stt=None,
@@ -233,6 +249,7 @@ def main():
     signals.system_ready = True
 
     signals.log_hub.emit("system", f"Lumi booting — audio mode = {selected_audio_mode}")
+    _global_games.resume_if_enabled()
 
     try:
         asyncio.run(prompter.run())
@@ -244,6 +261,7 @@ def main():
         except Exception as e:
             print(f"\033[91mSESSION: Shutdown save failed: {e}\033[0m")
         signals.terminate = True
+        stop_games()
         stop_tunnel()
         time.sleep(3.0)
         os._exit(0)

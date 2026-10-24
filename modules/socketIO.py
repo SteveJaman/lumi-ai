@@ -639,6 +639,11 @@ class SocketIOServer:
         r.add_post("/api/chat/upload",  self._handle_chat_upload)
         r.add_post("/api/agent/toggle", self._handle_agent_toggle)
 
+        # Background game agents (modules/game_manager.py). Host-only:
+        # neither route is in _REMOTE_API_ALLOW.
+        r.add_get("/api/game/status",   self._handle_game_status)
+        r.add_post("/api/game/toggle",  self._handle_game_toggle)
+
         # Memory browser — export route MUST register before the
         # dynamic {mem_id} route or aiohttp will treat "export" as an id.
         r.add_get("/api/memories/export",       self._handle_memories_export)
@@ -1410,6 +1415,56 @@ class SocketIOServer:
         return web.json_response({
             "enabled": self.prompter.agent_mode_enabled,
         })
+
+    # ------------------------------------------------------------------
+    # Game agents
+    # ------------------------------------------------------------------
+    async def _handle_game_status(self, request):
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        games = getattr(self.signals, "game_manager", None)
+        if games is None:
+            return _json_error(503, "Game manager not available.")
+        game = request.query.get("game", "minecraft")
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, games.status, game)
+        except ValueError as e:
+            return _json_error(400, str(e))
+        return web.json_response(data)
+
+    async def _handle_game_toggle(self, request):
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        games = getattr(self.signals, "game_manager", None)
+        if games is None:
+            return _json_error(503, "Game manager not available.")
+        game = str(body.get("game") or "")
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            return _json_error(400, "'enabled' must be true or false.")
+
+        # Starting waits up to ~1 s for bot.js; stopping up to 5 s per
+        # process. Keep both off the event loop.
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, games.set_enabled, game, enabled)
+        except ValueError as e:
+            return _json_error(400, str(e))
+        from modules.log_hub import emit as hub_emit
+        hub_emit(self.signals, "minecraft",
+                 f"autoplay {'enabled' if enabled else 'disabled'} from the dashboard")
+        return web.json_response(data)
 
     # ------------------------------------------------------------------
     # Memory browser (Phase 10.11)

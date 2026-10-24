@@ -128,41 +128,66 @@ Calling `requires_confirm()` on an action forces the `y/n` prompt regardless of 
 
 # Minecraft agent (`minecraft_bot.py`)
 
-An autonomous Minecraft player built on the same control primitives as
-[Voyager](https://github.com/MineDojo/Voyager). It drives the mineflayer bot in
-[`../sdk/examples/minecraft/bot.js`](../sdk/examples/minecraft/README.md) through
-that bot's local control API (`127.0.0.1:5057`). It does not need Lumi:
-the skill loop starts at launch, and the agent attaches to Lumi's SDK
-whenever `main.py` is running.
+Lumi's "other half": an autonomous Minecraft player that runs in the
+background, separate from her chat. It is built on the same control
+primitives as [Voyager](https://github.com/MineDojo/Voyager) and drives the
+mineflayer bot in
+[`../sdk/examples/minecraft/bot.js`](../sdk/examples/minecraft/README.md)
+through that bot's local control API (`127.0.0.1:5057`).
+
+It keeps Lumi's chat responsive in three ways:
+
+- **Its own model.** Goals are picked by `GAME_AGENT_MODEL` (`qwen2.5:3b`),
+  small enough to stay loaded next to Lumi's chat model instead of swapping
+  it out of VRAM.
+- **Silent status.** Every 30 s it replaces a short status line in Lumi's
+  prompt (health, hunger, held item, what it's doing). Lumi reads it when
+  she next talks, without being interrupted.
+- **Spoken events only for big moments.** Only diamonds (from the agent)
+  and deaths, boss kills and top-tier loot (from `bot.js`) make Lumi react
+  out loud. Each one costs a turn of her chat model.
 
 ## Running it
 
-Three terminals, from the workspace root:
+From the web dashboard (recommended):
+
+1. Start Lumi: `python main.py`.
+2. Open the **Dashboard** page in Lumi's web UI on the host machine and turn
+   on the **Minecraft AI** switch.
+
+Lumi starts `bot.js` (unless one is already running) and this agent as
+background processes, with no extra terminals. The card shows the agent's
+current thought, health and goal, and the bot's first-person live view. The
+switch writes `data/minecraft/autoplay.json`. Switching it off stops both
+processes, and Lumi restarts them on the next boot while it stays on.
+
+Their output goes to the dashboard's Event Stream (`minecraft` filter) and
+to `data/logs/minecraft/agent.log` and `bot.log`. If either process exits
+unexpectedly, the card shows the exit code and its last lines, and the
+Event Stream logs an error. On Windows the processes are tied to Lumi's,
+so they never outlive it, even if Lumi crashes.
+
+By hand, for debugging (from the workspace root, `bot.js` first):
 
 ```powershell
-# 1. The bot (joins the world, serves the control API on :5057)
-cd sdk/examples/minecraft; node bot.js
-
-# 2. The agent
-python plugin/minecraft_bot.py
-
-# 3. Optional: the diagnostics page
-python plugin/mc_dashboard.py
+cd sdk/examples/minecraft; node bot.js     # terminal 1
+python plugin/minecraft_bot.py             # terminal 2
+python plugin/mc_dashboard.py              # optional diagnostics page
 ```
 
-Start `bot.js` first. Until it answers, the agent reports `waiting for bot`.
 The agent needs only the standard library plus the SDK's `websockets`. Goal
-picking also uses Lumi's `modules/llm_providers.py` when it can import it.
-Run the agent from Lumi's Python environment to get it.
+picking also uses Lumi's `modules/llm_providers.py` when it can import it,
+so run it from Lumi's Python environment.
 
 ## The loop
 
 Every `MC_LOOP_INTERVAL` seconds the agent:
 
-1. Reads the bot's position, health, hunger, inventory, nearby threats and time of day from `GET /status`.
+0. Checks `data/minecraft/autoplay.json`. While `"minecraft"` is `false` it stands by and does nothing else. A missing file counts as `true`, so running it by hand just works.
+1. Reads the bot's position, health, hunger, inventory, nearby threats and time of day from `GET /status`, and every `MC_STATUS_INTERVAL` seconds pushes Lumi's silent status line.
 2. **Survives.** If a hostile other than an enderman is within 6 blocks, it calls `defend`. If hunger is below 14 and there is food, it calls `eat_food`. Either one uses up the step.
-3. **Picks a goal.** A goal set through `mc_agent_set_goal` comes first. Otherwise the options are the next curriculum tier plus every free-play goal that can run now. Lumi's model (`MC_GOAL_MODEL`, default `MODEL_NAME`) picks one from a status summary and the recent goal history. If the model is missing or its call fails, a weighted random pick takes over: shelter at night, food when hungry, and the curriculum tier 70% of the time.
-4. **Narrates.** It pushes a `[MINECRAFT EVENT]` saying what it's starting, so Lumi says it out loud in character. It also pushes one when a curriculum tier finishes and when a goal fails three times in a row. Narration is limited to one every `MC_NARRATE_COOLDOWN` seconds, except for the iron pickaxe, diamonds, and repeated failures.
+3. **Picks a goal.** A goal set through `mc_agent_set_goal` comes first. Otherwise the options are the next curriculum tier plus every free-play goal that can run now. The game model (`MC_GOAL_MODEL`, default `GAME_AGENT_MODEL` from `constants.py`) picks one from a status summary and the recent goal history. If the model isn't pulled (the agent checks at startup and logs the `ollama pull` command) or its call fails, a weighted random pick takes over: shelter at night, food when hungry, and the curriculum tier 70% of the time.
+4. **Narrates, if it's big.** With the default `MC_NARRATE=major`, only mining diamonds becomes a spoken `[MINECRAFT EVENT]`. With `MC_NARRATE=all` it also announces each new goal, each finished curriculum tier and a goal failing three times in a row, at most one every `MC_NARRATE_COOLDOWN` seconds.
 5. **Executes** the goal's skill through `POST /action` as `execute_skill`. If Voyager's primitives aren't loaded, it runs the goal's plain-action fallback instead (for example `mine_block` then `craft_item`), when the goal has one.
 6. On success, a curriculum tier is marked verified in `data/minecraft/skills.json`. A goal that fails three times in a row is left out of the options until it succeeds again, unless nothing else can run.
 
@@ -223,10 +248,12 @@ The agent connects as `MinecraftAgent`. The allowlist entry needs
 | `BOT_API` | `http://127.0.0.1:5057` | `bot.js` control API |
 | `MC_LOOP_INTERVAL` | `4` | Seconds between loop steps |
 | `MC_ACTION_TIMEOUT` | `135` | Seconds to wait for a skill. Keep it above `bot.js`'s 120 s `SKILL_TIMEOUT_MS` |
-| `MC_GOAL_PICKER` | `llm` | `llm` asks Lumi's model to pick goals, `random` skips the model |
-| `MC_GOAL_MODEL` | `MODEL_NAME` from `constants.py` | Model spec for goal picking, in the same format as Lumi's other model settings |
-| `MC_NARRATE` | `true` | Push "starting X" events for Lumi to say out loud |
-| `MC_NARRATE_COOLDOWN` | `75` | Minimum seconds between narration events |
+| `MC_GOAL_PICKER` | `llm` | `llm` asks the game model to pick goals, `random` skips it |
+| `MC_GOAL_MODEL` | `GAME_AGENT_MODEL` from `constants.py` | Model spec for goal picking, in the same format as Lumi's other model settings |
+| `MC_GOAL_KEEP_ALIVE` | `30m` | How long Ollama keeps the game model loaded between picks |
+| `MC_STATUS_INTERVAL` | `30` | Seconds between silent status pushes to Lumi |
+| `MC_NARRATE` | `major` | Spoken events from the agent: `major` (diamonds), `all` (also goals, milestones, repeated failures), or `off` |
+| `MC_NARRATE_COOLDOWN` | `75` | Minimum seconds between non-major narration events |
 
 ## Files it writes
 
@@ -235,8 +262,10 @@ The agent connects as `MinecraftAgent`. The allowlist entry needs
 | `data/minecraft/telemetry.json` | Latest bot state, loop state and `current_thought`, read by the dashboard |
 | `data/minecraft/events.jsonl` | Append-only event log |
 | `data/minecraft/skills.json` | Verified tiers. Delete it to restart the curriculum |
+| `data/minecraft/autoplay.json` | Written by the dashboard switch, read by the agent and by Lumi at boot |
+| `data/logs/minecraft/agent.log`, `bot.log` | Output of the processes Lumi started |
 
-All three are gitignored.
+All of these are gitignored.
 
 ---
 

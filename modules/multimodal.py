@@ -89,6 +89,110 @@ RECALL_SCREEN_WORDS = (
     "screen", "monitor", "display", "desktop", "computer", "screenshot"
 )
 
+# The game window's title, e.g. "Minecraft* 1.19 - Singleplayer" (not the
+# launcher).
+MINECRAFT_TITLE = re.compile(r"^Minecraft\*?\s+\d")
+
+
+def _print_window(hwnd):
+    """Render a window's client area with PrintWindow(PW_RENDERFULLCONTENT),
+    which works even when other windows cover it (including Minecraft's
+    OpenGL surface). Returns a PIL image, or None if it failed or came
+    back blank. Windows only."""
+    import ctypes
+    from ctypes import wintypes
+    # Private handles, so these argtypes don't leak into ctypes.windll,
+    # which other modules share.
+    user32, gdi32 = ctypes.WinDLL("user32"), ctypes.WinDLL("gdi32")
+    user32.GetDC.restype = wintypes.HDC
+    user32.GetDC.argtypes = [wintypes.HWND]
+    user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+    user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+    gdi32.CreateCompatibleDC.restype = wintypes.HDC
+    gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+    gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+    gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+    gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+    gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+    gdi32.DeleteDC.argtypes = [wintypes.HDC]
+    gdi32.GetDIBits.argtypes = [wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT,
+                                ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT]
+    user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
+                    ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
+                    ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+                    ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
+                    ("biClrImportant", wintypes.DWORD)]
+
+    rect = wintypes.RECT()
+    user32.GetClientRect(hwnd, ctypes.byref(rect))
+    w, h = rect.right, rect.bottom
+    if w < 50 or h < 50:
+        return None
+    hdc_win = user32.GetDC(hwnd)
+    hdc_mem = gdi32.CreateCompatibleDC(hdc_win)
+    bmp = gdi32.CreateCompatibleBitmap(hdc_win, w, h)
+    try:
+        gdi32.SelectObject(hdc_mem, bmp)
+        if not user32.PrintWindow(hwnd, hdc_mem, 1 | 2):  # CLIENTONLY | RENDERFULLCONTENT
+            return None
+        bi = BITMAPINFOHEADER(biSize=ctypes.sizeof(BITMAPINFOHEADER), biWidth=w,
+                              biHeight=-h, biPlanes=1, biBitCount=32)   # top-down
+        buf = ctypes.create_string_buffer(w * h * 4)
+        if not gdi32.GetDIBits(hdc_mem, bmp, 0, h, buf, ctypes.byref(bi), 0):
+            return None
+    finally:
+        gdi32.DeleteObject(bmp)
+        gdi32.DeleteDC(hdc_mem)
+        user32.ReleaseDC(hwnd, hdc_win)
+    img = Image.frombuffer("RGB", (w, h), buf, "raw", "BGRX", 0, 1)
+    if img.convert("L").getextrema()[1] < 8:
+        return None      # all black: the window's renderer didn't cooperate
+    return img
+
+
+def _find_window(title_re):
+    """Find a visible top-level window whose title matches. Returns
+    (hwnd, bounds, title, foreground, minimized), with bounds as an mss
+    monitor dict in physical pixels, or None if no window matches.
+    Windows only."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _visit(hwnd, _lparam):
+        if user32.IsWindowVisible(hwnd):
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n:
+                buf = ctypes.create_unicode_buffer(n + 1)
+                user32.GetWindowTextW(hwnd, buf, n + 1)
+                if title_re.search(buf.value):
+                    found.append((hwnd, buf.value))
+        return True
+
+    user32.EnumWindows(_visit, 0)
+    if not found:
+        return None
+    hwnd, title = found[0]
+    minimized = bool(user32.IsIconic(hwnd))
+    rect = wintypes.RECT()
+    # DWMWA_EXTENDED_FRAME_BOUNDS is in physical pixels (what mss grabs)
+    # and excludes the invisible resize border GetWindowRect includes.
+    if ctypes.windll.dwmapi.DwmGetWindowAttribute(
+            hwnd, 9, ctypes.byref(rect), ctypes.sizeof(rect)) != 0:
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    bounds = {"left": rect.left, "top": rect.top,
+              "width": rect.right - rect.left, "height": rect.bottom - rect.top}
+    return hwnd, bounds, title, user32.GetForegroundWindow() == hwnd, minimized
+
+
 MONITOR_KEYWORDS = {
     1: (
         "monitor 1", "1st monitor", "first monitor", "monitor one",
@@ -248,6 +352,62 @@ class MultiModal(Module):
             print(f"\033[91mMULTIMODAL VLM Error: Could not connect to Ollama ({e})\033[0m")
 
         return ""
+
+    def describe_minecraft_window(self):
+        """Screenshot just the Minecraft game window and have the VLM
+        describe it. Returns (description, note); description is "" when
+        nothing was captured and note says why. Blocking — call from an
+        executor."""
+        if not HAS_MSS:
+            return "", "screen capture is unavailable (mss/pillow not installed)"
+        win = _find_window(MINECRAFT_TITLE)
+        if win is None:
+            return "", "no Minecraft game window is open"
+        hwnd, bounds, _title, foreground, minimized = win
+        if minimized or bounds["width"] < 50 or bounds["height"] < 50:
+            return "", "the Minecraft window is minimized"
+        try:
+            # The window's own pixels, even if it's covered. A screen grab
+            # is the fallback, and only safe when the window is in front:
+            # otherwise it captures whatever covers it.
+            img = _print_window(hwnd)
+            if img is None:
+                if not foreground:
+                    return "", ("the Minecraft window is behind other windows and "
+                                "couldn't be captured; bring it to the front")
+                with mss.mss() as sct:
+                    img = self._grab_monitor(sct, bounds)
+        except Exception as e:
+            return "", f"capturing the Minecraft window failed: {e}"
+        img.thumbnail((800, 800))
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=80)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        img_path = os.path.join(_IMAGES_DIR, f"minecraft_{timestamp}.jpg")
+        with open(img_path, "wb") as f:
+            f.write(buffer.getvalue())
+
+        payload = {
+            "model": self.vlm_model,
+            # Neutral on purpose: telling a small VLM "this is Minecraft"
+            # makes it describe Minecraft whatever the image shows.
+            "prompt": ("Describe what this screenshot shows. If it is a video game, "
+                       "describe the scene: terrain, blocks, animals or monsters, "
+                       "the item in hand, the health and hunger bars, and any chat "
+                       "messages or open menu. Only describe what is visible."),
+            "images": [base64.b64encode(buffer.getvalue()).decode("utf-8")],
+            "stream": False,
+            "options": {"num_predict": 160},
+        }
+        try:
+            resp = requests.post(self.ollama_url, json=payload, timeout=60)
+            summary = resp.json().get("response", "").strip() if resp.status_code == 200 else ""
+        except Exception as e:
+            return "", f"the vision model didn't answer ({e})"
+        if not _vlm_output_safe(summary):
+            return "", "the vision model gave no usable description"
+        self._save_visual_memory(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), img_path, summary)
+        return summary, ""
 
     def _phrase_triggers_vision(self, lowered):
         """True if a conversational vision trigger appears at the START

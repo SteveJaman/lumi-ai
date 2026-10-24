@@ -26,6 +26,8 @@ HOST_ONLY = [
     ("GET",    "/api/memories/export"),
     ("DELETE", "/api/memories/abc"),
     ("POST",   "/api/agent/toggle"),
+    ("GET",    "/api/game/status"),
+    ("POST",   "/api/game/toggle"),
     ("GET",    "/api/log_events"),
     ("GET",    "/api/some-future-route"),   # default-deny
 ]
@@ -106,6 +108,49 @@ def test_local_gets_200(live_lumi):
         r = await live.local.post("/api/chat/send",
                                   json={"text": "!agent_off"}, headers=h)
         assert r.status == 200
+    live_lumi(scenario)
+
+
+def test_local_game_toggle(live_lumi):
+    """The dashboard's Minecraft AI switch: validated, CSRF-checked, and
+    passed to the game manager."""
+    async def scenario(live):
+        calls = []
+
+        class FakeGames:
+            def status(self, game):
+                if game != "minecraft":
+                    raise ValueError(f"unknown game: {game}")
+                return {"game": game, "enabled": bool(calls and calls[-1][1])}
+
+            def set_enabled(self, game, enabled):
+                self.status(game)
+                calls.append((game, enabled))
+                return self.status(game)
+
+        live.srv.signals.game_manager = FakeGames()
+        csrf = await live.register()
+        h = {"Origin": LOCAL, "X-CSRF-Token": csrf}
+
+        r = await live.local.get("/api/game/status")
+        assert r.status == 200 and (await r.json())["enabled"] is False
+
+        r = await live.local.post("/api/game/toggle",
+                                  json={"game": "minecraft", "enabled": True}, headers=h)
+        assert r.status == 200 and (await r.json())["enabled"] is True
+        assert calls == [("minecraft", True)]
+
+        r = await live.local.post("/api/game/toggle",
+                                  json={"game": "minecraft", "enabled": "yes"}, headers=h)
+        assert r.status == 400
+        r = await live.local.post("/api/game/toggle",
+                                  json={"game": "chess", "enabled": True}, headers=h)
+        assert r.status == 400
+        r = await live.local.post("/api/game/toggle",
+                                  json={"game": "minecraft", "enabled": False},
+                                  headers={"Origin": LOCAL})
+        assert r.status == 403          # no CSRF token
+        assert calls == [("minecraft", True)]
     live_lumi(scenario)
 
 

@@ -1,23 +1,29 @@
 """
 Lumi × Minecraft — Autonomous Voyager-inspired agent.
 
-Runs independently of Lumi's web chat / agent mode. It manages its own
-loop (assess → survive → pick goal → narrate → execute skill → verify)
-and connects to Lumi's SDK server to register status/control actions,
-push telemetry context, and push narration events Lumi reacts to.
+Lumi's "other half": a background game agent, separate from her chat.
+It manages its own loop (assess → survive → pick goal → execute skill →
+verify) and connects to Lumi's SDK server as "MinecraftAgent" to register
+status/control actions, push a silent status line every 30 s, and push
+spoken events only for major moments.
 
 The mineflayer bot (sdk/examples/minecraft/bot.js) is the execution
 layer. This script talks to it through the local control API on
-127.0.0.1:5057 — start bot.js before running this script.
+127.0.0.1:5057.
 
 Goal choice: survival first (fight nearby hostiles, eat when hungry),
 then the next curriculum tier or a free-play goal (chop trees, hunt,
-explore, build a dirt hut at night, ...). Lumi's own LLM picks among
-the goals that can run right now; without an LLM it falls back to a
-weighted random pick.
+explore, build a dirt hut at night, ...). GAME_AGENT_MODEL (a small
+model, so Lumi's chat models stay loaded) picks among the goals that can
+run right now; without it the agent falls back to a weighted random pick.
 
-Usage:
+Usage: Lumi starts and stops this process from the web dashboard's
+"Minecraft AI" switch (modules/game_manager.py). It can also be run by
+hand:
     python plugin/minecraft_bot.py
+
+The loop runs only while data/minecraft/autoplay.json allows it (a
+missing file counts as allowed).
 
 Dependencies: websockets (already in Lumi's requirements). HTTP calls
 use urllib from the stdlib. Goal picking uses modules/llm_providers
@@ -50,13 +56,13 @@ if _ROOT not in sys.path:
 
 from sdk import LumiClient, action
 
-# Lumi's LLM, for goal picking. Optional: the agent plays without it.
+# Lumi's LLM layer, for goal picking. Optional: the agent plays without it.
 try:
-    from modules.llm_providers import chat_sync
-    from constants import MODEL_NAME as _LUMI_MODEL
+    from modules.llm_providers import chat_sync, parse_model_spec
+    from constants import GAME_AGENT_MODEL as _GAME_MODEL, LLM_ENDPOINT as _OLLAMA
 except Exception:
-    chat_sync = None
-    _LUMI_MODEL = None
+    chat_sync = parse_model_spec = None
+    _GAME_MODEL, _OLLAMA = None, "http://localhost:11434"
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 DATA_ROOT      = os.path.join(_ROOT, "data")
@@ -64,18 +70,25 @@ MC_DIR         = os.path.join(DATA_ROOT, "minecraft")
 SKILLS_PATH    = os.path.join(MC_DIR, "skills.json")
 TELEMETRY_PATH = os.path.join(MC_DIR, "telemetry.json")
 EVENTS_PATH    = os.path.join(MC_DIR, "events.jsonl")
+AUTOPLAY_PATH  = os.path.join(MC_DIR, "autoplay.json")
 TOKEN_PATH     = os.path.join(DATA_ROOT, "memories", "sdk_token.txt")
 
 BOT_API        = os.environ.get("BOT_API", "http://127.0.0.1:5057")
 LOOP_INTERVAL  = float(os.environ.get("MC_LOOP_INTERVAL", "4"))  # seconds between steps
 # Must exceed bot.js SKILL_TIMEOUT_MS (120 s) so bot.js reports the timeout itself.
 ACTION_TIMEOUT = float(os.environ.get("MC_ACTION_TIMEOUT", "135"))
-# "llm" asks Lumi's model to pick goals; "random" skips the model.
+# "llm" asks GAME_AGENT_MODEL to pick goals; "random" skips the model.
 GOAL_PICKER    = os.environ.get("MC_GOAL_PICKER", "llm").lower()
-GOAL_MODEL     = os.environ.get("MC_GOAL_MODEL") or _LUMI_MODEL
-# Narration: push "I'm starting X" events for Lumi to say out loud.
-NARRATE        = os.environ.get("MC_NARRATE", "true").lower() != "false"
+GOAL_MODEL     = os.environ.get("MC_GOAL_MODEL") or _GAME_MODEL
+# Keep the small game model loaded between picks so it isn't reloaded
+# (and doesn't evict anything) once a minute.
+GOAL_KEEP_ALIVE = os.environ.get("MC_GOAL_KEEP_ALIVE", "30m")
+# Spoken events Lumi reacts to: "major" (diamonds only, from this agent;
+# bot.js covers deaths and bosses), "all" (also goal starts, milestones
+# and repeated failures), or "off".
+NARRATE        = os.environ.get("MC_NARRATE", "major").lower()
 NARRATE_COOLDOWN = float(os.environ.get("MC_NARRATE_COOLDOWN", "75"))
+STATUS_EVERY   = float(os.environ.get("MC_STATUS_INTERVAL", "30"))  # silent status push
 EAT_BELOW_FOOD = 14   # eat when hunger drops below this and food is on hand
 DEFEND_RANGE   = 6    # proactively fight hostiles this close (blocks)
 
@@ -320,6 +333,9 @@ class MinecraftAgent(LumiClient):
         self._recent_goals: List[str] = []           # last few goals, newest last
         self._failures: Dict[str, int] = {}          # consecutive failures per goal
         self._last_narration = 0.0
+        self._last_status_push = 0.0
+        self._last_done: Optional[str] = None
+        self._autoplay_was = True
         self._defend_backoff_until = 0.0
         self._llm_ok = chat_sync is not None and GOAL_PICKER == "llm" and bool(GOAL_MODEL)
         self._tel: Dict[str, Any] = {
@@ -492,12 +508,21 @@ class MinecraftAgent(LumiClient):
 
     async def _skill_loop(self) -> None:
         self._tel["loop_state"] = "running"
+        if self._llm_ok:
+            loop = asyncio.get_running_loop()
+            missing = await loop.run_in_executor(None, _missing_ollama_model, GOAL_MODEL)
+            if missing:
+                self._llm_ok = False
+                self._record("warn", f"game model {GOAL_MODEL} is not installed — picking goals "
+                                     f"at random. Run: ollama pull {missing}")
         self._record("agent", "Skill loop started"
                      + (f" (goal picker: {GOAL_MODEL})" if self._llm_ok else " (goal picker: random)"))
 
         while True:
             try:
                 await asyncio.sleep(LOOP_INTERVAL)
+                if not self._autoplay_allowed():
+                    continue
                 if self._paused:
                     continue
 
@@ -519,6 +544,7 @@ class MinecraftAgent(LumiClient):
                     "loop_state":  "running",
                 })
                 self._flush_telemetry()
+                await self._push_status(status)
 
                 if not status.get("ready"):
                     self._think("Waiting to spawn in...")
@@ -543,6 +569,7 @@ class MinecraftAgent(LumiClient):
                 await self._narrate(
                     f"I'm starting something new: {desc.lower()}."
                     + (f" Why: {reason}" if reason else ""))
+                await self._push_status(status, force=True)
 
                 # 4. Execute
                 ok, msg = await self._execute_goal(goal_name, status)
@@ -553,11 +580,13 @@ class MinecraftAgent(LumiClient):
                     self._failures.pop(goal_name, None)
                     self._record("result", f"OK {goal_name}: {msg}")
                     self._think(f"Done: {desc.lower()}. What next?")
+                    self._last_done = desc
                     if goal_name in BUILTIN_SKILLS:
                         self._save_skill(goal_name, BUILTIN_SKILLS[goal_name])
-                        await self._narrate(f"I just finished a milestone: {desc.lower()}.",
-                                            force=goal_name in ("craft_iron_pickaxe", "mine_diamond"))
-                    await self.send_context(f"[Minecraft] Completed: {goal_name}. {msg}", silent=True)
+                        if goal_name == "mine_diamond":
+                            await self._narrate("I just found and mined diamonds!", major=True)
+                        else:
+                            await self._narrate(f"I just finished a milestone: {desc.lower()}.")
                     self._tel["current_goal"] = None
                 else:
                     n = self._failures[goal_name] = self._failures.get(goal_name, 0) + 1
@@ -565,7 +594,7 @@ class MinecraftAgent(LumiClient):
                     self._think(f"That didn't work ({desc.lower()}): {msg[:120]}")
                     if n == 3:
                         await self._narrate(f"I keep failing at this: {desc.lower()}. "
-                                            f"The game says: {msg[:160]}", force=True)
+                                            f"The game says: {msg[:160]}")
                     # Back off before retrying
                     await asyncio.sleep(5)
 
@@ -691,8 +720,8 @@ class MinecraftAgent(LumiClient):
         loop = asyncio.get_running_loop()
         try:
             resp = await loop.run_in_executor(None, lambda: chat_sync(
-                GOAL_MODEL, messages, think=False,
-                options={"temperature": 0.7, "num_ctx": 4096}))
+                GOAL_MODEL, messages, think=False, keep_alive=GOAL_KEEP_ALIVE,
+                options={"temperature": 0.7, "num_ctx": 2048}))
             text = (resp.content or "").strip()
         except Exception as e:
             self._record("warn", f"goal picker LLM failed ({e}) — using random picks for 5 min")
@@ -716,16 +745,54 @@ class MinecraftAgent(LumiClient):
     def _reenable_llm(self) -> None:
         self._llm_ok = chat_sync is not None and GOAL_PICKER == "llm" and bool(GOAL_MODEL)
 
-    async def _narrate(self, text: str, force: bool = False) -> None:
-        """Push an event Lumi reacts to out loud. Rate-limited so she
-        comments on what she's doing without narrating every step."""
-        if not NARRATE:
+    async def _narrate(self, text: str, major: bool = False) -> None:
+        """Push an event Lumi reacts to out loud. Each one costs a turn of
+        Lumi's chat model, so by default only major moments are sent;
+        MC_NARRATE=all adds the rest, rate-limited."""
+        if NARRATE == "off" or (NARRATE != "all" and not major):
             return
         now = time.time()
-        if not force and now - self._last_narration < NARRATE_COOLDOWN:
+        if not major and now - self._last_narration < NARRATE_COOLDOWN:
             return
         self._last_narration = now
         await self.send_context(f"[MINECRAFT EVENT] {text}", silent=False)
+
+    async def _push_status(self, status: Dict, force: bool = False) -> None:
+        """Silent standing context: what Lumi knows about her other half
+        without being interrupted. Replaced every STATUS_EVERY seconds."""
+        now = time.time()
+        if not force and now - self._last_status_push < STATUS_EVERY:
+            return
+        self._last_status_push = now
+        held = (status.get("held") or "nothing").replace("_", " ")
+        threats = ", ".join(t["name"] for t in (status.get("threats") or [])[:3]) or "none"
+        doing = self._tel.get("current_thought") or "idle"
+        lines = [
+            "Your other half is playing Minecraft in the background.",
+            f"Status: health {_fmt(status.get('health'))}/20, hunger {_fmt(status.get('food'))}/20, "
+            f"holding {held}, {'day' if status.get('is_day', True) else 'night'}, "
+            f"hostiles nearby: {threats}.",
+            f"Currently: {doing}",
+        ]
+        if self._last_done:
+            lines.append(f"Last finished: {self._last_done}.")
+        await self.send_context("\n".join(lines), silent=True)
+
+    def _autoplay_allowed(self) -> bool:
+        """data/minecraft/autoplay.json, written by the dashboard switch.
+        Checked every loop so switching off stops play even if the
+        process is left running."""
+        try:
+            with open(AUTOPLAY_PATH, encoding="utf-8") as f:
+                allowed = bool(json.load(f).get("minecraft", True))
+        except Exception:
+            allowed = True
+        if allowed != self._autoplay_was:
+            self._autoplay_was = allowed
+            self._tel["loop_state"] = "running" if allowed else "autoplay off"
+            self._think("Back to playing." if allowed else "Autoplay is off. Standing by.")
+            self._record("agent", f"autoplay {'on' if allowed else 'off'}")
+        return allowed
 
     def _remember_goal(self, goal: str) -> None:
         self._recent_goals.append(goal)
@@ -814,6 +881,27 @@ _EDIBLE = ["bread", "apple", "baked_potato", "carrot", "potato", "beetroot", "me
            "sweet_berries", "cookie", "pumpkin_pie", "golden_carrot", "mushroom_stew",
            "cooked_beef", "cooked_porkchop", "cooked_chicken", "cooked_mutton",
            "cooked_rabbit", "cooked_cod", "cooked_salmon", *_MEAT]
+
+
+def _fmt(v: Any) -> str:
+    return "?" if v is None else f"{v:g}" if isinstance(v, (int, float)) else str(v)
+
+
+def _missing_ollama_model(spec: Optional[str]) -> Optional[str]:
+    """The model's name if it's an Ollama model that isn't pulled yet.
+    Other providers, and an unreachable Ollama, count as available."""
+    if not spec or parse_model_spec is None:
+        return None
+    provider, model = parse_model_spec(spec)
+    if provider != "ollama" or not model:
+        return None
+    try:
+        with urllib.request.urlopen(f"{_OLLAMA}/api/tags", timeout=3) as r:
+            names = {m.get("name") for m in json.loads(r.read()).get("models", [])}
+    except Exception:
+        return None
+    wanted = model if ":" in model else model + ":latest"
+    return None if wanted in names else model
 
 
 def _inv(status: Dict) -> Dict[str, int]:

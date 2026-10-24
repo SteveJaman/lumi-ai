@@ -78,7 +78,7 @@ For a LAN world, the port changes every launch. Set it from the dashboard's
 | `BOT_CONTROL_PORT` | `5057` | Port for the local control API |
 | `SKILL_TIMEOUT_MS` | `120000` | Time limit for one skill run |
 | `VOYAGER_DIR` | `../../../plugin/voyager/voyager` | Where to load Voyager's primitives from |
-| `EVENT_REACTIONS` | `true` | Push game events (damage, mobs, deaths, rare loot) for Lumi to react to out loud. `false` keeps only the silent status snapshots |
+| `EVENT_REACTIONS` | `major` | Which game events Lumi reacts to out loud: `major` (deaths, boss kills, top-tier loot), `all` (also damage, mobs, hunger, kills, joining), or `off`. See [Context and events](#context-and-events) |
 | `AUTO_DEFEND` | `true` | Fight back when a hostile mob hits the bot. See [Self-defense](#self-defense) |
 | `VIEWER_PORT` | `3000` | Port for the first-person [live viewer](#live-viewer). `0` turns it off |
 | `VIEWER_DISTANCE` | `6` | Chunks the live viewer renders around the bot |
@@ -411,23 +411,51 @@ inventory when she decides to call a tool.
 
 It also pushes **events** (`silent: false`), each starting with
 `[MINECRAFT EVENT]`. An event starts a turn, so Lumi reacts out loud in
-character ("Ow! Who put a zombie here?"). This happens in both chat and agent
-mode, and event turns never call tools.
+character. This happens in both chat and agent mode, and event turns never
+call tools. Every event costs a turn of Lumi's chat model, so by default
+(`EVENT_REACTIONS=major`) only the big ones are sent; the rest go to the
+bot's event log (`GET /events`) only.
 
-| Event | When | Bot cooldown |
-|---|---|---|
-| Joined the world | First spawn on a server | — |
-| Took damage | Health drops. Names the nearest hostile and warns at 6 HP or less | 20 s |
-| Hostile nearby | A hostile mob comes within 10 blocks for the first time. Creepers get an extra warning | 25 s |
-| Getting hungry | Hunger falls to 6 or below | 2 min |
-| Killed a mob | A mob the bot was fighting dies | 10 s |
-| Died | Death, with the mob that last hurt it if that was within 10 s | — |
-| Rare pickup | Diamonds, emeralds, gold, ender pearls, golden apples and similar | 15 s per item |
+| Event | When | Sent with `major` | Bot cooldown |
+|---|---|---|---|
+| Died | Death, with the mob that last hurt it if that was within 10 s | Yes | — |
+| Boss died | An ender dragon, wither, elder guardian or warden dies within 32 blocks ("I killed it" if the bot was fighting it) | Yes | — |
+| Top-tier loot | Diamonds, emeralds, ancient debris, netherite, enchanted golden apples, totems, elytra, nether stars | Yes | 15 s per item |
+| Other rare pickup | Gold, ender pearls, golden apples, lapis, name tags, saddles | `all` only | 15 s per item |
+| Joined the world | First spawn on a server | `all` only | — |
+| Took damage | Health drops. Names the nearest hostile and warns at 6 HP or less | `all` only | 20 s |
+| Hostile nearby | A hostile mob comes within 10 blocks for the first time. Creepers get an extra warning | `all` only | 25 s |
+| Getting hungry | Hunger falls to 6 or below | `all` only | 2 min |
+| Killed a mob | A mob the bot was fighting dies | `all` only | 10 s |
 
 Lumi's SDK server applies one more limit on top: it ignores events while Lumi
 is thinking or speaking, and allows at most one event turn every 12 s per
-client. Events it drops are logged, not queued. Set `EVENT_REACTIONS=false` to
-turn events off.
+client. Events it drops are logged, not queued. Set `EVENT_REACTIONS=off` to
+turn events off, or `all` for the full Neuro-style commentary.
+
+## Running from Lumi's dashboard
+
+You don't have to start `bot.js` yourself. The **Minecraft AI** switch on the
+Dashboard page of Lumi's web UI starts it, together with the game agent, as
+background processes. If a `bot.js` is already running (the control API on
+`:5057` answers), Lumi uses it and leaves it running when you switch off.
+See [the agent's README](../../../plugin/README.md#running-it-1).
+
+## Seeing the game: `look_at_minecraft`
+
+While a Minecraft client is connected, Lumi's agent mode gets a
+`look_at_minecraft` tool. Ask "What is your other half doing?" and she
+captures the Minecraft game window, has the screen vision model (`moondream`)
+describe it, and answers using that plus the agent's current thought.
+
+- The capture uses the window's own pixels, so it works while the game is
+  behind other windows. It fails if the window is minimized.
+- It captures **your** Minecraft client: your player's view, which shows
+  LumiBot only if she's on screen. LumiBot's own first-person view is the
+  [live viewer](#live-viewer).
+- Screenshots are saved under `data/logs/images/minecraft_*.jpg`.
+- In chat mode (agent mode off) Lumi answers the same question from the
+  silent status line instead.
 
 ## Self-defense
 
