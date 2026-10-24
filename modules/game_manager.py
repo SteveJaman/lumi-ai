@@ -33,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from collections import deque
 from typing import Any, Deque, Dict, Optional
@@ -50,6 +51,7 @@ BOT_API        = os.environ.get("BOT_API", "http://127.0.0.1:5057")
 
 GAMES = ("minecraft",)
 TAIL_LINES = 40
+MAX_DIRECTIVE = 200
 
 # Chatty startup lines that would push real events out of the hub's buffer.
 _QUIET = re.compile(r"^\[sdk\] (registered:|connecting to)|^\[voyager\] running ")
@@ -218,10 +220,41 @@ class GameManager:
             "thought": tel.get("current_thought") if live else None,
             "goal": tel.get("goal_description") if live else None,
             "health": tel.get("health") if live else None,
+            "order": tel.get("current_order") if live else None,
+            "mode": tel.get("mode") if live else None,
             "food": tel.get("food") if live else None,
             "position": tel.get("position") if live else None,
             "viewer_port": self._viewer_port() if bot_up else None,
         }
+
+    def send_directive(self, game: str, text: str) -> Dict[str, Any]:
+        """Hand an order to the game agent through bot.js's /directive
+        inbox. bot.js interrupts the running skill; the agent picks the
+        order up on its next tick. Raises ValueError for a bad order and
+        RuntimeError when bot.js isn't running."""
+        if game not in GAMES:
+            raise ValueError(f"unknown game: {game}")
+        clean = " ".join(str(text or "").split())[:MAX_DIRECTIVE]
+        clean = "".join(ch for ch in clean if ch.isprintable())
+        if not clean:
+            raise ValueError("The order is empty.")
+        body = json.dumps({"text": clean, "source": "web"}).encode()
+        req = urllib.request.Request(f"{BOT_API}/directive", data=body,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:
+                result = json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            raise ValueError(json.loads(e.read() or b"{}").get("message") or f"bot.js said {e.code}")
+        except Exception:
+            raise RuntimeError("Minecraft AI isn't running (bot.js isn't answering on :5057).")
+        agent = self._children.get("agent")
+        if not (agent and agent.running):
+            result["message"] = ((result.get("message") or "Order received") +
+                                 " — the game agent isn't running, so it will wait "
+                                 "until Minecraft AI is switched on.")
+        hub_emit(self.signals, "minecraft", f"order from the Games page: {clean}")
+        return result
 
     def resume_if_enabled(self) -> None:
         """Called once at boot: restart games left switched on."""

@@ -125,6 +125,7 @@ const ICONS = {
   models:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/></svg>',
   plugs:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></svg>',
   stream:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>',
+  gamepad:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.98 3.59l-.9 8.2A2.62 2.62 0 0 0 4.4 19.7c.94 0 1.8-.5 2.27-1.32L7.6 16.6a2 2 0 0 1 1.73-1h5.34a2 2 0 0 1 1.73 1l.93 1.78a2.62 2.62 0 0 0 2.27 1.32 2.62 2.62 0 0 0 2.6-2.91l-.9-8.2A4 4 0 0 0 17.32 5z"/></svg>',
   settings:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
 };
 
@@ -173,6 +174,7 @@ document.addEventListener('click', (e) => {
 const NAV = [
   { id: 'chat',         label: 'Chat',         icon: 'chat' },
   { id: 'dashboard',    label: 'Dashboard',    icon: 'dashboard' },
+  { id: 'games',        label: 'Games',        icon: 'gamepad',  hostOnly: true },
   { id: 'persona',      label: 'Persona',      icon: 'persona',  hostOnly: true },
   { id: 'memory',       label: 'Memory',       icon: 'memory',   hostOnly: true },
   { id: 'models',       label: 'Models',       icon: 'models',   hostOnly: true },
@@ -225,7 +227,7 @@ function navigate(view, replace = false) {
   state.view = view;
   if (view !== 'chat') stopChatPolling();
   if (view !== 'stream') stopStreamPolling();
-  if (view !== 'dashboard') stopGamePolling();
+  if (view !== 'games') stopGamePolling();
   if (view !== 'chat') resetMoodAccent();
 
   if (view !== 'models') {
@@ -687,6 +689,7 @@ function render() {
   switch (state.view) {
     case 'chat':         return renderChatView(main);
     case 'dashboard':    return renderDashboard(main);
+    case 'games':        return renderGames(main);
     case 'memory':       return renderMemory(main);
     case 'persona':      return renderPersona(main);
     case 'models':       return renderModels(main);
@@ -1666,7 +1669,6 @@ async function renderDashboard(main) {
       </div>
       <div class="page-scroll">
         <div class="stat-grid" id="dash-stats"></div>
-        ${state.isLocal ? gameCardHtml() : ''}
         <div class="event-stream">
           <div class="event-stream-header" id="dash-filters"></div>
           <div class="event-list" id="dash-events"></div>
@@ -1709,7 +1711,26 @@ async function renderDashboard(main) {
   }
 
   $('#dash-refresh').addEventListener('click', () => renderDashboard(main));
-  if (state.isLocal) startGamePolling();
+}
+
+/* ==============================================================
+   GAMES — Lumi's background game agents
+   ============================================================== */
+function renderGames(main) {
+  main.innerHTML = `
+    <div class="page">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Games</div>
+          <div class="page-sub">Lumi's other half: game agents that play in the background.</div>
+        </div>
+      </div>
+      <div class="page-scroll">
+        ${gameCardHtml()}
+      </div>
+    </div>
+  `;
+  startGamePolling();
 }
 
 /* --------------------------------------------------------------
@@ -1733,6 +1754,16 @@ function gameCardHtml() {
     <div class="game-label">Current thought</div>
     <div class="game-thought" id="game-thought">—</div>
     <div class="game-meta" id="game-meta"></div>
+    <div class="game-meta" id="game-order"></div>
+    <label class="game-label game-directive-label" for="game-directive-text">AI directive / nudge</label>
+    <form class="game-directive" id="game-directive" autocomplete="off">
+      <input class="input" id="game-directive-text" maxlength="200"
+             placeholder="get me 5 diamonds · follow me · build a house · come back">
+      <button class="btn btn-primary" type="submit" id="game-directive-send">Send command</button>
+    </form>
+    <div class="game-hint" id="game-directive-msg">
+      In game, start a chat message with “Lumi,” to give her an order.
+    </div>
     <div class="game-error" id="game-error" hidden></div>
     <div class="game-viewer" id="game-viewer">
       <div class="empty">Live view appears here once the bot is in a world.</div>
@@ -1750,6 +1781,10 @@ function startGamePolling() {
   const toggle = $('#game-toggle');
   if (!toggle) return;
   toggle.addEventListener('change', () => onGameToggle(toggle.checked));
+  $('#game-directive').addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendGameDirective();
+  });
   refreshGameCard();
   _gameTimer = setInterval(refreshGameCard, 3000);
 }
@@ -1766,6 +1801,30 @@ async function refreshGameCard() {
     renderGameCard(await api('/api/game/status?game=minecraft'));
   } catch (e) {
     $('#game-sub').textContent = `Unavailable: ${e.message}`;
+  }
+}
+
+async function sendGameDirective() {
+  const input = $('#game-directive-text');
+  const button = $('#game-directive-send');
+  const note = $('#game-directive-msg');
+  const text = input.value.trim();
+  if (!text) { input.focus(); return; }
+  button.disabled = true;
+  try {
+    const r = await api('/api/games/minecraft/directive', {
+      method: 'POST', csrf: true, body: { text },
+    });
+    input.value = '';
+    note.classList.remove('error');
+    note.textContent = r.message || 'Sent.';
+    refreshGameCard();
+  } catch (e) {
+    note.classList.add('error');
+    note.textContent = e.message;
+  } finally {
+    button.disabled = false;
+    input.focus();
   }
 }
 
@@ -1814,6 +1873,11 @@ function renderGameCard(s) {
   if (s.food != null) meta.push(`hunger ${s.food}/20`);
   if (s.position) meta.push(`at ${Math.round(s.position.x)}, ${Math.round(s.position.y)}, ${Math.round(s.position.z)}`);
   $('#game-meta').textContent = meta.join(' · ');
+  $('#game-order').textContent = !agent.running ? ''
+    : s.mode === 'follow' ? 'Order: following you'
+    : s.mode === 'stay' ? 'Order: staying put'
+    : s.order ? `Order: ${s.order}`
+    : 'No order: playing on her own';
 
   const crashed = [agent, bot].filter(c => c.crashed);
   const err = $('#game-error');

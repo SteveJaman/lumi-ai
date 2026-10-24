@@ -1288,6 +1288,18 @@ html[data-theme="dark"] .msg.user .msg-avatar {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.game-directive-label { display: block; margin-top: var(--s-4); }
+.game-directive {
+  display: flex;
+  gap: var(--s-2);
+  margin-top: var(--s-2);
+}
+.game-directive .input { flex: 1; min-width: 0; }
+@media (max-width: 520px) {
+  .game-directive { flex-direction: column; }
+}
+.game-hint { margin-top: var(--s-2); font-size: var(--fs-sm); color: var(--text-dim); }
+.game-hint.error { color: var(--error-text); }
 .game-viewer {
   position: relative;
   margin-top: var(--s-4);

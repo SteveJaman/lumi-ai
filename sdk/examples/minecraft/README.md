@@ -454,10 +454,16 @@ to send their position.
 
 - **Checking in.** When idle and no hostile is close, the bot glances at the
   owner when they move (within 16 blocks), and at least every 8 s.
-- **Calling her.** A short chat message from the owner like "come here",
-  "follow me" or "lumi, come back" sets `called` for 60 s. The game agent
-  then brings her back. Longer messages count only if they mention Lumi, so
-  "I'll come back later" doesn't summon her.
+- **Calling her.** A short chat message from the owner like "come here"
+  or "follow me" sets `called` for 60 s, and the game agent brings her back.
+  Longer messages count only if they mention Lumi, so "I'll come back later"
+  doesn't summon her.
+- **Giving orders.** A message from the owner that starts with a wake word
+  (`Lumi,`, `Lumi:`, `!lumi`, or `Lumi ` and more words) is an order, not
+  chat: it goes to the order inbox below, the bot answers `Got it. <order>.`,
+  and it isn't passed to Lumi as chat. Everything else is ordinary chat,
+  which Lumi sees in her context as before. What orders can say is in
+  [the agent's README](../../../plugin/README.md#orders).
 
 The agent decides when to return. See
 [the agent's README](../../../plugin/README.md#playing-near-you).
@@ -501,10 +507,10 @@ held (the latest one per client) and delivered when she's free, or dropped if
 she's still busy after 20 s. Drops are logged. Set `EVENT_REACTIONS=off` to
 turn events off, or `all` for the full Neuro-style commentary.
 
-## Running from Lumi's dashboard
+## Running from Lumi's web UI
 
 You don't have to start `bot.js` yourself. The **Minecraft AI** switch on the
-Dashboard page of Lumi's web UI starts it, together with the game agent, as
+Games page of Lumi's web UI starts it, together with the game agent, as
 background processes. If a `bot.js` is already running (the control API on
 `:5057` answers), Lumi uses it and leaves it running when you switch off.
 See [the agent's README](../../../plugin/README.md#running-it-1).
@@ -553,6 +559,8 @@ It doesn't go through Lumi, so it works whether or not Lumi is running.
 | `GET` | `/config` | `{host, port, username, auth, viewer_port, skin_port}`. `viewer_port` is `null` while the viewer isn't running |
 | `POST` | `/config` | `{host, port}`. Updates the target server and reconnects if it changed |
 | `POST` | `/action` | `{action, args}`, where `action` is an action name without the `minecraft_` prefix (e.g. `mine_block`). Returns `{success, message}` |
+| `POST` | `/directive` | `{text, source?}`. Stores an order for the game agent (the latest one wins, up to 200 characters, control characters removed) and interrupts the running skill unless the bot is fighting. 422 for empty or non-string text |
+| `GET` | `/directive` | `{directive}`: the pending order `{text, source, from, at}`, or `null`. `?take=1` also clears it (the game agent does this). `/status` has `directive_pending` |
 
 The API has no authentication and allows any origin (CORS `*`). See the
 warning in [docs/security.md](../../../docs/security.md#minecraft-bot-control-api)

@@ -28,6 +28,7 @@ HOST_ONLY = [
     ("POST",   "/api/agent/toggle"),
     ("GET",    "/api/game/status"),
     ("POST",   "/api/game/toggle"),
+    ("POST",   "/api/games/minecraft/directive"),
     ("GET",    "/api/log_events"),
     ("GET",    "/api/some-future-route"),   # default-deny
 ]
@@ -151,6 +152,46 @@ def test_local_game_toggle(live_lumi):
                                   headers={"Origin": LOCAL})
         assert r.status == 403          # no CSRF token
         assert calls == [("minecraft", True)]
+    live_lumi(scenario)
+
+
+def test_local_game_directive(live_lumi):
+    """The Games page's directive box: validated, CSRF-checked, passed to
+    the game manager, and a stopped bot is reported as 503."""
+    async def scenario(live):
+        sent = []
+
+        class FakeGames:
+            running = True
+
+            def send_directive(self, game, text):
+                if game != "minecraft":
+                    raise ValueError(f"unknown game: {game}")
+                if not self.running:
+                    raise RuntimeError("Minecraft AI isn't running.")
+                sent.append(text)
+                return {"success": True, "message": f"Order received: {text}"}
+
+        games = live.srv.signals.game_manager = FakeGames()
+        csrf = await live.register()
+        h = {"Origin": LOCAL, "X-CSRF-Token": csrf}
+
+        r = await live.local.post("/api/games/minecraft/directive",
+                                  json={"text": "get me 5 diamonds"}, headers=h)
+        assert r.status == 200 and sent == ["get me 5 diamonds"]
+        for bad in ({"text": "   "}, {"text": 5}, {}):
+            r = await live.local.post("/api/games/minecraft/directive", json=bad, headers=h)
+            assert r.status == 400, bad
+        r = await live.local.post("/api/games/chess/directive", json={"text": "go"}, headers=h)
+        assert r.status == 400
+        r = await live.local.post("/api/games/minecraft/directive",
+                                  json={"text": "follow me"}, headers={"Origin": LOCAL})
+        assert r.status == 403          # no CSRF token
+        games.running = False
+        r = await live.local.post("/api/games/minecraft/directive",
+                                  json={"text": "follow me"}, headers=h)
+        assert r.status == 503
+        assert sent == ["get me 5 diamonds"]
     live_lumi(scenario)
 
 

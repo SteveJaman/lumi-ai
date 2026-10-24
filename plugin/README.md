@@ -152,12 +152,13 @@ It keeps Lumi's chat responsive in three ways:
 From the web dashboard (recommended):
 
 1. Start Lumi: `python main.py`.
-2. Open the **Dashboard** page in Lumi's web UI on the host machine and turn
-   on the **Minecraft AI** switch.
+2. Open the **Games** page in Lumi's web UI on the host machine and turn on
+   the **Minecraft AI** switch.
 
 Lumi starts `bot.js` (unless one is already running) and this agent as
 background processes, with no extra terminals. The card shows the agent's
-current thought, health and goal, and the bot's first-person live view. The
+current thought, health, goal and current order, and the bot's first-person
+live view. Its **AI directive / nudge** box gives her [orders](#orders). The
 switch writes `data/minecraft/autoplay.json`. Switching it off stops both
 processes, and Lumi restarts them on the next boot while it stays on.
 
@@ -223,6 +224,47 @@ tree:
 
 Spoken events from these goals: finishing the house, and finding diamonds in
 a branch mine.
+
+### Orders
+
+You can tell Lumi's other half what to do, in two ways:
+
+- **In game**, as the owner: start a chat message with `Lumi,`, `Lumi:`,
+  `!lumi` or just `Lumi `, e.g. `Lumi, get me 5 diamonds`. `bot.js` answers
+  `Got it. get me 5 diamonds.` in chat. A bare `Lumi` gets
+  `Lumi here. What should I do?`.
+- **From the web UI**: the Games page's directive box
+  (`POST /api/games/minecraft/directive`, host only).
+
+Both go to `bot.js`'s order inbox (`POST /directive`), which keeps the latest
+one and **interrupts the running skill**, so the new order takes effect right
+away. A fight already in progress isn't interrupted. The agent takes the order
+on its next tick (`GET /directive?take=1`). An interrupted goal isn't counted
+as a failure.
+
+The order is parsed in code first. These are checked in order, so "Forget
+diamonds, come back to me" means "come back":
+
+| Kind | Example phrases | What happens |
+|---|---|---|
+| Resume | "go play", "do your thing", "stop following" | Clears any order or mode |
+| Follow | "follow me", "stay close", "come with me" | Follow mode: stays within about 5 blocks of you until told otherwise |
+| Come back | "come here", "come back", "where are you" | `return_to_player` once, then free play |
+| Stay | "stay", "wait here", "stop", "don't move" | Stay mode: does nothing but survive until told otherwise |
+| Collect | "get me 5 diamonds", "get some wood", "mine for iron", "coal", "cobblestone" | An objective: N more than she has now (defaults: 3 diamonds, 6 iron, 8 coal, 16 logs, 32 cobblestone). She works through the tech tree first when she needs a better pickaxe (diamonds need iron), then branch-mines, chops or mines until she has them |
+| House | "build a house" | Builds the house, gathering what it's missing, until it's done |
+| Task | "go home", "make torches", "sort your stuff", "hunt", "cook", "make a shelter", "make a furnace", "go mining", "explore" | That goal, once |
+
+Anything else goes to the game model with the override prompt ("The user has
+given you a new direct order: '…'. You must prioritize this above all current
+goals."), which picks one goal or says it isn't an order. If it isn't
+understood, she says so in chat and keeps her current order.
+
+An order outranks free play and the leash, but survival still comes first.
+Orders give up after 3 real failures or 20 minutes. Lumi's chat model hears
+about each order (a spoken event, so she acknowledges it: "Alright, I'll go
+find some diamonds. Don't wander too far."), sees it in her silent status
+line, and hears when it's done or given up.
 
 ### Playing near you
 

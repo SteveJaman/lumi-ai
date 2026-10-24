@@ -643,6 +643,7 @@ class SocketIOServer:
         # neither route is in _REMOTE_API_ALLOW.
         r.add_get("/api/game/status",   self._handle_game_status)
         r.add_post("/api/game/toggle",  self._handle_game_toggle)
+        r.add_post("/api/games/{game}/directive", self._handle_game_directive)
 
         # Memory browser — export route MUST register before the
         # dynamic {mem_id} route or aiohttp will treat "export" as an id.
@@ -1464,6 +1465,37 @@ class SocketIOServer:
         from modules.log_hub import emit as hub_emit
         hub_emit(self.signals, "minecraft",
                  f"autoplay {'enabled' if enabled else 'disabled'} from the dashboard")
+        return web.json_response(data)
+
+    async def _handle_game_directive(self, request):
+        """An order for a game agent, from the Games page's directive box."""
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+        games = getattr(self.signals, "game_manager", None)
+        if games is None:
+            return _json_error(503, "Game manager not available.")
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return _json_error(400, "Type an order first.")
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(
+                None, games.send_directive, request.match_info["game"], text)
+        except ValueError as e:
+            return _json_error(400, str(e))
+        except RuntimeError as e:
+            return _json_error(503, str(e))
         return web.json_response(data)
 
     # ------------------------------------------------------------------

@@ -315,6 +315,14 @@ function createBot() {
 
   bot.on("chat", (username, message) => {
     if (username === bot.username) return;
+    // "!lumi ...", "Lumi, ..." or "Lumi ..." from the owner is an order for
+    // the game agent. Anything else is ordinary chat for Lumi's context.
+    const order = username === ownerName() ? stripWakeWord(message) : null;
+    if (order !== null) {
+      const r = setDirective(order, "chat", username);
+      bot.chat(r.success ? `Got it. ${r.directive.text}.` : "Lumi here. What should I do?");
+      return;
+    }
     pushBotContext(`[chat] ${username}: ${message}`);
     // Only a short command or one that names the bot counts as a call, so
     // "I'll come back later" in conversation doesn't summon it.
@@ -459,6 +467,48 @@ function nearbyBlock(name, maxDistance = 32) {
   return Boolean(b && bot.findBlock({ matching: b.id, maxDistance }));
 }
 
+// ─── Orders (directives) for the game agent ─────────────────────────────────
+// The owner gives orders in chat with a wake word, or the host from the web
+// UI's Games page (via POST /directive). bot.js only stores the latest one
+// and interrupts whatever skill is running; plugin/minecraft_bot.py takes it
+// with GET /directive?take=1 and decides what to do.
+
+const WAKE_RE = /^\s*(?:!lumi\b[\s,:]*|lumi\s*[,:!]\s*|lumi\s+)(.*)$/i;
+const MAX_DIRECTIVE = 200;
+let pendingDirective = null;   // { text, source, from, at }
+let interruptSeq = 0;          // bumped by each order; running skills watch it
+
+// The order after the wake word, "" for a bare "lumi", or null when the
+// message isn't addressed to the bot.
+function stripWakeWord(message) {
+  if (/^\s*!?lumi\s*[!.?]?\s*$/i.test(message)) return "";
+  const m = WAKE_RE.exec(message);
+  return m ? m[1].trim() : null;
+}
+
+function cleanDirective(text) {
+  // Printable text only, one line, bounded.
+  return String(text ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ")
+                           .trim().slice(0, MAX_DIRECTIVE);
+}
+
+function setDirective(text, source, from = null) {
+  const clean = cleanDirective(text).replace(/[.!]+$/, "");
+  if (!clean) return { success: false, message: "Empty order" };
+  pendingDirective = { text: clean, source, from, at: Date.now() / 1000 };
+  _logEv("directive", `${from || source}: ${clean}`);
+  console.log(`[directive] ${from || source}: ${clean}`);
+  interruptCurrent();
+  return { success: true, message: `Order received: ${clean}`, directive: pendingDirective };
+}
+
+// Abort the running skill so a new order takes effect now. A fight in
+// progress is left alone: survival comes first.
+function interruptCurrent() {
+  interruptSeq++;
+  if (!defendTarget) stopAllActivity();
+}
+
 // ─── The player Lumi plays near ─────────────────────────────────────────────
 
 // "come here", "follow me", "lumi come back", ... in chat from the owner.
@@ -540,6 +590,7 @@ function buildStatusJson() {
     free_slots: bot.inventory.emptySlotCount(),
     owner:     ownerInfo(),
     house:     house ? { origin: house.origin, material: house.material, complete: !!house.complete } : null,
+    directive_pending: Boolean(pendingDirective),
   };
 }
 
@@ -1214,8 +1265,10 @@ async function handleReturnToPlayer(a) {
     return Boolean(ent && bot.entity.position.distanceTo(ent.position) <= range + 2);
   };
 
+  const seq = interruptSeq;
   try {
     while (Date.now() < deadline) {
+      if (interruptSeq !== seq) return { success: false, message: "interrupted by a new order" };
       const ent = ownerEntity();
       if (!ent) {
         // Out of tracking range: no position to walk to.
@@ -1303,6 +1356,7 @@ async function handleBranchMine(a) {
   const length = Math.min(Math.max(parseInt(a.length ?? 20, 10) || 20, 1), 64);
   const deadline = Date.now() + Math.min(Math.max(parseInt(a.max_seconds ?? 105, 10) || 105, 10), 110) * 1000;
   const hurtAtStart = lastHurtAt;
+  const seq = interruptSeq;
   const found = {};
   let steps = 0, tunnel = 0, stopped = null;
 
@@ -1333,11 +1387,13 @@ async function handleBranchMine(a) {
     while (bot.entity.position.y > depth + 0.5) {
       if (Date.now() > deadline) { stopped = "time limit"; break; }
       if (lastHurtAt !== hurtAtStart) { stopped = "something attacked me"; break; }
+      if (interruptSeq !== seq) { stopped = "interrupted by a new order"; break; }
       await step(true);
     }
     while (!stopped && tunnel < length) {
       if (Date.now() > deadline) { stopped = "time limit"; break; }
       if (lastHurtAt !== hurtAtStart) { stopped = "something attacked me"; break; }
+      if (interruptSeq !== seq) { stopped = "interrupted by a new order"; break; }
       await step(false);
       tunnel++;
     }
@@ -1423,10 +1479,11 @@ async function handleBuildHouse(a) {
   const deadline = Date.now() + 105_000;
   const blockItem = () => bot.inventory.items().filter(i => MATERIAL[mat].matches(i.name))
                                               .sort((p, q) => q.count - p.count)[0];
+  const seq = interruptSeq;
   withoutDigging();
   try {
     for (const c of cells) {
-      if (Date.now() > deadline) break;
+      if (Date.now() > deadline || interruptSeq !== seq) break;
       let v = new Vec3(c.x, c.y, c.z);
       if (c.kind === "torch_outside") {
         // Highest air cell above solid ground, near the floor's height.
@@ -1706,7 +1763,8 @@ async function runVoyager(code, label, timeoutMs = SKILL_TIMEOUT_MS) {
   console.log(`[voyager] running ${label}`);
   _logEv("skill", `run ${label}`);
 
-  let timer;
+  let timer, watch;
+  const seq = interruptSeq;
   try {
     const fn = new AsyncFunction(
       "bot", "mcData", "Vec3", "Movements", "goals", ...GOAL_NAMES,
@@ -1718,6 +1776,11 @@ async function runVoyager(code, label, timeoutMs = SKILL_TIMEOUT_MS) {
         timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs / 1000} s`)),
                            timeoutMs);
       }),
+      new Promise((_, reject) => {
+        watch = setInterval(() => {
+          if (interruptSeq !== seq) reject(new Error("interrupted by a new order"));
+        }, 250);
+      }),
     ]);
     const parts = [result !== undefined ? String(result) : "Skill completed.", ...chatLog.slice(-8)];
     return { success: true, message: parts.join(" | ") };
@@ -1727,6 +1790,7 @@ async function runVoyager(code, label, timeoutMs = SKILL_TIMEOUT_MS) {
     return { success: false, message: `Skill error: ${e.message}${feedback}` };
   } finally {
     clearTimeout(timer);
+    clearInterval(watch);
     bot.removeListener("chatEvent", onChat);
   }
 }
@@ -1887,6 +1951,35 @@ const _controlServer = http.createServer((req, res) => {
         console.log(`[mc] server updated to ${MC_HOST}:${MC_PORT} — reconnecting`);
         createBot();
       }
+    });
+
+  } else if (req.method === "GET" && url === "/directive") {
+    // ?take=1 hands the order over and clears it (the game agent).
+    const take = /[?&]take=1\b/.test(req.url || "");
+    const d = pendingDirective;
+    if (take) pendingDirective = null;
+    res.writeHead(200);
+    res.end(JSON.stringify({ directive: d }));
+
+  } else if (req.method === "POST" && url === "/directive") {
+    let body = "";
+    req.on("data", c => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on("end", () => {
+      let payload;
+      try { payload = JSON.parse(body); } catch (_) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, message: "bad JSON" }));
+        return;
+      }
+      if (typeof payload.text !== "string") {
+        res.writeHead(422);
+        res.end(JSON.stringify({ success: false, message: "text must be a string" }));
+        return;
+      }
+      const source = ["web", "chat", "lumi"].includes(payload.source) ? payload.source : "web";
+      const r = setDirective(payload.text, source, payload.from ? cleanDirective(payload.from).slice(0, 32) : null);
+      res.writeHead(r.success ? 200 : 422);
+      res.end(JSON.stringify({ success: r.success, message: r.message, directive: r.directive || null }));
     });
 
   } else if (req.method === "POST" && url === "/action") {

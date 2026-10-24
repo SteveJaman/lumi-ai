@@ -583,6 +583,92 @@ FAIL_STREAK = 3          # failures in a row before a goal is rested
 FAIL_COOLDOWN_S = 300
 
 
+# ─── Orders ───────────────────────────────────────────────────────────────────
+# An order (directive) comes from the owner in game chat ("Lumi, get me 5
+# diamonds") or from the web UI's Games page, through bot.js's
+# /directive inbox. Common orders are parsed here; anything else goes to the
+# game model as an override. Checked in this order, so "forget diamonds,
+# come back to me" is a "come back".
+
+ORDER_MODES = [
+    (r"\b(stop|quit|don'?t) follow", "resume"),
+    (r"\b(go (play|have fun)|do your (own )?thing|you'?re free|carry on|resume|as you were"
+     r"|do whatever|back to (work|playing))\b", "resume"),
+    (r"\bfollow( me)?\b|\bstick (with|close to) me\b|\bcome with me\b|\bstay close\b", "follow"),
+    (r"\b(come (here|back)|over here|get over here|return to me|back to me|where are you)\b", "come"),
+    (r"\b(stay( here| put)?|wait( here)?|stop|hold (on|still)|don'?t move|freeze|halt)\b", "stay"),
+]
+
+# (pattern, label, inventory items counted, default amount)
+ORDER_COLLECT = [
+    (r"diamond", "diamonds", ["diamond"], 3),
+    (r"\biron\b", "iron", ["raw_iron", "iron_ingot"], 6),
+    (r"\bcoal\b", "coal", ["coal"], 8),
+    (r"\b(wood|logs?|trees?|timber)\b", "wood", _LOGS, 16),
+    (r"\b(cobble(stone)?|stone|rocks?)\b", "cobblestone", _STONE_MATS, 32),
+]
+
+ORDER_TASKS = [
+    (r"\b(go|head|run) home\b|\bto (the|your) house\b", "go_home"),
+    (r"\b(build|make)\b.*\b(house|home|base)\b|\bhouse\b", "build_house"),
+    (r"\btorch", "craft_torches"),
+    (r"\b(sort|organi[sz]e|tidy|chest|inventory)\b|\bput (stuff|things|it|everything) away\b",
+     "organize_inventory"),
+    (r"\bcook\b", "cook_meat"),
+    (r"\b(food|hungry|hunt|meat|cows?|pigs?)\b", "hunt_food"),
+    (r"\b(shelter|hut|hide)\b", "build_dirt_hut"),
+    (r"\bfurnace\b", "craft_furnace"),
+    (r"\b(branch ?mine|mine|mining|dig|ores?|caves?)\b", "branch_mine"),
+    (r"\b(explore|look around|wander|scout)\b", "explore"),
+]
+
+
+def _parse_order(text: str) -> Optional[Dict[str, Any]]:
+    """Turn an order into {kind, ...}, or None if it isn't recognized."""
+    t = text.lower()
+    for pattern, mode in ORDER_MODES:
+        if re.search(pattern, t):
+            return {"kind": mode}
+    for pattern, label, items, default in ORDER_COLLECT:
+        if re.search(pattern, t):
+            n = re.search(r"\b(\d{1,3})\b", t)
+            return {"kind": "collect", "label": label, "items": items,
+                    "amount": min(max(int(n.group(1)), 1), 64) if n else default}
+    for pattern, goal in ORDER_TASKS:
+        if re.search(pattern, t):
+            return {"kind": "house"} if goal == "build_house" else {"kind": "once", "goal": goal}
+    return None
+
+
+def _collect_step(label: str, inv: Dict[str, int], near: Dict[str, bool]) -> Optional[str]:
+    """The next goal toward an item order, working through the tech tree
+    when a better pickaxe is needed first."""
+    pick, tech = _pickaxe(inv), _tech_goal(inv, near)
+    if label == "wood":
+        return "chop_trees"
+    if label == "cobblestone":
+        return "gather_cobblestone" if pick >= 1 else tech
+    if label == "coal":
+        return "mine_coal" if pick >= 1 else tech
+    if label == "iron":
+        return "mine_iron_ore" if pick >= 2 else tech
+    if label == "diamonds":
+        if pick < 2:
+            return tech
+        if pick < 3:     # diamonds need an iron pickaxe
+            return _progress_goal(inv, near) or "mine_iron_ore"
+        return "branch_mine"
+    return None
+
+
+OVERRIDE_SYSTEM = (
+    "You control a Minecraft player. Your player just gave you an order. "
+    "Choose the one goal from the list that best carries it out. If the message "
+    "isn't actually an order for you, choose \"none\". Reply with JSON only: "
+    '{"goal": "<one of the listed names, or none>", "reason": "<one short sentence>"}'
+)
+
+
 # ─── Agent ────────────────────────────────────────────────────────────────────
 
 class MinecraftAgent(LumiClient):
@@ -608,6 +694,9 @@ class MinecraftAgent(LumiClient):
         self._wanted: Dict[str, int] = {}      # materials a failed house build asked for
         self._project_until = 0.0              # long leash until then
         self._band: Optional[str] = None       # near / roaming / far / out of sight
+        self._order: Optional[Dict[str, Any]] = None   # the player's current order
+        self._mode: Optional[str] = None       # "follow" or "stay" until told otherwise
+        self._done_order: Optional[Tuple[Dict[str, Any], str]] = None   # finished, not yet announced
         self._last_narration = 0.0
         self._last_status_push = 0.0
         self._last_done: Optional[str] = None
@@ -625,6 +714,8 @@ class MinecraftAgent(LumiClient):
             "goal_description": None,
             "goal_source": None,
             "current_thought": "Starting up...",
+            "current_order": None,
+            "mode": None,
             "loop_state": "starting",
             "last_update": None,
             "skills_verified": 0,
@@ -721,6 +812,7 @@ class MinecraftAgent(LumiClient):
             + (f' (picked by {t["goal_source"]})' if t["goal_source"] else ""),
             f'Recent goals: {self._recent_text(5)}',
             f'Resting: {self._cooldown_text()}',
+            f'Order: {self._order_text() or "none"}',
             f'Inventory: {inv}',
             f'Tech progress: {self._progress}/{len(CURRICULUM)}',
         ]
@@ -831,8 +923,15 @@ class MinecraftAgent(LumiClient):
                     self._think("Waiting to spawn in...")
                     continue
 
+                # New orders from the player, every tick.
+                await self._take_directive(status)
+
                 # 2. Survive — fights and meals come before any goal
                 if await self._survive(status):
+                    continue
+
+                # Standing modes from an order: stay put, or follow closely.
+                if await self._hold_mode(status):
                     continue
 
                 # 3. Pick a goal
@@ -856,7 +955,14 @@ class MinecraftAgent(LumiClient):
 
                 # 4. Execute
                 ok, msg = await self._execute_goal(goal_name, status)
+                if not ok and "interrupted by a new order" in msg:
+                    # Not a failure: the player changed their mind.
+                    self._record("agent", f"{goal_name} interrupted by a new order")
+                    self._tel["current_goal"] = None
+                    continue
                 self._remember_goal(goal_name, ok)
+                if source == "order":
+                    await self._order_result(goal_name, ok, msg)
 
                 # 5. Verify and record
                 if ok:
@@ -981,6 +1087,13 @@ class MinecraftAgent(LumiClient):
         inv = _inv(status)
         near = status.get("nearby") or {}
 
+        # The player's order beats wandering and the leash.
+        if self._order:
+            step = self._order_step(status)
+            if step:
+                return step, "order", self._order["text"]
+        await self._announce_done_order()
+
         # Semi-magnet: wander, but come back when called or too far.
         back = self._should_return(status)
         if back:
@@ -1015,6 +1128,176 @@ class MinecraftAgent(LumiClient):
             if picked:
                 return picked[0], "llm", picked[1]
         return self._random_pick(status, options, progress), "random", ""
+
+    # ─── Orders ────────────────────────────────────────────────────
+
+    async def _take_directive(self, status: Dict) -> None:
+        """Pick up a pending order from bot.js and turn it into a mode, an
+        objective, or a single goal."""
+        if not status.get("directive_pending"):
+            return
+        got = await self._bot_get("/directive?take=1")
+        d = (got or {}).get("directive")
+        text = re.sub(r"\s+", " ", str((d or {}).get("text") or "")).strip()[:200]
+        if not text:
+            return
+        in_game = d.get("source") == "chat"
+        who = (d.get("from") or (status.get("owner") or {}).get("name") or "my player") if in_game else None
+        heard = f'{who} told me in game: "{text}"' if in_game else f'I got an order from the Games page: "{text}"'
+        self._record("agent", f"order ({who or 'Games page'}): {text}")
+
+        order = _parse_order(text)
+        if order is None:
+            order = await self._override_order(text, status)
+        if order is None:
+            await self._bot_action("chat", {"message": f"Sorry, I don't know how to do that: {text[:60]}"})
+            self._record("warn", f"didn't understand the order: {text}")
+            return
+
+        kind = order["kind"]
+        if kind == "resume":
+            self._order, self._mode = None, None
+            ack = "I'm free to do my own thing again"
+        elif kind in ("follow", "stay"):
+            self._order, self._mode = None, kind
+            ack = "I'll follow them around" if kind == "follow" else "I'll stay right here"
+        elif kind == "come":
+            self._mode = None
+            self._order = {"kind": "once", "goal": "return_to_player"}
+            ack = "I'm heading back to them"
+        else:
+            self._mode = None
+            self._order = order
+            if kind == "collect":
+                order["start"] = sum(_inv(status).get(i, 0) for i in order["items"])
+                ack = f"I'm going to get {order['amount']} {order['label']}"
+            elif kind == "house":
+                ack = "I'm going to build a house"
+            else:
+                ack = f"On it: {_goal_desc(order['goal']).lower()}"
+        if self._order:
+            self._order.update(text=text, who=who, fails=0, until=time.time() + 20 * 60)
+        self._tel["current_order"], self._tel["mode"] = self._order_text() or None, self._mode
+        self._think(f"New order: {text}")
+        await self._narrate(f"{heard}. {ack}.", major=True)
+        await self._push_status(status, force=True)
+
+    async def _override_order(self, text: str, status: Dict) -> Optional[Dict[str, Any]]:
+        """Ask the game model which goal carries out an order the parser
+        didn't recognize. None if there's no model or it isn't an order."""
+        if not self._llm_ok:
+            return None
+        options = {g: d["desc"] for g, d in FREE_GOALS.items()}
+        options.update({t["goal"]: t["desc"] for t in CURRICULUM})
+        prompt = (
+            f"The user has given you a new direct order: '{text}'. You must prioritize "
+            "this above all current goals.\n"
+            f"Current inventory: {', '.join(f'{n}×{c}' for n, c in _inv(status).items()) or 'empty'}.\n"
+            "Goals:\n" + "\n".join(f"- {k}: {v}" for k, v in options.items()) + "\n- none: not an order"
+        )
+        loop = asyncio.get_running_loop()
+        try:
+            resp = await loop.run_in_executor(None, lambda: chat_sync(
+                GOAL_MODEL, [{"role": "system", "content": OVERRIDE_SYSTEM},
+                             {"role": "user", "content": prompt}],
+                think=False, keep_alive=GOAL_KEEP_ALIVE, options={"temperature": 0.2, "num_ctx": 2048}))
+            reply = (resp.content or "").strip()
+        except Exception as e:
+            self._record("warn", f"order model failed: {e}")
+            return None
+        m = re.search(r"\{.*\}", reply, re.S)
+        try:
+            goal = str(json.loads(m.group(0)).get("goal") or "").strip() if m else ""
+        except json.JSONDecodeError:
+            goal = ""
+        if goal not in options:
+            return None
+        return {"kind": "house"} if goal == "build_house" else {"kind": "once", "goal": goal}
+
+    def _order_step(self, status: Dict) -> Optional[str]:
+        """The next goal for the current order, or None (and the order is
+        cleared) once it's done or expired."""
+        o, inv = self._order, _inv(status)
+        if time.time() > o["until"]:
+            self._record("warn", f"order expired: {o['text']}")
+            self._order = None
+            return None
+        if o["kind"] == "once":
+            return o["goal"]
+        if o["kind"] == "house":
+            if _house(status).get("complete"):
+                self._finish_order_later("the house is built")
+                return None
+            if self._wanted.get("cobblestone"):
+                return "gather_cobblestone"
+            if self._wanted.get("oak_planks") or self._wanted.get("planks"):
+                return "chop_trees"
+            return "build_house"
+        have = sum(inv.get(i, 0) for i in o["items"]) - o["start"]
+        if have >= o["amount"]:
+            self._finish_order_later(f"got {o['amount']} {o['label']}")
+            return None
+        return _collect_step(o["label"], inv, status.get("nearby") or {})
+
+    def _finish_order_later(self, what: str) -> None:
+        """Mark the order done; the brag goes out from the loop."""
+        self._record("result", f"order done ({what}): {self._order['text']}")
+        self._done_order = (self._order, what)
+        self._order = None
+        self._tel["current_order"] = None
+
+    async def _order_result(self, goal: str, ok: bool, msg: str) -> None:
+        o = self._order
+        if not o:
+            return
+        if o["kind"] == "once" and ok:
+            self._finish_order_later(_goal_desc(goal).lower())
+        elif not ok:
+            o["fails"] += 1
+            if o["fails"] >= FAIL_STREAK:
+                self._record("warn", f"giving up on the order: {o['text']}")
+                self._order = None
+                self._tel["current_order"] = None
+                await self._narrate(f"I couldn't carry out the order \"{o['text']}\": {msg[:140]}",
+                                    major=True)
+        await self._announce_done_order()
+
+    async def _announce_done_order(self) -> None:
+        if self._done_order:
+            order, what = self._done_order
+            self._done_order = None
+            await self._narrate(f'Done with the order "{order["text"]}": {what}.', major=True)
+
+    async def _hold_mode(self, status: Dict) -> bool:
+        """Follow or stay, from an order. True if this step was used."""
+        if self._mode == "stay":
+            self._think("Staying put like I was told.")
+            return True
+        if self._mode == "follow":
+            owner = status.get("owner")
+            if not owner:
+                self._think("Waiting for my player to come back online.")
+                return True
+            d = _owner_distance(status)
+            if d is None or d > 5:
+                self._think(f"Following {owner['name']}.")
+                r = await self._bot_action("return_to_player", {"range": 3})
+                if not r.get("success") and "interrupted" not in r.get("message", ""):
+                    self._record("warn", f"follow: {r.get('message', '')}")
+            else:
+                self._think(f"Sticking close to {owner['name']}.")
+            return True
+        return False
+
+    def _order_text(self) -> str:
+        if self._mode:
+            return {"follow": "following the player", "stay": "staying put"}[self._mode]
+        o = self._order
+        if not o:
+            return ""
+        if o["kind"] == "collect":
+            return f"\"{o['text']}\" ({o['label']}, {o['amount']} wanted)"
+        return f"\"{o['text']}\""
 
     def _should_return(self, status: Dict) -> Optional[str]:
         """A reason to go back to the player, or None. Survival has already
@@ -1179,6 +1462,9 @@ class MinecraftAgent(LumiClient):
                              "keeping them in sight.")
             else:
                 lines.append(f"You're right next to {owner['name']} ({d:.0f} blocks).")
+        order = self._order_text()
+        if order:
+            lines.append(f"Your player's current order: {order}.")
         if _house(status).get("complete"):
             o = status["house"]["origin"]
             lines.append(f"You built a house at {o[0] + 3}, {o[1] + 1}, {o[2] + 3}.")
@@ -1243,6 +1529,8 @@ class MinecraftAgent(LumiClient):
 
     def _flush_telemetry(self) -> None:
         self._tel["skills_verified"] = self._progress
+        self._tel["current_order"] = self._order_text() or None
+        self._tel["mode"] = self._mode
         try:
             with open(TELEMETRY_PATH, "w", encoding="utf-8") as f:
                 json.dump(self._tel, f, indent=2)
