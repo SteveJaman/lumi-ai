@@ -232,7 +232,7 @@ The agent connects as `MinecraftAgent`. The allowlist entry needs
 
 | Path | Contents |
 |---|---|
-| `data/minecraft/telemetry.json` | Latest bot state and loop state, read by the dashboard |
+| `data/minecraft/telemetry.json` | Latest bot state, loop state and `current_thought`, read by the dashboard |
 | `data/minecraft/events.jsonl` | Append-only event log |
 | `data/minecraft/skills.json` | Verified tiers. Delete it to restart the curriculum |
 
@@ -246,6 +246,8 @@ A standalone page at `http://127.0.0.1:5002/` (`MC_DASH_PORT`), standard library
 
 | Panel | Source |
 |---|---|
+| Lumi's current thought | `current_thought` in telemetry: what the agent is doing or deciding, in plain words |
+| Live view | An iframe of `bot.js`'s first-person viewer, found through `GET 127.0.0.1:5057/config`. Shows "offline" until the bot spawns |
 | Bot telemetry | `data/minecraft/telemetry.json` |
 | Connection status | Telemetry, plus `GET 127.0.0.1:5057/status` from the browser |
 | Live command relay | `data/minecraft/events.jsonl` merged with `GET 127.0.0.1:5057/events` |

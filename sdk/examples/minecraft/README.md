@@ -47,11 +47,13 @@ Expected output:
 [mc] connecting to localhost:25565 as LumiBot
 [sdk] connecting to ws://127.0.0.1:5056/ws
 [ctrl] control API on 127.0.0.1:5057
+[skin] serving lumi_skin.png on http://127.0.0.1:3001/skins/LumiBot.png
 [sdk] welcome — session=... protocol=1.0
 [sdk] registered: minecraft_get_status
 ...
 [sdk] registered: minecraft_kill_mob
 [mc] bot spawned and ready
+[viewer] live view on http://localhost:3000
 ```
 
 For a LAN world, the port changes every launch. Set it from the dashboard's
@@ -78,9 +80,77 @@ For a LAN world, the port changes every launch. Set it from the dashboard's
 | `VOYAGER_DIR` | `../../../plugin/voyager/voyager` | Where to load Voyager's primitives from |
 | `EVENT_REACTIONS` | `true` | Push game events (damage, mobs, deaths, rare loot) for Lumi to react to out loud. `false` keeps only the silent status snapshots |
 | `AUTO_DEFEND` | `true` | Fight back when a hostile mob hits the bot. See [Self-defense](#self-defense) |
+| `VIEWER_PORT` | `3000` | Port for the first-person [live viewer](#live-viewer). `0` turns it off |
+| `VIEWER_DISTANCE` | `6` | Chunks the live viewer renders around the bot |
+| `SKIN_PORT` | `3001` | Port for the [skin server](#lumis-skin). `0` turns it off |
+| `SKIN_PATH` | `lumi_skin.png` next to `bot.js` | The skin PNG the skin server sends |
+
+### Ports
+
+| Port | Used by | Bound to |
+|---|---|---|
+| `3000` | Live viewer (`VIEWER_PORT`) | All interfaces. prismarine-viewer can't be told otherwise, so Windows may show a firewall prompt; allow it on private networks only, or deny it, since the dashboard on this PC still works |
+| `3001` | Skin server (`SKIN_PORT`) | `127.0.0.1` |
+| `5000` | Lumi's web UI | — |
+| `5002` | Minecraft dashboard (`plugin/mc_dashboard.py`) | `127.0.0.1` |
+| `5056` | Lumi SDK server | `127.0.0.1` |
+| `5057` | `bot.js` control API (`BOT_CONTROL_PORT`) | `127.0.0.1` |
 
 `MC_HOST` and `MC_PORT` can also be changed while the bot runs, through
 `POST /config` or the dashboard. That is how LAN worlds are handled.
+
+---
+
+## Lumi's skin
+
+The skin is `lumi_skin.png` in this folder: a standard 64×64 skin with classic
+(4 px) arms, built from the reference sheet in
+`assets/branding/lumi_png_samples/`. Edit it in any skin editor.
+
+**Why the game doesn't show it automatically.** A vanilla LAN world runs in
+offline mode. An offline-mode client never sends skin data to the server: the
+login packet has no field for it. So the server tells every player that
+`LumiBot` has the default skin. Minecraft also rejects skin URLs that aren't
+on Mojang's domains. A fake profile from `bot.js` can't get around either
+limit.
+
+**What works:** the [CustomSkinLoader](https://modrinth.com/mod/customskinloader)
+mod, installed in *your* Minecraft client (Fabric 1.19 build, alongside Fabric
+API). It replaces skins on your screen, which is what viewers see when you
+stream. Install it, launch the game once so it creates its folders, then do
+one of the following:
+
+- **Copy the file** (simplest). Copy `lumi_skin.png` to
+  `%APPDATA%\.minecraft\CustomSkinLoader\LocalSkin\skins\LumiBot.png`. Use
+  your `MC_USERNAME` as the file name if you changed it.
+- **Load it from `bot.js`.** In `%APPDATA%\.minecraft\CustomSkinLoader\CustomSkinLoader.json`,
+  add this entry to the top of `loadlist`. The skin then follows whatever is
+  in `lumi_skin.png` (or `SKIN_PATH`) while `bot.js` runs:
+
+  ```json
+  {"name": "LumiBot", "type": "Legacy", "checkPNG": false,
+   "skin": "http://127.0.0.1:3001/skins/{USERNAME}.png",
+   "model": "default", "cape": "", "elytra": ""}
+  ```
+
+The skin server only answers `/lumi_skin.png` and `/skins/<MC_USERNAME>.png`.
+Other players on the LAN still see the default skin unless they install the
+mod and the file too.
+
+---
+
+## Live viewer
+
+When the bot spawns, `bot.js` starts
+[prismarine-viewer](https://github.com/PrismarineJS/prismarine-viewer) in
+first-person mode: a 3D view of what the bot sees, at
+`http://localhost:3000`. The dashboard (`plugin/mc_dashboard.py`) embeds it in
+its **Live View** panel.
+
+The viewer is optional. If the package doesn't load (for example, `canvas`,
+an optional native dependency, failed to install) or port 3000 is taken,
+`bot.js` logs a warning and the bot plays normally without it. It stops on
+disconnect and starts again after the bot reconnects and spawns.
 
 ---
 
@@ -384,7 +454,7 @@ It doesn't go through Lumi, so it works whether or not Lumi is running.
 |---|---|---|
 | `GET` | `/status` | `{ready, username, server, position, health, food, inventory, threats, is_day, busy, defending}` |
 | `GET` | `/events` | Last 100 entries of the bot's event log |
-| `GET` | `/config` | `{host, port, username, auth}` |
+| `GET` | `/config` | `{host, port, username, auth, viewer_port, skin_port}`. `viewer_port` is `null` while the viewer isn't running |
 | `POST` | `/config` | `{host, port}`. Updates the target server and reconnects if it changed |
 | `POST` | `/action` | `{action, args}`, where `action` is an action name without the `minecraft_` prefix (e.g. `mine_block`). Returns `{success, message}` |
 
@@ -417,6 +487,21 @@ free-play goals (chop trees, hunt, explore, build a dirt hut at night). See
 ---
 
 ## Troubleshooting
+
+**`[viewer] live view disabled (Cannot find module 'canvas')`.**
+`canvas` is an optional native dependency, so `npm install` carries on without
+it if it can't be installed. Run `npm install canvas` in this folder and read
+the error it prints. The bot works without the viewer.
+
+**Live View panel says offline.**
+The viewer starts only after the bot spawns in a world. Check the `bot.js`
+log for `[viewer]` lines: another program on port 3000 (`VIEWER_PORT`) is the
+usual cause.
+
+**LumiBot still has the default skin.**
+See [Lumi's skin](#lumis-skin): the skin needs the CustomSkinLoader mod in
+your client. With the `loadlist` option, `bot.js` must be running when the
+skin loads. Press F3+T in game to reload textures.
 
 **Bot connects to Lumi but actions never fire.**
 Agent mode must be ON (`!agent_on` in the terminal or the Agent chip in the web

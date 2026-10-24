@@ -29,6 +29,7 @@ const { plugin: pvpPlugin }    = require("mineflayer-pvp");
 const fs   = require("fs");
 const path = require("path");
 const http = require("http");
+const net  = require("net");
 
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
@@ -58,6 +59,89 @@ const DEFEND_RADIUS    = 5;   // blocks: look at / fight hostiles this close
 const THREAT_RADIUS    = 10;  // blocks: announce hostiles this close
 // While a skill runs, auto-defend only interrupts it at or below this health.
 const DEFEND_INTERRUPT_HEALTH = 12;
+// First-person 3D view of what the bot sees (prismarine-viewer). 0 disables.
+const VIEWER_PORT      = parseInt(process.env.VIEWER_PORT || "3000", 10);
+const VIEWER_DISTANCE  = parseInt(process.env.VIEWER_DISTANCE || "6", 10);
+// Serves the bot's skin PNG for CustomSkinLoader. 0 disables.
+const SKIN_PORT        = parseInt(process.env.SKIN_PORT || "3001", 10);
+const SKIN_PATH        = process.env.SKIN_PATH || path.join(__dirname, "lumi_skin.png");
+
+// ─── Live viewer (optional) ────────────────────────────────────────────────
+
+// Loaded once at startup. If it's missing or broken the bot runs without it.
+let startViewerFor = null;
+try {
+  startViewerFor = require("prismarine-viewer").mineflayer;
+} catch (e) {
+  console.warn(`[viewer] live view disabled (${e.message.split("\n")[0]}). ` +
+               "Run npm install in sdk/examples/minecraft to enable it.");
+}
+let viewerRunning = false;
+
+// prismarine-viewer doesn't handle listen errors, so a port clash would
+// crash the bot. Check first, binding the same way it does (all interfaces).
+function portFree(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer()
+      .once("error", () => resolve(false))
+      .once("listening", () => probe.close(() => resolve(true)))
+      .listen(port);
+  });
+}
+
+async function startViewer(b) {
+  if (!VIEWER_PORT || !startViewerFor || viewerRunning) return;
+  if (!(await portFree(VIEWER_PORT))) {
+    console.warn(`[viewer] port ${VIEWER_PORT} is in use — live view disabled (set VIEWER_PORT)`);
+    return;
+  }
+  if (b !== bot) return;  // replaced by a reconnect while we checked
+  try {
+    startViewerFor(b, { port: VIEWER_PORT, firstPerson: true, viewDistance: VIEWER_DISTANCE });
+    viewerRunning = true;
+    console.log(`[viewer] live view on http://localhost:${VIEWER_PORT}`);
+    _logEv("viewer", `live view on :${VIEWER_PORT}`);
+  } catch (e) {
+    console.warn(`[viewer] failed to start: ${e.message}`);
+  }
+}
+
+function stopViewer(b) {
+  if (!viewerRunning || !b || !b.viewer || !b.viewer.close) return;
+  try { b.viewer.close(); } catch (_) {}
+  viewerRunning = false;
+}
+
+// ─── Skin server ───────────────────────────────────────────────────────────
+// A vanilla LAN server can't receive a skin from an offline-mode bot, so the
+// skin is applied client-side by the CustomSkinLoader mod, which can load it
+// from this URL. See README "Lumi's skin".
+
+function startSkinServer() {
+  if (!SKIN_PORT) return;
+  const server = http.createServer((req, res) => {
+    const url = (req.url || "").split("?")[0].toLowerCase();
+    const known = url === "/lumi_skin.png" || url === `/skins/${MC_USERNAME.toLowerCase()}.png`;
+    if (req.method !== "GET" || !known) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    fs.readFile(SKIN_PATH, (err, data) => {
+      if (err) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "no-cache",
+                           "Access-Control-Allow-Origin": "*" });
+      res.end(data);
+    });
+  });
+  server.on("error", (e) => console.warn(`[skin] skin server not started on :${SKIN_PORT} (${e.code || e.message})`));
+  server.listen(SKIN_PORT, "127.0.0.1", () =>
+    console.log(`[skin] serving ${path.basename(SKIN_PATH)} on http://127.0.0.1:${SKIN_PORT}/skins/${MC_USERNAME}.png`));
+}
 
 // ─── Voyager control primitives (plugin/voyager submodule) ─────────────────
 
@@ -108,6 +192,7 @@ const announcedThreats = new Set();
 
 function createBot() {
   if (bot) {
+    stopViewer(bot);
     try { bot.end("reconnecting"); } catch (_) {}
     bot      = null;
     botReady = false;
@@ -136,6 +221,7 @@ function createBot() {
     lastHealth = bot.health;
     lastFood   = bot.food;
     console.log("[mc] bot spawned and ready");
+    startViewer(bot);
     pushBotContext();
     pushEvent("spawn", `I just joined the world. Health ${fmtHp(bot.health)}/20, ` +
                        `hunger ${bot.food}/20, carrying: ${inventorySummary()}.`);
@@ -220,6 +306,7 @@ function createBot() {
     // Ignore ends from a bot already replaced by a /config reconnect.
     if (bot !== thisBot) return;
     botReady = false;
+    stopViewer(thisBot);
     console.log(`[mc] disconnected from ${MC_HOST}:${MC_PORT}:`, reason);
     setTimeout(() => { if (bot === thisBot) createBot(); }, 10000);
   });
@@ -1070,7 +1157,9 @@ const _controlServer = http.createServer((req, res) => {
 
   } else if (req.method === "GET" && url === "/config") {
     res.writeHead(200);
-    res.end(JSON.stringify({ host: MC_HOST, port: MC_PORT, username: MC_USERNAME, auth: MC_AUTH }));
+    res.end(JSON.stringify({ host: MC_HOST, port: MC_PORT, username: MC_USERNAME, auth: MC_AUTH,
+                             viewer_port: viewerRunning ? VIEWER_PORT : null,
+                             skin_port: SKIN_PORT || null }));
 
   } else if (req.method === "POST" && url === "/config") {
     let body = "";
@@ -1283,5 +1372,6 @@ process.on("SIGINT", () => {
   process.exit(0);
 });
 
+startSkinServer();
 createBot();
 connect();

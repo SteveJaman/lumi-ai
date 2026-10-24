@@ -9,6 +9,8 @@ Panels:
   • Bot telemetry      — position, health, food, inventory, current goal
   • Command relay      — live stream of SDK and control-API events from events.jsonl
   • Error tracker      — recent errors extracted from the event log
+  • Current thought    — what the agent is doing or deciding right now
+  • Live view          — bot.js's first-person prismarine-viewer (:3000)
 
 Data sources (all local files written by minecraft_bot.py / bot.js):
   data/minecraft/telemetry.json  — live bot state
@@ -354,6 +356,29 @@ header h1 {
 .s-pill.warn .dot { background: var(--warn); }
 .s-pill.bad  { border-color: rgba(248,113,113,.35); color: var(--error); }
 .s-pill.bad  .dot { background: var(--error); }
+
+/* ── Thought + live view ─────────────────────────────────────────── */
+.thought {
+  padding: 16px 18px;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text);
+  border-left: 3px solid var(--accent);
+  background: var(--bg-inset);
+  margin: 12px 14px;
+  border-radius: 0 6px 6px 0;
+  min-height: 3em;
+}
+.thought-meta { padding: 0 14px 12px; font-size: 11px; color: var(--text-mute); }
+.viewer-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 70vh;
+  background: var(--bg-inset);
+}
+.viewer-wrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.viewer-wrap .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
 </style>
 </head>
 <body>
@@ -373,6 +398,27 @@ header h1 {
 </header>
 
 <div class="grid">
+
+  <!-- ── Current thought ───────────────────────────────────────── -->
+  <div class="panel" style="grid-column: 1 / -1">
+    <div class="panel-head">
+      Lumi's Current Thought
+      <span class="badge" id="thought-goal">—</span>
+    </div>
+    <div class="thought" id="thought-text">Waiting for the agent…</div>
+    <div class="thought-meta" id="thought-meta"></div>
+  </div>
+
+  <!-- ── Live view ─────────────────────────────────────────────── -->
+  <div class="panel" style="grid-column: 1 / -1">
+    <div class="panel-head">
+      Live View
+      <a class="badge" id="viewer-link" href="#" target="_blank" rel="noopener" style="text-decoration:none">—</a>
+    </div>
+    <div class="viewer-wrap" id="viewer-wrap">
+      <div class="empty">Live view is offline. Start bot.js and wait for the bot to spawn.</div>
+    </div>
+  </div>
 
   <!-- ── Telemetry ─────────────────────────────────────────────── -->
   <div class="panel">
@@ -542,6 +588,38 @@ function renderTelemetry() {
   `;
 }
 
+// ── Render thought ────────────────────────────────────────────────
+function renderThought() {
+  const t = _tel;
+  document.getElementById("thought-text").textContent = t.current_thought || "Waiting for the agent…";
+  document.getElementById("thought-goal").textContent = t.current_goal || "idle";
+  document.getElementById("thought-meta").textContent = t.goal_source
+    ? `goal picked by ${t.goal_source}` + (t.last_update ? ` · updated ${t.last_update}` : "")
+    : (t.last_update ? `updated ${t.last_update}` : "");
+}
+
+// ── Live view ─────────────────────────────────────────────────────
+// The iframe is only (re)created when the viewer's URL changes, so the
+// 3D scene isn't reloaded on every poll.
+let _viewerUrl = null;
+async function refreshViewer() {
+  const cfg = await fetchJson("http://127.0.0.1:5057/config");
+  const url = cfg && cfg.viewer_port ? `http://localhost:${cfg.viewer_port}/` : null;
+  if (url === _viewerUrl) return;
+  _viewerUrl = url;
+  const wrap = document.getElementById("viewer-wrap");
+  const link = document.getElementById("viewer-link");
+  if (url) {
+    wrap.innerHTML = `<iframe src="${esc(url)}" title="Lumi's first-person view" allow="fullscreen"></iframe>`;
+    link.textContent = `:${cfg.viewer_port} ↗`;
+    link.href = url;
+  } else {
+    wrap.innerHTML = '<div class="empty">Live view is offline. Start bot.js and wait for the bot to spawn.</div>';
+    link.textContent = "offline";
+    link.removeAttribute("href");
+  }
+}
+
 // ── Render connection status ──────────────────────────────────────
 function renderStatus() {
   const t   = _tel;
@@ -659,6 +737,7 @@ async function poll() {
   _botSt = botSt;
   if (botEvt) _bEvt = botEvt;
 
+  renderThought();
   renderTelemetry();
   renderStatus();
   renderLog();
@@ -709,7 +788,9 @@ async function applyServer() {
 
 poll();
 loadServerConfig();
+refreshViewer();
 setInterval(poll, 2000);
+setInterval(refreshViewer, 5000);
 </script>
 </body>
 </html>

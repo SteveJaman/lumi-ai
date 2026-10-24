@@ -332,6 +332,7 @@ class MinecraftAgent(LumiClient):
             "current_goal": None,
             "goal_description": None,
             "goal_source": None,
+            "current_thought": "Starting up...",
             "loop_state": "starting",
             "last_update": None,
             "skills_verified": 0,
@@ -443,6 +444,7 @@ class MinecraftAgent(LumiClient):
     async def _h_pause(self, _args: Dict) -> tuple:
         self._paused = True
         self._tel["loop_state"] = "paused"
+        self._think("Paused. Just standing here.")
         self._record("agent", "Loop paused")
         return True, "Paused"
 
@@ -504,7 +506,7 @@ class MinecraftAgent(LumiClient):
                 if not status:
                     self._tel["bot_status"] = "unreachable"
                     self._tel["loop_state"] = "waiting for bot"
-                    self._flush_telemetry()
+                    self._think("Waiting for the game to start...")
                     continue
 
                 self._tel.update({
@@ -519,6 +521,7 @@ class MinecraftAgent(LumiClient):
                 self._flush_telemetry()
 
                 if not status.get("ready"):
+                    self._think("Waiting to spawn in...")
                     continue
 
                 # 2. Survive — fights and meals come before any goal
@@ -528,12 +531,14 @@ class MinecraftAgent(LumiClient):
                 # 3. Pick a goal
                 picked = await self._pick_goal(status)
                 if picked is None:
+                    self._think("Nothing I can do right now. Taking a breather.")
                     await asyncio.sleep(10)
                     continue
                 goal_name, source, reason = picked
                 desc = _goal_desc(goal_name)
                 self._tel.update({"current_goal": goal_name, "goal_description": desc,
                                   "goal_source": source})
+                self._think(desc + (f" — {reason}" if reason else ""))
                 self._record("curriculum", f"Goal: {desc} ({source}{': ' + reason if reason else ''})")
                 await self._narrate(
                     f"I'm starting something new: {desc.lower()}."
@@ -547,6 +552,7 @@ class MinecraftAgent(LumiClient):
                 if ok:
                     self._failures.pop(goal_name, None)
                     self._record("result", f"OK {goal_name}: {msg}")
+                    self._think(f"Done: {desc.lower()}. What next?")
                     if goal_name in BUILTIN_SKILLS:
                         self._save_skill(goal_name, BUILTIN_SKILLS[goal_name])
                         await self._narrate(f"I just finished a milestone: {desc.lower()}.",
@@ -556,6 +562,7 @@ class MinecraftAgent(LumiClient):
                 else:
                     n = self._failures[goal_name] = self._failures.get(goal_name, 0) + 1
                     self._record("error", f"FAIL {goal_name} (x{n}): {msg}")
+                    self._think(f"That didn't work ({desc.lower()}): {msg[:120]}")
                     if n == 3:
                         await self._narrate(f"I keep failing at this: {desc.lower()}. "
                                             f"The game says: {msg[:160]}", force=True)
@@ -580,6 +587,7 @@ class MinecraftAgent(LumiClient):
         if threats and not status.get("defending") and time.time() >= self._defend_backoff_until:
             self._tel["current_goal"], self._tel["goal_description"] = "defend", f"Fight off a {threats[0]['name']}"
             self._record("survival", f"{threats[0]['name']} at {threats[0]['distance']} blocks — defending")
+            self._think(f"A {threats[0]['name'].replace('_', ' ')} is right there! Fighting it off.")
             r = await self._bot_action("defend", {})
             self._record("result" if r.get("success") else "error", f"defend: {r.get('message', '')}")
             if not r.get("success"):
@@ -591,6 +599,7 @@ class MinecraftAgent(LumiClient):
         inv = _inv(status)
         food = status.get("food")
         if food is not None and food < EAT_BELOW_FOOD and _has(inv, _EDIBLE):
+            self._think(f"Hunger is at {food}/20. Snack time.")
             r = await self._bot_action("eat_food", {})
             self._record("survival", f"eat_food: {r.get('message', '')}")
             return bool(r.get("success"))
@@ -782,6 +791,12 @@ class MinecraftAgent(LumiClient):
             errs = self._tel.setdefault("errors", [])
             errs.append({"time": entry["time"], "message": message})
             self._tel["errors"] = errs[-30:]
+
+    def _think(self, thought: str) -> None:
+        """What the agent is doing or deciding, in plain words, for the
+        dashboard's thought box."""
+        self._tel["current_thought"] = thought
+        self._flush_telemetry()
 
     def _flush_telemetry(self) -> None:
         self._tel["skills_verified"] = sum(
