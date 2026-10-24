@@ -89,6 +89,12 @@ NARRATE_COOLDOWN = float(os.environ.get("MC_NARRATE_COOLDOWN", "75"))
 STATUS_EVERY   = float(os.environ.get("MC_STATUS_INTERVAL", "30"))  # silent status push
 EAT_BELOW_FOOD = 14   # eat when hunger drops below this and food is on hand
 DEFEND_RANGE   = 6    # proactively fight hostiles this close (blocks)
+# The "semi-magnet": Lumi plays near her player like a kid near a parent.
+NEAR_DIST      = 10   # closer than this: right next to them
+FAR_DIST       = 25   # farther than this: go back to them
+PROJECT_LEASH  = 64   # leash while on a long project (branch mine, house, ores)
+PROJECT_GOALS  = {"branch_mine", "build_house", "mine_iron_ore", "mine_diamond"}
+PROJECT_HOLD_S = 180  # a project keeps the long leash this long after it starts
 
 # ─── Tech tree ────────────────────────────────────────────────────────────────
 # Progress is read from the inventory (plus a crafting table or furnace placed
@@ -348,8 +354,21 @@ _MEAT = ["beef", "porkchop", "chicken", "mutton"]
 _PICKAXES = ["wooden_pickaxe", "stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "netherite_pickaxe"]
 
 
-def _explore_code(_status: Dict) -> str:
-    dx, dz = random.choice(_DIRS)
+def _explore_dir(status: Dict) -> Tuple[int, int]:
+    """Random, but back toward the player once more than 15 blocks out, so
+    exploring stays nearby."""
+    owner, me = status.get("owner") or {}, status.get("position") or {}
+    op = owner.get("position")
+    if op and me and (owner.get("distance") or 0) > 15:
+        sign = lambda v: (v > 2) - (v < -2)
+        d = (sign(op["x"] - me["x"]), sign(op["z"] - me["z"]))
+        if d != (0, 0):
+            return d
+    return random.choice(_DIRS)
+
+
+def _explore_code(status: Dict) -> str:
+    dx, dz = _explore_dir(status)
     return (f'await exploreUntil(bot, new Vec3({dx}, 0, {dz}), 45, () => null);\n'
             f'const p = bot.entity.position;\n'
             f'return `Explored to ${{p.x.toFixed(0)}}, ${{p.y.toFixed(0)}}, ${{p.z.toFixed(0)}}`;')
@@ -357,7 +376,7 @@ def _explore_code(_status: Dict) -> str:
 
 def _explore_steps(status: Dict) -> List[Step]:
     p = status.get("position") or {}
-    dx, dz = random.choice(_DIRS)
+    dx, dz = _explore_dir(status)
     return [("move_to", {"x": p.get("x", 0) + dx * 30, "y": p.get("y", 64),
                          "z": p.get("z", 0) + dz * 30, "range": 6})]
 
@@ -427,6 +446,19 @@ while (bot.time && !bot.time.isDay && Date.now() - t0 < 100000) await bot.waitFo
 return bot.time && bot.time.isDay ? "Made it to morning" : "Still night, waited a while";
 """
 
+_CRAFT_TORCHES = """
+await ensureSticks(2);
+const before = countOf("torch");
+await craftItem(bot, "torch", Math.min(countOf("coal"), 4));
+if (countOf("torch") <= before) throw new Error("Couldn't craft torches");
+return `Have ${countOf("torch")} torches`;
+"""
+
+_GATHER_COBBLE = """
+await findOrExplore("stone", new Vec3(1, -1, 1));
+return await mineAndCheck("stone", ["cobblestone", "cobbled_deepslate"], 16);
+"""
+
 Code = Union[str, Callable[[Dict], str]]
 
 
@@ -434,11 +466,53 @@ def _has(inv: Dict[str, int], names: List[str]) -> bool:
     return any(inv.get(n, 0) > 0 for n in names)
 
 
+def _owner_distance(st: Dict) -> Optional[float]:
+    """Horizontal distance to the player, or None when out of sight.
+    Horizontal on purpose: mining straight below them is still "nearby"."""
+    owner, me = st.get("owner") or {}, st.get("position") or {}
+    op = owner.get("position")
+    if not op or not me:
+        return owner.get("distance")
+    return ((op["x"] - me["x"]) ** 2 + (op["z"] - me["z"]) ** 2) ** 0.5
+
+
+def _house(st: Dict) -> Dict:
+    return st.get("house") or {}
+
+
+def _house_center(st: Dict) -> Optional[Dict[str, float]]:
+    o = _house(st).get("origin")
+    return {"x": o[0] + 3, "y": o[1] + 1, "z": o[2] + 3} if o else None
+
+
+def _away_from_home(st: Dict) -> bool:
+    c, me = _house_center(st), st.get("position")
+    if not c or not me:
+        return False
+    return max(abs(me["x"] - c["x"]), abs(me["z"] - c["z"])) > 3 or abs(me["y"] - c["y"]) > 2
+
+
+def _at_surface(st: Dict) -> bool:
+    """Roughly level with the player, so the house isn't built in a mine."""
+    op, me = (st.get("owner") or {}).get("position"), st.get("position")
+    return not op or not me or abs(op["y"] - me["y"]) <= 8
+
+
+def _house_material(inv: Dict[str, int]) -> str:
+    return "cobblestone" if _cobble(inv) >= _wood(inv) else "planks"
+
+
+def _wants(st: Dict, *items: str) -> bool:
+    """Whether a failed house build asked for one of these items. The agent
+    puts its wishlist into the status it hands the gates."""
+    return any(st.get("wanted", {}).get(i) for i in items)
+
+
 # Each gate is checked in code, so the model is never offered a goal that
 # makes no sense right now (a hut at noon, more trees with a full stack).
 FREE_GOALS: Dict[str, Dict[str, Any]] = {
     "chop_trees":     {"desc": "Chop down some trees for wood",
-                       "when": lambda inv, st: _logs(inv) < 10,
+                       "when": lambda inv, st: _logs(inv) < 10 or _wants(st, "oak_planks", "planks"),
                        "code": _CHOP_TREES,
                        "steps": [("mine_block", {"name": "oak_log", "count": 4})]},
     "hunt_food":      {"desc": "Hunt an animal for food",
@@ -456,8 +530,35 @@ FREE_GOALS: Dict[str, Dict[str, Any]] = {
                        "when": lambda inv, st: _has(inv, _PICKAXES),
                        "code": _MINE_COAL},
     "build_dirt_hut": {"desc": "Build a dirt hut to hide in for the night",
-                       "when": lambda inv, st: not st.get("is_day", True),
+                       "when": lambda inv, st: not st.get("is_day", True) and not _house(st).get("complete"),
                        "code": _DIRT_HUT},
+    "go_home":        {"desc": "Go home to the house for the night",
+                       "when": lambda inv, st: (not st.get("is_day", True) and _house(st).get("complete")
+                                                and _away_from_home(st)),
+                       "action": ("move_to", lambda st: dict(_house_center(st), range=1))},
+    "build_house":    {"desc": "Build a proper 7x7 house",
+                       "when": lambda inv, st: (st.get("is_day", True) and not _house(st).get("complete")
+                                                and max(_cobble(inv), _wood(inv)) >= 64 and _at_surface(st)),
+                       "action": ("build_house", lambda st: {"material": _house_material(_inv(st))})},
+    "gather_cobblestone": {"desc": "Mine cobblestone for the house",
+                       "when": lambda inv, st: _wants(st, "cobblestone") and _pickaxe(inv) >= 1,
+                       "code": _GATHER_COBBLE},
+    "branch_mine":    {"desc": "Dig a branch mine and look for ores",
+                       "when": lambda inv, st: _pickaxe(inv) >= 2,
+                       # Iron level first; diamonds sit near the bottom of the world in 1.18+.
+                       "action": ("mine_branch_tunnel",
+                                  lambda st: {"depth": -54 if _pickaxe(_inv(st)) >= 3 else 12, "length": 24})},
+    "craft_torches":  {"desc": "Craft torches",
+                       "when": lambda inv, st: inv.get("coal", 0) >= 1 and inv.get("torch", 0) < 16
+                                               and _wood(inv) >= 2,
+                       "code": _CRAFT_TORCHES},
+    "organize_inventory": {"desc": "Put excess stuff away in a chest",
+                       "when": lambda inv, st: (st.get("free_slots") or 36) <= 6,
+                       "action": ("sort_inventory", {"place_if_missing": True})},
+    # Never offered as an option: chosen by the proximity check.
+    "return_to_player": {"desc": "Head back to my player",
+                       "when": lambda inv, st: False,
+                       "action": ("return_to_player", {"range": 4})},
     "wait_out_night": {"desc": "Hide and wait for the sun to come up",
                        "when": lambda inv, st: not st.get("is_day", True),
                        "code": _WAIT_NIGHT},
@@ -474,9 +575,10 @@ PICKER_SYSTEM = (
 # Goal time limits (s), shorter than bot.js's 120 s default where a stuck
 # pathfinder is the usual failure, so the agent moves on sooner.
 GOAL_TIMEOUT_S = {"collect_wood": 60, "chop_trees": 60, "explore": 60,
-                  "build_dirt_hut": 90, "hunt_food": 75, "mine_stone": 90}
+                  "build_dirt_hut": 90, "hunt_food": 75, "mine_stone": 90,
+                  "gather_cobblestone": 90}
 # After success, don't offer a goal again for this long (s).
-SUCCESS_COOLDOWN_S = {"build_dirt_hut": 600}
+SUCCESS_COOLDOWN_S = {"build_dirt_hut": 600, "organize_inventory": 120}
 FAIL_STREAK = 3          # failures in a row before a goal is rested
 FAIL_COOLDOWN_S = 300
 
@@ -503,6 +605,9 @@ class MinecraftAgent(LumiClient):
         self._cooldown_until: Dict[str, float] = {}        # goal -> time it may run again
         self._hut_this_night = False
         self._progress = 0
+        self._wanted: Dict[str, int] = {}      # materials a failed house build asked for
+        self._project_until = 0.0              # long leash until then
+        self._band: Optional[str] = None       # near / roaming / far / out of sight
         self._last_narration = 0.0
         self._last_status_push = 0.0
         self._last_done: Optional[str] = None
@@ -719,7 +824,8 @@ class MinecraftAgent(LumiClient):
                     self._hut_this_night = False
                 self._progress = _progress_count(_inv(status), status.get("nearby") or {})
                 self._flush_telemetry()
-                await self._push_status(status)
+                band_changed = self._update_band(status)
+                await self._push_status(status, force=band_changed)
 
                 if not status.get("ready"):
                     self._think("Waiting to spawn in...")
@@ -744,6 +850,8 @@ class MinecraftAgent(LumiClient):
                 await self._narrate(
                     f"I'm starting something new: {desc.lower()}."
                     + (f" Why: {reason}" if reason else ""))
+                if goal_name in PROJECT_GOALS:
+                    self._project_until = time.time() + PROJECT_HOLD_S
                 await self._push_status(status, force=True)
 
                 # 4. Execute
@@ -760,7 +868,17 @@ class MinecraftAgent(LumiClient):
                         self._cooldown_until[goal_name] = time.time() + SUCCESS_COOLDOWN_S[goal_name]
                     if goal_name == "build_dirt_hut":
                         self._hut_this_night = True
-                    if goal_name == "mine_diamond":
+                    if goal_name == "build_house" and msg.startswith("Built a"):
+                        self._wanted.clear()
+                        await self._narrate("I just finished building a real house! "
+                                            "Floor, walls, windows, a roof, the works.", major=True)
+                    elif goal_name == "build_house":
+                        self._wanted.clear()
+                        self._project_until = time.time() + PROJECT_HOLD_S   # keep at it
+                    if goal_name == "return_to_player":
+                        self._project_until = 0.0
+                        await self._push_status(status, force=True)
+                    if goal_name == "mine_diamond" or (goal_name == "branch_mine" and "diamond" in msg):
                         await self._narrate("I just found and mined diamonds!", major=True)
                     elif goal_name in _TIERS:
                         await self._narrate(f"I just finished a milestone: {desc.lower()}.")
@@ -768,6 +886,10 @@ class MinecraftAgent(LumiClient):
                 else:
                     n = self._failures[goal_name] = self._failures.get(goal_name, 0) + 1
                     self._record("error", f"FAIL {goal_name} (x{n}): {msg}")
+                    missing = re.search(r"Missing materials: (\w+)×(\d+)", msg)
+                    if missing:
+                        self._wanted[missing.group(1)] = int(missing.group(2))
+                        self._record("agent", f"house needs {missing.group(2)} more {missing.group(1)}")
                     self._think(f"That didn't work ({desc.lower()}): {msg[:120]}")
                     if n >= FAIL_STREAK:
                         self._failures.pop(goal_name, None)
@@ -816,6 +938,13 @@ class MinecraftAgent(LumiClient):
         return False
 
     async def _execute_goal(self, goal: str, status: Dict) -> Tuple[bool, str]:
+        spec = FREE_GOALS.get(goal, {}).get("action")
+        if spec:
+            # A plain bot.js action (house, branch mine, chests, return).
+            name, args = spec
+            self._record("skill", f"Executing: {goal} ({name})")
+            r = await self._bot_action(name, args(status) if callable(args) else dict(args))
+            return bool(r.get("success")), r.get("message", "")
         code = _skill_code(goal, status)
         if not code:
             return False, f"No skill code for '{goal}'"
@@ -852,10 +981,21 @@ class MinecraftAgent(LumiClient):
         inv = _inv(status)
         near = status.get("nearby") or {}
 
+        # Semi-magnet: wander, but come back when called or too far.
+        back = self._should_return(status)
+        if back:
+            return "return_to_player", "proximity", back
+
         # The basics are never left to the model.
         tech = _tech_goal(inv, near)
         if tech and self._available(tech, status):
             return tech, "tech tree", _TECH_REASON[tech]
+
+        # Routines, also decided in code: home at night, a full inventory.
+        gate_status = dict(status, wanted=self._wanted)
+        for routine in ("go_home", "organize_inventory"):
+            if FREE_GOALS[routine]["when"](inv, gate_status) and self._available(routine, status):
+                return routine, "routine", ""
 
         options: Dict[str, str] = {}
         progress = _progress_goal(inv, near)
@@ -863,7 +1003,7 @@ class MinecraftAgent(LumiClient):
             options[progress] = f"{_goal_desc(progress)} (next step toward better tools)"
         for name, g in FREE_GOALS.items():
             try:
-                if g["when"](inv, status) and self._available(name, status):
+                if g["when"](inv, gate_status) and self._available(name, status):
                     options[name] = g["desc"]
             except Exception:
                 pass
@@ -875,6 +1015,40 @@ class MinecraftAgent(LumiClient):
             if picked:
                 return picked[0], "llm", picked[1]
         return self._random_pick(status, options, progress), "random", ""
+
+    def _should_return(self, status: Dict) -> Optional[str]:
+        """A reason to go back to the player, or None. Survival has already
+        run by now, so a creeper always comes first."""
+        owner = status.get("owner")
+        if not owner or not self._available("return_to_player", status):
+            return None
+        name, d = owner.get("name"), _owner_distance(status)
+        if owner.get("called") and (d is None or d > 4):
+            return f"{name} called me"
+        leash = PROJECT_LEASH if time.time() < self._project_until else FAR_DIST
+        if d is None:
+            return f"{name} is out of sight"
+        if d > leash:
+            return f"{name} is {d:.0f} blocks away"
+        return None
+
+    def _update_band(self, status: Dict) -> bool:
+        """Track near / roaming / far, and say so in the log on a change.
+        Returns True on a change so the silent status goes out right away."""
+        owner = status.get("owner")
+        if not owner:
+            band = None
+        elif _owner_distance(status) is None:
+            band = "out of sight"
+        else:
+            d = _owner_distance(status)
+            band = "near" if d < NEAR_DIST else "roaming" if d <= FAR_DIST else "far"
+        if band == self._band:
+            return False
+        if band and self._band:
+            self._record("agent", f"{owner['name']}: {self._band} → {band}")
+        self._band = band
+        return True
 
     def _available(self, goal: str, status: Dict) -> bool:
         """Not resting after a success or a failure streak, and (for the
@@ -892,10 +1066,13 @@ class MinecraftAgent(LumiClient):
                     return night_goal
         if (status.get("food") or 20) < EAT_BELOW_FOOD and "hunt_food" in options:
             return "hunt_food"
+        if "craft_torches" in options and "branch_mine" in options:
+            return "craft_torches"     # light before going underground
         if progress in options and random.random() < 0.7:
             return progress
         weights = {"chop_trees": 3, "explore": 2, "hunt_food": 1, "mine_coal": 2,
-                   "cook_meat": 2, "build_dirt_hut": 0, "wait_out_night": 0}
+                   "cook_meat": 2, "build_dirt_hut": 0, "wait_out_night": 0,
+                   "branch_mine": 3, "build_house": 4, "gather_cobblestone": 4}
         just_did = {g for g, _ in self._recent_goals[-2:]}
         names = [n for n in options if n not in just_did] or list(options)
         return random.choices(names, weights=[weights.get(n, 1) or 0.1 for n in names])[0]
@@ -910,8 +1087,11 @@ class MinecraftAgent(LumiClient):
             f"Current time: {'Day' if is_day else 'Night'}. "
             f"Health {_fmt(status.get('health'))}/20, hunger {_fmt(status.get('food'))}/20. "
             f"Hostiles nearby: {threats}.\n"
+            f"{self._player_line(status)}"
             f"Recent goals (oldest first, with result): {self._recent_text(5)}.\n"
-            "Rules: Do not pick build_dirt_hut if it is Day. Do not pick chop_trees if "
+            + (f"Materials wanted for the house: "
+               f"{', '.join(f'{k}×{v}' for k, v in self._wanted.items())}.\n" if self._wanted else "")
+            + "Rules: Do not pick build_dirt_hut if it is Day. Do not pick chop_trees if "
             "you already have 10+ logs. Do not repeat a goal that just succeeded unless "
             "nothing else makes sense.\n\n"
             "Goals you can pick:\n"
@@ -943,6 +1123,16 @@ class MinecraftAgent(LumiClient):
             self._record("warn", f"goal picker gave no valid goal: {text[:120]}")
             return None
         return goal, str(data.get("reason") or "").strip()[:160]
+
+    def _player_line(self, status: Dict) -> str:
+        owner = status.get("owner")
+        if not owner:
+            return ""
+        d = _owner_distance(status)
+        where = f"{d:.0f} blocks away" if d is not None else "out of sight"
+        return (f"You are playing near {owner['name']} ({where}). If you get too far "
+                f"({FAR_DIST}+ blocks) or they call you, go back to them. Otherwise, do "
+                "your own thing nearby.\n")
 
     def _reenable_llm(self) -> None:
         self._llm_ok = chat_sync is not None and GOAL_PICKER == "llm" and bool(GOAL_MODEL)
@@ -976,6 +1166,22 @@ class MinecraftAgent(LumiClient):
             f"hostiles nearby: {threats}.",
             f"Currently: {doing}",
         ]
+        owner = status.get("owner")
+        if owner:
+            d = _owner_distance(status)
+            if d is None:
+                lines.append(f"{owner['name']} is out of sight, so you wandered off "
+                             "(or they did). You're heading back.")
+            elif d > FAR_DIST:
+                lines.append(f"You wandered {d:.0f} blocks away from {owner['name']}.")
+            elif d >= NEAR_DIST:
+                lines.append(f"You're roaming {d:.0f} blocks from {owner['name']}, "
+                             "keeping them in sight.")
+            else:
+                lines.append(f"You're right next to {owner['name']} ({d:.0f} blocks).")
+        if _house(status).get("complete"):
+            o = status["house"]["origin"]
+            lines.append(f"You built a house at {o[0] + 3}, {o[1] + 1}, {o[2] + 3}.")
         if self._last_done:
             lines.append(f"Last finished: {self._last_done}.")
         await self.send_context("\n".join(lines), silent=True)
@@ -1100,7 +1306,9 @@ _TECH_REASON = {
 
 def _skill_code(goal: str, status: Dict) -> Optional[str]:
     if goal in FREE_GOALS:
-        code: Code = FREE_GOALS[goal]["code"]
+        code: Optional[Code] = FREE_GOALS[goal].get("code")
+        if code is None:
+            return None      # an action goal, run as a plain bot.js action
         return _PRELUDE + (code(status) if callable(code) else code)
     return BUILTIN_SKILLS.get(goal)
 

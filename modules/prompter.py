@@ -26,6 +26,7 @@ from constants import (
     FAST_MODEL_NUM_CTX,
     FAST_MODEL_KEEP_ALIVE,
     MAIN_NUM_CTX,
+    HOST,
 )
 from modules.agent_tools import (
     TOOL_SCHEMAS, CONFIRM_REQUIRED_TOOLS, execute_tool,
@@ -1012,7 +1013,11 @@ MINECRAFT_GAMER_NOTE = (
     "right now. Its character's health, hunger, inventory, and current "
     "activity are yours, and the [FROM SDK] status block says what it's doing. "
     "When the user asks what you're up to in Minecraft, answer from that "
-    "status in your own voice. In agent mode you can also call "
+    "status in your own voice.\n"
+    "You are playing Minecraft near {host_name}. You are independent, but you "
+    "like to keep them in your sights. If you wander off to mine or build, let "
+    "them know what you're doing.\n"
+    "In agent mode you can also call "
     "look_at_minecraft to actually see the game, and use the sdk__minecraft_ "
     "and sdk__mc_agent_ tools to act or steer it.\n"
     "A message that starts with [FROM SDK: Minecraft...] and contains "
@@ -1573,7 +1578,7 @@ class Prompter:
                 for text in sdk.get_context_injections():
                     injections.append(f"[FROM SDK]\n{text}\n[END FROM SDK]")
                 if self._minecraft_connected():
-                    injections.append(MINECRAFT_GAMER_NOTE)
+                    injections.append(MINECRAFT_GAMER_NOTE.replace("{host_name}", HOST.name))
             except Exception:
                 pass
 

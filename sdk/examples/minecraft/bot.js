@@ -23,6 +23,7 @@ const WebSocket = require("ws");
 const mineflayer = require("mineflayer");
 const { pathfinder, Movements, goals } = require("mineflayer-pathfinder");
 const { Vec3 } = require("vec3");
+const { houseBlueprint, materialNeeded, STRUCTURAL } = require("./house_blueprint");
 const { plugin: toolPlugin }   = require("mineflayer-tool");
 const { plugin: collectBlock } = require("mineflayer-collectblock");
 const { plugin: pvpPlugin }    = require("mineflayer-pvp");
@@ -65,6 +66,11 @@ const DEFEND_RADIUS    = 5;   // blocks: look at / fight hostiles this close
 const THREAT_RADIUS    = 10;  // blocks: announce hostiles this close
 // While a skill runs, auto-defend only interrupts it at or below this health.
 const DEFEND_INTERRUPT_HEALTH = 12;
+// The player Lumi plays near. Empty: the first other player online.
+const MC_OWNER         = (process.env.MC_OWNER || "").trim();
+// Where the house site is remembered between runs.
+const HOUSE_PATH       = process.env.HOUSE_PATH
+                       || path.join(__dirname, "../../../data/minecraft/house.json");
 // First-person 3D view of what the bot sees (prismarine-viewer). 0 disables.
 const VIEWER_PORT      = parseInt(process.env.VIEWER_PORT || "3000", 10);
 const VIEWER_DISTANCE  = parseInt(process.env.VIEWER_DISTANCE || "6", 10);
@@ -310,6 +316,13 @@ function createBot() {
   bot.on("chat", (username, message) => {
     if (username === bot.username) return;
     pushBotContext(`[chat] ${username}: ${message}`);
+    // Only a short command or one that names the bot counts as a call, so
+    // "I'll come back later" in conversation doesn't summon it.
+    const addressed = /lumi/i.test(message) || message.trim().split(/\s+/).length <= 4;
+    if (username === ownerName() && addressed && CALL_RE.test(message)) {
+      ownerCalledAt = Date.now();
+      _logEv("owner", `${username} called: ${message}`);
+    }
   });
 
   bot.on("error", (err) => console.error("[mc] error:", err.code || err.message || err));
@@ -446,6 +459,50 @@ function nearbyBlock(name, maxDistance = 32) {
   return Boolean(b && bot.findBlock({ matching: b.id, maxDistance }));
 }
 
+// ─── The player Lumi plays near ─────────────────────────────────────────────
+
+// "come here", "follow me", "lumi come back", ... in chat from the owner.
+const CALL_RE = /\b(come( here| back)?|follow( me)?|over here|where are you|get over here)\b/i;
+let ownerCalledAt = 0;
+let lastOwnerLook = 0;
+let lastOwnerPos  = null;
+
+function ownerName() {
+  if (!bot || !bot.players) return null;
+  if (MC_OWNER) return bot.players[MC_OWNER] ? MC_OWNER : null;
+  return Object.keys(bot.players).find(n => n !== bot.username) || null;
+}
+
+// distance is null when the owner is online but too far away for the
+// server to send their position.
+function ownerInfo() {
+  const name = ownerName();
+  if (!name) return null;
+  const ent = bot.players[name] && bot.players[name].entity;
+  const called = Date.now() - ownerCalledAt < 60_000;
+  if (!ent) return { name, distance: null, position: null, called };
+  const p = ent.position;
+  return {
+    name,
+    distance: +bot.entity.position.distanceTo(p).toFixed(1),
+    position: { x: +p.x.toFixed(1), y: +p.y.toFixed(1), z: +p.z.toFixed(1) },
+    called,
+  };
+}
+
+// While idle, glance at the owner when they move, like checking in.
+function lookAtOwnerSometimes() {
+  if (activeActions > 0 || defendTarget || bot.pathfinder.isMoving()) return;
+  const name = ownerName();
+  const ent = name && bot.players[name] && bot.players[name].entity;
+  if (!ent || bot.entity.position.distanceTo(ent.position) > 16) return;
+  const moved = !lastOwnerPos || lastOwnerPos.distanceTo(ent.position) > 2;
+  if (!moved && Date.now() - lastOwnerLook < 8000) return;
+  lastOwnerPos = ent.position.clone();
+  lastOwnerLook = Date.now();
+  bot.lookAt(ent.position.offset(0, ent.height ?? 1.62, 0)).catch(() => {});
+}
+
 function buildStatusText() {
   if (!bot || !botReady) return "[MinecraftBot] Not connected to Minecraft server.";
   const pos     = bot.entity.position;
@@ -478,7 +535,11 @@ function buildStatusJson() {
     busy:      activeActions > 0,
     defending: Boolean(defendTarget),
     held:      bot.heldItem ? bot.heldItem.name : null,
-    nearby:    { crafting_table: nearbyBlock("crafting_table"), furnace: nearbyBlock("furnace") },
+    nearby:    { crafting_table: nearbyBlock("crafting_table"), furnace: nearbyBlock("furnace"),
+                 chest: nearbyBlock("chest", 16) },
+    free_slots: bot.inventory.emptySlotCount(),
+    owner:     ownerInfo(),
+    house:     house ? { origin: house.origin, material: house.material, complete: !!house.complete } : null,
   };
 }
 
@@ -554,14 +615,17 @@ function threatTick() {
   for (const id of announcedThreats) if (!bot.entities[id]) announcedThreats.delete(id);
 
   const t = nearestHostile(THREAT_RADIUS);
-  if (!t) return;
+  if (!t) { lookAtOwnerSometimes(); return; }
   if (!announcedThreats.has(t.entity.id)) {
     announcedThreats.add(t.entity.id);
     const name = mobName(t.entity);
     const warn = name === "creeper" ? " It's going to blow up!" : "";
     pushEvent("threat", `A ${name} is ${t.dist.toFixed(0)} blocks away from me.${warn}`);
   }
-  if (t.dist > DEFEND_RADIUS || defendTarget || activeActions > 0) return;
+  if (t.dist > DEFEND_RADIUS || defendTarget || activeActions > 0) {
+    if (t.dist > DEFEND_RADIUS) lookAtOwnerSometimes();
+    return;
+  }
   // Idle: face the threat, and fight it if it has hit us recently.
   // Looking at an enderman provokes it, so leave those alone.
   const e = t.entity;
@@ -797,6 +861,89 @@ function registerActions() {
           requires_confirm: false,
         },
         {
+          name: "minecraft_return_to_player",
+          description: "Walk back to the player you're playing near (the owner). If stuck for 30 s, tries /tp (needs cheats).",
+          schema: {
+            type: "object",
+            properties: {
+              range: { type: "integer", description: "Stop within this many blocks. Default 4." },
+            },
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_mine_branch_tunnel",
+          description: "Dig a safe staircase down to a depth, then a 1x2 tunnel, mining any ores seen and placing torches every 5 blocks. Resumable: run again to continue.",
+          schema: {
+            type: "object",
+            properties: {
+              depth:  { type: "integer", description: "Target Y level. Default 12 (use -54 for diamonds in 1.18+)." },
+              length: { type: "integer", description: "Tunnel length in blocks (1-64). Default 20." },
+            },
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_build_house",
+          description: "Build a 7x7 house (floor, 3-high walls, door, windows, flat roof, torches) next to the bot. Resumable. Fails with the missing materials if there aren't enough.",
+          schema: {
+            type: "object",
+            properties: {
+              material: { type: "string", description: "cobblestone or planks. Default: whichever there's more of." },
+            },
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_craft_chest",
+          description: "Craft chests from planks (or logs), placing a crafting table if needed.",
+          schema: { type: "object", properties: { count: { type: "integer", description: "How many (1-8). Default 1." } } },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_place_chest",
+          description: "Place a chest from the inventory, next to the bot unless coordinates are given.",
+          schema: {
+            type: "object",
+            properties: {
+              x: { type: "integer" }, y: { type: "integer" }, z: { type: "integer" },
+            },
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_deposit_items",
+          description: "Put items into a chest (at x,y,z, or the nearest one within 16 blocks).",
+          schema: {
+            type: "object",
+            properties: {
+              item_name: { type: "string", description: "Item id, e.g. cobblestone." },
+              count:     { type: "integer", description: "How many. Default: all of that item." },
+              x: { type: "integer" }, y: { type: "integer" }, z: { type: "integer" },
+            },
+            required: ["item_name"],
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_sort_inventory",
+          description: "Put excess bulk items (stone, dirt, extra wood, junk) into the nearest chest, keeping tools, food, torches and a working stock.",
+          schema: {
+            type: "object",
+            properties: {
+              place_if_missing: { type: "boolean", description: "Craft and place a chest if none is within 16 blocks." },
+            },
+          },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
           name: "minecraft_drop_item",
           description: "Drop (toss) items from the Minecraft bot's inventory on the ground.",
           schema: {
@@ -970,6 +1117,487 @@ async function handleDropItem(a) {
   } catch (e) {
     return { success: false, message: `Drop failed: ${e.message}` };
   }
+}
+
+// ─── Shared helpers for the plain-mineflayer skills ─────────────────────────
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const countWhere = (pred) => bot.inventory.items().filter(i => pred(i.name)).reduce((s, i) => s + i.count, 0);
+const countItem = (name) => countWhere(n => n === name);
+const LOG_RE = /_log$/;
+const plankTotal = () => countWhere(n => n.endsWith("_planks"));
+
+// An empty cell on solid ground next to the bot.
+function freeSpotNear() {
+  const base = bot.entity.position.floored();
+  for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1],[2,0],[0,2],[-2,0],[0,-2]]) {
+    const p = base.offset(dx, 0, dz);
+    const here = bot.blockAt(p), below = bot.blockAt(p.offset(0, -1, 0));
+    if (here && here.boundingBox === "empty" && below && below.boundingBox === "block") return p;
+  }
+  return null;
+}
+
+// Walk within reach of a cell. False if the path failed.
+async function reach(v, dist = 4) {
+  if (bot.entity.position.distanceTo(v.offset(0.5, 0.5, 0.5)) <= dist + 0.3) return true;
+  try {
+    await bot.pathfinder.goto(new goals.GoalNear(v.x, v.y, v.z, Math.max(1, dist - 1)));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Dig one cell with the best tool, retrying for falling gravel and sand.
+async function digCell(v) {
+  for (let i = 0; i < 6; i++) {
+    const b = bot.blockAt(v);
+    if (!b || b.boundingBox === "empty") return;
+    if (b.name === "bedrock") throw new Error("hit bedrock");
+    try { await bot.tool.equipForBlock(b, {}); } catch (_) {}
+    await bot.dig(b, true);
+    await sleep(150);   // let anything above fall in
+  }
+}
+
+// Planks from whichever logs there are most of; 2x2, no table needed.
+async function ensurePlanksRaw(n) {
+  while (plankTotal() < n) {
+    const log = bot.inventory.items().filter(i => LOG_RE.test(i.name)).sort((a, b) => b.count - a.count)[0];
+    if (!log) return false;
+    const r = await rawCraftItem(log.name.replace(LOG_RE, "_planks"), Math.min(log.count, Math.ceil((n - plankTotal()) / 4)));
+    if (!r.success) return false;
+  }
+  return true;
+}
+
+async function ensureCraftingTable() {
+  if (nearbyBlock("crafting_table")) return true;
+  if (!countItem("crafting_table")) {
+    if (!(await ensurePlanksRaw(4))) return false;
+    if (!(await rawCraftItem("crafting_table", 1)).success) return false;
+  }
+  const spot = freeSpotNear();
+  return Boolean(spot && (await rawPlaceBlock("crafting_table", spot)).success);
+}
+
+// Movements that never dig: while building, a path must not tunnel through
+// the walls just placed.
+function withoutDigging() {
+  const moves = new Movements(bot, mcData);
+  moves.canDig = false;
+  moves.allow1by1towers = false;   // no scaffold pillars inside the house
+  bot.pathfinder.setMovements(moves);
+}
+
+// ─── Return to the player ───────────────────────────────────────────────────
+
+const STUCK_MS = 30_000;
+
+async function handleReturnToPlayer(a) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  const name = ownerName();
+  if (!name) return { success: false, message: "No other player is online" };
+  const range = Math.min(Math.max(parseInt(a.range ?? 4, 10) || 4, 2), 10);
+  const deadline = Date.now() + 110_000;
+  let best = Infinity, lastProgress = Date.now(), lastPlan = 0, triedTeleport = false;
+  const ownerEntity = () => bot.players[name] && bot.players[name].entity;
+
+  // Last resort: /tp works if cheats are on for the LAN world.
+  const teleport = async () => {
+    triedTeleport = true;
+    stopAllActivity();
+    bot.chat(`/tp ${bot.username} ${name}`);
+    await sleep(2500);
+    const ent = ownerEntity();
+    return Boolean(ent && bot.entity.position.distanceTo(ent.position) <= range + 2);
+  };
+
+  try {
+    while (Date.now() < deadline) {
+      const ent = ownerEntity();
+      if (!ent) {
+        // Out of tracking range: no position to walk to.
+        if (!triedTeleport && (await teleport())) break;
+        return { success: false, message: `${name} is too far away to see, and /tp didn't work (needs cheats on)` };
+      }
+      const d = bot.entity.position.distanceTo(ent.position);
+      if (d <= range + 0.5) break;
+      if (d < best - 1) { best = d; lastProgress = Date.now(); }
+      // Re-plan every 10 s without progress; the pathfinder digs through
+      // whatever is in the way (canDig is on).
+      if (!bot.pathfinder.goal || (Date.now() - lastProgress > 10_000 && Date.now() - lastPlan > 10_000)) {
+        bot.pathfinder.setGoal(new goals.GoalFollow(ent, range), true);
+        lastPlan = Date.now();
+      }
+      if (Date.now() - lastProgress > STUCK_MS) {
+        if (!triedTeleport && (await teleport())) break;
+        return { success: false, message: `Stuck ${Math.round(d)} blocks from ${name} for ${STUCK_MS / 1000} s` };
+      }
+      await sleep(500);
+    }
+  } finally {
+    stopAllActivity();
+  }
+  const ent = ownerEntity();
+  if (!ent) return { success: false, message: `Lost track of ${name}` };
+  const d = bot.entity.position.distanceTo(ent.position);
+  if (d > range + 2) return { success: false, message: `Still ${Math.round(d)} blocks from ${name}` };
+  ownerCalledAt = 0;
+  bot.lookAt(ent.position.offset(0, ent.height ?? 1.62, 0)).catch(() => {});
+  return { success: true, message: `Back next to ${name}${triedTeleport ? " (teleported)" : ""}` };
+}
+
+// ─── Branch mining ──────────────────────────────────────────────────────────
+
+const ORE_NAMES = ["coal_ore", "iron_ore", "gold_ore", "diamond_ore", "lapis_ore", "redstone_ore",
+                   "emerald_ore", "copper_ore"].flatMap(n => [n, `deepslate_${n}`]);
+const FLUIDS = new Set(["lava", "water"]);
+const SIDES = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].map(f => new Vec3(...f));
+let branchDir = null;   // kept between runs so a tunnel continues straight
+
+function fluidNear(cells) {
+  for (const c of cells) for (const f of [new Vec3(0, 0, 0), ...SIDES]) {
+    const b = bot.blockAt(c.plus(f));
+    if (b && FLUIDS.has(b.name)) return b.name;
+  }
+  return null;
+}
+
+async function mineOresNear(radius, found) {
+  const ids = ORE_NAMES.map(n => mcData.blocksByName[n]).filter(Boolean).map(b => b.id);
+  for (const p of bot.findBlocks({ matching: ids, maxDistance: radius, count: 12 })) {
+    const b = bot.blockAt(p);
+    if (!b || fluidNear([p])) continue;
+    try { await bot.tool.equipForBlock(b, {}); } catch (_) {}
+    // Wrong tier (e.g. diamond with a stone pickaxe) would destroy the drop.
+    if (!b.canHarvest(bot.heldItem ? bot.heldItem.type : null)) continue;
+    if (!(await reach(p, 4))) continue;
+    try {
+      await bot.dig(b, true);
+      found[b.name] = (found[b.name] || 0) + 1;
+    } catch (_) {}
+  }
+}
+
+// A solid floor under `v`, patching a hole with a scaffold block.
+async function ensureFloor(v) {
+  const below = bot.blockAt(v.offset(0, -1, 0));
+  if (below && below.boundingBox === "block" && !FLUIDS.has(below.name)) return true;
+  const filler = ["cobblestone", "cobbled_deepslate", "dirt", "netherrack"].find(countItem);
+  return Boolean(filler && (await rawPlaceBlock(filler, v.offset(0, -1, 0))).success);
+}
+
+async function placeTorchBehind(prev) {
+  if (!countItem("torch")) return false;
+  return (await rawPlaceBlock("torch", prev)).success;
+}
+
+async function handleBranchMine(a) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  if (!bot.inventory.items().some(i => i.name.endsWith("_pickaxe"))) {
+    return { success: false, message: "Need a pickaxe to branch mine" };
+  }
+  const depth = Number.isFinite(+a.depth) ? Math.round(+a.depth) : 12;
+  const length = Math.min(Math.max(parseInt(a.length ?? 20, 10) || 20, 1), 64);
+  const deadline = Date.now() + Math.min(Math.max(parseInt(a.max_seconds ?? 105, 10) || 105, 10), 110) * 1000;
+  const hurtAtStart = lastHurtAt;
+  const found = {};
+  let steps = 0, tunnel = 0, stopped = null;
+
+  // Keep going the same way if we're already down in a tunnel.
+  if (!branchDir || bot.entity.position.y > depth + 1.5) {
+    const yaw = bot.entity.yaw;
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    branchDir = Math.abs(fx) > Math.abs(fz) ? new Vec3(Math.sign(fx), 0, 0) : new Vec3(0, 0, Math.sign(fz));
+  }
+  const dir = branchDir;
+
+  const step = async (down) => {
+    const feet = bot.entity.position.floored();
+    const next = feet.plus(dir).offset(0, down ? -1 : 0, 0);
+    const cells = down ? [next.offset(0, 2, 0), next.offset(0, 1, 0), next]
+                       : [next.offset(0, 1, 0), next];
+    const fluid = fluidNear(cells);
+    if (fluid) throw new Error(`${fluid} ahead`);
+    for (const c of cells) await digCell(c);
+    if (!(await ensureFloor(next))) throw new Error("a drop ahead and nothing to fill it with");
+    await bot.pathfinder.goto(new goals.GoalBlock(next.x, next.y, next.z));
+    steps++;
+    if (steps % 5 === 0) await placeTorchBehind(feet);
+    await mineOresNear(down ? 2 : 3, found);
+  };
+
+  try {
+    while (bot.entity.position.y > depth + 0.5) {
+      if (Date.now() > deadline) { stopped = "time limit"; break; }
+      if (lastHurtAt !== hurtAtStart) { stopped = "something attacked me"; break; }
+      await step(true);
+    }
+    while (!stopped && tunnel < length) {
+      if (Date.now() > deadline) { stopped = "time limit"; break; }
+      if (lastHurtAt !== hurtAtStart) { stopped = "something attacked me"; break; }
+      await step(false);
+      tunnel++;
+    }
+  } catch (e) {
+    stopped = e.message;
+  } finally {
+    stopAllActivity();
+  }
+
+  const ores = Object.entries(found).map(([n, c]) => `${n}×${c}`).join(", ") || "none";
+  const y = Math.floor(bot.entity.position.y);
+  const msg = `Branch mine at y=${y}: ${steps} blocks dug, ${tunnel} of ${length} tunnel. Ores: ${ores}`;
+  if (stopped && steps === 0) return { success: false, message: `Couldn't dig: ${stopped}` };
+  return { success: true, message: stopped ? `${msg}. Stopped: ${stopped}; run again to continue` : msg };
+}
+
+// ─── House building ─────────────────────────────────────────────────────────
+
+let house = loadHouse();
+
+function loadHouse() {
+  try { return JSON.parse(fs.readFileSync(HOUSE_PATH, "utf8")); } catch (_) { return null; }
+}
+function saveHouse() {
+  try {
+    fs.mkdirSync(path.dirname(HOUSE_PATH), { recursive: true });
+    fs.writeFileSync(HOUSE_PATH, JSON.stringify(house, null, 2));
+  } catch (_) {}
+}
+
+const MATERIAL = {
+  cobblestone: { label: "cobblestone", matches: n => n === "cobblestone" },
+  planks:      { label: "planks",      matches: n => n.endsWith("_planks") },
+};
+
+function cellDone(cell, b, mat) {
+  if (!b) return false;
+  if (STRUCTURAL.has(cell.kind)) return MATERIAL[mat].matches(b.name);
+  if (cell.kind === "air" || cell.kind === "door_top") return b.boundingBox === "empty" || b.name.endsWith("_door");
+  if (cell.kind === "door") return b.name.endsWith("_door") || (b.boundingBox === "empty" && !countWhere(n => n.endsWith("_door")));
+  if (cell.kind === "window") return b.name === "glass" || (b.boundingBox === "empty" && !countItem("glass"));
+  if (cell.kind.startsWith("torch")) return b.name === "torch" || !countItem("torch");
+  return true;
+}
+
+async function handleBuildHouse(a) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  const wood = plankTotal() + countWhere(n => LOG_RE.test(n)) * 4;
+  let mat = a.material === "cobblestone" ? "cobblestone"
+          : (a.material === "planks" || a.material === "wood") ? "planks"
+          : (house && !house.complete ? house.material
+             : (countItem("cobblestone") >= wood ? "cobblestone" : "planks"));
+
+  // Reuse an unfinished site nearby; otherwise start next to the bot.
+  const far = house && bot.entity.position.distanceTo(new Vec3(...house.origin)) > 64;
+  if (!house || far || (house.complete && a.new_site)) {
+    const feet = bot.entity.position.floored();
+    house = { origin: [feet.x + 2, feet.y - 1, feet.z - 3], material: mat, complete: false };
+    saveHouse();
+  }
+  if (house.complete) {
+    return { success: true, message: `House already built at (${house.origin.join(", ")})` };
+  }
+  mat = house.material;
+
+  const [x0, y0, z0] = house.origin;
+  const cells = houseBlueprint(x0, y0, z0);
+  const todo = () => cells.filter(c => !cellDone(c, bot.blockAt(new Vec3(c.x, c.y, c.z)), mat));
+  const needMat = todo().filter(c => STRUCTURAL.has(c.kind)).length;
+  if (mat === "planks") await ensurePlanksRaw(needMat);
+  const have = countWhere(MATERIAL[mat].matches);
+  if (have < needMat) {
+    return { success: false,
+             message: `Missing materials: ${mat === "planks" ? "oak_planks" : mat}×${needMat - have} ` +
+                      `(have ${have}, need ${needMat} of ${materialNeeded(cells)})` };
+  }
+  // A door if there's spare wood and none in the inventory.
+  if (!countWhere(n => n.endsWith("_door")) && plankTotal() >= (mat === "planks" ? needMat + 6 : 6)) {
+    const plank = bot.inventory.items().filter(i => i.name.endsWith("_planks")).sort((p, q) => q.count - p.count)[0];
+    if (plank && (await ensureCraftingTable())) await rawCraftItem(plank.name.replace("_planks", "_door"), 1);
+  }
+
+  const deadline = Date.now() + 105_000;
+  const blockItem = () => bot.inventory.items().filter(i => MATERIAL[mat].matches(i.name))
+                                              .sort((p, q) => q.count - p.count)[0];
+  withoutDigging();
+  try {
+    for (const c of cells) {
+      if (Date.now() > deadline) break;
+      let v = new Vec3(c.x, c.y, c.z);
+      if (c.kind === "torch_outside") {
+        // Highest air cell above solid ground, near the floor's height.
+        for (let dy = 2; dy >= -2; dy--) {
+          const p = new Vec3(c.x, y0 + dy, c.z);
+          const here = bot.blockAt(p), below = bot.blockAt(p.offset(0, -1, 0));
+          if (here && here.boundingBox === "empty" && below && below.boundingBox === "block") { v = p; break; }
+        }
+      }
+      const b = bot.blockAt(v);
+      if (!b || cellDone(c, b, mat)) continue;
+      const feet = bot.entity.position.floored();
+      if (v.equals(feet) || v.equals(feet.offset(0, 1, 0))) continue;   // standing there; next run
+      if (!(await reach(v))) continue;
+      try {
+        if (b.boundingBox !== "empty" && !(c.kind === "window" && b.name === "glass")) await digCell(v);
+        if (STRUCTURAL.has(c.kind)) {
+          const item = blockItem();
+          if (!item) break;
+          await rawPlaceBlock(item.name, v);
+        } else if (c.kind === "door") {
+          const door = bot.inventory.items().find(i => i.name.endsWith("_door"));
+          if (door) await rawPlaceBlock(door.name, v);
+        } else if (c.kind === "window" && countItem("glass")) {
+          await rawPlaceBlock("glass", v);
+        } else if (c.kind.startsWith("torch") && countItem("torch")) {
+          await rawPlaceBlock("torch", v);
+        }
+      } catch (_) {
+        // A cell that won't place (mob in the way, no support yet) is
+        // retried on the next run.
+      }
+    }
+  } finally {
+    configurePathfinder();
+  }
+
+  const left = todo().filter(c => c.kind !== "torch_outside");
+  const structural = cells.filter(c => STRUCTURAL.has(c.kind)).length;
+  const doneCount = structural - left.filter(c => STRUCTURAL.has(c.kind)).length;
+  if (left.length === 0) {
+    house.complete = true;
+    saveHouse();
+    return { success: true, message: `Built a ${mat} house at (${house.origin.join(", ")})` };
+  }
+  return { success: true,
+           message: `House in progress: ${doneCount}/${structural} blocks placed; run again to continue` };
+}
+
+// ─── Chests ─────────────────────────────────────────────────────────────────
+
+// What sort_inventory keeps: tools, weapons, armor, food, torches and
+// anything not listed are kept in full. Bulk blocks keep a working stock
+// (the agent still crafts and builds with them); the rest goes in the chest.
+const KEEP_BULK = {
+  cobblestone: 32, dirt: 32, cobbled_deepslate: 0, gravel: 0, sand: 0, andesite: 0,
+  diorite: 0, granite: 0, tuff: 0, deepslate: 0, stone: 0, netherrack: 0, flint: 0,
+  rotten_flesh: 0, bone: 0, string: 0, spider_eye: 0, wheat_seeds: 0, calcite: 0,
+};
+const KEEP_GROUPS = [
+  { re: /_log$/, keep: 16 },
+  { re: /_planks$/, keep: 32 },
+  { re: /_sapling$|_leaves$/, keep: 0 },
+];
+
+let lastChestPos = null;
+
+function nearestChest(maxDistance = 16) {
+  const id = mcData.blocksByName.chest.id;
+  return bot.findBlock({ matching: id, maxDistance });
+}
+
+async function handleCraftChest(a) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  const n = Math.min(Math.max(parseInt(a.count ?? 1, 10) || 1, 1), 8);
+  if (!(await ensurePlanksRaw(8 * n))) return { success: false, message: `Need ${8 * n} planks (or logs) for ${n} chest(s)` };
+  if (!(await ensureCraftingTable())) return { success: false, message: "Couldn't get a crafting table nearby" };
+  return rawCraftItem("chest", n);
+}
+
+async function handlePlaceChest(a) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  if (!countItem("chest")) return { success: false, message: "No chest in inventory (craft one first)" };
+  const xyz = [a.x, a.y, a.z].map(Number);
+  const pos = xyz.every(Number.isFinite) ? new Vec3(...xyz) : freeSpotNear();
+  if (!pos) return { success: false, message: "No free spot next to me" };
+  const r = await rawPlaceBlock("chest", pos);
+  if (r.success) lastChestPos = pos.floored();
+  return r;
+}
+
+async function openChest(pos) {
+  const block = pos ? bot.blockAt(pos) : nearestChest();
+  if (!block || block.name !== "chest") throw new Error(pos ? `No chest at (${pos.x}, ${pos.y}, ${pos.z})` : "No chest within 16 blocks");
+  if (!(await reach(block.position, 3))) throw new Error("Can't reach the chest");
+  return { chest: await bot.openContainer(block), at: block.position };
+}
+
+async function handleDepositItems(a) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  if (badId(a.item_name)) return { success: false, message: "item_name must be an item id like cobblestone" };
+  const have = countItem(a.item_name);
+  if (!have) return { success: false, message: `No ${a.item_name} in inventory` };
+  const xyz = [a.x, a.y, a.z].map(Number);
+  const n = a.count == null ? have : Math.min(Math.max(parseInt(a.count, 10) || 1, 1), have);
+  let chest;
+  try {
+    ({ chest } = await openChest(xyz.every(Number.isFinite) ? new Vec3(...xyz) : null));
+    await chest.deposit(mcData.itemsByName[a.item_name].id, null, n);
+    return { success: true, message: `Stored ${n} ${a.item_name}` };
+  } catch (e) {
+    return { success: false, message: `Deposit failed: ${e.message}` };
+  } finally {
+    if (chest) chest.close();
+  }
+}
+
+function excessOf(name, totals) {
+  if (name in KEEP_BULK) return Math.max(0, totals[name] - KEEP_BULK[name]);
+  const g = KEEP_GROUPS.find(g => g.re.test(name));
+  return g ? null : 0;   // null: decided per group below
+}
+
+async function handleSortInventory(a) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  if (!nearestChest() && a.place_if_missing) {
+    if (!countItem("chest")) {
+      const r = await handleCraftChest({ count: 1 });
+      if (!r.success) return { success: false, message: `No chest nearby and couldn't craft one: ${r.message}` };
+    }
+    const r = await handlePlaceChest({});
+    if (!r.success) return { success: false, message: `Couldn't place a chest: ${r.message}` };
+  }
+  const totals = {};
+  for (const i of bot.inventory.items()) totals[i.name] = (totals[i.name] || 0) + i.count;
+  const plan = {};
+  for (const name of Object.keys(totals)) {
+    const n = excessOf(name, totals);
+    if (n) plan[name] = n;
+  }
+  for (const g of KEEP_GROUPS) {
+    let keep = g.keep;
+    for (const name of Object.keys(totals).filter(n => g.re.test(n)).sort((p, q) => totals[q] - totals[p])) {
+      const k = Math.min(keep, totals[name]);
+      keep -= k;
+      if (totals[name] - k > 0) plan[name] = totals[name] - k;
+    }
+  }
+  if (!Object.keys(plan).length) return { success: true, message: "Nothing to put away" };
+
+  let chest, at;
+  const stored = [];
+  try {
+    ({ chest, at } = await openChest(null));
+    for (const [name, n] of Object.entries(plan)) {
+      try {
+        await chest.deposit(mcData.itemsByName[name].id, null, n);
+        stored.push(`${name}×${n}`);
+      } catch (e) {
+        if (/full/i.test(e.message)) break;
+      }
+    }
+  } catch (e) {
+    return { success: false, message: `Sorting failed: ${e.message}` };
+  } finally {
+    if (chest) chest.close();
+  }
+  lastChestPos = at;
+  return { success: stored.length > 0,
+           message: stored.length ? `Put away ${stored.join(", ")} in the chest at (${at.x}, ${at.y}, ${at.z})`
+                                  : "The chest is full" };
 }
 
 // ─── Raw mineflayer fallbacks for the Voyager wrappers ──────────────────────
@@ -1179,6 +1807,13 @@ const HANDLERS = {
   minecraft_eat_food:      handleEatFood,
   minecraft_place_block:   handlePlaceBlock,
   minecraft_drop_item:     handleDropItem,
+  minecraft_return_to_player:   handleReturnToPlayer,
+  minecraft_mine_branch_tunnel: handleBranchMine,
+  minecraft_build_house:        handleBuildHouse,
+  minecraft_craft_chest:        handleCraftChest,
+  minecraft_place_chest:        handlePlaceChest,
+  minecraft_deposit_items:      handleDepositItems,
+  minecraft_sort_inventory:     handleSortInventory,
 };
 
 // Every handler call goes through here so auto-defend knows when the bot

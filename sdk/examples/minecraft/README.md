@@ -81,6 +81,8 @@ For a LAN world, the port changes every launch. Set it from the dashboard's
 | `VOYAGER_DIR` | `../../../plugin/voyager/voyager` | Where to load Voyager's primitives from |
 | `EVENT_REACTIONS` | `major` | Which game events Lumi reacts to out loud: `major` (deaths, boss kills, top-tier loot), `all` (also damage, mobs, hunger, kills, joining), or `off`. See [Context and events](#context-and-events) |
 | `AUTO_DEFEND` | `true` | Fight back when a hostile mob hits the bot. See [Self-defense](#self-defense) |
+| `MC_OWNER` | *(first other player online)* | The in-game name of the player Lumi plays near. See [Playing near you](#playing-near-you) |
+| `HOUSE_PATH` | `../../../data/minecraft/house.json` | Where the house site and its progress are remembered |
 | `VIEWER_PORT` | `3000` | Port for the first-person [live viewer](#live-viewer). `0` turns it off |
 | `VIEWER_DISTANCE` | `6` | Chunks the live viewer renders around the bot |
 | `SKIN_PORT` | `3001` | Port for the [skin server](#lumis-skin). `0` turns it off |
@@ -404,6 +406,64 @@ for fighting. `smelt_item` and `minecraft_execute_skill` have no fallback.
 
 ---
 
+### Companion actions
+
+**Tier:** `write`. Plain mineflayer, so they work without Voyager. Each one
+stops itself after about 105 s and reports its progress, so a call never
+outlasts the agent's 135 s wait. Building and branch mining are resumable:
+call again to continue.
+
+| Action | Parameters | What it does |
+|---|---|---|
+| `minecraft_return_to_player` | optional `range` (default 4) | Follows the owner until within `range` blocks. The pathfinder digs through whatever is in the way. With no progress for 30 s, or the owner out of tracking range, it tries `/tp` (works only with cheats on in the LAN world), then gives up |
+| `minecraft_mine_branch_tunnel` | optional `depth` (default 12), `length` (default 20, max 64) | Digs a 1-wide staircase down to `depth`, then a 1x2 tunnel. Mines any ore within 2 to 3 blocks it can harvest with the pickaxe it has (it never breaks diamond with a stone pickaxe), places a torch every 5 blocks if it has torches, fills holes in the floor, and stops at lava or water, at bedrock, or when attacked. Keeps the same direction between calls. In 1.18+ diamonds are most common around y=-54 |
+| `minecraft_build_house` | optional `material`: `cobblestone` or `planks` | Builds the [7x7 house](#the-house) next to the bot, or continues the unfinished one. Fails with `Missing materials: cobblestone×65 (have 100, need 165 of 165)` when short |
+| `minecraft_craft_chest` | optional `count` (1–8) | Crafts chests from planks or logs, placing a crafting table if needed |
+| `minecraft_place_chest` | optional `x`,`y`,`z` | Places a chest from the inventory, next to the bot by default |
+| `minecraft_deposit_items` | `item_name`, optional `count`, `x`,`y`,`z` | Puts items into the chest at `x`,`y`,`z`, or the nearest one within 16 blocks |
+| `minecraft_sort_inventory` | optional `place_if_missing` | Puts excess bulk items into the nearest chest (crafting and placing one first with `place_if_missing`). Keeps tools, weapons, armor, food, torches and anything not listed, plus a working stock of 32 cobblestone, 32 dirt, 16 logs and 32 planks. Everything else on the bulk list (other stone, gravel, sand, saplings, mob drops like rotten flesh) goes in the chest |
+
+#### The house
+
+`house_blueprint.js` describes it as an ordered list of cells. The floor's
+north-west corner goes 2 blocks east and 3 north of where the bot stands:
+
+| Layer | Contents |
+|---|---|
+| Floor | 7x7 of the material, replacing the ground |
+| Walls, 3 high | The 7x7 perimeter, with a 1x2 door gap in the middle of the front (north) wall and 1x1 windows in the middle of the other three walls at eye level |
+| Roof | Flat, 7x7, placed from the edge inward |
+| Extras | A door (crafted from spare planks if there are 6), glass in the windows if the bot has glass, two torches inside and one outside the door if it has torches |
+
+Inside the walls is dug out first, so the house can sit against a slope.
+That takes 165 blocks of material. While building, the pathfinder may not
+dig, so it can't tunnel through walls it just placed. Cells it can't place
+yet (a mob in the way, the bot standing there) are retried on the next call.
+The site and whether it's finished are kept in `HOUSE_PATH`. A new site is
+picked only when there's no house yet, the unfinished one is more than 64
+blocks away, or the finished one is far away and `new_site` is passed.
+
+---
+
+## Playing near you
+
+Lumi treats one player as hers, the **owner**: `MC_OWNER`, or the first other
+player online. `GET /status` reports `owner: {name, distance, position,
+called}`. `distance` is `null` when the owner is too far away for the server
+to send their position.
+
+- **Checking in.** When idle and no hostile is close, the bot glances at the
+  owner when they move (within 16 blocks), and at least every 8 s.
+- **Calling her.** A short chat message from the owner like "come here",
+  "follow me" or "lumi, come back" sets `called` for 60 s. The game agent
+  then brings her back. Longer messages count only if they mention Lumi, so
+  "I'll come back later" doesn't summon her.
+
+The agent decides when to return. See
+[the agent's README](../../../plugin/README.md#playing-near-you).
+
+---
+
 ## Context and events
 
 The bot pushes a status snapshot (`silent: true`) that Lumi sees in her prompt
@@ -488,7 +548,7 @@ It doesn't go through Lumi, so it works whether or not Lumi is running.
 
 | Method | Path | Body / response |
 |---|---|---|
-| `GET` | `/status` | `{ready, username, server, position, health, food, inventory, threats, is_day, busy, defending, held, nearby}`. `nearby` says whether a crafting table and a furnace are within 32 blocks |
+| `GET` | `/status` | `{ready, username, server, position, health, food, inventory, threats, is_day, busy, defending, held, nearby, free_slots, owner, house}`. `nearby` says whether a crafting table and a furnace are within 32 blocks and a chest within 16. `owner` is described in [Playing near you](#playing-near-you), `house` is `{origin, material, complete}` or `null` |
 | `GET` | `/events` | Last 100 entries of the bot's event log |
 | `GET` | `/config` | `{host, port, username, auth, viewer_port, skin_port}`. `viewer_port` is `null` while the viewer isn't running |
 | `POST` | `/config` | `{host, port}`. Updates the target server and reconnects if it changed |

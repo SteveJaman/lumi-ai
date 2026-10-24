@@ -185,7 +185,7 @@ Every `MC_LOOP_INTERVAL` seconds the agent:
 
 0. Checks `data/minecraft/autoplay.json`. While `"minecraft"` is `false` it stands by and does nothing else. A missing file counts as `true`, so running it by hand just works.
 1. Reads the bot's position, health, hunger, inventory, nearby threats and time of day from `GET /status`, and every `MC_STATUS_INTERVAL` seconds pushes Lumi's silent status line.
-2. **Survives.** If a hostile other than an enderman is within 6 blocks, it calls `defend`. If hunger is below 14 and there is food, it calls `eat_food`. Either one uses up the step.
+2. **Survives.** If a hostile other than an enderman is within 6 blocks, it calls `defend`. If hunger is below 14 and there is food, it calls `eat_food`. Either one uses up the step. Survival always comes before going back to the player: next, if the player called, is out of sight, or is past the leash, the goal is `return_to_player`. See [Playing near you](#playing-near-you).
 3. **Picks a goal.** A goal set through `mc_agent_set_goal` comes first. Then the [tech tree](#tech-tree) decides, in code, until there's a stone pickaxe. After that the options are the next later tier that can run plus every free-play goal whose gate passes and that isn't resting. The game model (`MC_GOAL_MODEL`, default `GAME_AGENT_MODEL` from `constants.py`) picks one from the exact inventory, day or night, and the recent goals with their results. If the model isn't pulled (the agent checks at startup and logs the `ollama pull` command) or its call fails, a weighted random pick takes over: shelter at night, food when hungry, and the tool tier 70% of the time.
 4. **Narrates, if it's big.** With the default `MC_NARRATE=major`, only mining diamonds becomes a spoken `[MINECRAFT EVENT]`. With `MC_NARRATE=all` it also announces each new goal, each finished curriculum tier and a goal failing three times in a row, at most one every `MC_NARRATE_COOLDOWN` seconds.
 5. **Executes** the goal's skill through `POST /action` as `execute_skill`, with a per-goal time limit (`GOAL_TIMEOUT_S`: 60 s for chopping and exploring, 90 s for mining stone and the hut, 120 s otherwise) so a stuck pathfinder fails fast. If Voyager's primitives aren't loaded, it runs the goal's plain-action fallback instead (for example `mine_block` then `craft_item`), when the goal has one.
@@ -207,6 +207,51 @@ model is never offered something that makes no sense right now.
 | `mine_coal` | Any pickaxe | Explores until coal ore is in sight, mines 5 |
 | `build_dirt_hut` | Night, and not built yet tonight | Digs 25 dirt and seals itself in a 3×3 dirt box |
 | `wait_out_night` | Night | Waits up to 100 s for morning |
+| `build_dirt_hut` | Night, no finished house, not built yet tonight | (as above) |
+| `build_house` | Day, no finished house, 64+ cobblestone or wood on hand, roughly level with the player (not down a mine) | `build_house` in `bot.js`, with whichever material there's more of. A `Missing materials` failure puts the item on a wishlist |
+| `gather_cobblestone` | The house wants cobblestone, any pickaxe | Mines 16 stone. (`chop_trees` is also offered past 10 logs while the house wants planks) |
+| `branch_mine` | Stone pickaxe | `mine_branch_tunnel` in `bot.js`: down to y=12 for iron, or y=-54 for diamonds once there's an iron pickaxe, then a 24-block tunnel |
+| `craft_torches` | Coal, fewer than 16 torches, some wood | Sticks if needed, then up to 4 torch recipes. The random picker does this before a branch mine |
+
+Two **routines** are decided in code before the model is asked, like the tech
+tree:
+
+| Routine | When | What it does |
+|---|---|---|
+| `go_home` | Night, the house is finished, and the bot isn't in it | Walks to the middle of the house (then `wait_out_night` takes over) |
+| `organize_inventory` | 6 or fewer free slots | `sort_inventory` in `bot.js`, crafting and placing a chest if none is within 16 blocks. Then rested for 2 minutes |
+
+Spoken events from these goals: finishing the house, and finding diamonds in
+a branch mine.
+
+### Playing near you
+
+Lumi plays near one player, like a kid near a parent: she wanders off to do
+her own thing but comes back when she's too far away. `bot.js` reports the
+player (`MC_OWNER`, or the first other player online) in `GET /status`, and
+the agent uses the **horizontal** distance, so mining straight below them
+still counts as nearby.
+
+| Distance | What happens |
+|---|---|
+| Under 10 blocks | Near: free play as usual |
+| 10–25 blocks | Roaming: free play, and `explore` heads back toward the player once more than 15 blocks out |
+| Over 25 blocks, or out of sight | `return_to_player`, unless on a project |
+| Over 64 blocks during a project | `return_to_player` even on a project |
+| The player called ("come here", "follow me", …) | `return_to_player` within 60 s of the message |
+
+A **project** is `branch_mine`, `build_house`, `mine_iron_ore` or
+`mine_diamond`. Starting one gives the long 64-block leash for 3 minutes, and
+an unfinished house renews it. Survival still runs first, so a creeper gets
+fought before she walks back.
+
+The goal picker's prompt says where the player is, with the rule: "You are
+playing near Anthony (18 blocks away). If you get too far (25+ blocks) or they
+call you, go back to them. Otherwise, do your own thing nearby." Lumi's silent
+status line says whether she's right next to them, roaming, or has wandered
+off, and is sent right away whenever that changes. Lumi's own prompt tells her
+she is independent but likes to keep the host in her sights, and to say what
+she's doing when she wanders off.
 
 ### Tech tree
 
