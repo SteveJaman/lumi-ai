@@ -98,7 +98,10 @@ the message directly.
 
 **History payload.** `/api/history` returns attachments as `{name, kind}`
 only. The extracted text stays server-side, where the prompter reads it; the
-chat only needs it for the badge.
+chat only needs it for the badge. It also leaves out game events (entries with
+`source: "sdk_event"`) and anything marked `hidden`: they stay in Lumi's
+history for the model, but the chat shows only her reaction. `visibleHistory()`
+in `app.js` applies the same filter as a backstop.
 
 ## Pages
 

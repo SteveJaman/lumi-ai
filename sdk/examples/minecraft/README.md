@@ -546,12 +546,13 @@ bot's event log (`GET /events`) only.
 | Other rare pickup | Gold, ender pearls, golden apples, lapis, name tags, saddles | `all` only | 15 s per item |
 | Joined the world | First spawn on a server | `all` only | — |
 | Took damage | Health drops. Names the nearest hostile and warns at 6 HP or less | `all` only | 20 s |
-| Hostile nearby | A hostile mob comes within 10 blocks for the first time. Creepers get an extra warning | `all` only | 25 s |
+| Hostile nearby | A hostile mob comes within 10 blocks for the first time. Creepers get an extra warning | `all` only | 30 s |
 | Getting hungry | Hunger falls to 6 or below | `all` only | 2 min |
 | Killed a mob | A mob the bot was fighting dies | `all` only | 10 s |
 
-Lumi's SDK server applies one more limit on top: at most one event turn every
-12 s per client. An event that arrives while Lumi is thinking or speaking is
+On top of the cooldowns, the bot sends at most 3 events of the same kind in
+any 60 s; a fourth is only logged. Lumi's SDK server applies one more limit:
+at most one event turn every 12 s per client. An event that arrives while Lumi is thinking or speaking is
 held (the latest one per client) and delivered when she's free, or dropped if
 she's still busy after 20 s. Drops are logged. Set `EVENT_REACTIONS=off` to
 turn events off, or `all` for the full Neuro-style commentary.

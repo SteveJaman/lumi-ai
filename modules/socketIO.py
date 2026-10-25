@@ -1018,7 +1018,11 @@ class SocketIOServer:
         except ValueError:
             limit = 40
         limit = max(1, min(limit, 200))
-        history = getattr(self.signals, "history", [])[-limit:]
+        # Game events (SDK silent:false) and other hidden entries stay in the
+        # model's history but aren't part of the conversation you see: the
+        # chat shows only Lumi's reaction.
+        history = [m for m in getattr(self.signals, "history", [])
+                   if m.get("source") != "sdk_event" and not m.get("hidden")][-limit:]
         # The chat only renders attachment badges, so don't ship the
         # extracted text on every poll.
         slim = []

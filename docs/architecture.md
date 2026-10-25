@@ -434,9 +434,13 @@ local HTTP API:
 Lumi's chat model hears about the game two ways. Standing context
 (`silent: true`) is replaced in her prompt on every turn. The agent sends a
 status line every 30 s. Events (`silent: false`), such as a death, diamonds, a
-finished house or a new order, each start a short reaction turn. The SDK server
-holds an event that arrives while she's busy for up to 20 s (see
-[SDK bridge](#sdk-bridge)).
+finished house or a new order, each start a short reaction turn. That turn
+skips the usual prompt stack: `run_event_reaction()` in the prompter sends a
+small system prompt (one lowercase line, at most 12 words, one emotion tag)
+and the event text to the fast model, then trims the reply to that shape. The
+event stays in `signals.history` with `source: "sdk_event"` and `/api/history`
+leaves it out of the chat. The SDK server holds an event that arrives while
+she's busy for up to 20 s (see [SDK bridge](#sdk-bridge)).
 
 Orders reach the agent through `bot.js`'s inbox (`POST`/`GET /directive`).
 They come from the owner's wake-word chat messages, or from the Games page

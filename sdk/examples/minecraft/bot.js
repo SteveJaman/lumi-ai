@@ -753,8 +753,12 @@ function pushBotContext(extra = null) {
 
 // Per-kind cooldowns so a fight doesn't become a wall of reactions. Lumi's
 // SDK server adds its own per-client cooldown on top.
-const EVENT_COOLDOWN_MS = { hurt: 20_000, threat: 25_000, hunger: 120_000, collect: 15_000, kill: 10_000 };
+const EVENT_COOLDOWN_MS = { hurt: 20_000, threat: 30_000, hunger: 120_000, collect: 15_000, kill: 10_000 };
 const _lastEventAt = {};
+// On top of the cooldowns: at most 3 of the same kind in any 60 s, so a
+// zombie that keeps wandering in and out doesn't get "not again" five times.
+const EVENT_BURST = 3, EVENT_BURST_WINDOW_MS = 60_000;
+const _recentEvents = {};
 
 // silent:false makes Lumi take a turn and react out loud. Only `major`
 // events are sent unless EVENT_REACTIONS=all; the rest are just logged.
@@ -764,6 +768,9 @@ function pushEvent(kind, text, major = false) {
   const now = Date.now();
   const cooldown = EVENT_COOLDOWN_MS[kind.split(":")[0]] ?? 0;
   if (now - (_lastEventAt[kind] || 0) < cooldown) return;
+  const burst = (_recentEvents[kind] || []).filter(t => now - t < EVENT_BURST_WINDOW_MS);
+  if (burst.length >= EVENT_BURST) return;
+  _recentEvents[kind] = [...burst, now];
   _lastEventAt[kind] = now;
   sendJson({ command: "context", game: GAME_NAME,
              data: { message: `[MINECRAFT EVENT] ${text}`, silent: false } });

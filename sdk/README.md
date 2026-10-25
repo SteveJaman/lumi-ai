@@ -213,7 +213,7 @@ An action whose capabilities exceed the client's ceiling is refused with an `err
 | `true` (default) | Standing context. Replaces this client's previous context and is shown to Lumi, as data, on every turn until replaced or cleared. |
 | `false` | One-shot event. Starts a turn so Lumi reacts to it out loud, and leaves the standing context unchanged. |
 
-Event turns are spoken reactions only. They run in conversational mode with no tools, even when agent mode is on, and the event text reaches the model as data between `[FROM SDK: <game>]` markers. If Lumi is already thinking or speaking, the server holds the event (the latest one per client) and starts the turn when she's free, or drops it after 20 s. An event less than 12 s after the same client's last event turn is dropped. Only approved clients can send events. To stop one client starting turns, set `"allow_reactions": false` on its allowlist entry.
+Event turns are spoken reactions only. They use their own small prompt instead of Lumi's full persona stack: one lowercase sentence of at most 12 words, starting with one emotion tag, with no tools, even when agent mode is on. Lumi enforces the length and casing on the reply, because small models drift. The event is stored in her history between `[FROM SDK: <game>]` markers, so later turns know it happened, but the web chat doesn't show it: only her reaction appears. If Lumi is already thinking or speaking, the server holds the event (the latest one per client) and starts the turn when she's free, or drops it after 20 s. An event less than 12 s after the same client's last event turn is dropped. Only approved clients can send events. To stop one client starting turns, set `"allow_reactions": false` on its allowlist entry.
 
 ### speech_finished
 

@@ -75,6 +75,12 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// Game events stay in Lumi's history for the model but aren't shown in the
+// chat; the server already filters them, this is the backstop.
+function visibleHistory(history) {
+  return (history || []).filter(m => m.source !== 'sdk_event' && !m.hidden);
+}
+
 async function api(path, { method = 'GET', body, csrf = false } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (csrf && state.csrf) headers['X-CSRF-Token'] = state.csrf;
@@ -801,7 +807,7 @@ async function refreshHistory() {
   if (state.view !== 'chat') return;
   try {
     const res = await api('/api/history?limit=100');
-    const next = res.history || [];
+    const next = visibleHistory(res.history);
 
     const nextFp = fingerprint(next);
     if (nextFp === _chatFp) return;
@@ -955,7 +961,7 @@ async function renderChatView(main) {
 
   try {
     const res = await api('/api/history?limit=100');
-    state.history = res.history || [];
+    state.history = visibleHistory(res.history);
   } catch {}
   renderChat();
 

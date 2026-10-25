@@ -25,6 +25,20 @@ iteration against real use, not new subsystems.
   Reverse chronological. What shipped, when, and why.
 
   2026-10-24
+    - Neuro-sama voice: casual chat and the heartbeat speak in one
+      short lowercase sentence (12 words max), blunt and sarcastic,
+      with catchphrases using the host's name ("thanks anthony",
+      "filtered", "heart()"). Agent turns keep the tone without the
+      cap. Game events get a minimal one-line prompt of their own
+      (run_event_reaction) with the shape enforced on the reply.
+    - Prompt leaks fixed: the "TIME CHECK BEFORE YOU WRITE" block is
+      gone, and the heartbeat no longer describes the TTS engine or
+      lists tags Fish Audio doesn't know.
+    - Raw [MINECRAFT EVENT] messages no longer show in the web chat.
+    - bot.js: hostile-nearby cooldown 30 s, and at most 3 events of a
+      kind per minute.
+    - Traits retuned: playfulness 0.8, chaos 0.7, empathy 0.6,
+      sarcasm 0.75.
     - scripts/setup_skin.py installs Lumi's skin for CustomSkinLoader:
       copies it to the mod's LocalSkin folder, puts LocalSkin first in
       CustomSkinLoader.json (with a backup), clears the mod's cache,

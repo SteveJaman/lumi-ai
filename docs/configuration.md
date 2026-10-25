@@ -105,7 +105,7 @@ with `<host>` substituted for the current user's name at load time.
 | `name` | Character name |
 | `greeting` | Fallback greeting |
 | `personality` | Long-form personality description, values list |
-| `traits` | Eight numeric traits — playfulness, intelligence, chaos, empathy, sarcasm, warmth, curiosity, patience |
+| `traits` | Eight numeric traits, 0 to 1 — playfulness, intelligence, chaos, empathy, sarcasm, warmth, curiosity, patience. The shipped values lean Neuro-sama: playfulness 0.8, chaos 0.7, sarcasm 0.75, empathy 0.6 |
 | `frames` | Cognitive frame descriptions — play, strategy, chaos, social, learning, threat |
 | `identity` | Birthday, presented age, species, pronouns, self-description |
 | `personality_modes` | Named modes (troll, unhinged, superiority, …) with descriptions and sample lines |

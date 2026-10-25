@@ -117,6 +117,24 @@ def test_local_gets_200(live_lumi):
     live_lumi(scenario)
 
 
+def test_history_hides_game_events(live_lumi):
+    async def scenario(live):
+        await live.register()
+        live.srv.signals.history = [
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": "[FROM SDK: minecraft]\nzombie\n[END FROM SDK]",
+             "source": "sdk_event"},
+            {"role": "assistant", "content": "[scared] not the zombie again"},
+            {"role": "system", "content": "internal", "hidden": True},
+        ]
+        r = await live.local.get("/api/history")
+        shown = [m["content"] for m in (await r.json())["history"]]
+        assert shown == ["hi", "[scared] not the zombie again"]
+        # The model still sees the event.
+        assert len(live.srv.signals.history) == 4
+    live_lumi(scenario)
+
+
 def test_local_game_toggle(live_lumi):
     """The dashboard's Minecraft AI switch: validated, CSRF-checked, and
     passed to the game manager."""

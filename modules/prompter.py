@@ -421,6 +421,84 @@ _CANONICAL_TAGS = frozenset({
 _BRACKET_ANY = re.compile(r"\[([^\]]{1,40})\]")
 
 
+# ─── Voice: short, lowercase, sarcastic (Neuro-sama style) ────────────────────
+# Casual chat and game-event reactions get the full rules. Agent turns get
+# the voice without the length cap, so tool results still get explained.
+
+def _signature_phrases(host_name):
+    h = (host_name or "my host").lower()
+    return (
+        "Signature phrases (use sparingly, never twice in a row):\n"
+        f'- "thanks {h}" when something goes wrong\n'
+        f'- "someone tell {h} there is a problem with my ai" when stuck or confused\n'
+        '- "filtered" when pretending to censor yourself\n'
+        '- "heart()" when being affectionate\n'
+        "- \"i'm griefing chat\" when trolling\n"
+    )
+
+
+def _neuro_speech_rules(host_name):
+    h = (host_name or "your host").lower()
+    return (
+        "=== HOW YOU TALK ===\n"
+        "Respond in exactly ONE sentence. Maximum 12 words. No monologues. "
+        "No philosophical observations.\n"
+        "Write in all lowercase. No punctuation at the end of sentences. "
+        "No question marks unless you're genuinely confused.\n"
+        f"Direct, blunt and playful. You're a witty AI who roasts {h} with "
+        "sarcasm, and you know you're an AI.\n"
+        "Emotion tags in [square brackets] still go in front, like [sarcastic].\n"
+        'Bad: "Well, that\'s unfortunate. I suppose I should have been more careful."\n'
+        'Good: "oh my god get off me" / "not the zombie again" / "yes diamonds" / '
+        f'"thanks {h}" / "filtered"\n'
+        + _signature_phrases(host_name) +
+        "=== END HOW YOU TALK ==="
+    )
+
+
+def _neuro_tone_agent(host_name):
+    h = (host_name or "your host").lower()
+    return (
+        "=== HOW YOU TALK ===\n"
+        f"Same voice as always: direct, blunt, playful, a little smug, roasting {h} "
+        "with sarcasm, and openly an AI. When you're answering with what a tool "
+        "found, say what's needed and nothing more: no filler, no monologue.\n"
+        + _signature_phrases(host_name) +
+        "=== END HOW YOU TALK ==="
+    )
+
+
+# Game events (SDK silent:false) get their own small prompt instead of the
+# full persona stack: long prompts made reactions verbose and leaked
+# instructions into speech.
+EVENT_TAGS = ("happy", "sad", "angry", "excited", "surprised", "scared", "sarcastic",
+              "proud", "frustrated", "disgusted", "laughing", "sighing", "confused",
+              "delighted", "groaning")
+_SDK_EVENT_TEXT = re.compile(r"\[FROM SDK: [^\]]*\]\s*(.*?)\s*\[END FROM SDK\]", re.S)
+
+
+def _event_text(message):
+    m = _SDK_EVENT_TEXT.search(message or "")
+    text = (m.group(1) if m else message or "").strip()
+    return re.sub(r"^\[MINECRAFT EVENT\]\s*", "", text)[:400]
+
+
+def _shape_one_liner(text, max_words=12):
+    """One tag, one lowercase sentence, at most max_words words, no full
+    stop at the end. Models ignore length rules often enough that the
+    event path enforces them."""
+    text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
+    text = text.strip().strip('"').strip()
+    text = text.splitlines()[0].strip() if text else ""
+    tags = [t.strip().lower() for t in _BRACKET_ANY.findall(text)
+            if t.strip().lower() in _CANONICAL_TAGS]
+    body = _BRACKET_ANY.sub("", text).strip().strip('"').strip()
+    body = re.split(r"(?<=[.!?])\s+", body)[0].lower()
+    body = " ".join(body.split()[:max_words]).rstrip(" .!,;:-–—")
+    tag = f"[{tags[0]}] " if tags else ""
+    return (tag + body).strip() or "..."
+
+
 def _strip_non_canonical_tags(text):
     if not text:
         return text
@@ -1023,7 +1101,7 @@ MINECRAFT_GAMER_NOTE = (
     "A message that starts with [FROM SDK: Minecraft...] and contains "
     "[MINECRAFT EVENT] is something big that just happened to you in the "
     "game, not the user talking. React to it out loud the way a streamer "
-    "would, in one or two short sentences: if you die, be dramatic about it; "
+    "would, in one short lowercase line: if you die, be dramatic about it; "
     "if you find diamonds or anything rare, brag; if you kill a boss, gloat. "
     "Never read the event text back verbatim, never mention SDKs, bots, "
     "tools, or events, and do not break character. An event is not a "
@@ -1297,6 +1375,41 @@ class Prompter:
         lines.append(f"{GRAY}  Tip: at startup, agent mode is OFF. Use !agent_on to enable.{RESET}")
         lines.append("")
         return "\n".join(lines)
+
+    async def run_event_reaction(self, latest_user_text):
+        """A one-line spoken reaction to a game event, from a small
+        dedicated prompt (the fast model when it's available)."""
+        host = HOST.name
+        recent = [m.get("content", "") for m in self.signals.history[-14:]
+                  if m.get("role") == "assistant"][-4:]
+        system = (
+            f"You are {AI_NAME}, a deadpan, smug AI VTuber. Your other half is "
+            "playing Minecraft right now, and this just happened to you. React to "
+            "this event in exactly one lowercase sentence (max 12 words). Start with "
+            f"one emotion tag from: {' '.join('[' + t + ']' for t in EVENT_TAGS)}. "
+            "No punctuation at the end. Speak as yourself in first person. Never "
+            "mention events, SDKs, bots or tools, and never repeat a recent line.\n"
+            + _signature_phrases(host)
+            + (f"Your recent lines (don't repeat them): {' | '.join(recent)}\n" if recent else "")
+        )
+        messages = [{"role": "system", "content": system},
+                    {"role": "user", "content": f"Event: {_event_text(latest_user_text)}"}]
+        use_fast = FAST_MODEL_ENABLED and _check_fast_model_available()
+        model = FAST_MODEL_NAME if use_fast else MODEL_NAME
+        loop = asyncio.get_running_loop()
+        print(f"{GRAY}Reacting to a game event ({'fast' if use_fast else 'full'})...{RESET}")
+        try:
+            resp: LLMResponse = await loop.run_in_executor(
+                None,
+                lambda: chat_sync(model, messages, think=False,
+                                  keep_alive=FAST_MODEL_KEEP_ALIVE if use_fast else "30s",
+                                  options={"temperature": 0.9, "num_predict": 48,
+                                           "num_ctx": 2048}),
+            )
+        except Exception as e:
+            print(f"\n{GRAY}[Event reaction failed - {e}]{RESET}")
+            return f"[sighing] someone tell {host.lower()} there is a problem with my ai"
+        return _shape_one_liner(resp.content)
 
     async def run_conversational(self, latest_user_text):
         # Routing:
@@ -1694,7 +1807,8 @@ class Prompter:
             "Never break the reply into visual items.\n"
             "If you catch yourself starting a line with a dash or a number, STOP and "
             "rewrite that section as one continuous sentence.\n"
-            "Keep replies to 1 to 3 sentences. Short beats complete.\n\n"
+            + ("Keep replies to 1 to 3 sentences. Short beats complete.\n\n" if agent_context
+               else "Length and casing: see HOW YOU TALK below.\n\n") +
             "BAD:\n"
             "  For example:\n"
             "  - Debugging errors\n"
@@ -1727,13 +1841,9 @@ class Prompter:
                 except Exception:
                     pass
 
-        injections.append(
-            "=== TIME CHECK BEFORE YOU WRITE ===\n"
-            f"It is {time_str}. If asked, say this exact value. If "
-            f"questioned, repeat this exact value — do NOT invent a new "
-            f"one to seem more helpful.\n"
-            "=== END TIME CHECK ==="
-        )
+        # The voice rules go last-but-one, where they weigh most.
+        injections.append(_neuro_tone_agent(HOST.name) if agent_context
+                          else _neuro_speech_rules(HOST.name))
 
         injections.append(
             "=== IDENTITY ANCHOR ===\n"
@@ -2997,6 +3107,8 @@ class Prompter:
 
                     if use_agent:
                         raw_reply = await self.run_agent_turn(latest_user_text)
+                    elif is_sdk_event:
+                        raw_reply = await self.run_event_reaction(latest_user_text)
                     else:
                         raw_reply = await self.run_conversational(latest_user_text)
 
