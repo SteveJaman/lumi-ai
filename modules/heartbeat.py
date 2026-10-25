@@ -23,7 +23,8 @@ import requests
 
 from modules.module import Module
 from constants import (LLM_ENDPOINT, MODEL_NAME, AI_NAME, HOST, FAST_MODEL_NAME,
-                       FAST_MODEL_ENABLED, FAST_MODEL_NUM_CTX, FAST_MODEL_KEEP_ALIVE)
+                       FAST_MODEL_ENABLED, FAST_MODEL_NUM_CTX, FAST_MODEL_KEEP_ALIVE,
+                       get_chat_system_prompt)
 from modules.log_hub import emit as hub_emit
 from modules.llm_providers import chat_sync, LLMResponse
 
@@ -32,9 +33,9 @@ from modules.llm_providers import chat_sync, LLMResponse
 # ---------------------------------------------------------------
 # All times in seconds. Adjust after observing real behavior.
 # ===============================================================
-TICK_SECONDS = 30                  # How often the heartbeat checks in
-MIN_IDLE_SECONDS = 300             # User must be quiet this long before we consider breaking silence
-MIN_GAP_BETWEEN_UTTERANCES = 600   # At least 10 min between unprompted messages
+TICK_SECONDS = 20                  # How often the heartbeat checks in
+MIN_IDLE_SECONDS = 90              # User must be quiet this long before we consider breaking silence
+MIN_GAP_BETWEEN_UTTERANCES = 180   # At least 3 min between unprompted messages
 LATE_NIGHT_START = 23              # 11 PM — the "it's late" window begins
 LATE_NIGHT_END = 5                 # 5 AM — the window ends
 LATE_NIGHT_IDLE_SECONDS = 1800     # During late night, require longer idle (30 min)
@@ -88,7 +89,8 @@ EMOTION TAGS:
 
 RESPONSE FORMAT:
 - If you decide to speak: respond with your message only, starting with an emotion tag.
-  Keep it short — 1 to 2 sentences, in your normal voice. Anchor to something specific.
+  Usually a line or two in your normal voice; a few sentences if you actually have a
+  thought or a story to tell. Anchor to something specific.
 - If you decide to stay silent: respond with exactly the word SILENCE
 
 Your response:"""
@@ -328,9 +330,12 @@ class Heartbeat(Module):
 
         try:
             fast = self.decision_model == FAST_MODEL_NAME
+            # Her persona first, so the line sounds like her (and Ollama
+            # reuses the prompt cache chat built).
             resp: LLMResponse = chat_sync(
                 self.decision_model,
-                [{"role": "user", "content": prompt}],
+                [{"role": "system", "content": get_chat_system_prompt()},
+                 {"role": "user", "content": prompt}],
                 think=False,
                 keep_alive=FAST_MODEL_KEEP_ALIVE if fast else None,
                 options={"temperature": 0.7, "top_p": 0.9,
@@ -344,6 +349,8 @@ class Heartbeat(Module):
 
     def _emit_utterance(self, text):
         """Push the message into the normal pipeline: history + TTS."""
+        from modules.prompter import _clean_reply
+        text = _clean_reply(text) or text
         # Notify the self-model that she spoke unprompted.
         if hasattr(self.signals, "self_model"):
             try:

@@ -83,7 +83,7 @@ Modules that act on a timer instead of a user message.
 
 | File | Role | Status |
 |---|---|---|
-| `heartbeat.py` | Every 30 seconds, decides whether Lumi should speak unprompted. Uses the fast model, so it doesn't push the chat model out of VRAM | spawned |
+| `heartbeat.py` | Every 20 seconds, decides whether Lumi should speak unprompted (after 90 s of quiet, at most every 3 min). Uses the fast model and her persona prompt | spawned |
 | `ambient_perception.py` | Samples the screen every 30 seconds; calls the VLM only on window or content change | spawned |
 | `game_manager.py` | Starts, watches and stops the Minecraft game processes (`bot.js`, `plugin/minecraft_bot.py`) for the Games page: output to the log hub and `data/logs/minecraft/`, crash reports, the `autoplay.json` switch, resume at boot, orders from the web, and a Windows job object so the children die with Lumi. Also backs the HUD: shapes `bot.js`'s `/status` into the HUD data, forwards the one allowed HUD action (`drop_item`), finds item textures (`texture_file()`), validates and saves skin uploads, and switches the bot's server (`set_server()`: `bot.js` `/reconnect`, or `data/minecraft/server.json` when it isn't running), listing LAN worlds from `/lan`. Created in `main.py`; see [docs/minecraft.md](../docs/minecraft.md) | imported |
 

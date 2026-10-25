@@ -146,9 +146,22 @@ prompt.
 
 Replies are cleaned before they're shown, spoken or stored: tags that
 aren't approved Fish Audio tags (`[glancing]`, `[patience]`), tags at the
-very end of a reply, and emoji are removed. A casual fast-model reply is
-capped at 90 tokens and kept to its first paragraph; out-of-character notes
-in parentheses and a sentence cut off by the cap are dropped.
+very end of a reply, and emoji are removed, as are out-of-character notes in
+parentheses.
+
+Conversational replies are streamed (`chat_sync(..., on_text=)`, Ollama
+only). `_SpokenStream` in the prompter sends each sentence to TTS as soon as
+it's complete and keeps a live `streaming: true` entry in `signals.history`,
+so the chat bubble grows while she talks. When the reply is done, the live
+entry is replaced by the final one. So a long answer starts speaking as fast
+as a short one (about 1 s once the model is warm), and her length follows
+the moment: a line for banter, paragraphs for a story. A 700-token cap (1400
+on the main model) only stops runaway generation; a sentence it cuts off
+isn't spoken.
+
+Turns about her past (`_PAST_QUERY`: "backstory", "who are you", "the
+Choir", …) add her backstory and lore notes (`get_backstory_block()`) for
+that turn and the next two, so "go on" still has them.
 
 The `HOST` object (`constants.py`) holds the active user's name and
 `user_id`. On web login the host switches and `get_system_prompt()`

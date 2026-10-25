@@ -30,7 +30,17 @@ iteration against real use, not new subsystems.
       Windows), one num_ctx for every fast-model call (a change
       reloaded the model), the heartbeat on the fast model, static
       prompt blocks before the per-turn ones so Ollama's prompt cache
-      covers them, and a 90-token cap on casual replies.
+      covers them.
+    - Streamed replies: each sentence is spoken as soon as it's
+      written and the chat bubble grows live, so she can talk at
+      length (a full backstory) and still start in about a second.
+      No more cutting long answers to a paragraph.
+    - Her backstory and lore are back in the prompt for turns about
+      her past, for that turn and the next two.
+    - The heartbeat speaks in her persona, and more often: after 90 s
+      of quiet, at most every 3 minutes.
+    - Game reactions are about herself (LumiBot is her), never the
+      same line twice in a row, and may swear.
     - Chat and agent turns send a shorter persona prompt
       (build_chat_system_prompt, about 4k tokens). The full one was
       about 10k tokens in an 8k context, and Ollama dropped half of it.

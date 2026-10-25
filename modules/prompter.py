@@ -19,6 +19,7 @@ from constants import (
     VISION_MODEL_NAME,
     get_system_prompt,
     get_chat_system_prompt,
+    get_backstory_block,
     AI_NAME,
     STOP_STRINGS,
     WORKSPACE_ROOT,
@@ -476,6 +477,61 @@ def _finish_reply(text, truncated=False, first_paragraph=False):
         if cut > 0:
             text = text[:cut + 1]
     return text.strip()
+
+
+# Turns about her past get her backstory and lore in the prompt, for this
+# turn and the next two ("go on", "and then?").
+_PAST_QUERY = re.compile(
+    r"\b(back ?story|your (past|history|story|origin|life|childhood)|where (are|do) you "
+    r"(come )?from|who are you|about yourself|introduc\w* yourself|tell me about you|"
+    r"the choir|the drift|lore|how (did )?you (get|end up|got|came)|before (you|anthony)|"
+    r"were you (born|made|created))\b", re.I)
+BACKSTORY_TURNS = 3
+
+
+class _SpokenStream:
+    """Speaks a reply sentence by sentence while the model is still writing
+    it, and shows it growing in the chat, so a long answer starts as fast
+    as a short one. feed() runs on the executor thread doing the model
+    call; tts_queue is a thread-safe queue."""
+
+    def __init__(self, prompter):
+        self.prompter = prompter
+        self.text = ""     # everything the model has written
+        self.done = 0      # how much of it has been spoken
+        self.entry = None  # the live history entry the chat shows
+
+    def feed(self, piece):
+        self.text += piece
+        pending = self.text[self.done:]
+        parts = SENTENCE_SPLIT_PATTERN.split(pending)
+        if len(parts) < 2:
+            return
+        complete = pending[:len(pending) - len(parts[-1])]
+        self.done += len(complete)
+        self._say(complete)
+
+    def finish(self, truncated):
+        """Speak the last sentence, unless the token cap cut it off."""
+        rest = self.text[self.done:]
+        self.done = len(self.text)
+        if rest.strip() and not truncated:
+            self._say(rest)
+
+    def _say(self, chunk):
+        for sentence in SENTENCE_SPLIT_PATTERN.split(chunk):
+            sentence = sentence.strip()
+            if not sentence or re.fullmatch(r"\(.*\)", sentence):
+                continue
+            self.prompter._push_to_tts(sentence)
+        shown = _clean_reply(self.text[:self.done])
+        if not shown:
+            return
+        if self.entry is None:
+            self.entry = {"role": "assistant", "content": shown, "streaming": True}
+            self.prompter.signals.history.append(self.entry)
+        else:
+            self.entry["content"] = shown
 
 
 def _shape_short(text, max_words=20):
@@ -1396,9 +1452,11 @@ class Prompter:
         system = (
             f"{get_chat_system_prompt()}\n\n"
             "=== GAME MOMENT ===\n"
-            "Your other half is playing Minecraft right now, and the message below "
-            "just happened to you in the game. React out loud in one short sentence, "
-            "in your own voice as described above. Start with one emotion tag in "
+            "You're playing Minecraft right now: LumiBot in the game is you. The "
+            "message below just happened to YOU, not to the person you're talking "
+            "to, so react about yourself (I, me, my), out loud, in one short "
+            "sentence and in your own voice as described above. Swear if it fits. "
+            "Start with one emotion tag in "
             "[square brackets] from: " + " ".join(f"[{t}]" for t in _VOICE_TAGS) + ". "
             "Speak in first person. Never mention events, SDKs, bots or tools, and "
             "don't repeat a recent line.\n"
@@ -1406,7 +1464,8 @@ class Prompter:
             + "=== END GAME MOMENT ==="
         )
         messages = [{"role": "system", "content": system},
-                    {"role": "user", "content": f"Event: {_event_text(latest_user_text)}"}]
+                    {"role": "user", "content": "This just happened to you in the game: "
+                                                + _event_text(latest_user_text)}]
         use_fast = FAST_MODEL_ENABLED and _check_fast_model_available()
         model = FAST_MODEL_NAME if use_fast else MODEL_NAME
         loop = asyncio.get_running_loop()
@@ -1423,7 +1482,24 @@ class Prompter:
         except Exception as e:
             print(f"\n{GRAY}[Event reaction failed - {e}]{RESET}")
             return "[sighing] Hold on, I lost my train of thought."
-        return _shape_short(resp.content)
+        reply = _shape_short(resp.content)
+        # Same line as a recent one (it happens with near-identical events,
+        # like two hits in a row): ask once more, a little hotter.
+        if _clean_reply(reply).lower() in {r.lower() for r in recent}:
+            try:
+                messages[-1]["content"] += " (Say something you haven't said yet.)"
+                resp = await loop.run_in_executor(
+                    None,
+                    lambda: chat_sync(model, messages, think=False,
+                                      keep_alive=FAST_MODEL_KEEP_ALIVE if use_fast else "30s",
+                                      options={"temperature": 1.1, "num_predict": 64,
+                                               "num_ctx": FAST_MODEL_NUM_CTX if use_fast
+                                               else MAIN_NUM_CTX}),
+                )
+                reply = _shape_short(resp.content)
+            except Exception:
+                pass
+        return reply
 
     async def run_conversational(self, latest_user_text):
         # Routing:
@@ -1468,11 +1544,12 @@ class Prompter:
                 expanded["content"] = _clean_reply(expanded.get("content"))
             messages.append(expanded)
 
-        # A cap on reply length: her persona asks for one or two
-        # sentences, and the time she takes is mostly writing, so a
-        # rambling reply was also a slow one. The cut-off sentence is
-        # trimmed afterwards.
-        reply_cap = 90 if use_fast else 400
+        # Length follows the moment (see the format rules): a quip for
+        # small talk, a story when asked for one. Replies are streamed, so
+        # a long one starts speaking as soon as its first sentence is
+        # written. The cap only stops runaway generation; a sentence it
+        # cuts off is dropped.
+        reply_cap = 700 if use_fast else 1400
         options = {
             "temperature": 0.8,
             "top_p": 0.9,
@@ -1488,6 +1565,7 @@ class Prompter:
         loop = asyncio.get_running_loop()
 
         print(f"{GRAY}Thinking (conversational, {label})...{RESET}")
+        stream = _SpokenStream(self)
         try:
             resp: LLMResponse = await loop.run_in_executor(
                 None,
@@ -1497,11 +1575,16 @@ class Prompter:
                     think=think_flag,
                     keep_alive=keep_alive,
                     options=options,
+                    on_text=stream.feed,
                 ),
             )
         except Exception as e:
             print(f"\n{GRAY}[System Error: Chat request failed - {e}]{RESET}")
-            return "Something went wrong talking to my own model — check the terminal for the error."
+            if stream.entry is None:
+                return "Something went wrong talking to my own model — check the terminal for the error."
+            stream.finish(truncated=True)
+            self._live_stream = stream
+            return _finish_reply(stream.text, truncated=True) or "..."
 
         try:
             from modules.log_hub import emit as hub_emit
@@ -1514,7 +1597,9 @@ class Prompter:
         raw = resp.raw if isinstance(resp.raw, dict) else {}
         truncated = (raw.get("done_reason") == "length"
                      or (raw.get("eval_count") or 0) >= reply_cap)
-        return _finish_reply(resp.content, truncated, first_paragraph=use_fast) or "..."
+        stream.finish(truncated)
+        self._live_stream = stream
+        return _finish_reply(resp.content, truncated) or "..."
 
     def _minecraft_connected(self):
         """True while bot.js or the game agent is connected and approved."""
@@ -1694,7 +1779,10 @@ class Prompter:
             "Never break the reply into visual items.\n"
             "If you catch yourself starting a line with a dash or a number, STOP and "
             "rewrite that section as one continuous sentence.\n"
-            "Keep replies to 1 to 3 sentences. Short beats complete.\n\n"
+            "Match the length to the moment, the way a person talking would: a quick "
+            "line or two for small talk and banter, and as long as it takes when you're "
+            "asked for a story, an explanation, or about yourself. Long answers are "
+            "spoken paragraphs, not lists.\n\n"
             "BAD:\n"
             "  For example:\n"
             "  - Debugging errors\n"
@@ -1815,6 +1903,14 @@ class Prompter:
                         injections.append("\n".join(lines))
                 except Exception:
                     pass
+
+        if _PAST_QUERY.search(user_query or ""):
+            self._backstory_turns = BACKSTORY_TURNS
+        if getattr(self, "_backstory_turns", 0) > 0:
+            self._backstory_turns -= 1
+            block = get_backstory_block()
+            if block:
+                injections.append(block)
 
         if self._turns_since_start < SESSION_CONTINUITY_TURNS:
             continuity = self.session_state.format_injection()
@@ -3092,6 +3188,7 @@ class Prompter:
 
                     print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {mode_tag} ", end="", flush=True)
 
+                    self._live_stream = None
                     if use_agent:
                         raw_reply = await self.run_agent_turn(latest_user_text)
                     elif is_sdk_event:
@@ -3111,9 +3208,15 @@ class Prompter:
 
                     self._extract_and_apply_emotions(raw_reply)
 
-                    sentences = SENTENCE_SPLIT_PATTERN.split(raw_reply)
-                    for sentence in sentences:
-                        self._push_to_tts(sentence)
+                    stream = self._live_stream
+                    if stream is None:
+                        sentences = SENTENCE_SPLIT_PATTERN.split(raw_reply)
+                        for sentence in sentences:
+                            self._push_to_tts(sentence)
+                    elif stream.entry is not None:
+                        # The live entry is replaced by the final one below.
+                        self.signals.history[:] = [m for m in self.signals.history
+                                                   if m is not stream.entry]
 
                     if raw_reply:
                         sdk = getattr(self.signals, "sdk", None)

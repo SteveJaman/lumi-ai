@@ -729,7 +729,8 @@ def build_chat_system_prompt(host_name=None, profile_dict=None, examples=True):
 # =======================================================
 # Live prompt cache + persona save / reload (Phase 10.10)
 # =======================================================
-_PROMPT_CACHE = {"host": None, "prompt": None, "chat": None, "agent": None}
+_PROMPT_CACHE = {"host": None, "prompt": None, "chat": None, "agent": None,
+                 "backstory": None}
 
 
 def get_system_prompt(host_name=None):
@@ -743,6 +744,7 @@ def get_system_prompt(host_name=None):
     _PROMPT_CACHE["prompt"] = prompt
     _PROMPT_CACHE["chat"] = None
     _PROMPT_CACHE["agent"] = None
+    _PROMPT_CACHE["backstory"] = None
     return prompt
 
 
@@ -760,11 +762,33 @@ def get_chat_system_prompt(host_name=None, agent=False):
     return _PROMPT_CACHE[key]
 
 
+def get_backstory_block(host_name=None):
+    """Her backstory and lore notes from lumi.yaml, for turns about her
+    past. The chat prompt leaves them out to stay small; without them she
+    makes a story up."""
+    if host_name is None:
+        host_name = HOST.name
+    if _PROMPT_CACHE["host"] != host_name or not _PROMPT_CACHE["prompt"]:
+        get_system_prompt(host_name)
+    if _PROMPT_CACHE["backstory"] is None:
+        profile_dict = load_profile(host_name)
+        backstory = _text(profile_dict.get("backstory", ""))
+        lore = _bullets(profile_dict.get("lore_notes", []))
+        parts = [f"[Backstory]\n{backstory}" if backstory else "",
+                 f"[Lore Notes]\n{lore}" if lore else ""]
+        body = "\n\n".join(p for p in parts if p)
+        _PROMPT_CACHE["backstory"] = (
+            "=== YOUR PAST (facts about you; tell it in your own words) ===\n"
+            f"{body}\n=== END YOUR PAST ===" if body else "")
+    return _PROMPT_CACHE["backstory"]
+
+
 def invalidate_prompt_cache():
     _PROMPT_CACHE["host"] = None
     _PROMPT_CACHE["prompt"] = None
     _PROMPT_CACHE["chat"] = None
     _PROMPT_CACHE["agent"] = None
+    _PROMPT_CACHE["backstory"] = None
 
 
 def reload_profile(host_name=None):

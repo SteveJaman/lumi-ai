@@ -693,11 +693,11 @@ class OllamaClient(LLMClient):
         return out
 
     def chat(self, messages, tools=None, think=None, options=None,
-             keep_alive=None, model=""):
+             keep_alive=None, model="", on_text=None):
         payload: Dict[str, Any] = {
             "model": model,
             "messages": self._convert_messages(messages),
-            "stream": False,
+            "stream": on_text is not None,
         }
         if tools:
             payload["tools"] = tools
@@ -709,10 +709,33 @@ class OllamaClient(LLMClient):
             payload["options"] = options
 
         t0 = time.time()
-        r = requests.post(f"{self.base_url}/api/chat",
-                          json=payload, timeout=self.timeout)
-        r.raise_for_status()
-        data = r.json()
+        if on_text is None:
+            r = requests.post(f"{self.base_url}/api/chat",
+                              json=payload, timeout=self.timeout)
+            r.raise_for_status()
+            data = r.json()
+        else:
+            # Streaming: hand each piece of the reply to on_text as it
+            # arrives, then build the same response a non-streamed call
+            # returns (the final chunk carries the stats).
+            parts, calls, data = [], [], {}
+            with requests.post(f"{self.base_url}/api/chat", json=payload,
+                               timeout=self.timeout, stream=True) as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    chunk = json.loads(line)
+                    msg = chunk.get("message") or {}
+                    piece = msg.get("content") or ""
+                    if piece:
+                        parts.append(piece)
+                        on_text(piece)
+                    calls.extend(msg.get("tool_calls") or [])
+                    if chunk.get("done"):
+                        data = dict(chunk)
+            data["message"] = {"role": "assistant", "content": "".join(parts),
+                               "tool_calls": calls}
         latency = int((time.time() - t0) * 1000)
 
         msg = data.get("message", {}) or {}
@@ -1257,13 +1280,23 @@ def invalidate_client_cache():
 # Public entry point
 # ===============================================================
 def chat_sync(model_spec, messages, tools=None, think=None,
-              options=None, keep_alive=None) -> LLMResponse:
+              options=None, keep_alive=None, on_text=None) -> LLMResponse:
+    """on_text, if given, receives the reply as it's written. Ollama
+    streams it; other providers deliver it in one piece at the end."""
     provider_id, model = parse_model_spec(model_spec)
     client = get_client(provider_id)
-    return client.chat(
+    if on_text is not None and isinstance(client, OllamaClient):
+        return client.chat(
+            messages, tools=tools, think=think, options=options,
+            keep_alive=keep_alive, model=model, on_text=on_text,
+        )
+    resp = client.chat(
         messages, tools=tools, think=think,
         options=options, keep_alive=keep_alive, model=model,
     )
+    if on_text is not None and resp.content:
+        on_text(resp.content)
+    return resp
 
 
 # ===============================================================

@@ -134,7 +134,7 @@ that keeps the DOM in sync:
 |---|---|
 | Nothing changed (same fingerprint) | No DOM work |
 | New messages after an unchanged prefix | `appendNewMessages()` appends them with the pop-in animation |
-| Same length, only the newest entry changed in place | `patchLastMessage()` replaces that one bubble, without animation. The backend does not stream replies into history today; this path is ready for it |
+| Same length, only the newest entry changed in place | `patchLastMessage()` replaces that one bubble, without animation. This is how a streamed reply grows while Lumi is still talking |
 | Anything else | `renderChat()` rebuilds the list off-DOM and swaps it in; redrawn rows get `.msg-static` so they don't re-animate |
 
 Scroll rules:
