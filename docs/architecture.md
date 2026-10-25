@@ -108,9 +108,12 @@ The system prompt is built fresh every turn. The layers, in order:
 
 | Layer | Source | Injected when |
 |---|---|---|
-| Persona | `config/lumi.yaml` via `get_system_prompt()` | Every turn |
+| Persona | `config/lumi.yaml` via `get_chat_system_prompt()` | Every turn |
 | Tool directive | Hardcoded in prompter | Agent mode only |
 | Conversational directive | Hardcoded in prompter | Conversational only |
+| Emotion tag rules | Hardcoded, the approved Fish Audio tags | Every turn |
+| Output format rules | Hardcoded; the long list version in agent mode only | Every turn |
+| Profanity rule | Hardcoded | Every turn |
 | Time anchor | `_get_local_now()` | Every turn |
 | Mood profile | `MoodManager.get_injection()` | Every turn |
 | Emotional state + frame | `emotional_state.describe()` | Every turn |
@@ -120,11 +123,32 @@ The system prompt is built fresh every turn. The layers, in order:
 | Self-model observations | `self_model.get_injection()` | Only when observations are fresh (< 1h) |
 | Library RAG reference | `memory_module.API.search_library()` | Only when query > 8 chars and top hits are within distance threshold |
 | Session continuity | `session_state.format_injection()` | First 3 turns of a session |
-| Fish Audio rules | Hardcoded | Every turn |
-| Output format rules | Hardcoded | Every turn |
-| Random thought seed | Random choice | Every turn |
 | Module injections | Each module's `get_prompt_injection()` | When `.text` is non-empty |
 | Identity anchor | Hardcoded | Every turn |
+
+The order matters for speed. Ollama reuses its cached work for the part of
+the prompt that matches the previous turn, up to the first token that
+differs. Everything that stays the same (persona, directives, tag, format and
+profanity rules) comes first, and everything that changes each turn (clock,
+mood, screen, game status, library hits) comes after. A warm turn then
+re-reads only a few hundred tokens instead of the whole prompt.
+
+The persona layer is `get_chat_system_prompt()`, not the full
+`get_system_prompt()`. The full persona is about 10k tokens, more than the
+8k context the chat models run with, and Ollama was silently dropping more
+than half of it. The chat version keeps her quick facts, personality,
+relationship, likes and dislikes, quirks, voice and speech, signature
+phrases, the first sentence of each rule, and the example dialogues. It
+leaves out backstory, lore, appearance and the inner-life sections (about
+4k tokens). Agent turns also leave out the example dialogues, to make room
+for the tool directive. The Persona page's preview still shows the full
+prompt.
+
+Replies are cleaned before they're shown, spoken or stored: tags that
+aren't approved Fish Audio tags (`[glancing]`, `[patience]`), tags at the
+very end of a reply, and emoji are removed. A casual fast-model reply is
+capped at 90 tokens and kept to its first paragraph; out-of-character notes
+in parentheses and a sentence cut off by the cap are dropped.
 
 The `HOST` object (`constants.py`) holds the active user's name and
 `user_id`. On web login the host switches and `get_system_prompt()`
@@ -435,9 +459,10 @@ Lumi's chat model hears about the game two ways. Standing context
 (`silent: true`) is replaced in her prompt on every turn. The agent sends a
 status line every 30 s. Events (`silent: false`), such as a death, diamonds, a
 finished house or a new order, each start a short reaction turn. That turn
-skips the usual prompt stack: `run_event_reaction()` in the prompter sends a
-small system prompt (one lowercase line, at most 12 words, one emotion tag)
-and the event text to the fast model, then trims the reply to that shape. The
+skips most of the prompt stack: `run_event_reaction()` in the prompter sends
+her persona prompt plus a short instruction (one short sentence, one emotion
+tag) and the event text to the fast model, and cuts a reply past about 20
+words. The
 event stays in `signals.history` with `source: "sdk_event"` and `/api/history`
 leaves it out of the chat. The SDK server holds an event that arrives while
 she's busy for up to 20 s (see [SDK bridge](#sdk-bridge)).

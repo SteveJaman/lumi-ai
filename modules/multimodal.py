@@ -212,7 +212,7 @@ class MultiModal(Module):
         super().__init__(signals, enabled)
         self.API = self.API(self)
         self.enabled = enabled
-        self.ollama_url = "http://localhost:11434/api/generate"
+        self.ollama_url = "http://127.0.0.1:11434/api/generate"
         self.vlm_model = "moondream"
 
         # Default to Monitor 2 (Main display), can be toggled to 1 by voice/text
@@ -232,7 +232,7 @@ class MultiModal(Module):
 
     def _ensure_ollama_running(self):
         try:
-            res = requests.get("http://localhost:11434/", timeout=2)
+            res = requests.get("http://127.0.0.1:11434/", timeout=2)
             if res.status_code == 200:
                 return
         except Exception:

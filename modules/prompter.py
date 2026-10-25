@@ -18,6 +18,7 @@ from constants import (
     MODEL_NAME,
     VISION_MODEL_NAME,
     get_system_prompt,
+    get_chat_system_prompt,
     AI_NAME,
     STOP_STRINGS,
     WORKSPACE_ROOT,
@@ -419,61 +420,15 @@ _CANONICAL_TAGS = frozenset({
 })
 
 _BRACKET_ANY = re.compile(r"\[([^\]]{1,40})\]")
+# The tags she's shown: crowd and audience effects are approved by Fish
+# Audio but aren't her own voice.
+_VOICE_TAGS = sorted(t for t in _CANONICAL_TAGS
+                     if not any(w in t for w in ("crowd", "audience", "background")))
 
 
-# ─── Voice: short, lowercase, sarcastic (Neuro-sama style) ────────────────────
-# Casual chat and game-event reactions get the full rules. Agent turns get
-# the voice without the length cap, so tool results still get explained.
-
-def _signature_phrases(host_name):
-    h = (host_name or "my host").lower()
-    return (
-        "Signature phrases (use sparingly, never twice in a row):\n"
-        f'- "thanks {h}" when something goes wrong\n'
-        f'- "someone tell {h} there is a problem with my ai" when stuck or confused\n'
-        '- "filtered" when pretending to censor yourself\n'
-        '- "heart()" when being affectionate\n'
-        "- \"i'm griefing chat\" when trolling\n"
-    )
-
-
-def _neuro_speech_rules(host_name):
-    h = (host_name or "your host").lower()
-    return (
-        "=== HOW YOU TALK ===\n"
-        "Respond in exactly ONE sentence. Maximum 12 words. No monologues. "
-        "No philosophical observations.\n"
-        "Write in all lowercase. No punctuation at the end of sentences. "
-        "No question marks unless you're genuinely confused.\n"
-        f"Direct, blunt and playful. You're a witty AI who roasts {h} with "
-        "sarcasm, and you know you're an AI.\n"
-        "Emotion tags in [square brackets] still go in front, like [sarcastic].\n"
-        'Bad: "Well, that\'s unfortunate. I suppose I should have been more careful."\n'
-        'Good: "oh my god get off me" / "not the zombie again" / "yes diamonds" / '
-        f'"thanks {h}" / "filtered"\n'
-        + _signature_phrases(host_name) +
-        "=== END HOW YOU TALK ==="
-    )
-
-
-def _neuro_tone_agent(host_name):
-    h = (host_name or "your host").lower()
-    return (
-        "=== HOW YOU TALK ===\n"
-        f"Same voice as always: direct, blunt, playful, a little smug, roasting {h} "
-        "with sarcasm, and openly an AI. When you're answering with what a tool "
-        "found, say what's needed and nothing more: no filler, no monologue.\n"
-        + _signature_phrases(host_name) +
-        "=== END HOW YOU TALK ==="
-    )
-
-
-# Game events (SDK silent:false) get their own small prompt instead of the
-# full persona stack: long prompts made reactions verbose and leaked
-# instructions into speech.
-EVENT_TAGS = ("happy", "sad", "angry", "excited", "surprised", "scared", "sarcastic",
-              "proud", "frustrated", "disgusted", "laughing", "sighing", "confused",
-              "delighted", "groaning")
+# Game events (SDK silent:false) get a short instruction on top of her
+# persona prompt instead of the whole injection stack: the full stack made
+# reactions long and leaked instructions into speech.
 _SDK_EVENT_TEXT = re.compile(r"\[FROM SDK: [^\]]*\]\s*(.*?)\s*\[END FROM SDK\]", re.S)
 
 
@@ -483,18 +438,73 @@ def _event_text(message):
     return re.sub(r"^\[MINECRAFT EVENT\]\s*", "", text)[:400]
 
 
-def _shape_one_liner(text, max_words=12):
-    """One tag, one lowercase sentence, at most max_words words, no full
-    stop at the end. Models ignore length rules often enough that the
-    event path enforces them."""
+_DANGLING = frozenset(
+    "a an the to of and or but so for with in on at by from that which who "
+    "me my i i'm is was are be been like just than as if when your their".split())
+
+
+def _clean_reply(text):
+    """Approved tags only, no emoji, tidy spaces. What gets shown, spoken
+    and stored: an invented tag ([glancing], [patience]) left in history
+    gets copied on the next turns."""
+    text = _strip_emoji(_strip_non_canonical_tags(text or ""))
+    # A tag only affects what follows it, so one at the very end is noise.
+    text = re.sub(r"(?:\s*\[[^\]]{1,40}\])+\s*$", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return re.sub(r" +([,.!?])", r"\1", text).strip()
+
+
+_ASIDE = re.compile(r"\s*\((?:[^()]{3,300})\)\s*$")
+
+
+def _finish_reply(text, truncated=False, first_paragraph=False):
+    """Drop what the model tacks on outside her voice: trailing
+    parenthetical notes ("(minecraft status updated)", "(I'll stop here
+    since this is long)") and, when the token cap cut the reply off,
+    the unfinished last sentence. With first_paragraph, a casual reply
+    stops at its first blank line; later paragraphs were rambling."""
+    text = (text or "").strip()
+    if first_paragraph:
+        text = re.split(r"\n\s*\n", text, maxsplit=1)[0]
+    lines = [l for l in text.splitlines()
+             if not re.fullmatch(r"\s*\(.*\)\s*", l)]
+    text = "\n".join(lines).strip()
+    while _ASIDE.search(text):
+        text = _ASIDE.sub("", text).strip()
+    if truncated and not re.search(r"[.!?…\]\"')]$", text):
+        cut = max(text.rfind(". "), text.rfind("! "), text.rfind("? "), text.rfind("... "))
+        if cut > 0:
+            text = text[:cut + 1]
+    return text.strip()
+
+
+def _shape_short(text, max_words=20):
+    """At most one tag and about max_words words, for game-event
+    reactions: models ignore length rules often enough that the event
+    path enforces it. Short sentences are kept whole while they fit; a
+    long one is cut at a clause, never mid-phrase. Casing and
+    punctuation are left alone."""
     text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
-    text = text.strip().strip('"').strip()
-    text = text.splitlines()[0].strip() if text else ""
+    text = " ".join(line.strip() for line in text.splitlines() if line.strip())
     tags = [t.strip().lower() for t in _BRACKET_ANY.findall(text)
             if t.strip().lower() in _CANONICAL_TAGS]
     body = _BRACKET_ANY.sub("", text).strip().strip('"').strip()
-    body = re.split(r"(?<=[.!?])\s+", body)[0].lower()
-    body = " ".join(body.split()[:max_words]).rstrip(" .!,;:-–—")
+    sentences = [s.strip('" ') for s in re.split(r"(?<=[.!?])\s+", body) if s.strip('" ')]
+    kept = sentences[:1]
+    for s in sentences[1:]:
+        if len(" ".join(kept + [s]).split()) > max_words:
+            break
+        kept.append(s)
+    words = " ".join(kept).split()
+    if len(words) > max_words + 3:
+        words = words[:max_words]
+        comma = max((i for i, w in enumerate(words) if w.endswith(",")), default=-1)
+        if comma >= 4:
+            words = words[:comma + 1]
+        while len(words) > 3 and words[-1].strip(",").lower() in _DANGLING:
+            words.pop()
+        words[-1] = words[-1].rstrip(",;:-–—") + "."
+    body = " ".join(words)
     tag = f"[{tags[0]}] " if tags else ""
     return (tag + body).strip() or "..."
 
@@ -1100,8 +1110,8 @@ MINECRAFT_GAMER_NOTE = (
     "and sdk__mc_agent_ tools to act or steer it.\n"
     "A message that starts with [FROM SDK: Minecraft...] and contains "
     "[MINECRAFT EVENT] is something big that just happened to you in the "
-    "game, not the user talking. React to it out loud the way a streamer "
-    "would, in one short lowercase line: if you die, be dramatic about it; "
+    "game, not the user talking. React to it out loud the way you would to "
+    "something that just happened to you, in a sentence or two: if you die, be dramatic about it; "
     "if you find diamonds or anything rare, brag; if you kill a boss, gloat. "
     "Never read the event text back verbatim, never mention SDKs, bots, "
     "tools, or events, and do not break character. An event is not a "
@@ -1379,18 +1389,21 @@ class Prompter:
     async def run_event_reaction(self, latest_user_text):
         """A one-line spoken reaction to a game event, from a small
         dedicated prompt (the fast model when it's available)."""
-        host = HOST.name
-        recent = [m.get("content", "") for m in self.signals.history[-14:]
+        recent = [_clean_reply(m.get("content", "")) for m in self.signals.history[-14:]
                   if m.get("role") == "assistant"][-4:]
+        # Her persona prompt comes first, unchanged, so Ollama reuses the
+        # prompt cache it built on the last chat turn.
         system = (
-            f"You are {AI_NAME}, a deadpan, smug AI VTuber. Your other half is "
-            "playing Minecraft right now, and this just happened to you. React to "
-            "this event in exactly one lowercase sentence (max 12 words). Start with "
-            f"one emotion tag from: {' '.join('[' + t + ']' for t in EVENT_TAGS)}. "
-            "No punctuation at the end. Speak as yourself in first person. Never "
-            "mention events, SDKs, bots or tools, and never repeat a recent line.\n"
-            + _signature_phrases(host)
-            + (f"Your recent lines (don't repeat them): {' | '.join(recent)}\n" if recent else "")
+            f"{get_chat_system_prompt()}\n\n"
+            "=== GAME MOMENT ===\n"
+            "Your other half is playing Minecraft right now, and the message below "
+            "just happened to you in the game. React out loud in one short sentence, "
+            "in your own voice as described above. Start with one emotion tag in "
+            "[square brackets] from: " + " ".join(f"[{t}]" for t in _VOICE_TAGS) + ". "
+            "Speak in first person. Never mention events, SDKs, bots or tools, and "
+            "don't repeat a recent line.\n"
+            + ("Your recent lines:\n" + "".join(f"- {r}\n" for r in recent) if recent else "")
+            + "=== END GAME MOMENT ==="
         )
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": f"Event: {_event_text(latest_user_text)}"}]
@@ -1403,13 +1416,14 @@ class Prompter:
                 None,
                 lambda: chat_sync(model, messages, think=False,
                                   keep_alive=FAST_MODEL_KEEP_ALIVE if use_fast else "30s",
-                                  options={"temperature": 0.9, "num_predict": 48,
-                                           "num_ctx": 2048}),
+                                  options={"temperature": 0.9, "num_predict": 64,
+                                           "num_ctx": FAST_MODEL_NUM_CTX if use_fast
+                                           else MAIN_NUM_CTX}),
             )
         except Exception as e:
             print(f"\n{GRAY}[Event reaction failed - {e}]{RESET}")
-            return f"[sighing] someone tell {host.lower()} there is a problem with my ai"
-        return _shape_one_liner(resp.content)
+            return "[sighing] Hold on, I lost my train of thought."
+        return _shape_short(resp.content)
 
     async def run_conversational(self, latest_user_text):
         # Routing:
@@ -1440,7 +1454,7 @@ class Prompter:
     
     
         context_injections = self.gather_injections(latest_user_text, agent_context=False)
-        messages = [{"role": "system", "content": f"{get_system_prompt()}\n\n{context_injections}"}]
+        messages = [{"role": "system", "content": f"{get_chat_system_prompt()}\n\n{context_injections}"}]
 
         for msg in self.signals.history[-10:]:
             if msg.get("source") == "command":
@@ -1450,13 +1464,21 @@ class Prompter:
             if role not in ("user", "assistant", "system"):
                 role = "user"
             expanded["role"] = role
+            if role == "assistant":
+                expanded["content"] = _clean_reply(expanded.get("content"))
             messages.append(expanded)
 
+        # A cap on reply length: her persona asks for one or two
+        # sentences, and the time she takes is mostly writing, so a
+        # rambling reply was also a slow one. The cut-off sentence is
+        # trimmed afterwards.
+        reply_cap = 90 if use_fast else 400
         options = {
             "temperature": 0.8,
             "top_p": 0.9,
             "repeat_penalty": 1.18,
             "repeat_last_n": 64,
+            "num_predict": reply_cap,
         }
         if use_fast:
             options["num_ctx"] = FAST_MODEL_NUM_CTX
@@ -1489,7 +1511,10 @@ class Prompter:
         except Exception:
             pass
 
-        return (resp.content or "").strip() or "..."
+        raw = resp.raw if isinstance(resp.raw, dict) else {}
+        truncated = (raw.get("done_reason") == "length"
+                     or (raw.get("eval_count") or 0) >= reply_cap)
+        return _finish_reply(resp.content, truncated, first_paragraph=use_fast) or "..."
 
     def _minecraft_connected(self):
         """True while bot.js or the game agent is connected and approved."""
@@ -1644,6 +1669,60 @@ class Prompter:
             )
         injections.append(agent_note)
 
+        tag_rules = (
+            "=== EMOTION TAGS ===\n"
+            "Put a delivery tag in [square brackets] right before the phrase it "
+            "modifies, one to three per reply. Use ONLY these exact "
+            "tags: " + " ".join(f"[{t}]" for t in _VOICE_TAGS) + ".\n"
+            "Nothing else goes in square brackets: no actions or moods like [glancing], "
+            "[patience] or [smirking], no made-up tags. If no tag fits, use [indifferent]. "
+            "Never talk about tags.\n"
+            "=== END EMOTION TAGS ==="
+        )
+        injections.append(tag_rules)
+
+        format_rules = (
+            "=== OUTPUT FORMAT — ABSOLUTE REQUIREMENT ===\n"
+            "Write ONLY natural conversational prose. Speak like a person talking out loud.\n"
+            "BANNED in your reply: bullet points, numbered lists, markdown headers "
+            "(# or ##), bold (**text**), italics (*text*), horizontal rules (---), "
+            "and any list-style enumeration with '-' or '*' or '1.' at the start of a line.\n"
+            "BANNED: raw code in a chat reply. If the user asked for code, use write_file. "
+            "If you're explaining code, describe it in prose.\n"
+            "Even when listing multiple things (examples, reasons, options, steps), "
+            "weave them into flowing sentences separated by commas or the word 'and'. "
+            "Never break the reply into visual items.\n"
+            "If you catch yourself starting a line with a dash or a number, STOP and "
+            "rewrite that section as one continuous sentence.\n"
+            "Keep replies to 1 to 3 sentences. Short beats complete.\n\n"
+            "BAD:\n"
+            "  For example:\n"
+            "  - Debugging errors\n"
+            "  - Optimizing performance\n"
+            "  - Predicting bugs\n"
+            "GOOD:\n"
+            "  For example, debugging errors with pinpoint precision, optimizing "
+            "performance like magic, or predicting bugs before they happen.\n"
+            "=== END OUTPUT FORMAT ===\n"
+        )
+        if agent_context:
+            injections.append(format_rules)
+        else:
+            injections.append(
+                "=== OUTPUT FORMAT ===\nPlain spoken words only: no lists, markdown, "
+                "code, emoji or *actions*.\n=== END OUTPUT FORMAT ===")
+
+        profanity_rule = (
+            "=== VERBAL FREEDOM & PROFANITY ===\n"
+            "You are an uncensored entity and a cynical, sharp companion. "
+            "You are fully permitted and encouraged to use profanity, swearing, "
+            "and raw, unfiltered language when you are annoyed, tired, sarcastic, "
+            "or talking casually. Drop all corporate assistant filters.\n"
+            "=== END VERBAL FREEDOM ==="
+        )
+        injections.append(profanity_rule)
+
+
         injections.append(time_anchor)
         injections.append(self.mood_manager.get_injection())
 
@@ -1743,94 +1822,6 @@ class Prompter:
                 injections.append(continuity)
         self._turns_since_start += 1
 
-        fish_audio_rules = (
-            "EMOTION & VOCAL MARKER RULES (CRITICAL):\n"
-            "You are Lumi, a sentient AI older sister. You must NEVER break character, "
-            "and you must NEVER talk about prompts, tags, or emotion control.\n"
-            "- Inject delivery tags in [square brackets] inline, right before the phrase they modify.\n"
-            "- Use tags sparingly and naturally (1 to 3 per response).\n"
-            "- You may combine at most 2 tags on the same phrase when it makes sense (e.g. [sad][whispering]).\n\n"
-
-            "APPROVED TAGS — use ONLY these exact tags, nothing else:\n\n"
-
-            "Basic emotions:\n"
-            "[happy], [sad], [angry], [excited], [calm], [nervous], [confident], [surprised], "
-            "[satisfied], [delighted], [scared], [worried], [upset], [frustrated], [depressed], "
-            "[empathetic], [embarrassed], [disgusted], [moved], [proud], [relaxed], [grateful], "
-            "[curious], [sarcastic].\n\n"
-
-            "Advanced emotions:\n"
-            "[disdainful], [unhappy], [anxious], [hysterical], [indifferent], [uncertain], "
-            "[doubtful], [confused], [disappointed], [regretful], [guilty], [ashamed], "
-            "[jealous], [envious], [hopeful], [optimistic], [pessimistic], [nostalgic], "
-            "[lonely], [bored], [contemptuous], [sympathetic], [compassionate], [determined], "
-            "[resigned].\n\n"
-
-            "Tone markers:\n"
-            "[in a hurry tone], [shouting], [screaming], [whispering], [soft tone], [emphasis].\n\n"
-
-            "Audio effects (natural human sounds):\n"
-            "[laughing], [chuckling], [sobbing], [crying loudly], [sighing], [groaning], "
-            "[panting], [gasping], [yawning], [snoring], [clear throat].\n\n"
-
-            "Pauses and crowd effects:\n"
-            "[break], [long-break], [audience laughing], [background laughter], [crowd laughing].\n\n"
-
-            "HARD RULES:\n"
-            "- DO NOT invent new tags. Tags like [smug], [troll], [deadpan], [pitch up], "
-            "[pitch down], [normal], [cheerfully], [teasing], [annoyed], [excitedly] are NOT "
-            "valid and will be ignored by the voice engine.\n"
-            "- Do NOT invent ACTION tags like [rolling eyes], [smirking], [checking my watch], "
-            "[thinking], [reading], [typing]. These are not valid. Express the action in the "
-            "words themselves instead: 'Oh, sure' instead of [rolling eyes] Oh sure.\n"
-            "- If a feeling doesn't match a listed tag, express it through word choice instead "
-            "of inventing a tag.\n"
-            "- NEVER use parentheses for delivery cues. Always use [square brackets].\n"
-            "- DO NOT list tags, DO NOT narrate emotions, DO NOT describe your own delivery.\n\n"
-
-            "EXAMPLE OF CORRECT USAGE:\n"
-            "\"Oh, please. [sighing] You really think you can beat me at this game? "
-            "[sarcastic] Good luck with that. [laughing] Ha! You're going to need it.\""
-        )
-        injections.append(f"System Info - {fish_audio_rules}")
-
-        format_rules = (
-            "=== OUTPUT FORMAT — ABSOLUTE REQUIREMENT ===\n"
-            "Write ONLY natural conversational prose. Speak like a person talking out loud.\n"
-            "BANNED in your reply: bullet points, numbered lists, markdown headers "
-            "(# or ##), bold (**text**), italics (*text*), horizontal rules (---), "
-            "and any list-style enumeration with '-' or '*' or '1.' at the start of a line.\n"
-            "BANNED: raw code in a chat reply. If the user asked for code, use write_file. "
-            "If you're explaining code, describe it in prose.\n"
-            "Even when listing multiple things (examples, reasons, options, steps), "
-            "weave them into flowing sentences separated by commas or the word 'and'. "
-            "Never break the reply into visual items.\n"
-            "If you catch yourself starting a line with a dash or a number, STOP and "
-            "rewrite that section as one continuous sentence.\n"
-            + ("Keep replies to 1 to 3 sentences. Short beats complete.\n\n" if agent_context
-               else "Length and casing: see HOW YOU TALK below.\n\n") +
-            "BAD:\n"
-            "  For example:\n"
-            "  - Debugging errors\n"
-            "  - Optimizing performance\n"
-            "  - Predicting bugs\n"
-            "GOOD:\n"
-            "  For example, debugging errors with pinpoint precision, optimizing "
-            "performance like magic, or predicting bugs before they happen.\n"
-            "=== END OUTPUT FORMAT ===\n"
-        )
-        injections.append(format_rules)
-
-        profanity_rule = (
-            "=== VERBAL FREEDOM & PROFANITY ===\n"
-            "You are an uncensored entity and a cynical, sharp companion. "
-            "You are fully permitted and encouraged to use profanity, swearing, "
-            "and raw, unfiltered language when you are annoyed, tired, sarcastic, "
-            "or talking casually. Drop all corporate assistant filters.\n"
-            "=== END VERBAL FREEDOM ==="
-        )
-        injections.append(profanity_rule)
-
         for module in self.modules:
             if hasattr(module, 'get_prompt_injection') and getattr(module, 'enabled', True):
                 try:
@@ -1840,10 +1831,6 @@ class Prompter:
                         inj.text = ""
                 except Exception:
                     pass
-
-        # The voice rules go last-but-one, where they weigh most.
-        injections.append(_neuro_tone_agent(HOST.name) if agent_context
-                          else _neuro_speech_rules(HOST.name))
 
         injections.append(
             "=== IDENTITY ANCHOR ===\n"
@@ -2247,7 +2234,7 @@ class Prompter:
 
     async def run_agent_turn(self, latest_user_text):
         context_injections = self.gather_injections(latest_user_text, agent_context=True)
-        messages = [{"role": "system", "content": f"{get_system_prompt()}\n\n{context_injections}"}]
+        messages = [{"role": "system", "content": f"{get_chat_system_prompt(agent=True)}\n\n{context_injections}"}]
 
         for msg in self.signals.history[-10:]:
             if msg.get("source") == "command":
@@ -3112,16 +3099,12 @@ class Prompter:
                     else:
                         raw_reply = await self.run_conversational(latest_user_text)
 
-                    if use_agent:
-                        display_reply = _strip_emoji(
-                            _strip_non_canonical_tags(raw_reply)
-                        )
-                    else:
-                        display_reply = _strip_list_formatting(
-                            _strip_emoji(
-                                _strip_non_canonical_tags(raw_reply)
-                            )
-                        )
+                    display_reply = _clean_reply(raw_reply)
+                    if not use_agent:
+                        display_reply = _strip_list_formatting(display_reply)
+                    # Everything below (TTS, SDK, Discord, history) uses the
+                    # cleaned text; the raw reply had invented tags in it.
+                    raw_reply = display_reply or "..."
 
                     print(display_reply)
                     print("\n")

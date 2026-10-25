@@ -25,12 +25,20 @@ iteration against real use, not new subsystems.
   Reverse chronological. What shipped, when, and why.
 
   2026-10-24
-    - Neuro-sama voice: casual chat and the heartbeat speak in one
-      short lowercase sentence (12 words max), blunt and sarcastic,
-      with catchphrases using the host's name ("thanks anthony",
-      "filtered", "heart()"). Agent turns keep the tone without the
-      cap. Game events get a minimal one-line prompt of their own
-      (run_event_reaction) with the shape enforced on the reply.
+    - Faster replies, 6-26 s down to about 1-4 s once the model is
+      warm: Ollama at 127.0.0.1 (localhost cost 2 s per request on
+      Windows), one num_ctx for every fast-model call (a change
+      reloaded the model), the heartbeat on the fast model, static
+      prompt blocks before the per-turn ones so Ollama's prompt cache
+      covers them, and a 90-token cap on casual replies.
+    - Chat and agent turns send a shorter persona prompt
+      (build_chat_system_prompt, about 4k tokens). The full one was
+      about 10k tokens in an 8k context, and Ollama dropped half of it.
+    - Replies are cleaned before they're shown, spoken and stored:
+      invented tags ([glancing], [patience]), trailing tags, emoji,
+      parenthetical asides, and a sentence cut off by the cap.
+    - Game events get a short reaction from her persona prompt plus a
+      one-sentence instruction (run_event_reaction).
     - Prompt leaks fixed: the "TIME CHECK BEFORE YOU WRITE" block is
       gone, and the heartbeat no longer describes the TTS engine or
       lists tags Fish Audio doesn't know.
@@ -39,6 +47,8 @@ iteration against real use, not new subsystems.
       kind per minute.
     - Traits retuned: playfulness 0.8, chaos 0.7, empathy 0.6,
       sarcasm 0.75.
+    - She talks the way config/lumi.yaml describes her, not in a
+      streamer voice: no lowercase one-liners or catchphrases.
     - scripts/setup_skin.py installs Lumi's skin for CustomSkinLoader:
       copies it to the mod's LocalSkin folder, puts LocalSkin first in
       CustomSkinLoader.json (with a backup), clears the mod's cache,

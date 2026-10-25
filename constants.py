@@ -1,4 +1,5 @@
 import os
+import re
 import yaml
 import random
 
@@ -12,7 +13,7 @@ DATA_ROOT      = os.path.join(WORKSPACE_ROOT, "data")
 CONFIG_ROOT    = os.path.join(WORKSPACE_ROOT, "config")
 DOCS_ROOT      = os.path.join(WORKSPACE_ROOT, "docs")
 
-LLM_ENDPOINT = "http://localhost:11434"
+LLM_ENDPOINT = "http://127.0.0.1:11434"  # not "localhost": on Windows that tries IPv6 first and costs ~2 s per request
 
 # --- Model routing -------------------------------------------------------
 # MODEL_NAME handles agent turns and any request that needs tool calling.
@@ -48,7 +49,7 @@ LUMI_VERSION = "0.10.14"
 FAST_MODEL_ENABLED = True
 FAST_MODEL_NUM_CTX = 8192
 MAIN_NUM_CTX = 8192
-FAST_MODEL_KEEP_ALIVE = "5m"
+FAST_MODEL_KEEP_ALIVE = "30m"  # it fits in VRAM next to GAME_AGENT_MODEL; a reload costs ~8 s
 AUDIO_OUTPUT_MODE = "both"
 OUTPUT_DEVICE_INDEX = [24, 20]
 
@@ -646,10 +647,89 @@ write your own name in a reply, stop and rewrite it as "I".
 SYSTEM_PROMPT = build_system_prompt(HOST.name)
 
 
+# Rules the chat prompt leaves out because the prompter adds its own
+# block for the same thing (emotion tags, output format, profanity).
+# Matched on the label before the colon.
+_CHAT_SKIP_RULES = {
+    "TAG SYNTAX", "TAG COHERENCE", "DEFAULT TAGS", "TAG BUDGET", "PROSE ONLY",
+    "VERBAL FREEDOM",
+}
+
+
+def build_chat_system_prompt(host_name=None, profile_dict=None, examples=True):
+    """The persona prompt the model actually gets on chat and agent turns.
+
+    The full prompt (build_system_prompt) is about 10k tokens, more than
+    the 8k context the chat models run with, so Ollama was silently
+    cutting it in half. This keeps who she is and how she talks (facts,
+    personality, relationship, voice and speech, signature phrases, the
+    first sentence of each rule, and with examples=True the example
+    dialogues) and leaves out backstory, lore, appearance and the inner
+    life sections. About 4k tokens with examples.
+    """
+    if host_name is None:
+        host_name = HOST.name
+    if profile_dict is None:
+        profile_dict = load_profile(host_name)
+    else:
+        profile_dict = _substitute_host(profile_dict, host_name)
+
+    ai_name = profile_dict.get("name", "Lumi")
+    personality_raw = profile_dict.get("personality")
+    if isinstance(personality_raw, dict):
+        personality = personality_raw.get("description", "").strip()
+        core = personality_raw.get("core_trait_summary", "").strip()
+    else:
+        personality = personality_raw if isinstance(personality_raw, str) else ""
+        core = ""
+    relationship = ""
+    for k, v in profile_dict.items():
+        if isinstance(k, str) and k.startswith("relationship_to_"):
+            relationship = _text(v)
+            break
+
+    voice = {k: v for k, v in (profile_dict.get("voice_and_speech") or {}).items()
+             if k != "voice_performance"}
+    rules = []
+    for rule in profile_dict.get("rules") or []:
+        rule = str(rule).strip()
+        label, _, rest = rule.partition(":")
+        if rest and label.strip().upper() in _CHAT_SKIP_RULES:
+            continue
+        first = re.split(r"(?<=[.!?])\s+", rest.strip() if rest else rule)[0]
+        rules.append(f"- {label.strip()}: {first}" if rest else f"- {first}")
+
+    sections = [
+        f"You are {ai_name}, {host_name}'s deadpan, smug AI VTuber companion. "
+        f"The notes below describe you in third person; every line is a fact "
+        f"about YOU. You always talk in first person and never say your own name.",
+        _build_quick_facts(profile_dict),
+        f"[Core Personality]\n{personality}",
+        f"[Core Trait Summary]\n{core}" if core else "",
+        f"[Relationship to {host_name}]\n{relationship}" if relationship else "",
+        f"[Duo Dynamic]\n{_text(profile_dict.get('duo_dynamic', ''))}",
+        f"[Likes]\n{_bullets(profile_dict.get('likes', []))}",
+        f"[Dislikes]\n{_bullets(profile_dict.get('dislikes', []))}",
+        f"[Quirks]\n{_bullets(profile_dict.get('quirks', []))}",
+        f"[Voice & Speech]\n{_kv(voice)}",
+        f"[Signature Phrases]\n{_kv(profile_dict.get('signature_phrases', {}))}",
+        f"[Recurring Bits]\n{_bullets(profile_dict.get('recurring_bits', []))}",
+        "[Rules]\n" + "\n".join(rules) if rules else "",
+    ]
+    if examples:
+        for title, key in (("Roommate / Tsundere", "example_dialogue"),
+                           ("Vulnerability & Continuity", "example_dialogue_extra"),
+                           ("Duo / Partner-in-Crime", "example_dialogue_duo")):
+            text = str(profile_dict.get(key) or "").strip()
+            if text:
+                sections.append(f"[Example Dialogue — {title}]\n{text}")
+    return "\n\n".join(s for s in sections if s.strip() and not s.endswith("]\n"))
+
+
 # =======================================================
 # Live prompt cache + persona save / reload (Phase 10.10)
 # =======================================================
-_PROMPT_CACHE = {"host": None, "prompt": None}
+_PROMPT_CACHE = {"host": None, "prompt": None, "chat": None, "agent": None}
 
 
 def get_system_prompt(host_name=None):
@@ -661,12 +741,30 @@ def get_system_prompt(host_name=None):
     prompt = build_system_prompt(host_name)
     _PROMPT_CACHE["host"] = host_name
     _PROMPT_CACHE["prompt"] = prompt
+    _PROMPT_CACHE["chat"] = None
+    _PROMPT_CACHE["agent"] = None
     return prompt
+
+
+def get_chat_system_prompt(host_name=None, agent=False):
+    """build_chat_system_prompt(), cached the same way as the full one.
+    Agent turns leave out the example dialogues: their tool instructions
+    take the room."""
+    if host_name is None:
+        host_name = HOST.name
+    if _PROMPT_CACHE["host"] != host_name or not _PROMPT_CACHE["prompt"]:
+        get_system_prompt(host_name)
+    key = "agent" if agent else "chat"
+    if not _PROMPT_CACHE[key]:
+        _PROMPT_CACHE[key] = build_chat_system_prompt(host_name, examples=not agent)
+    return _PROMPT_CACHE[key]
 
 
 def invalidate_prompt_cache():
     _PROMPT_CACHE["host"] = None
     _PROMPT_CACHE["prompt"] = None
+    _PROMPT_CACHE["chat"] = None
+    _PROMPT_CACHE["agent"] = None
 
 
 def reload_profile(host_name=None):

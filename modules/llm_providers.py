@@ -71,7 +71,7 @@ PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
     "ollama": {
         "label":       "Ollama (local)",
         "kind":        "ollama",
-        "base_url":    "http://localhost:11434",
+        "base_url":    "http://127.0.0.1:11434",
         "key_env":     None,
         "doc_url":     "https://ollama.com",
     },

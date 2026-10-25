@@ -22,7 +22,8 @@ import datetime
 import requests
 
 from modules.module import Module
-from constants import LLM_ENDPOINT, MODEL_NAME, AI_NAME, HOST
+from constants import (LLM_ENDPOINT, MODEL_NAME, AI_NAME, HOST, FAST_MODEL_NAME,
+                       FAST_MODEL_ENABLED, FAST_MODEL_NUM_CTX, FAST_MODEL_KEEP_ALIVE)
 from modules.log_hub import emit as hub_emit
 from modules.llm_providers import chat_sync, LLMResponse
 
@@ -83,12 +84,11 @@ EMOTION TAGS:
 - Start your message with ONE emotion tag in square brackets.
 - Approved tags: [sarcastic] [sighing] [chuckling] [laughing] [curious] [bored]
   [confident] [soft tone] [whispering] [worried] [happy] [indifferent]
-- Example: "[sarcastic] still on that bug or did you finally give up"
+- Example: "[sarcastic] Still on that bug, or did you finally give up?"
 
 RESPONSE FORMAT:
 - If you decide to speak: respond with your message only, starting with an emotion tag.
-  One short sentence, all lowercase, at most 12 words, no punctuation at the end.
-  Direct, blunt and playful: roast {host_name} a little. Anchor to something specific.
+  Keep it short — 1 to 2 sentences, in your normal voice. Anchor to something specific.
 - If you decide to stay silent: respond with exactly the word SILENCE
 
 Your response:"""
@@ -110,7 +110,12 @@ class Heartbeat(Module):
         self.tick_seconds = tick_seconds
         self.min_idle_seconds = min_idle_seconds
         self.min_gap_between_utterances = min_gap_between_utterances
-        self.decision_model = decision_model or MODEL_NAME
+        # The fast model, like casual chat: the main model doesn't fit in
+        # VRAM next to it and the game agent's model, so every 30 s check
+        # pushed the fast model out and the next chat reply waited ~8 s
+        # for it to reload.
+        self.decision_model = decision_model or (FAST_MODEL_NAME if FAST_MODEL_ENABLED
+                                                 else MODEL_NAME)
 
         # Optional reference to the module list so we can find TTS if we
         # need to push audio directly (fallback path when signals.tts_queue
@@ -322,10 +327,14 @@ class Heartbeat(Module):
         )
 
         try:
+            fast = self.decision_model == FAST_MODEL_NAME
             resp: LLMResponse = chat_sync(
                 self.decision_model,
                 [{"role": "user", "content": prompt}],
-                options={"temperature": 0.7, "top_p": 0.9},
+                think=False,
+                keep_alive=FAST_MODEL_KEEP_ALIVE if fast else None,
+                options={"temperature": 0.7, "top_p": 0.9,
+                         **({"num_ctx": FAST_MODEL_NUM_CTX} if fast else {})},
             )
             return (resp.content or "").strip()
         except Exception as e:

@@ -245,14 +245,15 @@ with before she walks back.
 | Channel | When | Lumi's reaction |
 |---|---|---|
 | Silent status | Every 30 s, and right away when her distance from you changes band | None. It updates her context, so if you ask what she's doing in Minecraft she answers from it |
-| Spoken event | Deaths, boss kills, diamonds and other top loot, a finished house, each new order, an order done or abandoned | Lumi reacts with one short line ("[excited] yes diamonds", "[scared] not the zombie again") |
+| Spoken event | Deaths, boss kills, diamonds and other top loot, a finished house, each new order, an order done or abandoned | Lumi reacts in a short sentence, in her own voice ("[anxious] Oh, not now.") |
 
-A reaction comes from a small prompt of its own, not her full persona: one
-lowercase sentence of at most 12 words, starting with one emotion tag, with
-her catchphrases ("thanks anthony", "filtered", using the host name from
-settings) and her last few lines so she doesn't repeat herself. It uses the
-fast model when one is installed. Lumi trims the reply to that shape if the
-model doesn't. The event itself isn't shown in the web chat, only her line.
+A reaction uses her persona prompt (the same one chat uses, from
+`config/lumi.yaml`) plus a short instruction: react in one short sentence,
+starting with one emotion tag, without repeating her last few lines. It skips
+the rest of the chat prompt, uses the fast model when one is installed, and
+usually takes about a second. If the model runs long, Lumi cuts the reply at a
+clause, at about 20 words. The event itself isn't shown in the web chat, only
+her line.
 
 Spoken events are deliberately rare, because each one is a turn of Lumi's chat
 model. `bot.js` sends the same kind of event at most 3 times in any minute, on

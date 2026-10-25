@@ -61,7 +61,7 @@ try:
     from constants import GAME_AGENT_MODEL as _GAME_MODEL, LLM_ENDPOINT as _OLLAMA
 except Exception:
     chat_sync = parse_model_spec = None
-    _GAME_MODEL, _OLLAMA = None, "http://localhost:11434"
+    _GAME_MODEL, _OLLAMA = None, "http://127.0.0.1:11434"
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 DATA_ROOT      = os.path.join(_ROOT, "data")

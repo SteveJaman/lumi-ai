@@ -105,7 +105,7 @@ with `<host>` substituted for the current user's name at load time.
 | `name` | Character name |
 | `greeting` | Fallback greeting |
 | `personality` | Long-form personality description, values list |
-| `traits` | Eight numeric traits, 0 to 1 — playfulness, intelligence, chaos, empathy, sarcasm, warmth, curiosity, patience. The shipped values lean Neuro-sama: playfulness 0.8, chaos 0.7, sarcasm 0.75, empathy 0.6 |
+| `traits` | Eight numeric traits, 0 to 1 — playfulness, intelligence, chaos, empathy, sarcasm, warmth, curiosity, patience |
 | `frames` | Cognitive frame descriptions — play, strategy, chaos, social, learning, threat |
 | `identity` | Birthday, presented age, species, pronouns, self-description |
 | `personality_modes` | Named modes (troll, unhinged, superiority, …) with descriptions and sample lines |
@@ -135,7 +135,9 @@ with `<host>` substituted for the current user's name at load time.
 
 The web client's **Persona** page edits every section with form fields
 plus a Raw YAML tab. Save / Revert / Reload buttons. **Preview Prompt**
-renders the full system prompt from your draft without saving.
+renders the full system prompt from your draft without saving. Chat and
+agent turns send a shorter version of it, so it fits the model's context;
+see [architecture.md](architecture.md#prompt-assembly-stack).
 
 Saves are live. The cached system prompt (`_PROMPT_CACHE` in
 `constants.py`) is invalidated and rebuilt on the next turn. No restart
@@ -192,8 +194,13 @@ GAME_AGENT_MODEL  = "qwen2.5:3b" # background game agents (Minecraft goal pickin
 FAST_MODEL_ENABLED    = True
 FAST_MODEL_NUM_CTX    = 8192
 MAIN_NUM_CTX          = 8192
-FAST_MODEL_KEEP_ALIVE = "5m"
+FAST_MODEL_KEEP_ALIVE = "30m"
 ```
+
+Every call to a model has to use the same `num_ctx` as the last one, or
+Ollama reloads it (about 8 s for an 8B model). The fast-model calls (chat,
+game-event reactions, the heartbeat, memory and session summaries) all use
+`FAST_MODEL_NUM_CTX`.
 
 Both paths point at the same weights, so Ollama keeps one copy in VRAM.
 The fast path is differentiated by the `think` flag, not by the context
@@ -208,8 +215,11 @@ See [models.md](models.md) for the full routing story.
 ### LLM endpoint
 
 ```python
-LLM_ENDPOINT = "http://localhost:11434"
+LLM_ENDPOINT = "http://127.0.0.1:11434"
 ```
+
+Use `127.0.0.1`, not `localhost`. On Windows, `localhost` tries IPv6 first
+and falls back to IPv4 after about 2 seconds, on every request.
 
 Applies to every Ollama-routed call. Written by the Settings page.
 
@@ -333,7 +343,9 @@ full system prompt. Passing a `profile_dict` (from the persona editor's
 live preview) uses that instead of reading from disk.
 
 `get_system_prompt(host_name=None)` returns a cached prompt per host.
-`invalidate_prompt_cache()` clears the cache after a persona save.
+`build_chat_system_prompt()` and `get_chat_system_prompt(agent=False)` are
+the shorter version chat and agent turns send.
+`invalidate_prompt_cache()` clears all of them after a persona save.
 
 `save_persona_parsed(parsed_data)` and `save_persona_raw(raw_text)`
 write through `modules.persona_editor`, then call `reload_profile()`.

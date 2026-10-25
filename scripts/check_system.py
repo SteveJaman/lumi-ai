@@ -337,7 +337,7 @@ def check_ports():
             ok(f"Port {port} — {label}", "free")
 
 
-def check_ollama(endpoint="http://localhost:11434"):
+def check_ollama(endpoint="http://127.0.0.1:11434"):
     section("Ollama")
 
     try:
