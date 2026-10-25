@@ -25,6 +25,12 @@ iteration against real use, not new subsystems.
   Reverse chronological. What shipped, when, and why.
 
   2026-10-24
+    - scripts/setup_skin.py installs Lumi's skin for CustomSkinLoader:
+      copies it to the mod's LocalSkin folder, puts LocalSkin first in
+      CustomSkinLoader.json (with a backup), clears the mod's cache,
+      and warns when the mod isn't installed. --from-sheet rebuilds
+      the skin reproducibly from the reference sheet, which can't
+      simply be cropped. Documented in docs/minecraft.md.
     - Minecraft survival and world switching. bot.js survival
       overrides (500 ms): drowning (swim up, dig the ceiling), lava
       and fire (walk to a safe spot), falls (log, water-bucket

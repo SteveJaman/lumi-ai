@@ -34,7 +34,9 @@ running on the same PC.
 2. In Minecraft, open a world and choose **Open to LAN**.
 3. Start Lumi: `python main.py`.
 4. In Lumi's web UI on this PC, open **Games** and turn on **Minecraft AI**.
-5. Under **Server connection**, click your world. `bot.js` hears Minecraft's
+5. Optional, once: give her her own skin instead of Steve's. See
+   [Lumi's skin](#lumis-skin).
+6. Under **Server connection**, click your world. `bot.js` hears Minecraft's
    LAN announcement, so it shows up by name with its port. You can also type a
    host and port and press **Reconnect**. The choice is remembered for next
    time.
@@ -312,16 +314,52 @@ and `MC_PORT` in `.env`. With Minecraft AI off, **Reconnect** just saves it.
 - **Live viewer.** A first-person 3D view of what `LumiBot` sees, at
   `http://localhost:3000` and on the Games page. It sends 4 chunks around her
   (`VIEWER_DISTANCE`), down from 6, to keep memory in check.
-- **Skin.** A vanilla LAN world can't receive a custom skin from the bot:
-  offline-mode clients have no way to send one. Install the CustomSkinLoader
-  mod in your client and either copy `sdk/examples/minecraft/lumi_skin.png` to
-  `%APPDATA%\.minecraft\CustomSkinLoader\LocalSkin\skins\LumiBot.png`, or
-  point the mod at `bot.js`'s skin server. To change her skin, use
-  **Change skin…** on the Games page: it takes a 64x64 (or old-style 64x32)
-  PNG, keeps the previous one as `lumi_skin.bak.png`, and the skin server
-  serves the new one right away. If you copied the file into the mod's folder,
-  copy it again. See
-  [the bot's README](../sdk/examples/minecraft/README.md#lumis-skin).
+- **Skin.** See [Lumi's skin](#lumis-skin) below. The live viewer is
+  first-person, so it never shows her body or skin.
+
+### Lumi's skin
+
+Out of the box, `LumiBot` looks like Steve. A vanilla LAN world runs in
+offline mode, and an offline-mode bot has no way to send a skin to the server,
+so every player sees a default one. The fix lives in **your** Minecraft
+client: the CustomSkinLoader mod loads her skin from a file on your PC. It
+also changes what viewers see when you stream.
+
+One-time setup:
+
+1. **Install CustomSkinLoader for Fabric 1.19.** Download the Fabric build for
+   your Minecraft version from
+   [Modrinth](https://modrinth.com/mod/customskinloader) and put the `.jar` in
+   `%APPDATA%\.minecraft\mods`, next to Fabric API (which Fabric mods need
+   anyway). Start Minecraft once with the Fabric profile.
+2. **Run the setup script** from the workspace root:
+
+   ```powershell
+   python scripts/setup_skin.py --dry-run   # see what it will change
+   python scripts/setup_skin.py
+   ```
+
+   It copies her skin (`sdk/examples/minecraft/lumi_skin.png`) to
+   `%APPDATA%\.minecraft\CustomSkinLoader\LocalSkin\skins\LumiBot.png`
+   (named after `MC_USERNAME`). It puts the mod's LocalSkin loader first in
+   `CustomSkinLoader.json`, ahead of Mojang, which would otherwise return the
+   skin of whoever owns that name on a real account; the old file is kept as
+   `.bak`. It also clears the
+   mod's cache so a cached Steve doesn't stick. It warns if the mod isn't in
+   your mods folder.
+3. **Reload.** Restart Minecraft, or press F3+T in game.
+
+For a launcher instance (Prism, CurseForge, …) pass its folder:
+`--minecraft-dir "D:\Prism\instances\1.19\.minecraft"`.
+
+To change her skin later, upload one with **Change skin…** on the Games page
+(a 64x64 or old-style 64x32 PNG; the previous one is kept as
+`lumi_skin.bak.png`), then run `python scripts/setup_skin.py` again to copy it
+to the mod. `--from-sheet` rebuilds the original skin from her reference sheet
+in `assets/branding/`. That sheet is a character drawing, not a skin layout, so
+it can't simply be cropped. Other players on the LAN need the mod and the file
+too. More options, such as loading the skin straight from `bot.js`'s skin
+server, are in [the bot's README](../sdk/examples/minecraft/README.md#lumis-skin).
 
 ---
 

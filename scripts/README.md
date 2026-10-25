@@ -11,7 +11,46 @@ Standalone utilities for Lumi. `main.py` does not import or run any of them. Run
 | `check_system.py` | Prints Python version, key package versions, GPU info, and port availability | `python scripts/check_system.py` |
 | `import_chat_history.py` | One-shot importer that backfills long-term memory from a chat log | `python scripts/import_chat_history.py --dry-run` |
 | `setup_tunnel.py` | Exposes the web client through a Cloudflare Tunnel (`check`, `quick`, `setup`, `run`). Shares `modules/tunnel.py` with `main.py`'s `AUTO_START_TUNNEL`. See [../docs/remote-access.md](../docs/remote-access.md) | `python scripts/setup_tunnel.py check` |
+| `setup_skin.py` | Installs Lumi's Minecraft skin for the CustomSkinLoader mod, so `LumiBot` stops showing up as Steve. See [setup_skin.py](#setup_skinpy) | `python scripts/setup_skin.py --dry-run` |
 | `reset_lumi_history.ps1` | Clears chat history and session state | `.\scripts\reset_lumi_history.ps1` |
+
+## setup_skin.py
+
+Run it once after installing the CustomSkinLoader mod (Fabric 1.19 build) in
+your Minecraft client. It needs Pillow, which Lumi already uses.
+
+```powershell
+python scripts/setup_skin.py --dry-run   # show what would change
+python scripts/setup_skin.py
+```
+
+What it does, in order:
+
+1. Takes the skin: `sdk/examples/minecraft/lumi_skin.png`, or `--source
+   <png>`. It must be a real skin layout (64x64, 64x32, or a square HD skin);
+   anything else is refused. `--from-sheet` rebuilds the original skin from
+   her reference sheet in `assets/branding/`. The sheet is a character drawing,
+   not a skin, so a crop of it wouldn't work.
+2. Writes it to `sdk/examples/minecraft/lumi_skin.png` (served by `bot.js` on
+   `:3001`; the previous one becomes `lumi_skin.bak.png`) and to
+   `<.minecraft>/CustomSkinLoader/LocalSkin/skins/<MC_USERNAME>.png`.
+3. Puts the LocalSkin loader first in `CustomSkinLoader.json`, keeping the
+   other entries and settings and saving the old file as
+   `CustomSkinLoader.json.bak`. If the file doesn't exist yet, it creates one
+   with LocalSkin first.
+4. Clears the mod's cache folders.
+
+It changes nothing if the existing `CustomSkinLoader.json` isn't valid JSON,
+and it warns, with the download link, if it can't find the mod in your mods
+folder.
+
+| Option | Use |
+|---|---|
+| `--dry-run` | Print what would change and change nothing |
+| `--source <png>` | Install another skin |
+| `--from-sheet` | Rebuild the skin from the reference sheet |
+| `--minecraft-dir <dir>` | A launcher instance's `.minecraft` folder (default `%APPDATA%\.minecraft`) |
+| `--username <name>` | The in-game name (default `MC_USERNAME` from `sdk/examples/minecraft/.env`) |
 
 ## import_chat_history.py
 

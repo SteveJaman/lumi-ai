@@ -138,7 +138,12 @@ API). It replaces skins on your screen, which is what viewers see when you
 stream. Install it, launch the game once so it creates its folders, then do
 one of the following:
 
-- **Copy the file** (simplest). Copy `lumi_skin.png` to
+- **Run the setup script** (recommended). `python scripts/setup_skin.py`
+  from the workspace root copies the file below, puts the LocalSkin loader
+  first in `CustomSkinLoader.json`, and clears the mod's cache. See
+  [docs/minecraft.md](../../../docs/minecraft.md#lumis-skin) and
+  [scripts/README.md](../../../scripts/README.md#setup_skinpy).
+- **Copy the file** by hand. Copy `lumi_skin.png` to
   `%APPDATA%\.minecraft\CustomSkinLoader\LocalSkin\skins\LumiBot.png`. Use
   your `MC_USERNAME` as the file name if you changed it.
 - **Load it from `bot.js`.** In `%APPDATA%\.minecraft\CustomSkinLoader\CustomSkinLoader.json`,
@@ -700,7 +705,8 @@ usual cause.
 
 **LumiBot still has the default skin.**
 See [Lumi's skin](#lumis-skin): the skin needs the CustomSkinLoader mod in
-your client. With the `loadlist` option, `bot.js` must be running when the
+your client. Run `python scripts/setup_skin.py`; it says whether the mod is
+installed. With the `loadlist` option, `bot.js` must be running when the
 skin loads. Press F3+T in game to reload textures.
 
 **Bot connects to Lumi but actions never fire.**

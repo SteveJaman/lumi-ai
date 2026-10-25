@@ -246,6 +246,7 @@ crash's exit code and last lines), then the Dashboard's Event Stream with the
 | Agent stuck on `waiting for bot` | `bot.js` not running, or not spawned in a world | Start `bot.js` first, then check it printed `bot spawned and ready` |
 | Skill fails with `No … nearby, please explore first` | Voyager primitive feedback: the resource isn't within range | The agent explores after repeated failures; any wood type works |
 | Lumi reports `action timed out` but the bot keeps working | SDK invocations time out after 30 s | Expected for long skills; see [known-limitations.md](known-limitations.md#minecraft) |
+| LumiBot looks like Steve | CustomSkinLoader isn't installed in your client, or isn't set up | Install the mod's Fabric 1.19 build, then run `python scripts/setup_skin.py`. See [minecraft.md](minecraft.md#lumis-skin) |
 | She crafts a pickaxe she "already made" | Tools wear out; progress is read from the inventory | Intended: the tech tree rebuilds what's missing |
 
 Full reference: [../sdk/examples/minecraft/README.md](../sdk/examples/minecraft/README.md#troubleshooting).
