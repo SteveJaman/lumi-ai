@@ -546,13 +546,6 @@ function survivalMovements() {
 }
 
 function configurePathfinder() {
-  // Keep the active Movements reachable (the pathfinder doesn't expose
-  // them), so movementTick can switch sprinting on and off mid-path.
-  if (!bot.pathfinder._lumiWrapped) {
-    const set = bot.pathfinder.setMovements;
-    bot.pathfinder.setMovements = (m) => { bot.pathfinder.movements = m; return set(m); };
-    bot.pathfinder._lumiWrapped = true;
-  }
   bot.pathfinder.setMovements(survivalMovements());
   bot.pathfinder.thinkTimeout = PATH_THINK_MS;
 }
