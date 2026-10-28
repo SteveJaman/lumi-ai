@@ -222,7 +222,10 @@ tree:
 
 | Routine | When | What it does |
 |---|---|---|
-| `retrieve_items` | She died less than about 5 minutes ago (`death.recoverable` in `/status`). Checked before orders (a follow or stay mode still comes first) | `retrieve_items` in `bot.js`: walks back and picks up her dropped items. A spoken event when she gets them |
+| `retrieve_items` | She died less than about 5 minutes ago (`death.recoverable` in `/status`). Checked before orders and before following (a stay mode still comes first) | `retrieve_items` in `bot.js`: walks back and picks up her dropped items. A spoken event when she gets them |
+| `sleep_in_bed` | Night (or a thunderstorm), with a bed within 32 blocks or in her inventory. A routine checked in code, before the leash and before following | `use_bed` in `bot.js`: places the bed if needed, fights monsters that are too close, then sleeps. While she's asleep the loop waits |
+| `set_spawn` | By day, with a bed handy and no respawn point set at one yet. Same routine | `use_bed` with `mode: "spawn"`. After a failure (an old server), rested for 30 minutes |
+| `get_bed` | No bed handy or remembered. In code after the stone kit, by day; also offered to the model | Kills sheep until there are 3 wool of one colour, then crafts that bed |
 | `go_home` | Night, the house is finished, and the bot isn't in it | Walks to the middle of the house (then `wait_out_night` takes over) |
 | `organize_inventory` | 6 or fewer free slots | `sort_inventory` in `bot.js`, crafting and placing a chest if none is within 16 blocks. Then rested for 2 minutes |
 
@@ -251,15 +254,16 @@ diamonds, come back to me" means "come back":
 
 | Kind | Example phrases | What happens |
 |---|---|---|
-| Resume | "go play", "do your thing", "stop following" | Clears any order or mode |
-| Follow | "follow me", "stay close", "come with me" | Follow mode: stays within about 5 blocks of you until told otherwise |
-| Come back | "come here", "come back", "where are you" | `return_to_player` once, then free play |
+| Resume | "go play", "do your thing", "stop following" | Clears any order or mode and detaches her: free play near you |
+| Follow | "follow me", "stay close", "come with me" | Attaches her: follow mode, within about 5 blocks of you. The default (`MC_DEFAULT_MODE=follow`) |
+| Come back | "come here", "come back", "where are you" | `return_to_player`, then follow mode (attaches her) |
 | Stay | "stay", "wait here", "stop", "don't move" | Stay mode: does nothing but survive until told otherwise |
 | Give | "give me the pickaxe", "bring me 5 diamonds", "hand over your sword" | If she has it: walks over and tosses it to you (`give_item`; a loose name like "pickaxe" means her best one, a plural like "the diamonds" means all of them). If not, and it's a pickaxe or something she can collect, she gets or makes it first and then hands it over. Otherwise she says she doesn't have any |
-| Tool | "make an iron pickaxe", "…smelt it into an iron pickaxe" | Works through the tech tree until she has a pickaxe of that tier (wooden, stone or iron). Checked before Collect, so "collect some iron and smelt it into an iron pickaxe" is about the pickaxe, not just the iron |
+| Tool | "make a stone axe", "craft me an iron sword", "make an iron pickaxe", "…smelt it into an iron pickaxe" | Any pickaxe, axe, sword, shovel or hoe in wood, stone, iron or diamond (stone when no material is named: "craft an axe"). `_craft_step` gets what's missing first: wood for planks and sticks, a pickaxe to mine stone, iron mined and smelted (with a furnace, or 8 cobblestone to make one), diamonds from a branch mine with an iron pickaxe. Then she crafts it (`craft_<material>_<tool>`, or the tier goal for a pickaxe). For herself, that tier or better is enough; with "make **me**", "craft me" or "for me" she crafts that exact tool and hands it over. Checked before Collect, so "make a stone axe" is about the axe, not cobblestone |
 | Collect | "get me 5 diamonds", "get some wood", "mine for iron", "coal", "cobblestone" | An objective: N more than she has now (defaults: 3 diamonds, 6 iron, 8 coal, 16 logs, 32 cobblestone). She works through the tech tree first when she needs a better pickaxe (diamonds need iron), then branch-mines, chops or mines until she has them. With "get **me**", "bring me" or "for me" she hands them over at the end |
 | House | "build a house" | Builds the house, gathering what it's missing, until it's done |
 | Task | "go home", "make torches", "sort your stuff", "hunt", "cook", "make a shelter", "make a furnace", "go mining", "explore" | That goal, once |
+| Bed | "make a bed", "set your spawn", "go to sleep", "go to bed" | `get_bed`, `set_spawn` or `sleep_in_bed`. "Go to sleep" by day sets the respawn point instead (she says she can only sleep at night). With no bed, she makes one first, and the bed routine sleeps or sets the spawn after |
 
 Anything else goes to the game model with the override prompt ("The user has
 given you a new direct order: '…'. You must prioritize this above all current
@@ -283,8 +287,14 @@ line, and hears when it's done or given up.
 
 ### Playing near you
 
-Lumi plays near one player, like a kid near a parent: she wanders off to do
-her own thing but comes back when she's too far away. `bot.js` reports the
+By default (`MC_DEFAULT_MODE=follow`) she's attached: she follows the
+player, any order runs first, and she goes back to following when it's done
+(`_attached` in the agent). An order, a goal from Lumi, or getting her items
+back after a death comes before following. The rest of this section applies
+once she's detached ("do your own thing", or `MC_DEFAULT_MODE=free`).
+
+Detached, Lumi plays near one player, like a kid near a parent: she wanders
+off to do her own thing but comes back when she's too far away. `bot.js` reports the
 player (`MC_OWNER`, or the first other player online) in `GET /status`, and
 the agent uses the **horizontal** distance, so mining straight below them
 still counts as nearby.
@@ -328,6 +338,12 @@ the model never sees them:
 | `mine_stone` | Wooden pickaxe, fewer than 3 cobblestone | Explores until stone is in sight, mines 8 |
 | `craft_stone_pickaxe` | Wooden pickaxe and 3 cobblestone | Sticks if needed, then a stone pickaxe |
 
+Then, still in code (`_kit_goal`), the rest of a first stone kit, the way a
+player does it: a stone axe, so trees come down fast (mining equips the best
+tool for the block, so once she has an axe, she chops with it), then a stone
+sword. Each one mines the cobblestone or chops the wood it's missing first.
+An axe or sword of a better tier counts.
+
 With a stone pickaxe, the next of these is offered to the model as the
 "tool progress" option, as soon as its inputs are on hand:
 
@@ -369,6 +385,7 @@ The agent connects as `MinecraftAgent`. The allowlist entry needs
 | `MC_STATUS_INTERVAL` | `30` | Seconds between silent status pushes to Lumi |
 | `MC_NARRATE` | `major` | Spoken events from the agent: `major` (diamonds), `all` (also goals, milestones, repeated failures), or `off` |
 | `MC_NARRATE_COOLDOWN` | `75` | Minimum seconds between non-major narration events |
+| `MC_DEFAULT_MODE` | `follow` | `follow`: she follows the player and goes back to following after each order, until told to do her own thing. `free`: she plays on her own near the player |
 
 ## Files it writes
 

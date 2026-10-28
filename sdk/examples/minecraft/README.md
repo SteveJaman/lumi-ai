@@ -501,8 +501,15 @@ player online. `GET /status` reports `owner: {name, distance, position,
 called}`. `distance` is `null` when the owner is too far away for the server
 to send their position.
 
-- **Checking in.** When idle and no hostile is close, the bot glances at the
-  owner when they move (within 16 blocks), and at least every 8 s.
+- **Looking around.** When idle and no hostile is close, she looks at
+  whoever's around (idle gaze): first anyone who just crouched or swung at
+  her, then the closest player who's moving within 16 blocks, with the owner
+  winning a tie. She doesn't stare at someone standing still, skips about a
+  third of the glances, ignores tiny turns, turns smoothly, and looks at
+  most every 2 s.
+- **Gestures.** Crouching at her three times within 1.5 s (a "teabag") is an
+  event Lumi reacts to, and she crouches back three times when she isn't
+  busy. Hitting her is an event too, and she never fights back at a player.
 - **Calling her.** A short chat message from the owner like "come here"
   or "follow me" sets `called` for 60 s, and the game agent brings her back.
   Longer messages count only if they mention Lumi, so "I'll come back later"
@@ -516,6 +523,62 @@ to send their position.
 
 The agent decides when to return. See
 [the agent's README](../../../plugin/README.md#playing-near-you).
+
+### Moving like a player
+
+`movementTick` (every 250 ms) and `return_to_player` handle how she gets
+around:
+
+- **Sprinting.** The pathfinder sprints on straight stretches and
+  sprint-jumps where it can. She's only allowed to while hunger is 7 or more
+  (at 6 the game stops a player sprinting). When catching up to the owner she
+  runs, and walks the last 5 blocks so she doesn't overshoot.
+- **Swimming.** While going to the owner, water is cheap to path through
+  (`liquidCost` 3 instead of 40), so she swims after you across a river or
+  lake instead of failing to find a path. Otherwise water stays expensive, so
+  her own trips stay dry. Standing in deep water with nothing steering her,
+  she treads water at the surface. Mineflayer's physics has no fast
+  swimming, so she swims at the surface at normal speed.
+- **Creative flight.** In creative mode, when the owner is more than 20
+  blocks away or up in the air, she flies to them (`bot.creative.flyTo`):
+  straight there if the line is clear, else straight up and over (up to 10
+  blocks). She lands when you're back on the ground. Survival players can't
+  fly, so neither can she.
+- **Elytra.** Wearing one, she opens it when she falls with at least 6
+  blocks of air below, which also saves her from the fall. While gliding she
+  steers toward the owner, and when you're more than 24 blocks away she uses
+  a firework rocket from her inventory, at most every 2.5 s. She doesn't
+  take off from the ground on purpose; jumping off something tall is still
+  up to the pathfinder.
+
+### Beds
+
+`minecraft_use_bed` (`mode: "sleep"` or `"spawn"`) uses the nearest bed
+within 32 blocks, or puts the one in her inventory down next to her (foot
+one block away, head one further, both on solid ground).
+
+- **Respawn point** (`spawn`). She right-clicks the bed and waits for the
+  server's "Respawn point set". By day that works on Java 1.15+. Older
+  servers only set it by sleeping, and then the action fails.
+- **Sleeping** (`sleep`). Only at night or in a thunderstorm. When the game
+  says there are monsters nearby, she fights the nearest hostile within 12
+  blocks and tries again, up to 5 kills. Sleeping sets the respawn point too.
+  The action returns once she's asleep. A background watcher keeps her in
+  bed until the server wakes her in the morning, or gets her up early when
+  an order or emergency comes in, something hurts her, or the owner goes
+  more than 32 blocks away. On a multiplayer server the night only skips if
+  enough players sleep (`playersSleepingPercentage`). Otherwise she stays in
+  bed until it's day.
+
+The bed she used is remembered in `data/minecraft/bed.json` with whether the
+respawn point is set there. It's forgotten when the bed is gone, and the
+respawn flag is cleared when the server resets the spawn (the bed was broken
+or blocked). `GET /status` has `bed: {spawn_set, remembered, nearby,
+in_inventory}`, `sleeping` and `can_sleep`.
+
+`GET /status` and the environment text include `moving`: `sprinting`,
+`swimming`, `flying`, `gliding`, `walking` or `still`, so Lumi can talk
+about it.
 
 ---
 
@@ -540,12 +603,14 @@ bot's event log (`GET /events`) only.
 
 | Event | When | Sent with `major` | Bot cooldown |
 |---|---|---|---|
-| Died | Death, with the mob that last hurt it if that was within 10 s | Yes | — |
+| Died | Death, with what killed her if she was hurt in the last 10 s ("I fell to my death", "A skeleton got me", "I drowned") | Yes | — |
 | Boss died | An ender dragon, wither, elder guardian or warden dies within 32 blocks ("I killed it" if the bot was fighting it) | Yes | — |
 | Top-tier loot | Diamonds, emeralds, ancient debris, netherite, enchanted golden apples, totems, elytra, nether stars | Yes | 15 s per item |
 | Other rare pickup | Gold, ender pearls, golden apples, lapis, name tags, saddles | `all` only | 15 s per item |
 | Joined the world | First spawn on a server | `all` only | — |
-| Took damage | Health drops. Names the nearest hostile and warns at 6 HP or less | `all` only | 20 s |
+| Hit by a player | A player hits her ("Anthony just hit me!") | Yes | 20 s |
+| Crouch spam | A player within 8 blocks crouches at her 3 times in 1.5 s | Yes | 45 s |
+| Took damage | Health drops, with the cause: a mob (named), an arrow, an explosion, a fall, lava, fire, drowning or starving. Warns at 6 HP or less | `all` only | 20 s per cause |
 | Hostile nearby | A hostile mob comes within 10 blocks for the first time. Creepers get an extra warning | `all` only | 30 s |
 | Getting hungry | Hunger falls to 6 or below | `all` only | 2 min |
 | Killed a mob | A mob the bot was fighting dies | `all` only | 10 s |
@@ -614,7 +679,19 @@ death spot to `death_location.json` on every death.
 
 ## Self-defense
 
-Once a second the bot scans for hostile mobs:
+**Who hurt her.** On 1.20+ servers, the damage packet names the entity
+responsible (the skeleton that fired the arrow, the player who swung), and
+the bot uses that. Before, it blamed the nearest hostile, so an arrow from
+far away was pinned on whatever zombie stood close. It also tells a fall from
+an attack: it remembers how fast she was falling just before she landed,
+because the health update arrives after landing. Older servers don't send
+the source, and the bot falls back to the nearest hostile.
+
+When she's hit, she fights back against the mob that hit her if it's within
+12 blocks, or else the nearest hostile within 5. She never fights a player,
+and a fall, fire or drowning doesn't start a fight.
+
+Once a second the bot also scans for hostile mobs:
 
 - **Idle** (no action running): it looks at any hostile within 5 blocks, and
   fights it with `mineflayer-pvp` if it was hit in the last 5 s. It doesn't
@@ -623,8 +700,19 @@ Once a second the bot scans for hostile mobs:
   health is 12 or lower. The fight takes over the pathfinder, so the running
   skill usually fails and the agent retries it later.
 
-Set `AUTO_DEFEND=false` to turn this off. Lumi or the agent can still call
-`minecraft_defend` explicitly.
+**Eating at critical health.** At 6 HP or less, with hunger under 18 (above
+that, health comes back by itself), she eats the best food she has right away
+instead of waiting for the game agent's next turn. Never in the middle of a
+fight, since eating swaps her weapon out, and at most every 3 s.
+
+Set `AUTO_DEFEND=false` to turn fighting back off. Lumi or the agent can still
+call `minecraft_defend` explicitly.
+
+The damage attribution, fall tracking, gesture detection, idle gaze and
+critical-health eating are adapted from
+[AIRI's Minecraft integration](https://github.com/moeru-ai/airi/tree/main/integrations/minecraft)
+(MIT License, Copyright (c) 2024-PRESENT Neko Ayaka). None of it calls a
+model.
 
 ---
 

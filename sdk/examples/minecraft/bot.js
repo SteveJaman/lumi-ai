@@ -253,7 +253,6 @@ let mcData   = null;   // minecraft-data for the connected server's version
 let lastHealth    = null;
 let lastFood      = null;
 let lastHurtAt    = 0;
-let lastAttacker  = null;  // name of the hostile nearest when we last took damage
 let activeActions = 0;     // actions currently running (skills, SDK/ctrl calls)
 let defendTarget  = null;
 let lastFoughtId  = null;  // last entity we fought, for the kill announcement
@@ -278,21 +277,28 @@ function createBot() {
   // Adds bot.save / bot.inventoryUsed and the chatEvent hook the primitives use.
   if (voyagerInject) voyagerInject(bot);
 
-  lastHealth = lastFood = defendTarget = lastAttacker = lastFoughtId = null;
+  lastHealth = lastFood = defendTarget = lastFoughtId = null;
   lastHurtAt = 0;
   announcedThreats.clear();
+  recentHit = lastDamage = attention = null;
+  landing = { airborne: false, peak: 0, landedAt: 0, landedPeak: 0 };
+  gestures.clear();
+  lastSeen.clear();
 
   bot.once("spawn", () => {
     mcData = require("minecraft-data")(bot.version);
     configurePathfinder();
     botReady   = true;
-    lastHealth = bot.health;
-    lastFood   = bot.food;
+    lastHealth = bot.health ?? null;
+    lastFood   = bot.food ?? null;
     console.log("[mc] bot spawned and ready");
     startViewer(bot);
     pushBotContext();
-    pushEvent("spawn", `I just joined the world. Health ${fmtHp(bot.health)}/20, ` +
-                       `hunger ${bot.food}/20, carrying: ${inventorySummary()}.`);
+    // Health and hunger arrive in their own packet, often just after spawn.
+    const joined = () => pushEvent("spawn", `I just joined the world. Health ${fmtHp(bot.health)}/20, ` +
+                                            `hunger ${bot.food}/20, carrying: ${inventorySummary()}.`);
+    if (bot.food === undefined) bot.once("health", joined);
+    else joined();
   });
 
   bot.on("death", () => {
@@ -302,8 +308,7 @@ function createBot() {
     defendTarget = null;
     console.log("[mc] bot died");
     pushBotContext();
-    const cause = lastAttacker && Date.now() - lastHurtAt < 10_000 ? ` A ${lastAttacker} got me.` : "";
-    pushEvent("death", `I just died!${cause} I dropped everything I was carrying.`, true);
+    pushEvent("death", `I just died!${deathCause()} I dropped everything I was carrying.`, true);
   });
 
   bot.on("respawn", () => {
@@ -321,14 +326,18 @@ function createBot() {
   bot.on("health", () => {
     if (!botReady) return;
     const hp = bot.health, food = bot.food;
-    if (lastHealth !== null && hp < lastHealth - 0.01 && hp > 0) {
+    if (lastHealth !== null && hp < lastHealth - 0.01) {
       lastHurtAt = Date.now();
-      const t = nearestHostile(DEFEND_RADIUS + 3);
-      lastAttacker = t ? mobName(t.entity) : null;
-      const who = t ? ` A ${lastAttacker} is ${t.dist.toFixed(0)} blocks away.` : "";
-      const urgency = hp <= 6 ? " I'm about to die!" : "";
-      pushEvent("hurt", `I just took damage! Health is ${fmtHp(hp)}/20.${who}${urgency}`);
-      maybeAutoDefend();
+      const d = damageCause();
+      lastDamage = { ...d, at: lastHurtAt };
+      if (hp > 0) {
+        const urgency = hp <= 6 ? " I'm about to die!" : "";
+        // Being hit by a player is social, so it's worth a reaction even
+        // with EVENT_REACTIONS=major.
+        pushEvent(`hurt:${d.cause}`, `${describeDamage(d)} Health is ${fmtHp(hp)}/20.${urgency}`,
+                  d.cause === "player");
+        maybeAutoDefend(d);
+      }
     }
     if (lastFood !== null && food <= 6 && lastFood > 6) {
       pushEvent("hunger", `I'm getting really hungry (hunger ${food}/20).` +
@@ -338,8 +347,23 @@ function createBot() {
     lastFood   = food;
   });
 
-  bot.on("entityHurt", (entity) => {
-    if (entity === bot.entity) maybeAutoDefend();
+  bot.on("entityHurt", (entity, source) => recordHit(entity, source));
+  bot.on("entityCrouch", onPlayerCrouch);
+  bot.on("entitySwingArm", onPlayerSwing);
+
+  // Respawn point: confirmed by the server's "Respawn point set", and lost
+  // when the bed is gone or blocked at respawn.
+  bot.on("message", (msg) => {
+    if (msg.translate === "block.minecraft.set_spawn" || /respawn point set/i.test(msg.toString())) {
+      spawnHeardAt = Date.now();
+    }
+  });
+  bot.on("spawnReset", () => {
+    const mem = readBed();
+    if (mem && mem.spawn) {
+      saveBed({ ...mem, spawn: false });
+      _logEv("bed", "respawn point lost: the bed is gone or blocked");
+    }
   });
 
   bot.on("entityDead", (entity) => {
@@ -522,6 +546,13 @@ function survivalMovements() {
 }
 
 function configurePathfinder() {
+  // Keep the active Movements reachable (the pathfinder doesn't expose
+  // them), so movementTick can switch sprinting on and off mid-path.
+  if (!bot.pathfinder._lumiWrapped) {
+    const set = bot.pathfinder.setMovements;
+    bot.pathfinder.setMovements = (m) => { bot.pathfinder.movements = m; return set(m); };
+    bot.pathfinder._lumiWrapped = true;
+  }
   bot.pathfinder.setMovements(survivalMovements());
   bot.pathfinder.thinkTimeout = PATH_THINK_MS;
 }
@@ -592,8 +623,6 @@ function interruptCurrent(reason = "a new order") {
 // "come here", "follow me", "lumi come back", ... in chat from the owner.
 const CALL_RE = /\b(come( here| back)?|follow( me)?|over here|where are you|get over here)\b/i;
 let ownerCalledAt = 0;
-let lastOwnerLook = 0;
-let lastOwnerPos  = null;
 
 function ownerName() {
   if (!bot || !bot.players) return null;
@@ -616,19 +645,6 @@ function ownerInfo() {
     position: { x: +p.x.toFixed(1), y: +p.y.toFixed(1), z: +p.z.toFixed(1) },
     called,
   };
-}
-
-// While idle, glance at the owner when they move, like checking in.
-function lookAtOwnerSometimes() {
-  if (activeActions > 0 || defendTarget || bot.pathfinder.isMoving()) return;
-  const name = ownerName();
-  const ent = name && bot.players[name] && bot.players[name].entity;
-  if (!ent || bot.entity.position.distanceTo(ent.position) > 16) return;
-  const moved = !lastOwnerPos || lastOwnerPos.distanceTo(ent.position) > 2;
-  if (!moved && Date.now() - lastOwnerLook < 8000) return;
-  lastOwnerPos = ent.position.clone();
-  lastOwnerLook = Date.now();
-  bot.lookAt(ent.position.offset(0, ent.height ?? 1.62, 0)).catch(() => {});
 }
 
 function buildStatusText() {
@@ -721,6 +737,9 @@ function buildStatusJson() {
     environment: environmentJson(),
     emergency: emergency ? emergency.kind : null,
     death:     deathJson(),
+    bed:       bedJson(),
+    sleeping:  Boolean(bot.isSleeping),
+    can_sleep: canSleepNow(),
     heap_mb:   Math.round(process.memoryUsage().heapUsed / 1048576),
   };
 }
@@ -753,7 +772,8 @@ function pushBotContext(extra = null) {
 
 // Per-kind cooldowns so a fight doesn't become a wall of reactions. Lumi's
 // SDK server adds its own per-client cooldown on top.
-const EVENT_COOLDOWN_MS = { hurt: 20_000, threat: 30_000, hunger: 120_000, collect: 15_000, kill: 10_000 };
+const EVENT_COOLDOWN_MS = { hurt: 20_000, threat: 30_000, hunger: 120_000, collect: 15_000, kill: 10_000,
+                            social: 45_000 };
 const _lastEventAt = {};
 // On top of the cooldowns: at most 3 of the same kind in any 60 s, so a
 // zombie that keeps wandering in and out doesn't get "not again" five times.
@@ -776,6 +796,238 @@ function pushEvent(kind, text, major = false) {
              data: { message: `[MINECRAFT EVENT] ${text}`, silent: false } });
 }
 
+// ─── Perception and reflexes ───────────────────────────────────────────────
+// Adapted from AIRI's Minecraft integration (github.com/moeru-ai/airi,
+// integrations/minecraft, MIT License, Copyright (c) 2024-PRESENT Neko
+// Ayaka): the attacker, fall and damage-taken perception events, the
+// punch/teabag rules, and the idle-gaze and auto-eat reflexes. None of it
+// calls a model; it runs on mineflayer events and the 1 s/500 ms ticks.
+
+// Who or what hurt her. On 1.20+ servers entityHurt carries the real
+// source (the skeleton that shot, the player who hit) a few ticks before
+// the health packet; older servers fall back to the nearest hostile.
+const ATTACKER_RECENCY_MS = 600;
+const FALL_RECENCY_MS = 400;
+const FALL_VELOCITY = -0.45;      // blocks/tick: faster than a jump or a step down
+let recentHit = null;             // { entity, at }
+let landing = { airborne: false, peak: 0, landedAt: 0, landedPeak: 0 };
+let lastDamage = null;            // { cause, name, at } for the death message
+
+function recordHit(victim, source) {
+  if (bot && victim && victim === bot.entity && source) recentHit = { entity: source, at: Date.now() };
+}
+
+// Called every physics tick: remembers how fast she was falling just
+// before landing, because by the time the health packet arrives she's on
+// the ground with no velocity left.
+function trackFall(e) {
+  const vy = e.velocity ? e.velocity.y : 0;
+  if (!e.onGround) {
+    if (!landing.airborne) { landing.airborne = true; landing.peak = 0; }
+    if (vy < landing.peak) landing.peak = vy;
+    return;
+  }
+  if (landing.airborne) { landing.landedAt = Date.now(); landing.landedPeak = landing.peak; }
+  landing.airborne = false;
+  landing.peak = 0;
+}
+
+function fellJustNow(now = Date.now()) {
+  if (landing.airborne && landing.peak < FALL_VELOCITY) return true;
+  return now - landing.landedAt <= FALL_RECENCY_MS && landing.landedPeak < FALL_VELOCITY;
+}
+
+const onFire = (e) => typeof (e.metadata && e.metadata[0]) === "number" && (e.metadata[0] & 0x01) !== 0;
+
+// { cause, name, entity } for damage she just took. cause is one of lava,
+// fire, drowning, fall, player, mob, projectile, explosion, starving,
+// unknown.
+function damageCause(now = Date.now()) {
+  const e = bot.entity;
+  if (e.isInLava) return { cause: "lava" };
+  if (e.isInWater && (bot.oxygenLevel ?? 20) <= 0) return { cause: "drowning" };
+  const hit = recentHit && now - recentHit.at <= ATTACKER_RECENCY_MS ? recentHit.entity : null;
+  if (hit) {
+    if (hit.type === "player") return { cause: "player", name: hit.username || hit.name, entity: hit };
+    const n = mobName(hit);
+    if (/creeper|tnt|explosion|fireball/.test(n)) return { cause: "explosion", name: n, entity: hit };
+    if (/arrow|trident|snowball|potion/.test(n)) return { cause: "projectile", name: n };
+    return { cause: "mob", name: n, entity: hit };
+  }
+  if (fellJustNow(now)) return { cause: "fall" };
+  if (onFire(e)) return { cause: "fire" };
+  if (bot.food === 0) return { cause: "starving" };
+  const t = nearestHostile(DEFEND_RADIUS + 3);
+  if (t) return { cause: "mob", name: mobName(t.entity), entity: t.entity, guessed: true };
+  return { cause: "unknown" };
+}
+
+function describeDamage(d) {
+  const owner = d.name && d.name === ownerName();
+  switch (d.cause) {
+    case "lava":       return "I'm burning in lava!";
+    case "fire":       return "I'm on fire!";
+    case "drowning":   return "I'm drowning!";
+    case "fall":       return "I fell and hurt myself.";
+    case "starving":   return "I'm starving, and it's costing me health.";
+    case "player":     return `${d.name} just hit me!${owner ? " My own teammate." : ""}`;
+    case "explosion":  return `Something blew up right next to me${d.name === "creeper" ? " (a creeper)" : ""}!`;
+    case "projectile": return `Something shot me with a ${d.name.replace(/_/g, " ")}!`;
+    case "mob":        return d.guessed ? `I just took damage! A ${d.name} is right next to me.`
+                                        : `A ${d.name.replace(/_/g, " ")} hit me!`;
+    default:           return "I just took damage!";
+  }
+}
+
+function deathCause() {
+  if (!lastDamage || Date.now() - lastDamage.at > 10_000) return "";
+  switch (lastDamage.cause) {
+    case "lava":      return " I burned in lava.";
+    case "fire":      return " I burned to death.";
+    case "drowning":  return " I drowned.";
+    case "fall":      return " I fell to my death.";
+    case "starving":  return " I starved.";
+    case "player":    return ` ${lastDamage.name} killed me.`;
+    case "explosion": return " Something blew me up.";
+    case "mob": case "projectile":
+      return lastDamage.name ? ` A ${lastDamage.name.replace(/_/g, " ")} got me.` : "";
+    default:          return "";
+  }
+}
+
+// Players around her: a sliding-window count of crouches and arm swings
+// (AIRI's teabag and punch rules). Someone who just gestured at her gets
+// her attention, so idle gaze looks at them first.
+const SOCIAL_RANGE = 8;
+const CROUCH_SPAM = { count: 3, windowMs: 1_500 };   // 3 crouches = 6 toggles
+const SWING_SPAM  = { count: 5, windowMs: 2_000 };
+const gestures = new Map();      // "crouch:Name" -> [timestamps]
+let attention = null;            // { entity, at }
+
+function nearPlayer(e, range) {
+  return e && e.type === "player" && e !== bot.entity && e.position && bot.entity &&
+         bot.entity.position.distanceTo(e.position) <= range;
+}
+
+function countGesture(key, { count, windowMs }, now = Date.now()) {
+  const recent = (gestures.get(key) || []).filter(t => now - t < windowMs);
+  recent.push(now);
+  if (recent.length >= count) { gestures.delete(key); return true; }
+  gestures.set(key, recent);
+  return false;
+}
+
+function onPlayerCrouch(e) {
+  if (!botReady || !nearPlayer(e, SOCIAL_RANGE)) return;
+  attention = { entity: e, at: Date.now() };
+  if (!countGesture(`crouch:${e.username}`, CROUCH_SPAM)) return;
+  _logEv("social", `${e.username} is crouch-spamming`);
+  pushEvent("social:teabag", `${e.username} is crouch-spamming at me.`, true);
+  crouchBack(e);
+}
+
+function onPlayerSwing(e) {
+  if (!botReady || !nearPlayer(e, 10)) return;
+  attention = { entity: e, at: Date.now() };
+  if (countGesture(`swing:${e.username}`, SWING_SPAM)) _logEv("social", `${e.username} is punching the air near me`);
+}
+
+// Crouch back at them, three times, when nothing else needs her body.
+let crouching = false;
+async function crouchBack(e) {
+  if (crouching || activeActions > 0 || defendTarget || emergency) return;
+  crouching = true;
+  try {
+    await bot.lookAt(e.position.offset(0, e.height ?? 1.62, 0), true).catch(() => {});
+    for (let i = 0; i < 3; i++) {
+      bot.setControlState("sneak", true);  await sleep(180);
+      bot.setControlState("sneak", false); await sleep(180);
+    }
+  } finally {
+    bot.setControlState("sneak", false);
+    crouching = false;
+  }
+}
+
+// While idle, look at whoever's around: someone who just crouched or
+// swung at her first, then the closest player who's moving (the owner
+// wins a tie). Like AIRI's idle gaze, she skips about a third of the
+// glances, doesn't turn for tiny angles, and turns smoothly.
+const GAZE_RANGE = 16;
+const GAZE_COOLDOWN_MS = 2_000;
+const GAZE_SKIP = 0.3;
+const GAZE_DEADZONE = 0.07;      // radians
+let lastGazeAt = 0;
+const lastSeen = new Map();      // username -> position at the last gaze tick
+
+function lookDelta(target) {
+  const p = bot.entity.position;
+  const dx = target.x - p.x, dz = target.z - p.z;
+  const dy = target.y - (p.y + (bot.entity.height || 1.62));
+  let yaw = Math.atan2(-dx, -dz) - bot.entity.yaw;
+  while (yaw > Math.PI) yaw -= 2 * Math.PI;
+  while (yaw < -Math.PI) yaw += 2 * Math.PI;
+  const pitch = Math.atan2(dy, Math.hypot(dx, dz)) - bot.entity.pitch;
+  return Math.max(Math.abs(yaw), Math.abs(pitch));
+}
+
+function gazeTarget(now) {
+  if (attention && now - attention.at <= GAZE_COOLDOWN_MS && nearPlayer(attention.entity, GAZE_RANGE)) {
+    return { entity: attention.entity, attention: true };
+  }
+  const owner = ownerName();
+  let best = null;
+  for (const [name, pl] of Object.entries(bot.players)) {
+    const e = pl && pl.entity;
+    if (name === bot.username || !nearPlayer(e, GAZE_RANGE)) continue;
+    const before = lastSeen.get(name);
+    lastSeen.set(name, e.position.clone());
+    if (!before || before.distanceTo(e.position) < 0.3) continue;   // standing still: don't stare
+    const dist = bot.entity.position.distanceTo(e.position) - (name === owner ? 2 : 0);
+    if (!best || dist < best.dist) best = { entity: e, dist };
+  }
+  return best && { entity: best.entity, attention: false };
+}
+
+function idleGaze() {
+  if (!bot.entity || activeActions > 0 || defendTarget || emergency || crouching || bot.pathfinder.isMoving()) return;
+  const now = Date.now();
+  if (now - lastGazeAt < GAZE_COOLDOWN_MS) return;
+  const t = gazeTarget(now);
+  if (!t) return;
+  if (!t.attention && Math.random() < GAZE_SKIP) return;
+  const head = t.entity.position.offset(0, (t.entity.height || 1.8) * 0.85, 0);
+  if (lookDelta(head) < GAZE_DEADZONE) return;
+  lastGazeAt = now;
+  bot.lookAt(head, false).catch(() => {});
+}
+
+// Critical health: eat right away instead of waiting for the game agent's
+// next turn. Only at 6 HP or less, and only below 18 hunger (above that,
+// health comes back by itself). Never mid-fight: eating swaps her weapon
+// out, and the fight decides whether she lives.
+const REFLEX_EAT_HP = 6;
+let eatingNow = false;
+let lastReflexEat = 0;
+
+async function autoEatReflex() {
+  if (!bot || !botReady || eatingNow || defendTarget || emergency) return;
+  if (bot.health > REFLEX_EAT_HP || bot.food >= 18 || Date.now() - lastReflexEat < 3_000) return;
+  const food = pickFood();
+  if (!food) return;
+  eatingNow = true;
+  lastReflexEat = Date.now();
+  try {
+    await bot.equip(food, "hand");
+    await bot.consume();
+    _logEv("survival", `ate ${food.name} at ${fmtHp(bot.health)} HP`);
+  } catch (_) {
+  } finally {
+    eatingNow = false;
+  }
+}
+setInterval(autoEatReflex, 1000);
+
 // ─── Self-defense ───────────────────────────────────────────────────────────
 
 function startDefend(entity) {
@@ -788,14 +1040,24 @@ function startDefend(entity) {
   });
 }
 
-// Called when the bot is hurt. Fights back if a hostile is in range, but
-// only interrupts a running skill when health is getting low.
-function maybeAutoDefend() {
+// Called when the bot is hurt. Fights back against the mob that hit her
+// (a hostile within 12 blocks), or the nearest hostile if the server
+// didn't say who it was. Never a player, and not after a fall, fire or
+// drowning. Only interrupts a running skill when health is getting low.
+function maybeAutoDefend(d = null) {
   if (!AUTO_DEFEND || !botReady || defendTarget) return;
-  const t = nearestHostile(DEFEND_RADIUS);
-  if (!t) return;
+  if (d && !["mob", "projectile", "explosion"].includes(d.cause)) return;
+  let target = null;
+  if (d && d.entity && d.entity.type !== "player" && HOSTILE_MOBS.has(mobName(d.entity)) && d.entity.position &&
+      bot.entity.position.distanceTo(d.entity.position) <= 12) {
+    target = d.entity;
+  } else {
+    const t = nearestHostile(DEFEND_RADIUS);
+    target = t && t.entity;
+  }
+  if (!target) return;
   if (activeActions > 0 && bot.health > DEFEND_INTERRUPT_HEALTH) return;
-  startDefend(t.entity);
+  startDefend(target);
 }
 
 // Once a second: announce new hostiles and keep an eye on close ones.
@@ -804,7 +1066,7 @@ function threatTick() {
   for (const id of announcedThreats) if (!bot.entities[id]) announcedThreats.delete(id);
 
   const t = nearestHostile(THREAT_RADIUS);
-  if (!t) { lookAtOwnerSometimes(); return; }
+  if (!t) { idleGaze(); return; }
   if (!announcedThreats.has(t.entity.id)) {
     announcedThreats.add(t.entity.id);
     const name = mobName(t.entity);
@@ -812,7 +1074,7 @@ function threatTick() {
     pushEvent("threat", `A ${name} is ${t.dist.toFixed(0)} blocks away from me.${warn}`);
   }
   if (t.dist > DEFEND_RADIUS || defendTarget || activeActions > 0) {
-    if (t.dist > DEFEND_RADIUS) lookAtOwnerSometimes();
+    if (t.dist > DEFEND_RADIUS) idleGaze();
     return;
   }
   // Idle: face the threat, and fight it if it has hit us recently.
@@ -1097,6 +1359,16 @@ function registerActions() {
           name: "minecraft_retrieve_items",
           description: "Go back to where the bot last died and pick up the dropped items (they despawn 5 minutes after death).",
           schema: { type: "object", properties: {} },
+          capabilities: ["write"],
+          requires_confirm: false,
+        },
+        {
+          name: "minecraft_use_bed",
+          description: "Use a bed: the nearest one, or the one in the inventory placed down. mode 'sleep' (default) sleeps at night, fighting off monsters that are too close first; mode 'spawn' sets the respawn point at the bed, by day too.",
+          schema: {
+            type: "object",
+            properties: { mode: { type: "string", enum: ["sleep", "spawn"], description: "sleep (default) or spawn." } },
+          },
           capabilities: ["write"],
           requires_confirm: false,
         },
@@ -1453,10 +1725,174 @@ function survivalTick() {
 }
 setInterval(survivalTick, 500);
 
+// ─── Moving like a player: sprint, swim, fly ────────────────────────────────
+// Sprinting: the pathfinder sprints on straight stretches when allowed; this
+// decides when it's allowed. Not at 6 hunger or less (the game won't let a
+// player sprint then), and not for the last few blocks when catching up to
+// the player, so she doesn't run past them.
+// Swimming: while following, water is cheap to path through, so she swims
+// after the player instead of refusing to cross a river. Standing in deep
+// water with nowhere to go, she treads water at the surface.
+// Flying: in creative she flies to the player when they're far or up in the
+// air. With an elytra on, she opens it when she falls off something high,
+// and boosts with fireworks toward the player when they're far away.
+
+const SPRINT_MIN_FOOD = 7;
+const WALK_NEAR_OWNER = 5;
+const FLY_FOLLOW_DIST = 20;
+const GLIDE_MIN_DROP = 6;
+const ROCKET_EVERY_MS = 2500;
+const ROCKET_OWNER_DIST = 24;
+let following = false;        // inside return_to_player
+let flyingNow = false;        // creative flight (gravity off)
+let treading = false;
+let lastRocket = 0;
+
+function canCreativeFly() {
+  return bot.game && bot.game.gameMode === "creative";
+}
+
+function ownerEnt() {
+  const name = ownerName();
+  return name && bot.players[name] && bot.players[name].entity;
+}
+
+// Open air under a point, counted in blocks (up to `max`).
+function airBelow(pos, max) {
+  const p = pos.floored();
+  for (let i = 1; i <= max; i++) {
+    const b = bot.blockAt(p.offset(0, -i, 0));
+    if (!b || b.boundingBox !== "empty" || b.name === "water" || b.name === "lava") return i - 1;
+  }
+  return max;
+}
+
+// The player is in the air (flying, or falling), not standing on something.
+function ownerAirborne(ent) {
+  return airBelow(ent.position, 2) >= 2;
+}
+
+// A straight line the bot's body fits through, for creative flight (which
+// moves through blocks otherwise and gets rubber-banded by the server).
+function clearLine(from, to) {
+  const delta = to.minus(from), len = delta.norm();
+  if (len < 0.01) return true;
+  const step = delta.scaled(0.5 / len);
+  for (let p = from.clone(), t = 0; t <= len; t += 0.5, p = p.plus(step)) {
+    for (const dy of [0, 1]) {
+      const b = bot.blockAt(p.offset(0, dy, 0));
+      if (b && b.boundingBox !== "empty") return false;
+    }
+  }
+  return true;
+}
+
+function stopCreativeFlight() {
+  if (!flyingNow) return;
+  flyingNow = false;
+  try { bot.creative.stopFlying(); } catch (_) {}
+}
+
+// Fly next to the player in creative: straight there when the line is
+// clear, else straight up first and across from there. False if neither
+// is clear.
+async function flyNear(ent) {
+  const me = bot.entity.position;
+  const dir = me.minus(ent.position); dir.y = 0;
+  const off = dir.norm() > 0.1 ? dir.scaled(2 / dir.norm()) : new Vec3(2, 0, 0);
+  const dest = ent.position.plus(off).offset(0, ownerAirborne(ent) ? 0 : 0.5, 0);
+  let legs = null;
+  if (clearLine(me, dest)) legs = [dest];
+  else {
+    for (let up = 2; up <= 10 && !legs; up += 2) {
+      const top = me.offset(0, up, 0), over = dest.offset(0, up, 0);
+      if (clearLine(me, top) && clearLine(top, over) && clearLine(over, dest)) legs = [top, over, dest];
+    }
+  }
+  if (!legs) return false;
+  stopAllActivity();
+  flyingNow = true;
+  try {
+    for (const leg of legs) {
+      await Promise.race([bot.creative.flyTo(leg), sleep(15_000)]);
+    }
+  } catch (_) {
+    return false;
+  }
+  return true;
+}
+
+function followMovements() {
+  const moves = survivalMovements();
+  moves.liquidCost = 3;   // swim after the player rather than refuse to cross
+  return moves;
+}
+
+async function glideAndBoost(e) {
+  const torso = bot.inventory.slots[bot.getEquipmentDestSlot("torso")];
+  if (!torso || torso.name !== "elytra") return;
+  if (!e.elytraFlying) {
+    // Open it on a real fall: dropping fast with a long way to go.
+    if (!e.onGround && !e.isInWater && e.velocity.y < -0.5 && airBelow(e.position, GLIDE_MIN_DROP) >= GLIDE_MIN_DROP) {
+      bot.elytraFly().then(() => _logEv("move", "opened the elytra")).catch(() => {});
+    }
+    return;
+  }
+  // Gliding: head for the player if there is one, nose slightly down.
+  const ent = ownerEnt();
+  if (!ent) return;
+  const to = ent.position.minus(e.position);
+  const yaw = Math.atan2(-to.x, -to.z);
+  const far = Math.hypot(to.x, to.z) > ROCKET_OWNER_DIST;
+  bot.look(yaw, far ? 0.2 : -0.25, true).catch(() => {});
+  const rocket = bot.inventory.items().find(i => i.name === "firework_rocket");
+  if (far && rocket && Date.now() - lastRocket > ROCKET_EVERY_MS) {
+    lastRocket = Date.now();
+    try { await bot.equip(rocket, "hand"); bot.activateItem(); } catch (_) {}
+  }
+}
+
+function movementTick() {
+  if (!bot || !botReady || !bot.entity || !bot.pathfinder || !bot.pathfinder.movements) return;
+  const e = bot.entity;
+  const ent = ownerEnt();
+  const ownerD = ent ? e.position.distanceTo(ent.position) : Infinity;
+
+  bot.pathfinder.movements.allowSprinting =
+    (bot.food ?? 20) >= SPRINT_MIN_FOOD && !(following && ownerD < WALK_NEAR_OWNER);
+
+  // Tread water when nothing else is steering.
+  const head = bot.blockAt(headPos());
+  const shouldTread = Boolean(head && head.name === "water") && !emergency && !bot.pathfinder.isMoving();
+  try {
+    if (shouldTread && !bot.getControlState("jump")) bot.setControlState("jump", true);
+    else if (!shouldTread && treading) bot.setControlState("jump", false);
+  } catch (_) {}
+  treading = shouldTread;
+
+  // Creative flight ends once the player is back on the ground.
+  if (flyingNow && !following && (!ent || !ownerAirborne(ent))) stopCreativeFlight();
+
+  glideAndBoost(e).catch(() => {});
+}
+setInterval(movementTick, 250);
+
+function movementState() {
+  const e = bot.entity;
+  if (!e) return "still";
+  if (e.elytraFlying) return "gliding";
+  if (flyingNow) return "flying";
+  const head = bot.blockAt(headPos());
+  if (e.isInWater || (head && head.name === "water")) return "swimming";
+  if (bot.getControlState && bot.getControlState("sprint") && bot.getControlState("forward")) return "sprinting";
+  return bot.pathfinder && bot.pathfinder.isMoving() ? "walking" : "still";
+}
+
 // Falling: log it, and with a water bucket, catch the landing ("MLG").
 function onPhysicsTick() {
   if (!bot || !botReady || !bot.entity) return;
   const e = bot.entity;
+  trackFall(e);
   if (e.onGround || (e.velocity && e.velocity.y > -0.4)) {
     if (fall && fall.bucketUsed) pickUpWater();
     fall = null;
@@ -1524,6 +1960,7 @@ function environmentJson() {
     time_of_day: tod,
     hazards,
     emergency: emergency ? emergency.kind : null,
+    moving: movementState(),
   };
 }
 
@@ -1532,6 +1969,7 @@ function environmentText(env) {
   parts.push(env.is_day ? "It's day." : "It's night.");
   for (const h of env.hazards) parts.push(`${h[0].toUpperCase()}${h.slice(1)}.`);
   if (env.oxygen < 20) parts.push(`Oxygen is ${env.oxygen}/20.`);
+  if (env.moving && !["still", "walking"].includes(env.moving)) parts.push(`You are ${env.moving}.`);
   if (env.in_cave) parts.push("Pathfinding may be difficult.");
   if (env.emergency) parts.push(`EMERGENCY: ${env.emergency}.`);
   return `Environment: ${parts.join(" ")}`;
@@ -1540,6 +1978,204 @@ function environmentText(env) {
 async function handleScanEnvironment(_args) {
   if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
   return { success: true, message: environmentText(environmentJson()) };
+}
+
+// ─── Beds: respawn point and sleeping ───────────────────────────────────────
+// Using a bed sets the respawn point, by day too on Java 1.15+; the server
+// confirms with "Respawn point set". Sleeping needs night (or a
+// thunderstorm) and no monsters within about 8 blocks. When there are some,
+// she fights them and tries again. Sleeping sets the respawn point as well.
+// The bed she uses is remembered in data/minecraft/bed.json.
+
+const BED_PATH = path.join(DATA_DIR, "bed.json");
+const BED_RE = /_bed$/;
+const SLEEP_MAX_KILLS = 5;
+const SLEEP_MAX_MS = 10 * 60_000;        // a whole night is about 7 minutes
+const WAKE_OWNER_DIST = 32;              // get up if the player wanders off
+let spawnHeardAt = 0;                    // when the server last confirmed a respawn point
+
+function readBed() {
+  try { return JSON.parse(fs.readFileSync(BED_PATH, "utf8")); } catch (_) { return null; }
+}
+
+function saveBed(b) {
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(BED_PATH, JSON.stringify(b)); } catch (_) {}
+}
+
+function forgetBed() {
+  try { fs.unlinkSync(BED_PATH); } catch (_) {}
+}
+
+function canSleepNow() {
+  if (!bot.time) return false;
+  const t = bot.time.timeOfDay;
+  return Boolean(bot.isRaining && bot.thunderState > 0) || (t >= 12541 && t <= 23458);
+}
+
+const bedIds = () => Object.values(mcData.blocksByName).filter(b => BED_RE.test(b.name)).map(b => b.id);
+const bedItem = () => bot.inventory.items().find(i => BED_RE.test(i.name));
+
+// The remembered bed if it's still there and within range, else the
+// nearest one in range.
+function findBed(maxDistance = 32) {
+  const mem = readBed();
+  const memPos = mem && new Vec3(mem.x, mem.y, mem.z);
+  if (mem && (!mem.dimension || !bot.game || mem.dimension === bot.game.dimension)
+      && bot.entity.position.distanceTo(memPos) <= maxDistance) {
+    const b = bot.blockAt(memPos);
+    if (b && BED_RE.test(b.name)) return b;
+    if (b) forgetBed();                  // loaded, and the bed is gone
+  }
+  return bot.findBlock({ matching: bedIds(), maxDistance });
+}
+
+function rememberBed(pos, spawn) {
+  saveBed({ x: pos.x, y: pos.y, z: pos.z, dimension: bot.game && bot.game.dimension, spawn: Boolean(spawn) });
+}
+
+function bedJson() {
+  const mem = readBed();
+  const near = botReady && bot.entity ? findBed(32) : null;
+  return {
+    spawn_set: Boolean(mem && mem.spawn),
+    remembered: mem ? { x: mem.x, y: mem.y, z: mem.z } : null,
+    nearby: Boolean(near),
+    in_inventory: Boolean(botReady && bedItem()),
+  };
+}
+
+// Put the bed from the inventory down next to her: the foot one block
+// away, the head one further, both on solid ground. A bed points the way
+// the player placing it faces.
+async function placeBedNearby() {
+  const item = bedItem();
+  if (!item) return null;
+  const base = bot.entity.position.floored();
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const foot = base.offset(dx, 0, dz), head = base.offset(2 * dx, 0, 2 * dz);
+    const fits = [foot, head].every(p => {
+      const here = bot.blockAt(p);
+      return here && here.boundingBox === "empty" && here.name !== "water" && isSolid(bot.blockAt(p.offset(0, -1, 0)));
+    });
+    if (!fits) continue;
+    try {
+      await bot.look(Math.atan2(-dx, -dz), 0, true);
+      await bot.equip(item, "hand");
+      await bot.placeBlock(bot.blockAt(foot.offset(0, -1, 0)), new Vec3(0, 1, 0));
+    } catch (_) {
+      continue;
+    }
+    await sleep(300);
+    const b = bot.blockAt(foot);
+    if (b && BED_RE.test(b.name)) return b;
+  }
+  return null;
+}
+
+// Right-click the bed and wait for the server to confirm the respawn point.
+async function setSpawnAt(bed) {
+  const before = spawnHeardAt;
+  try { await bot.activateBlock(bed); } catch (_) { return false; }
+  for (let i = 0; i < 25 && spawnHeardAt === before && !bot.isSleeping; i++) await sleep(100);
+  return spawnHeardAt !== before || bot.isSleeping;
+}
+
+// Runs in the background once she's asleep, so the agent isn't blocked all
+// night: she stays in bed until the server wakes her (morning), or gets up
+// when an order or emergency comes in, something hurts her, or the player
+// wanders off.
+async function watchSleep(seq) {
+  const start = Date.now(), hp = bot.health;
+  while (bot && bot.isSleeping && Date.now() - start < SLEEP_MAX_MS) {
+    await sleep(500);
+    let why = null;
+    if (interruptSeq !== seq) why = `interrupted by ${interruptReason}`;
+    else if (bot.health < hp) why = "something hurt me";
+    else {
+      const ent = ownerEnt();
+      if (ownerName() && (!ent || bot.entity.position.distanceTo(ent.position) > WAKE_OWNER_DIST)) {
+        why = `${ownerName()} wandered off`;
+      }
+    }
+    if (why) {
+      _logEv("bed", `got up: ${why}`);
+      try { await bot.wake(); } catch (_) {}
+      return;
+    }
+  }
+  if (bot && bot.isSleeping) { try { await bot.wake(); } catch (_) {} }
+  else _logEv("bed", "woke up");
+}
+
+async function handleUseBed(a) {
+  if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  const mode = a.mode === "spawn" ? "spawn" : "sleep";
+  if (mode === "sleep" && !canSleepNow()) {
+    return { success: false, message: "It isn't night. Beds only work at night or in a thunderstorm" };
+  }
+  if (bot.isSleeping) return { success: true, message: "Already in bed" };
+  const seq = interruptSeq;
+  let bed = findBed();
+  if (!bed) bed = await placeBedNearby();
+  if (!bed) {
+    return { success: false, message: bedItem() ? "Couldn't find a flat spot to put my bed down"
+                                                 : "No bed nearby and none in my inventory" };
+  }
+  const pos = bed.position;
+  const mem = readBed();
+  const sameBed = mem && mem.x === pos.x && mem.y === pos.y && mem.z === pos.z;
+  rememberBed(pos, sameBed && mem.spawn);
+  if (!(await reach(pos, 2))) return { success: false, message: "Couldn't get to the bed" };
+  if (interruptSeq !== seq) return { success: false, message: `interrupted by ${interruptReason}` };
+
+  if (mode === "spawn") {
+    if (!(await setSpawnAt(bot.blockAt(pos)))) {
+      return { success: false, message: "The game didn't confirm a respawn point (older versions only set it by sleeping at night)" };
+    }
+    rememberBed(pos, true);
+    if (bot.isSleeping) {
+      watchSleep(seq).catch(() => {});
+      return { success: true, message: "Set my respawn point at the bed and went to sleep" };
+    }
+    return { success: true, message: `Set my respawn point at the bed (${pos.x}, ${pos.y}, ${pos.z})` };
+  }
+
+  // Sleep, clearing out any monsters the game says are too close.
+  const killed = [];
+  let lastError = "";
+  for (let tries = 0; tries < SLEEP_MAX_KILLS + 3 && !bot.isSleeping; tries++) {
+    if (interruptSeq !== seq) return { success: false, message: `interrupted by ${interruptReason}` };
+    try {
+      await bot.sleep(bot.blockAt(pos));
+    } catch (e) {
+      lastError = e.message;
+      if (/monsters nearby/.test(e.message)) {
+        if (killed.length >= SLEEP_MAX_KILLS) break;
+        const t = nearestHostile(12);
+        if (!t) { await sleep(1500); continue; }   // the server's box can see one we can't reach
+        const r = await fightUntilDead(t.entity, 25_000);
+        if (!r.success) return { success: false, message: `Couldn't sleep, monsters nearby: ${r.message}` };
+        killed.push(mobName(t.entity));
+        await reach(pos, 2);
+      } else if (/too far/.test(e.message)) {
+        await reach(pos, 1);
+      } else if (/occupied/.test(e.message)) {
+        return { success: false, message: "Someone else is in that bed" };
+      } else if (!canSleepNow()) {
+        return { success: false, message: "It's morning already" };
+      } else {
+        await sleep(1000);
+      }
+    }
+  }
+  const fought = killed.length ? `Killed ${killed.map(k => `a ${k.replace(/_/g, " ")}`).join(", ")}, then ` : "";
+  if (!bot.isSleeping) {
+    return { success: false, message: `${fought}couldn't get to sleep: ${lastError || "the game didn't let me"}` };
+  }
+  rememberBed(pos, true);                   // sleeping sets the respawn point
+  _logEv("bed", "sleeping");
+  watchSleep(seq).catch(() => {});
+  return { success: true, message: `${fought ? fought + "went to sleep" : "Went to sleep"}. My respawn point is here now` };
 }
 
 // ─── Death memory and getting items back ────────────────────────────────────
@@ -1811,8 +2447,23 @@ function withoutDigging() {
 
 const STUCK_MS = 30_000;
 
+// While going to the player she swims (water is cheap to path through) and,
+// in creative, flies; see "Moving like a player".
 async function handleReturnToPlayer(a) {
   if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
+  following = true;
+  bot.pathfinder.setMovements(followMovements());
+  try {
+    return await returnToPlayer(a);
+  } finally {
+    following = false;
+    bot.pathfinder.setMovements(survivalMovements());
+    const ent = ownerEnt();
+    if (flyingNow && (!ent || !ownerAirborne(ent))) stopCreativeFlight();
+  }
+}
+
+async function returnToPlayer(a) {
   const name = ownerName();
   if (!name) return { success: false, message: "No other player is online" };
   const range = Math.min(Math.max(parseInt(a.range ?? 4, 10) || 4, 2), 10);
@@ -1843,6 +2494,13 @@ async function handleReturnToPlayer(a) {
       const d = bot.entity.position.distanceTo(ent.position);
       if (d <= range + 0.5) break;
       if (d < best - 1) { best = d; lastProgress = Date.now(); }
+      // Creative: fly when they're far or up in the air (walking can't
+      // reach someone flying).
+      if (canCreativeFly() && (d > FLY_FOLLOW_DIST || ownerAirborne(ent)) && (await flyNear(ent))) {
+        lastPlan = 0;
+        await sleep(200);
+        continue;
+      }
       // Re-plan every 10 s without progress; the pathfinder digs through
       // whatever is in the way (canDig is on).
       if (!bot.pathfinder.goal || (Date.now() - lastProgress > 10_000 && Date.now() - lastPlan > 10_000)) {
@@ -2503,6 +3161,7 @@ const HANDLERS = {
   minecraft_give_item:          handleGiveItem,
   minecraft_scan_environment:   handleScanEnvironment,
   minecraft_retrieve_items:     handleRetrieveItems,
+  minecraft_use_bed:            handleUseBed,
   minecraft_craft_chest:        handleCraftChest,
   minecraft_place_chest:        handlePlaceChest,
   minecraft_deposit_items:      handleDepositItems,

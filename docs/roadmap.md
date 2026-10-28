@@ -24,6 +24,33 @@ iteration against real use, not new subsystems.
 ================================================================
   Reverse chronological. What shipped, when, and why.
 
+  2026-10-28
+    - Minecraft beds: she makes one (three sheep), sets her respawn
+      point at it by day, and sleeps at night, killing monsters that
+      are too close first. She gets up in the morning or when needed.
+      Orders: "make a bed", "set your spawn", "go to sleep".
+    - Minecraft movement: she sprints to catch up with you (not when
+      hungry, and walks the last few blocks), swims after you across
+      water, flies to you in creative, and glides with an elytra
+      (with firework boosts) instead of taking fall damage.
+    - In Minecraft she's attached to you by default: she follows you,
+      does your orders, and goes back to following after each one,
+      until you tell her to do her own thing (`MC_DEFAULT_MODE`).
+    - Minecraft tools beyond pickaxes: orders like "make a stone axe"
+      or "craft me an iron sword" get the materials and craft that
+      tool (before, "stone axe" was read as a cobblestone order). After
+      the stone pickaxe she crafts a stone axe and sword like a player
+      would, and chops with the axe. Her join message waits for
+      health and hunger instead of saying "?/20".
+    - Minecraft perception and reflexes adapted from AIRI's
+      integration (moeru-ai/airi, MIT): the real damage source on
+      1.20+ servers instead of the nearest hostile, damage causes
+      (fall, lava, fire, drowning, starving, player, mob, arrow,
+      explosion) in her events and death message, crouch-spam and
+      player-hit events she reacts to (she crouches back), idle gaze
+      at whoever's moving or gesturing, and eating at 6 HP or less
+      without waiting for the agent. She no longer fights a nearby
+      zombie after a fall, or anything after a player hits her.
   2026-10-24
     - Faster replies, 6-26 s down to about 1-4 s once the model is
       warm: Ollama at 127.0.0.1 (localhost cost 2 s per request on

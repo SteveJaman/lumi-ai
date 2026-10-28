@@ -101,7 +101,10 @@ applies:
    see [Staying alive](#staying-alive)), do nothing else until it's over.
    Fight a hostile mob within 6 blocks (not endermen); eat when hunger is below
    14. `bot.js` also fights back on its own when hit.
-3. **Hold a mode** from an order: stay put, or follow you closely.
+3. **Hold a mode**: follow you closely (the default), or stay put. An
+   order, a goal from Lumi or getting her items back after a death comes
+   first, and the steps below run only once she's been told to do her own
+   thing.
 4. **Get her items back** if she died less than 5 minutes ago (dropped items
    despawn after that).
 5. **Work on the current order.**
@@ -109,7 +112,8 @@ applies:
    blocks away (64 while on a long project). See
    [Playing near you](#playing-near-you).
 7. **Tech tree basics.** Wood → crafting table → wooden pickaxe → cobblestone
-   → stone pickaxe, decided in code. Progress is read from the inventory, any
+   → stone pickaxe → stone axe → stone sword, decided in code. Once she has
+   the axe, she chops with it. Progress is read from the inventory, any
    wood type works, and the language model never chooses these steps.
 8. **Routines.** Go home at night once there's a finished house, and put
    things away in a chest when the inventory is nearly full.
@@ -137,17 +141,25 @@ Two ways to tell her what to do:
 - **On the Games page**, type into **AI directive / nudge** and press
   **Send command**.
 
+By default she's attached to you: she follows you around (within about 5
+blocks) and does what you tell her. An order interrupts the following, and
+when it's done she comes back and follows again. She stops following only
+when you say so ("do your own thing", "stop following"); "follow me" or
+"come here" attaches her again. Set `MC_DEFAULT_MODE=free` for the old
+behaviour, where she plays on her own near you.
+
 A new order interrupts whatever she's doing, unless she's in the middle of a
 fight. Common orders are understood without the model:
 
 | You say | She does |
 |---|---|
-| `follow me` · `stay close` | Follows you until told otherwise |
-| `come here` · `come back` | Comes back once, then plays on her own |
-| `stay` · `wait here` · `stop` | Stays put (still defends herself) |
-| `go play` · `do your thing` · `stop following` | Back to playing on her own |
+| `follow me` · `stay close` | Follows you (the default), and again after each order |
+| `come here` · `come back` | Comes back and follows you again |
+| `stay` · `wait here` · `stop` | Stays put (still defends herself) until the next order |
+| `make a bed` · `set your spawn` · `go to sleep` | Makes a bed from sheep's wool, sets her respawn point at a bed, or sleeps (by day, "go to sleep" sets the respawn point instead) |
+| `go play` · `do your thing` · `stop following` | Plays on her own near you, until you say `follow me` or `come here` |
 | `get me 5 diamonds` · `get some wood` · `mine for iron` | Gets that many *more*. Upgrades her pickaxe first if she has to (diamonds need iron), and with "get **me**" hands them over at the end |
-| `make an iron pickaxe` | Works up the tech tree to that pickaxe |
+| `make a stone axe` · `craft me an iron sword` · `make an iron pickaxe` | Gets the materials, then crafts that tool: any pickaxe, axe, sword, shovel or hoe in wood, stone, iron or diamond. With "make **me**" or "craft me" she hands it over |
 | `give me the pickaxe` · `bring me 5 diamonds` | Walks over and tosses it to you, getting it first if she doesn't have it |
 | `build a house` | Builds the house, gathering what's missing |
 | `go home` · `make torches` · `sort your stuff` · `go mining` · `explore` | That task, once |
@@ -166,6 +178,14 @@ The full table is in
 ---
 
 ## Staying alive
+
+**Beds.** With a bed nearby or in her inventory, she sets her respawn point
+at it by day, so she respawns next to you and not at world spawn. At night
+she sleeps in it. If the game says monsters are nearby, she kills them first
+and then lies down. She gets up in the morning, or early if she's hurt,
+given an order, or you walk more than 32 blocks away. Without a bed, she
+makes one after her stone tools: three sheep, three planks. See
+[Beds](../sdk/examples/minecraft/README.md#beds).
 
 Survival runs inside `bot.js`, so it reacts within half a second, and it
 outranks everything: an emergency interrupts whatever skill is running (but
@@ -206,8 +226,16 @@ too old, she forgets it and moves on.
 ## Playing near you
 
 Lumi treats one player as hers: `MC_OWNER` in `sdk/examples/minecraft/.env`,
-or the first other player online. Distances are horizontal, so mining straight
-below you still counts as nearby.
+or the first other player online. By default she follows you (see
+[Orders](#orders)). The table is for when you've told her to do her own
+thing. Distances are horizontal, so mining straight below you still counts
+as nearby.
+
+She gets around like a player: she sprints to catch up (when hunger is 7 or
+more) and walks the last few blocks. She swims after you across water. In
+creative she flies to you when you're far or flying. With an elytra on, she
+glides instead of taking fall damage, and uses fireworks to reach you. See
+[Moving like a player](../sdk/examples/minecraft/README.md#moving-like-a-player).
 
 | Distance | What she does |
 |---|---|
@@ -245,7 +273,7 @@ with before she walks back.
 | Channel | When | Lumi's reaction |
 |---|---|---|
 | Silent status | Every 30 s, and right away when her distance from you changes band | None. It updates her context, so if you ask what she's doing in Minecraft she answers from it |
-| Spoken event | Deaths, boss kills, diamonds and other top loot, a finished house, each new order, an order done or abandoned | Lumi reacts in a short sentence, in her own voice ("[anxious] Oh, not now.") |
+| Spoken event | Deaths (with what killed her), boss kills, diamonds and other top loot, a finished house, each new order, an order done or abandoned, you hitting her, you crouch-spamming at her | Lumi reacts in a short sentence, in her own voice ("[anxious] Oh, not now.") |
 
 A reaction uses her persona prompt (the same one chat uses, from
 `config/lumi.yaml`) plus a short instruction: react in one short sentence,
@@ -432,7 +460,10 @@ None of these go through the Cloudflare tunnel.
   to branch mining or exploring.
 - The order parser knows common phrasings. Unusual ones depend on a 3B model's
   judgment.
-- No diamond tools, enchanting, farming, the Nether, or bows.
+- Diamond tools only when you order them. No enchanting, farming, the Nether,
+  or bows.
+- She swims at the surface at normal speed (no fast swimming), flies only in
+  creative, and doesn't take off with an elytra from the ground.
 - `/tp` for getting unstuck needs cheats on.
 - Survival is best-effort: the water-bucket landing needs a bucket and good
   timing; a lava escape needs somewhere safe within 6 blocks; dropped items

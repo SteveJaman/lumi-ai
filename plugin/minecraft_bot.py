@@ -87,6 +87,10 @@ GOAL_KEEP_ALIVE = os.environ.get("MC_GOAL_KEEP_ALIVE", "30m")
 NARRATE        = os.environ.get("MC_NARRATE", "major").lower()
 NARRATE_COOLDOWN = float(os.environ.get("MC_NARRATE_COOLDOWN", "75"))
 STATUS_EVERY   = float(os.environ.get("MC_STATUS_INTERVAL", "30"))  # silent status push
+# "follow": she sticks with the player, does their orders, and goes back to
+# following after each one, until told "do your own thing". "free": she
+# plays on her own near the player, as before.
+DEFAULT_MODE   = os.environ.get("MC_DEFAULT_MODE", "follow").lower()
 EAT_BELOW_FOOD = 14   # eat when hunger drops below this and food is on hand
 DEFEND_RANGE   = 6    # proactively fight hostiles this close (blocks)
 # The "semi-magnet": Lumi plays near her player like a kid near a parent.
@@ -134,6 +138,73 @@ def _has_table(inv: Dict[str, int], near: Dict[str, bool]) -> bool:
 
 def _has_furnace(inv: Dict[str, int], near: Dict[str, bool]) -> bool:
     return bool(inv.get("furnace") or near.get("furnace"))
+
+
+# Every tool, not just pickaxes. Tiers match _PICKAXE_TIER; the cost is
+# (head material, sticks).
+_TOOL_TIER = {"wooden": 1, "stone": 2, "iron": 3, "diamond": 4}
+_TOOL_COST = {"pickaxe": (3, 2), "axe": (3, 2), "sword": (2, 1), "shovel": (1, 2), "hoe": (2, 2)}
+# The pickaxes already have curriculum goals; every other tool gets craft_<mat>_<tool>.
+_PICKAXE_GOAL = {"wooden": "craft_wood_pickaxe", "stone": "craft_stone_pickaxe",
+                 "iron": "craft_iron_pickaxe"}
+
+
+def _tool_level(inv: Dict[str, int], tool: str) -> int:
+    """Best tier of this kind of tool on hand, 0 for none."""
+    return max((t for m, t in _TOOL_TIER.items() if inv.get(f"{m}_{tool}")), default=0)
+
+
+def _craft_goal(mat: str, tool: str) -> str:
+    return _PICKAXE_GOAL.get(mat) if tool == "pickaxe" and mat in _PICKAXE_GOAL else f"craft_{mat}_{tool}"
+
+
+def _craft_step(mat: str, tool: str, inv: Dict[str, int], near: Dict[str, bool]) -> Optional[str]:
+    """The next goal toward a tool: get whatever's missing, then craft it.
+    Stone needs a pickaxe to mine it, iron a stone pickaxe and smelting,
+    diamond an iron pickaxe."""
+    head, sticks = _TOOL_COST[tool]
+    if mat == "stone":
+        if _pickaxe(inv) < 1:
+            return _tech_goal(inv, near)
+        if _cobble(inv) < head:
+            return "mine_stone"
+    elif mat == "iron":
+        if _pickaxe(inv) < 2:
+            return _tech_goal(inv, near)
+        ingots = inv.get("iron_ingot", 0)
+        if ingots < head:
+            if ingots + inv.get("raw_iron", 0) < head:
+                return "mine_iron_ore"
+            return "smelt_iron" if _has_furnace(inv, near) or _cobble(inv) >= 8 else "mine_stone"
+    elif mat == "diamond":
+        if _pickaxe(inv) < 3:
+            return _tool_step(3, inv, near)
+        if inv.get("diamond", 0) < head:
+            return "branch_mine"
+    wood = ((head if mat == "wooden" else 0)
+            + (0 if inv.get("stick", 0) >= sticks else 2)
+            + (0 if _has_table(inv, near) else 4))
+    if _wood(inv) < wood:
+        return "collect_wood"
+    return _craft_goal(mat, tool)
+
+
+# After the stone pickaxe, the rest of a first stone kit, the way a player
+# does it: an axe so trees come down fast, then a sword.
+_KIT = [("axe", "an axe chops trees much faster than bare hands"),
+        ("sword", "a sword for fighting mobs")]
+
+
+def _kit_goal(inv: Dict[str, int], near: Dict[str, bool]) -> Optional[Tuple[str, str]]:
+    """(goal, reason) toward the next missing stone tool, or None."""
+    if _pickaxe(inv) < 2:
+        return None
+    for tool, why in _KIT:
+        if _tool_level(inv, tool) < 2:
+            step = _craft_step("stone", tool, inv, near)
+            if step:
+                return step, f"need a stone {tool}: {why}"
+    return None
 
 
 CURRICULUM: List[Dict[str, Any]] = [
@@ -328,6 +399,22 @@ BUILTIN_SKILLS: Dict[str, str] = {
     }.items()
 }
 
+
+def _tool_skill(mat: str, tool: str) -> str:
+    head, sticks = _TOOL_COST[tool]
+    planks = f"await ensurePlanks({head});\n" if mat == "wooden" else ""
+    return (_PRELUDE + 'await ensureNear("crafting_table");\n'
+            f"await ensureSticks({sticks});\n{planks}"
+            f'return await craftAndCheck("{mat}_{tool}");')
+
+
+# craft_<mat>_<tool> for every tool without a curriculum goal.
+TOOL_GOALS: Dict[str, str] = {
+    _craft_goal(m, t): f"Craft {'an' if m[0] in 'aeiou' else 'a'} {m} {t}"
+    for m in _TOOL_TIER for t in _TOOL_COST if _craft_goal(m, t) not in _TIERS
+}
+BUILTIN_SKILLS.update({g: _tool_skill(*g[len("craft_"):].split("_", 1)) for g in TOOL_GOALS})
+
 # Plain bot.js actions to run when Voyager's primitives aren't loaded. Those
 # actions fall back to raw mineflayer inside bot.js. They assume oak, and
 # tiers that need exploring or smelting have no fallback. A third element
@@ -347,6 +434,9 @@ CURRICULUM_STEPS: Dict[str, List[Step]] = {
     "craft_furnace":       [("craft_item", {"name": "furnace", "count": 1})],
     "craft_iron_pickaxe":  [("craft_item", {"name": "iron_pickaxe", "count": 1})],
 }
+CURRICULUM_STEPS.update({g: [("craft_item", {"name": "stick", "count": 1}, True),
+                             ("craft_item", {"name": g[len("craft_"):], "count": 1})]
+                         for g in TOOL_GOALS})
 
 # ─── Free-play goals ──────────────────────────────────────────────────────────
 # Repeatable goals picked when the agent isn't pushing the curriculum. Each
@@ -463,6 +553,25 @@ await findOrExplore("stone", new Vec3(1, -1, 1));
 return await mineAndCheck("stone", ["cobblestone", "cobbled_deepslate"], 16);
 """
 
+# A bed takes 3 wool of one colour and 3 planks. Sheep drop one wool each
+# (Voyager's killMob picks it up).
+_GET_BED = """
+const WOOLS = mcData.itemsArray.filter(i => i.name.endsWith("_wool")).map(i => i.name);
+const bestWool = () => WOOLS.map(n => [n, countOf(n)]).sort((a, b) => b[1] - a[1])[0];
+const sheep = () => bot.nearestEntity(e => e.name === "sheep" &&
+                                       bot.entity.position.distanceTo(e.position) < 48);
+for (let i = 0; i < 6 && bestWool()[1] < 3; i++) {
+  if (!sheep()) await exploreUntil(bot, new Vec3(1, 0, -1), 60, sheep);
+  if (!sheep()) break;
+  await killMob(bot, "sheep", 60);
+}
+const [wool, n] = bestWool();
+if (n < 3) throw new Error(`Only ${n} wool of one colour, a bed needs 3`);
+await ensureNear("crafting_table");
+await ensurePlanks(3);
+return await craftAndCheck(wool.replace(/_wool$/, "_bed"));
+"""
+
 Code = Union[str, Callable[[Dict], str]]
 
 
@@ -504,6 +613,24 @@ def _at_surface(st: Dict) -> bool:
 
 def _house_material(inv: Dict[str, int]) -> str:
     return "cobblestone" if _cobble(inv) >= _wood(inv) else "planks"
+
+
+def _bed(st: Dict) -> Dict:
+    return st.get("bed") or {}
+
+
+def _bed_handy(inv: Dict[str, int], st: Dict) -> bool:
+    """A bed within 32 blocks or in the inventory."""
+    return bool(_bed(st).get("nearby") or any(n.endswith("_bed") for n in inv))
+
+
+def _bed_routine(inv: Dict[str, int], st: Dict) -> Optional[str]:
+    """Sleep at night, else set the respawn point at a bed if it isn't set."""
+    if not _bed_handy(inv, st):
+        return None
+    if st.get("can_sleep"):
+        return "sleep_in_bed"
+    return None if _bed(st).get("spawn_set") else "set_spawn"
 
 
 def _wants(st: Dict, *items: str) -> bool:
@@ -559,7 +686,16 @@ FREE_GOALS: Dict[str, Dict[str, Any]] = {
     "organize_inventory": {"desc": "Put excess stuff away in a chest",
                        "when": lambda inv, st: (st.get("free_slots") or 36) <= 6,
                        "action": ("sort_inventory", {"place_if_missing": True})},
-    # Never offered as options: chosen by an order or the proximity check.
+    "get_bed":        {"desc": "Make a bed (wool from three sheep)",
+                       "when": lambda inv, st: not _bed_handy(inv, st) and not _bed(st).get("remembered"),
+                       "code": _GET_BED},
+    # Never offered as options: chosen by an order or a routine.
+    "sleep_in_bed":   {"desc": "Sleep in a bed for the night",
+                       "when": lambda inv, st: False,
+                       "action": ("use_bed", {"mode": "sleep"})},
+    "set_spawn":      {"desc": "Set my respawn point at a bed",
+                       "when": lambda inv, st: False,
+                       "action": ("use_bed", {"mode": "spawn"})},
     "retrieve_items": {"desc": "Go back to where I died and pick up my items",
                        "when": lambda inv, st: False,
                        "action": ("retrieve_items", {})},
@@ -589,6 +725,9 @@ GOAL_TIMEOUT_S = {"collect_wood": 60, "chop_trees": 60, "explore": 60,
                   "gather_cobblestone": 90}
 # After success, don't offer a goal again for this long (s).
 SUCCESS_COOLDOWN_S = {"build_dirt_hut": 600, "organize_inventory": 120}
+# After a single failure, rest these this long (s): an old server that only
+# sets the respawn point by sleeping, monsters she can't clear from a bed.
+FAIL_REST_S = {"set_spawn": 1800, "sleep_in_bed": 90}
 FAIL_STREAK = 3          # failures in a row before a goal is rested
 FAIL_COOLDOWN_S = 300
 
@@ -603,12 +742,31 @@ FAIL_COOLDOWN_S = 300
 # "give me the pickaxe", "bring me 5 diamonds", "hand over your sword"
 GIVE_RE = re.compile(r"\b(?:give|hand|toss|pass|bring)\b(?:\s+(?:me|us|over|it))*\s+(.*)$")
 GIVE_FILLER = re.compile(r"\b(the|a|an|some|your|my|of|please|pls|now|here|back|to me|over)\b")
-# "make an iron pickaxe", "smelt it into an iron pickaxe"
-TOOL_RE = re.compile(r"\b(wood(?:en)?|stone|iron)\s+pick(?:axe)?\b")
-TOOL_TIER = {"wood": 1, "wooden": 1, "stone": 2, "iron": 3}
-TOOL_NAME = {1: "wooden", 2: "stone", 3: "iron"}
-# Collect orders that ask for delivery ("get me", "bring me", "for me").
-DELIVER_RE = re.compile(r"\b(?:get|bring|give|fetch|grab)\s+me\b|\bfor me\b")
+# "make an iron pickaxe", "craft me a stone axe", "smelt it into an iron sword"
+TOOL_RE = re.compile(r"\b(wood(?:en)?|stone|cobble(?:stone)?|iron|diamond)\s+"
+                     r"(pick(?:axe)?|axe|sword|shovel|spade|hoe)s?\b")
+# No material named ("make an axe"): stone, the first real tier.
+BARE_TOOL_RE = re.compile(r"\b(pick(?:axe)?|axe|sword|shovel|spade|hoe)s?\b")
+TOOL_MAT = {"wood": "wooden", "wooden": "wooden", "stone": "stone", "cobble": "stone",
+            "cobblestone": "stone", "iron": "iron", "diamond": "diamond"}
+TOOL_KIND = {"pick": "pickaxe", "spade": "shovel"}
+# Orders that ask for delivery ("get me", "bring me", "for me", "craft me").
+DELIVER_RE = re.compile(r"\b(?:get|bring|give|fetch|grab|make|craft|build)\s+me\b|\bfor me\b")
+
+
+def _tool_order(text: str, deliver: bool) -> Optional[Dict[str, Any]]:
+    """{kind: tool, ...} for an order naming a tool, or None."""
+    m = TOOL_RE.search(text)
+    if m:
+        mat, tool = TOOL_MAT[m.group(1)], m.group(2)
+    else:
+        m = BARE_TOOL_RE.search(text)
+        if not m:
+            return None
+        mat, tool = "stone", m.group(1)
+    tool = TOOL_KIND.get(tool, tool)
+    return {"kind": "tool", "mat": mat, "tool": tool, "item": f"{mat}_{tool}",
+            "deliver": deliver, "label": f"{mat} {tool}"}
 # What to hand over at the end of a collect order, as a loose item name.
 DELIVER_ITEM = {"diamonds": "diamond", "iron": "iron", "coal": "coal", "wood": "log",
                 "cobblestone": "cobblestone"}
@@ -632,6 +790,9 @@ ORDER_COLLECT = [
 ]
 
 ORDER_TASKS = [
+    (r"\b(make|craft|get|build)\b.*\bbed\b", "get_bed"),
+    (r"\b(set|make|change)\b.*\b(re)?spawn\b|\b(re)?spawn ?point\b", "set_spawn"),
+    (r"\b(sleep|go to bed|bed ?time|get some rest|nap)\b", "sleep_in_bed"),
     (r"\b(go|head|run) home\b|\bto (the|your) house\b", "go_home"),
     (r"\b(build|make)\b.*\b(house|home|base)\b|\bhouse\b", "build_house"),
     (r"\btorch", "craft_torches"),
@@ -661,10 +822,9 @@ def _parse_order(text: str) -> Optional[Dict[str, Any]]:
         if item:
             return {"kind": "give", "item": item,
                     "count": min(max(int(n.group(1)), 1), 64) if n else None}
-    tool = TOOL_RE.search(t)
+    tool = _tool_order(t, deliver)
     if tool:
-        return {"kind": "tool", "tier": TOOL_TIER[tool.group(1)], "deliver": deliver,
-                "label": f"{TOOL_NAME[TOOL_TIER[tool.group(1)]]} pickaxe"}
+        return tool
     for pattern, label, items, default in ORDER_COLLECT:
         if re.search(pattern, t):
             n = re.search(r"\b(\d{1,3})\b", t)
@@ -690,10 +850,9 @@ def _held_item(inv: Dict[str, int], term: str) -> Optional[str]:
 
 def _give_fallback(item: str, deliver_count: Optional[int]) -> Optional[Dict[str, Any]]:
     """An order to get an item she doesn't have yet, then hand it over."""
-    tool = TOOL_RE.search(item)
-    if tool or re.search(r"\bpick(axe)?\b", item):
-        tier = TOOL_TIER[tool.group(1)] if tool else 2
-        return {"kind": "tool", "tier": tier, "deliver": True, "label": f"{TOOL_NAME[tier]} pickaxe"}
+    tool = _tool_order(item, True)
+    if tool:
+        return tool
     for pattern, label, items, default in ORDER_COLLECT:
         if re.search(pattern, item):
             return {"kind": "collect", "label": label, "items": items, "deliver": True,
@@ -770,7 +929,10 @@ class MinecraftAgent(LumiClient):
         self._project_until = 0.0              # long leash until then
         self._band: Optional[str] = None       # near / roaming / far / out of sight
         self._order: Optional[Dict[str, Any]] = None   # the player's current order
-        self._mode: Optional[str] = None       # "follow" or "stay" until told otherwise
+        # Attached: follow the player between orders. "do your own thing"
+        # detaches her; "follow me" or "come here" attaches her again.
+        self._attached = DEFAULT_MODE != "free"
+        self._mode: Optional[str] = "follow" if self._attached else None   # "follow" or "stay"
         self._done_order: Optional[Tuple[Dict[str, Any], str]] = None   # finished, not yet announced
         self._last_narration = 0.0
         self._last_status_push = 0.0
@@ -1013,6 +1175,13 @@ class MinecraftAgent(LumiClient):
                 # New orders from the player, every tick.
                 await self._take_directive(status)
 
+                # In bed: bot.js keeps her there until morning and gets her
+                # up for an order, a hit or the player wandering off.
+                if status.get("sleeping"):
+                    self._tel["current_goal"], self._tel["goal_description"] = "sleep_in_bed", "Sleeping"
+                    self._think("Zzz. Sleeping until morning.")
+                    continue
+
                 # 2. Survive — fights and meals come before any goal
                 if await self._survive(status):
                     continue
@@ -1087,6 +1256,8 @@ class MinecraftAgent(LumiClient):
                         self._wanted[missing.group(1)] = int(missing.group(2))
                         self._record("agent", f"house needs {missing.group(2)} more {missing.group(1)}")
                     self._think(f"That didn't work ({desc.lower()}): {msg[:120]}")
+                    if goal_name in FAIL_REST_S:
+                        self._cooldown_until[goal_name] = time.time() + FAIL_REST_S[goal_name]
                     if n >= FAIL_STREAK:
                         self._failures.pop(goal_name, None)
                         self._cooldown_until[goal_name] = time.time() + FAIL_COOLDOWN_S
@@ -1209,6 +1380,12 @@ class MinecraftAgent(LumiClient):
                 return step, "order", self._order["text"]
         await self._announce_done_order()
 
+        # Beds: sleep at night, and set the respawn point at one by day.
+        bed = _bed_routine(inv, status)
+        if bed and self._available(bed, status):
+            return bed, "routine", ("it's night" if bed == "sleep_in_bed"
+                                    else "so I respawn here instead of at world spawn")
+
         # Semi-magnet: wander, but come back when called or too far.
         back = self._should_return(status)
         if back:
@@ -1218,6 +1395,13 @@ class MinecraftAgent(LumiClient):
         tech = _tech_goal(inv, near)
         if tech and self._available(tech, status):
             return tech, "tech tree", _TECH_REASON[tech]
+        kit = _kit_goal(inv, near)
+        if kit and self._available(kit[0], status):
+            return kit[0], "tech tree", kit[1]
+        # Then a bed, by day, like a player's first day.
+        if (_pickaxe(inv) >= 2 and status.get("is_day", True)
+                and FREE_GOALS["get_bed"]["when"](inv, status) and self._available("get_bed", status)):
+            return "get_bed", "tech tree", "a bed to set my respawn point and sleep through the night"
 
         # Routines, also decided in code: home at night, a full inventory.
         gate_status = dict(status, wanted=self._wanted)
@@ -1287,19 +1471,32 @@ class MinecraftAgent(LumiClient):
                     return
                 order = fallback
 
+        if order.get("goal") in ("sleep_in_bed", "set_spawn") and not _bed_handy(_inv(status), status):
+            # No bed: make one; the bed routine sleeps or sets the spawn after.
+            order = {"kind": "once", "goal": "get_bed"}
+            await self._bot_action("chat", {"message": "I don't have a bed. I'll make one first."})
+        elif order.get("goal") == "sleep_in_bed" and not status.get("can_sleep"):
+            # "go to sleep" by day: the closest thing a bed can do now.
+            order = {"kind": "once", "goal": "set_spawn"}
+            await self._bot_action("chat", {"message": "I can only sleep at night. I'll set my spawn at the bed."})
+
         kind = order["kind"]
         if kind == "resume":
-            self._order, self._mode = None, None
+            self._order, self._mode, self._attached = None, None, False
             ack = "I'm free to do my own thing again"
         elif kind in ("follow", "stay"):
             self._order, self._mode = None, kind
+            if kind == "follow":
+                self._attached = True
             ack = "I'll follow them around" if kind == "follow" else "I'll stay right here"
         elif kind == "come":
-            self._mode = None
+            self._attached = True
+            self._mode = "follow"
             self._order = {"kind": "once", "goal": "return_to_player"}
             ack = "I'm heading back to them"
         else:
-            self._mode = None
+            # An order comes first; when attached, she follows again after.
+            self._mode = "follow" if self._attached else None
             self._order = order
             if kind == "collect":
                 order["start"] = sum(_inv(status).get(i, 0) for i in order["items"])
@@ -1311,7 +1508,7 @@ class MinecraftAgent(LumiClient):
                 ack = f"I'm going to make {'an' if order['label'][0] in 'aeiou' else 'a'} {order['label']}" + \
                       (" and hand it over" if order.get("deliver") else "")
                 if order.get("deliver"):
-                    order["give"] = {"item_name": f"{TOOL_NAME[order['tier']]}_pickaxe", "count": 1}
+                    order["give"] = {"item_name": order["item"], "count": 1}
             elif kind == "once" and order["goal"] == "give_item":
                 g = order["give"]
                 ack = f"Here, I'll bring over {g['count']} {g['item_name'].replace('_', ' ')}"
@@ -1382,8 +1579,12 @@ class MinecraftAgent(LumiClient):
             return "build_house"
         near = status.get("nearby") or {}
         if o["kind"] == "tool":
-            reached, what = _pickaxe(inv) >= o["tier"], f"made {o['label']}"
-            step = None if reached else _tool_step(o["tier"], inv, near)
+            # To hand one over she needs that exact tool; for herself, the
+            # tier or better is enough.
+            reached = (inv.get(o["item"], 0) > 0 if o.get("deliver")
+                       else _tool_level(inv, o["tool"]) >= _TOOL_TIER[o["mat"]])
+            what = f"made {'an' if o['label'][0] in 'aeiou' else 'a'} {o['label']}"
+            step = None if reached else _craft_step(o["mat"], o["tool"], inv, near)
         else:
             reached = sum(inv.get(i, 0) for i in o["items"]) - o["start"] >= o["amount"]
             what = f"got {o['amount']} {o['label']}"
@@ -1435,6 +1636,14 @@ class MinecraftAgent(LumiClient):
             self._think("Staying put like I was told.")
             return True
         if self._mode == "follow":
+            # An order, a goal from Lumi, or getting her items back after a
+            # death (they despawn) comes before following.
+            death = status.get("death") or {}
+            bed = _bed_routine(_inv(status), status)
+            if (self._order or self._override_goal
+                    or (death.get("recoverable") and self._available("retrieve_items", status))
+                    or (bed and self._available(bed, status))):
+                return False
             owner = status.get("owner")
             if not owner:
                 self._think("Waiting for my player to come back online.")
@@ -1451,11 +1660,9 @@ class MinecraftAgent(LumiClient):
         return False
 
     def _order_text(self) -> str:
-        if self._mode:
-            return {"follow": "following the player", "stay": "staying put"}[self._mode]
         o = self._order
         if not o:
-            return ""
+            return {"follow": "following the player", "stay": "staying put"}.get(self._mode or "", "")
         if o["kind"] == "collect":
             return f"\"{o['text']}\" ({o['label']}, {o['amount']} wanted)"
         return f"\"{o['text']}\""
@@ -1758,12 +1965,14 @@ def _inv(status: Dict) -> Dict[str, int]:
 
 
 def _all_goal_names() -> List[str]:
-    return [t["goal"] for t in CURRICULUM] + list(FREE_GOALS)
+    return [t["goal"] for t in CURRICULUM] + list(FREE_GOALS) + list(TOOL_GOALS)
 
 
 def _goal_desc(goal: str) -> str:
     if goal in FREE_GOALS:
         return FREE_GOALS[goal]["desc"]
+    if goal in TOOL_GOALS:
+        return TOOL_GOALS[goal]
     return next((t["desc"] for t in CURRICULUM if t["goal"] == goal), goal)
 
 
