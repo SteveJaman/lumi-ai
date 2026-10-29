@@ -20,10 +20,10 @@ architectural.
   session. This is an inherent property of the E2EE protocol and cannot
   be fixed at the application layer.
 
-* **No mid-utterance barge-in:** Barge-in works between utterances, not
-  during Lumi's active speech generation. If a user speaks mid-sentence,
-  the VAD fires and stops TTS playback, but the current audio buffer may
-  cut off abruptly.
+* **Barge-in cuts mid-word:** Talking over Lumi stops her at once (the
+  local mic, Discord voice, or hold-to-talk in the web chat), including the
+  reply she was still writing. The audio stops where it is, so the last
+  word can be cut off. Typing in the chat doesn't interrupt her.
 
 * **State-dependent roster events:** `signals.voice_context` relies on
   Discord's gateway. If Discord's `on_voice_state_update` event lags

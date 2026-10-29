@@ -168,6 +168,20 @@ stops runaway generation; a sentence it cuts off isn't spoken. The
 heartbeat's unprompted lines are cut to two sentences too
 (`limit_sentences`).
 
+**Barge-in.** Talking over her stops her mid-sentence: the local mic's VAD
+(on speech start, before transcription), Discord's VAD in the voice sink,
+or pressing hold-to-talk in the web chat (`POST /api/tts/interrupt`) calls
+`TTS.interrupt()`. It stops local playback, clears both queues (text to
+speak and downloaded audio), closes the avatar's mouth, stops Discord
+playback (`DiscordClient.stop_voice`) and browser tabs (a `tts_stop`
+socket event), and bumps `signals.speech_epoch`. Everything tagged with an
+older epoch is dropped: a Fish Audio answer still in flight, audio already
+queued, and the reply still being written (`_SpokenStream.feed` returns
+False, which ends the Ollama stream; `_push_to_tts` ignores the turn). A
+hidden system note then goes into history after what she got out, "The
+user interrupted you mid-sentence…", so her next reply answers the new
+input instead of finishing the old thought. Fish Audio stays the voice.
+
 Turns about her past (`_PAST_QUERY`: "backstory", "who are you", "the
 Choir", …) add her backstory and lore notes (`get_backstory_block()`) for
 that turn and the next two, so "go on" still has them.

@@ -92,7 +92,13 @@ class APIHandler:
         return self.outer.enabled
 
     def abort_current(self):
-        self.outer.stop()
+        self.outer.interrupt(source="web")
+
+
+# Added to history when the user cuts her off, so the next reply answers
+# them instead of finishing the old thought. Hidden from the chat.
+INTERRUPT_NOTE = ("[System Note: The user interrupted you mid-sentence. They are speaking "
+                  "now. Listen and respond to their new input.]")
 
 
 def _wav_duration(audio_bytes, text):
@@ -113,6 +119,11 @@ class TTS:
         self.audio_mode = audio_mode
         self.is_playing = False
         self._current_sa_obj = None
+        self._fetching = False
+        # Barge-in: bumped by interrupt(). Audio fetched or queued under an
+        # older value is dropped, and the prompter stops a reply whose turn
+        # started under one (signals.speech_epoch).
+        signals.speech_epoch = getattr(signals, "speech_epoch", 0)
 
         # DOUBLE BUFFERING QUEUE
         self.audio_queue = queue.Queue()
@@ -437,6 +448,43 @@ class TTS:
         else:
             self.audio_ended()
 
+    def interrupt(self, source="voice"):
+        """Barge-in: the user started talking, so she stops now. Playback
+        stops and both queues are cleared (stop()), a Fish Audio request
+        still in flight is discarded when it answers, Discord and browser
+        playback stop, and the reply being written stops too (the prompter
+        watches signals.speech_epoch). If she was speaking, a hidden note
+        goes into history so her next reply answers the new input instead
+        of finishing the old thought. Returns True if she was speaking."""
+        tq = getattr(self.signals, "tts_queue", None)
+        was_speaking = bool(
+            getattr(self.signals, "AI_speaking", False) or self.is_playing or self._fetching
+            or not self.audio_queue.empty() or (tq is not None and not tq.empty())
+            or getattr(self.signals, "AI_thinking", False))
+        self.signals.speech_epoch = getattr(self.signals, "speech_epoch", 0) + 1
+        self.stop()
+        for module in self.modules:
+            if module.__class__.__name__ == "DiscordClient" and hasattr(module, "stop_voice"):
+                try:
+                    module.stop_voice()
+                except Exception:
+                    pass
+        stop_browser = getattr(self.signals, "broadcast_tts_stop", None)
+        if stop_browser is not None:
+            try:
+                stop_browser()
+            except Exception:
+                pass
+        if was_speaking:
+            print(f"\033[93m[TTS] Interrupted ({source})\033[0m")
+            if getattr(self.signals, "AI_thinking", False):
+                # Mid-turn: the prompter adds the note after her cut-off reply.
+                self.signals.interrupt_pending = True
+            else:
+                self.signals.history.append(
+                    {"role": "system", "content": INTERRUPT_NOTE, "hidden": True, "source": "interrupt"})
+        return was_speaking
+
     def stop(self):
         """Aborts playback and completely clears all queued speech."""
         self.is_playing = False
@@ -486,8 +534,11 @@ class TTS:
         """BACKGROUND WORKER 2: Continuously plays ready-to-go audio files."""
         while not getattr(self.signals, 'terminate', False):
             try:
-                message, audio_bytes = self.audio_queue.get(timeout=0.05)
-                if message and audio_bytes and not getattr(self.signals, 'terminate', False):
+                item = self.audio_queue.get(timeout=0.05)
+                message, audio_bytes = item[0], item[1]
+                epoch = item[2] if len(item) > 2 else self.signals.speech_epoch
+                stale = epoch != self.signals.speech_epoch      # from before a barge-in
+                if message and audio_bytes and not stale and not getattr(self.signals, 'terminate', False):
                     self.play_audio(message, audio_bytes)
                 self.audio_queue.task_done()
             except queue.Empty:
@@ -511,9 +562,16 @@ class TTS:
                     # heartbeat, game reactions (modules/speech_filter.py).
                     message = strip_slurs(message) if message else message
                     if message:
-                        audio_bytes = self.fetch_audio(message)
-                        if audio_bytes:
-                            self.audio_queue.put((message, audio_bytes))
+                        # A barge-in during the request makes its answer
+                        # stale: dropped instead of played.
+                        epoch = self.signals.speech_epoch
+                        self._fetching = True
+                        try:
+                            audio_bytes = self.fetch_audio(message)
+                        finally:
+                            self._fetching = False
+                        if audio_bytes and epoch == self.signals.speech_epoch:
+                            self.audio_queue.put((message, audio_bytes, epoch))
 
                     self.signals.tts_queue.task_done()
             except queue.Empty:

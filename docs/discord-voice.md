@@ -120,7 +120,10 @@ and fires transcription half a second after you stop talking.
 
 When a user starts talking, Lumi stops mid-sentence. Same behavior as
 the local mic path. The VAD fires on speech start, not on transcription
-— so the interruption feels instant.
+— so the interruption feels instant. It's a full stop (`TTS.interrupt`):
+the clip playing in the channel, the clips queued behind it, the reply she
+was still writing, and her local and browser playback. Her next reply
+knows she was cut off. See [architecture.md](architecture.md).
 
 ## Group awareness
 
@@ -311,12 +314,11 @@ middle of each utterance always decodes cleanly.
 Not fixable at the application layer. It's a property of the E2EE
 protocol.
 
-### No mid-utterance barge-in
+### Barge-in cuts the sentence
 
-Barge-in works between utterances, not during Lumi's own speech. If she's
-mid-sentence and someone starts talking, the VAD fires and stops the TTS
-playback, but the current sentence may cut off. Same as the local mic
-path.
+When someone talks over her, the sentence she was saying stops where it
+is; it isn't finished first. A sentence's audio already sent to Discord
+stops with it.
 
 ### Roster depends on Discord's state
 

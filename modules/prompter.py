@@ -537,6 +537,9 @@ class _SpokenStream:
         self.max_sentences = max_sentences
         self.sentences = 0
         self.stopped = False
+        # A barge-in (TTS.interrupt bumps speech_epoch) stops the reply too.
+        self.epoch = getattr(prompter.signals, "speech_epoch", 0)
+        self.interrupted = False
 
     @property
     def spoken(self):
@@ -544,6 +547,9 @@ class _SpokenStream:
 
     def feed(self, piece):
         if self.stopped:
+            return False
+        if getattr(self.prompter.signals, "speech_epoch", 0) != self.epoch:
+            self.stopped = self.interrupted = True
             return False
         self.text += piece
         pending = self.text[self.done:]
@@ -1772,9 +1778,10 @@ class Prompter:
 
     def _body_status(self):
         """[BODY STATUS]: a live read of her Minecraft body from bot.js, on
-        every turn, agent mode or not, so "what are you doing?" is answered
-        from now, not from the last 30 s status push. None when the bot
-        isn't in a world."""
+        every turn, agent mode or not, and whether or not the game agent is
+        connected to the SDK, so "what are you doing?" is answered from now,
+        not from the last 30 s status push. None when the bot isn't in a
+        world (a refused connection on 127.0.0.1 costs about a millisecond)."""
         try:
             st = requests.get("http://127.0.0.1:5057/status", timeout=0.3).json()
         except Exception:
@@ -1786,17 +1793,29 @@ class Prompter:
             tel = read_telemetry()
         except Exception:
             tel = {}
+        threats = [t for t in (st.get("threats") or []) if isinstance(t, dict)]
+        name = lambda t: str(t.get("name") or "mob").replace("_", " ")
+        emergency = st.get("emergency")
         if st.get("sleeping"):
             activity = "asleep in a bed"
+        elif emergency:
+            activity = "swimming up for air" if emergency == "drowning" else "getting away from lava"
+        elif st.get("defending") and threats:
+            activity = f"fighting a {name(threats[0])}"
         else:
             activity = (tel.get("goal_description") or tel.get("current_thought") or "idle").rstrip(".")
             activity = activity[:1].lower() + activity[1:]
         fmt = lambda v: "?" if v is None else (f"{v:.0f}" if isinstance(v, (int, float)) else str(v))
         p = st.get("position") or {}
         where = ", ".join(fmt(p.get(k)) for k in ("x", "y", "z")) if p else "unknown"
+        extras = [f"Holding: {str(st.get('held') or 'nothing').replace('_', ' ')}",
+                  "day" if st.get("is_day", True) else "night"]
+        near = [f"{name(t)} {fmt(t.get('distance'))} blocks away" for t in threats[:3]]
+        if near:
+            extras.append("hostiles nearby: " + ", ".join(near))
         return ("[BODY STATUS]\n"
                 f"Your Minecraft body is currently: {activity}. Health: {fmt(st.get('health'))}/20, "
-                f"Hunger: {fmt(st.get('food'))}/20, Position: {where}.\n"
+                f"Hunger: {fmt(st.get('food'))}/20, Position: {where}. " + ". ".join(extras) + ".\n"
                 "[END BODY STATUS]")
 
     def _minecraft_connected(self):
@@ -2063,6 +2082,11 @@ class Prompter:
             except Exception:
                 pass
 
+        # ─── Her Minecraft body, live, whenever bot.js is in a world ───
+        body = self._body_status()
+        if body:
+            injections.append(body)
+
         # ─── SDK context — standing status pushed by connected apps ───
         sdk = getattr(self.signals, "sdk", None)
         if sdk is not None:
@@ -2071,9 +2095,6 @@ class Prompter:
                     injections.append(f"[FROM SDK]\n{text}\n[END FROM SDK]")
                 if self._minecraft_connected():
                     injections.append(MINECRAFT_GAMER_NOTE.replace("{host_name}", HOST.name))
-                    body = self._body_status()
-                    if body:
-                        injections.append(body)
                 if getattr(self, "_game_order_note", None):
                     injections.append(self._game_order_note)
             except Exception:
@@ -2165,6 +2186,10 @@ class Prompter:
         return text
 
     def _push_to_tts(self, text_chunk):
+        # Nothing from a turn the user has since interrupted.
+        turn = getattr(self, "_turn_epoch", None)
+        if turn is not None and getattr(self.signals, "speech_epoch", 0) != turn:
+            return
         clean_chunk = self.clean_for_voice(text_chunk)
         if clean_chunk:
             if hasattr(self.signals, 'tts_queue'):
@@ -2960,6 +2985,8 @@ class Prompter:
                     # game; this turn's prompt tells her it's being done.
                     self._game_order_note = None
                     self._dispatched_order = None
+                    self._turn_epoch = getattr(self.signals, "speech_epoch", 0)
+                    self.signals.interrupt_pending = False
                     entry = self.signals.history[-1]
                     if not is_sdk_event and entry.get("from_host"):
                         try:
@@ -3478,6 +3505,13 @@ class Prompter:
                                 pass
 
                         self.signals.history.append({"role": "assistant", "content": raw_reply})
+                        if getattr(self.signals, "interrupt_pending", False):
+                            # Cut off mid-reply (TTS.interrupt): say so after
+                            # what she got out, so the next turn moves on.
+                            from modules.tts import INTERRUPT_NOTE
+                            self.signals.history.append({"role": "system", "content": INTERRUPT_NOTE,
+                                                         "hidden": True, "source": "interrupt"})
+                            self.signals.interrupt_pending = False
 
                         if len(self.signals.history) > 20:
                             self.signals.history = self.signals.history[-20:]

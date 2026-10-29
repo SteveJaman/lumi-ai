@@ -587,6 +587,7 @@ class SocketIOServer:
         self._tts_clients = set()
         self._loop = None
         self.signals.broadcast_tts_audio = self._broadcast_tts_audio
+        self.signals.broadcast_tts_stop = self._broadcast_tts_stop
 
         self._register_http_routes()
         self._register_socket_events()
@@ -637,6 +638,7 @@ class SocketIOServer:
         r.add_get("/api/history",       self._handle_history)
         r.add_post("/api/chat/send",    self._handle_chat_send)
         r.add_post("/api/chat/upload",  self._handle_chat_upload)
+        r.add_post("/api/tts/interrupt", self._handle_tts_interrupt)
         r.add_post("/api/agent/toggle", self._handle_agent_toggle)
 
         # Background game agents (modules/game_manager.py). Host-only:
@@ -2593,6 +2595,37 @@ class SocketIOServer:
     # ------------------------------------------------------------------
     # Voice in browser (Phase 10.19)
     # ------------------------------------------------------------------
+    def _broadcast_tts_stop(self):
+        """Barge-in: tell browser tabs playing her voice to stop. Called
+        from TTS.interrupt on any thread."""
+        if not self._tts_clients or self._loop is None or self._loop.is_closed():
+            return
+
+        async def _send():
+            try:
+                await self.sio.emit("tts_stop", {})
+            except Exception:
+                pass
+        asyncio.run_coroutine_threadsafe(_send(), self._loop)
+
+    async def _handle_tts_interrupt(self, request):
+        """Barge-in from the web chat: hold-to-talk pressed while she talks."""
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        ok, err = self._require_csrf(request, body if isinstance(body, dict) else {})
+        if not ok:
+            return _json_error(403, err)
+        tts = getattr(self.signals, "tts_instance", None)
+        if tts is None:
+            return web.json_response({"interrupted": False})
+        return web.json_response({"interrupted": bool(tts.interrupt(source="web"))})
+
     def _broadcast_tts_audio(self, audio_bytes):
         """Called by tts.py when an utterance starts playing.
 

@@ -398,6 +398,7 @@ client, so each needs its own allowlist entry.
 | `MC_STATUS_INTERVAL` | `30` | Seconds between silent status pushes to Lumi |
 | `MC_NARRATE` | `major` | Spoken events from the agent: `major` (diamonds), `all` (also goals, milestones, repeated failures), or `off` |
 | `MC_NARRATE_COOLDOWN` | `75` | Minimum seconds between non-major narration events |
+| `MC_VISION_EVERY` | `0` | Seconds between background glances through the live viewer, fed to the goal picker and Lumi's status. `0`: only when stuck. Costs VRAM, see [docs/minecraft.md](../docs/minecraft.md) |
 | `MC_VISION_MODEL` | `VISION_MODEL_NAME` from `constants.py` (`qwen2.5vl:latest`) | Vision model for looking around when stuck (`game_vision.py`). moondream is faster but answers these frames with junk |
 | `MC_DEFAULT_MODE` | `follow` | `follow`: she follows the player and goes back to following after each order, until told to do her own thing. `free`: she plays on her own near the player |
 

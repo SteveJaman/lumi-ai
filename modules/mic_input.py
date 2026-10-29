@@ -67,7 +67,7 @@ class MicInput(Module):
         tts = getattr(self.signals, 'tts_instance', None)
         if tts:
             print("\n\033[93m[Mic Input] Interrupting — you started talking\033[0m")
-            tts.stop()
+            tts.interrupt(source="mic")
 
     def _shutdown_watchdog(self):
         """Watches signals.terminate and shuts down the recorder to unblock

@@ -25,6 +25,14 @@ iteration against real use, not new subsystems.
   Reverse chronological. What shipped, when, and why.
 
   2026-10-28
+    - Real barge-in: talking over her (mic, Discord, or hold-to-talk in
+      the web chat) stops the audio, the queued sentences, a Fish Audio
+      request in flight and the reply still being written, closes the
+      avatar's mouth, and her next turn knows she was interrupted.
+    - [BODY STATUS] no longer needs the game agent connected, and says
+      what she's fighting or escaping, what she holds, and what's near.
+      MC_VISION_EVERY (opt-in) lets the agent glance through the viewer
+      regularly and use what it sees when picking goals.
     - One Lumi across chat and game: a live [BODY STATUS] line in
       every chat turn, game moments move her mood (clamped), and
       milestones (a house, diamonds, a death) become memories.

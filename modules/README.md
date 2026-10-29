@@ -50,7 +50,7 @@ How text and speech reach the prompter. All of them feed the same `signals.histo
 | File | Role | Status |
 |---|---|---|
 | `console_input.py` | Prompt-pinned terminal UI; yields stdin during `y/n` confirmations | spawned |
-| `mic_input.py` | Microphone capture with VAD and barge-in, feeds faster-whisper | spawned |
+| `mic_input.py` | Microphone capture with VAD and barge-in (`TTS.interrupt()` on speech start), feeds faster-whisper | spawned |
 | `local_input.py` | Earlier local input path | legacy |
 
 Web chat and Discord text also reach `signals.history`, through `socketIO.py` and `discordClient.py`.

@@ -307,7 +307,7 @@ with before she walks back.
 | Channel | When | Lumi's reaction |
 |---|---|---|
 | Silent status | Every 30 s, and right away when her distance from you changes band | None. It updates her context, so if you ask what she's doing in Minecraft she answers from it |
-| Body status | Every chat turn, agent mode or not | None. A live `[BODY STATUS]` line read from bot.js that turn: what she's doing, health, hunger, position |
+| Body status | Every chat turn while bot.js is in a world, agent mode or not, game agent connected or not | None. A live `[BODY STATUS]` line read from bot.js that turn: what she's doing (fighting a zombie, escaping lava, asleep, or the current goal), health, hunger, position, what she's holding, day or night, hostiles nearby |
 | Mood | Every game moment, spoken or not (deaths, hits, diamonds, kills, a house, orders done or failed) | None out loud: her emotional state moves a little (dying stings, diamonds feel good), clamped so a bad fight makes her grumpy, not unhinged, and it fades back on its own |
 | Memory | A death, a finished house, diamonds, her first furnace and iron pickaxe | None. Stored as a long-term memory with the coordinates, so she remembers it in later sessions |
 | Spoken event | Deaths (with what killed her), boss kills, diamonds and other top loot, a finished house, each new order from the Games page, an order done or abandoned, an order said to her that she can't do, you hitting her, you crouch-spamming at her | Lumi reacts in a short sentence, in her own voice ("[anxious] Oh, not now.") |
@@ -336,6 +336,15 @@ the agent acts on: a small vision model gets it wrong now and then. At most
 every 3 minutes; it runs in the background and unloads the model after, but
 loading it while the chat models are in VRAM can take a couple of minutes.
 Lumi can also call `mc_agent_look_around` in agent mode.
+
+**Her own eyes, all the time (opt-in).** `MC_VISION_EVERY=60` makes the
+agent glance through the viewer every 60 s and put what it sees ("tall
+grass and a cow ahead") into the goal picker's prompt and Lumi's status, so
+decisions and reactions can come from what's on screen, mistakes included.
+It's off by default: each look loads the vision model (about 6 GB) next to
+Lumi's chat models, which on an 11 GB card pushes them out of VRAM and slows
+her replies. Worth it with more VRAM, or a smaller vision model in
+`MC_VISION_MODEL`.
 
 **The game agent works on its own.** Lumi's chat and her other half are
 separate: the game agent (`plugin/minecraft_bot.py`) runs whenever the

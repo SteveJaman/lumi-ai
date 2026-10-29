@@ -730,6 +730,14 @@ GOAL_TIMEOUT_S = {"collect_wood": 60, "chop_trees": 60, "explore": 60,
 STUCK_RE = re.compile(r"path|stuck|took to long|timed out|couldn'?t (reach|get to)|no .* found", re.I)
 LOOK_EVERY_S = 180
 LOOK_MEMORY_S = 300      # how long the look stays in Lumi's status
+# Opt-in: glance through the viewer every N seconds (0 = only when stuck) and
+# feed what she sees into the goal picker and Lumi's status. Off by default:
+# each look loads the vision model (qwen2.5vl, ~6 GB) next to Lumi's chat
+# models, which on an 11 GB card pushes them out and slows her replies.
+VISION_EVERY_S = float(os.environ.get("MC_VISION_EVERY", "0"))
+GLANCE_QUESTION = ("This is a first-person view in a blocky video game. In one or two "
+                   "sentences, say what you see: the terrain, blocks, animals or monsters, "
+                   "and anything in the way.")
 
 # Tool tiers kept as Lumi's long-term memories when reached.
 REMEMBERED_TIERS = {"craft_iron_pickaxe": "Made my first iron pickaxe",
@@ -949,8 +957,9 @@ class MinecraftAgent(BaseGameAgent):
         self._last_narration = 0.0
         self._last_status_push = 0.0
         self._last_done: Optional[str] = None
-        self._last_look: Optional[Tuple[float, str]] = None   # (when, what the VLM saw)
+        self._last_look: Optional[Tuple[float, str, str]] = None   # (when, what the VLM saw, why)
         self._last_look_at = 0.0
+        self._looking = False
         self._autoplay_was = True
         self._defend_backoff_until = 0.0
         self._llm_ok = chat_sync is not None and GOAL_PICKER == "llm" and bool(GOAL_MODEL)
@@ -1119,19 +1128,38 @@ class MinecraftAgent(BaseGameAgent):
         answer, note = await loop.run_in_executor(None, game_vision.look, BOT_API, q)
         return (True, answer) if answer else (False, f"Couldn't see anything: {note}")
 
+    async def _glance(self) -> None:
+        """MC_VISION_EVERY: what she sees, for the goal picker and Lumi."""
+        loop = asyncio.get_running_loop()
+        self._looking = True
+        try:
+            answer, note = await loop.run_in_executor(None, game_vision.look, BOT_API, GLANCE_QUESTION)
+        except Exception as e:
+            answer, note = "", str(e)
+        finally:
+            self._looking = False
+        if not answer:
+            self._record("vision", f"couldn't glance around: {note}")
+            return
+        self._last_look = (time.time(), answer, "glance")
+        self._record("vision", f"glanced around: {answer}")
+
     async def _look_when_stuck(self, desc: str) -> None:
         """Ask the vision model what's in the way, from the live viewer. The
         answer is a hint for Lumi to talk about, not something the agent
         acts on: a small VLM gets it wrong now and then."""
         loop = asyncio.get_running_loop()
+        self._looking = True
         try:
             answer, note = await loop.run_in_executor(None, game_vision.look, BOT_API)
         except Exception as e:
             answer, note = "", str(e)
+        finally:
+            self._looking = False
         if not answer:
             self._record("vision", f"couldn't look around: {note}")
             return
-        self._last_look = (time.time(), answer)
+        self._last_look = (time.time(), answer, "stuck")
         self._record("vision", f"stuck ({desc.lower()}), looked around: {answer}")
         self._think(f"I'm stuck. Looking around... {answer[:140]}")
         await self._narrate(f"I got stuck trying to {desc.lower()}, so I looked around. "
@@ -1226,6 +1254,12 @@ class MinecraftAgent(BaseGameAgent):
 
                 # New orders from the player, every tick.
                 await self._take_directive(status)
+
+                # Opt-in eyes: a background glance through the live viewer.
+                if (VISION_EVERY_S > 0 and not self._looking
+                        and time.time() - self._last_look_at > VISION_EVERY_S):
+                    self._last_look_at = time.time()
+                    asyncio.create_task(self._glance())
 
                 # In bed: bot.js keeps her there until morning and gets her
                 # up for an order, a hit or the player wandering off.
@@ -1820,7 +1854,9 @@ class MinecraftAgent(BaseGameAgent):
             f"Hostiles nearby: {threats}.\n"
             f"{_environment_text(status.get('environment'))}\n"
             f"{self._player_line(status)}"
-            f"Recent goals (oldest first, with result): {self._recent_text(5)}.\n"
+            + (f"What you can see right now (your eyes can be wrong): {self._last_look[1]}\n"
+               if self._last_look and time.time() - self._last_look[0] < LOOK_MEMORY_S else "")
+            + f"Recent goals (oldest first, with result): {self._recent_text(5)}.\n"
             + (f"Materials wanted for the house: "
                f"{', '.join(f'{k}×{v}' for k, v in self._wanted.items())}.\n" if self._wanted else "")
             + "Rules: Do not pick build_dirt_hut if it is Day. Do not pick chop_trees if "
@@ -1926,7 +1962,8 @@ class MinecraftAgent(BaseGameAgent):
         if self._last_done:
             lines.append(f"Last finished: {self._last_done}.")
         if self._last_look and now - self._last_look[0] < LOOK_MEMORY_S:
-            lines.append(f"When you got stuck just now, you looked around and saw: {self._last_look[1]}")
+            when = "When you got stuck just now, you" if self._last_look[2] == "stuck" else "You just"
+            lines.append(f"{when} looked around and saw (your eyes can be wrong): {self._last_look[1]}")
         await self.send_context("\n".join(lines), silent=True)
 
     def _autoplay_allowed(self) -> bool:

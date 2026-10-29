@@ -1561,9 +1561,21 @@ function ensureVoiceSocket() {
       if (!payload || !payload.data) return;
       playTtsAudio(payload.data);
     });
+
+    // Barge-in (TTS.interrupt): stop her voice in this tab now.
+    _voiceSocket.on('tts_stop', stopTtsAudio);
   } catch (e) {
     console.warn('voice socket failed', e);
   }
+}
+
+const _ttsPlaying = new Set();
+
+function stopTtsAudio() {
+  for (const a of _ttsPlaying) {
+    try { a.pause(); } catch { /* already gone */ }
+  }
+  _ttsPlaying.clear();
 }
 
 function playTtsAudio(b64) {
@@ -1574,8 +1586,11 @@ function playTtsAudio(b64) {
     const blob = new Blob([arr], { type: 'audio/wav' });
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
-    audio.addEventListener('ended', () => URL.revokeObjectURL(url));
-    audio.play().catch(() => URL.revokeObjectURL(url));
+    _ttsPlaying.add(audio);
+    const done = () => { _ttsPlaying.delete(audio); URL.revokeObjectURL(url); };
+    audio.addEventListener('ended', done);
+    audio.addEventListener('pause', done);
+    audio.play().catch(done);
   } catch (e) {
     console.warn('audio playback failed', e);
   }
@@ -1585,6 +1600,9 @@ async function startMicRecording() {
   const btn = $('#mic-toggle');
   if (!btn || btn.disabled) return;
   _micHeld = true;
+  // Barge-in: talking over her stops her, here and on the host.
+  stopTtsAudio();
+  api('/api/tts/interrupt', { method: 'POST', csrf: true, body: {} }).catch(() => {});
   if (_micStarting) return;
   if (_mediaRecorder && _mediaRecorder.state === 'recording') return;
 

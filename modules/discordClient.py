@@ -364,10 +364,14 @@ class LocalAudioSink(voice_recv.AudioSink):
             speaking = True
             self.user_is_speaking[user_id] = True
             self.user_silence_counts[user_id] = 0
-            # Barge-in: stop Lumi mid-sentence.
+            # Barge-in: stop Lumi mid-sentence, everywhere (TTS.interrupt
+            # also stops this voice client through DiscordClient.stop_voice).
             vc = self.voice_client
             if vc is not None and vc.is_playing():
                 self.loop.call_soon_threadsafe(vc.stop)
+            tts = getattr(self.signals, "tts_instance", None)
+            if tts is not None and getattr(self.signals, "AI_speaking", False):
+                tts.interrupt(source="discord")
         elif speaking and rms < self.rms_stop:
             # Candidate silence — increment counter, keep capturing the tail.
             self.user_silence_counts[user_id] += 1
@@ -916,6 +920,26 @@ class DiscordClient(Module):
 
         if self.bot and self.bot.loop:
             asyncio.run_coroutine_threadsafe(_send(), self.bot.loop)
+
+    def stop_voice(self):
+        """Barge-in: drop queued voice clips and stop the one playing."""
+        if not self.bot:
+            return
+
+        async def _stop():
+            while not self._tts_queue.empty():
+                try:
+                    self._tts_queue.get_nowait()
+                except Exception:
+                    break
+            for vc in list(self.connections.values()):
+                if vc and vc.is_playing():
+                    vc.stop()
+
+        try:
+            asyncio.run_coroutine_threadsafe(_stop(), self.bot.loop)
+        except Exception:
+            pass
 
     def play_audio_in_voice(self, audio_bytes):
         if not self.bot:
