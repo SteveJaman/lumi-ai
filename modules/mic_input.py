@@ -101,7 +101,10 @@ class MicInput(Module):
                 input_device_index=1,  # Updated to Focusrite USB Audio index
                 post_speech_silence_duration=2.2,
                 min_length_of_recording=1.0,
-                on_vad_detect_start=self._on_vad_start,
+                # Speech actually starting a recording. (on_vad_detect_start
+                # fires when the recorder starts *waiting* for speech, right
+                # after the last transcription, which cut her off late.)
+                on_recording_start=self._on_vad_start,
             )
             # The terminal already announces mic status in the startup
             # banner (main.py). Route the detailed line to the hub so it

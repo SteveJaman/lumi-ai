@@ -101,6 +101,17 @@ INTERRUPT_NOTE = ("[System Note: The user interrupted you mid-sentence. They are
                   "now. Listen and respond to their new input.]")
 
 
+def insert_before_new_user(history, entries, keep=None):
+    """Put entries before the user messages at the end of history, so a
+    message that just arrived stays last and gets its turn (the prompter
+    only replies when the newest entry is the user's). `keep` is a user
+    entry that should stay before them: the one the turn was answering."""
+    i = len(history)
+    while i > 0 and history[i - 1].get("role") == "user" and history[i - 1] is not keep:
+        i -= 1
+    history[i:i] = entries
+
+
 def _wav_duration(audio_bytes, text):
     """Seconds of audio, for pacing subtitles. Falls back to a
     speaking-rate estimate if the bytes aren't a readable WAV."""
@@ -481,8 +492,9 @@ class TTS:
                 # Mid-turn: the prompter adds the note after her cut-off reply.
                 self.signals.interrupt_pending = True
             else:
-                self.signals.history.append(
-                    {"role": "system", "content": INTERRUPT_NOTE, "hidden": True, "source": "interrupt"})
+                # Before what they just said, if it's already in history.
+                insert_before_new_user(self.signals.history, [
+                    {"role": "system", "content": INTERRUPT_NOTE, "hidden": True, "source": "interrupt"}])
         return was_speaking
 
     def stop(self):

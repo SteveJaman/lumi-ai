@@ -199,3 +199,36 @@ def test_the_reply_being_written_stops_too():
     host.signals.speech_epoch = 1                    # barge-in
     assert stream.feed("And she kept going. ") is False
     assert stream.interrupted and pushed == ["She was mid-way through a thought."]
+
+
+def test_note_goes_before_what_you_just_said(monkeypatch):
+    # The log that found this: the mic transcribed "let's talk about
+    # something else" first, then the interrupt fired and put its note
+    # after it, so the newest entry wasn't the user's and no reply came.
+    t, signals, *_ = _tts(monkeypatch)
+    signals.AI_speaking = True
+    said = {"role": "user", "content": "Hold up, let's talk about something else."}
+    signals.history[:] = [{"role": "user", "content": "Explain the Matrix."},
+                          {"role": "assistant", "content": "The Matrix is about..."}, said]
+    assert t.interrupt(source="mic")
+    assert signals.history[-1] is said
+    assert signals.history[-2]["content"] == INTERRUPT_NOTE
+
+
+def test_message_during_a_reply_stays_last():
+    from modules.tts import insert_before_new_user
+    asked = {"role": "user", "content": "Explain the Matrix."}
+    new = {"role": "user", "content": "Actually, cookies?"}
+    history = [asked, new]                       # arrived while she was writing
+    insert_before_new_user(history, [{"role": "assistant", "content": "The Matrix is"},
+                                     {"role": "system", "content": INTERRUPT_NOTE}], keep=asked)
+    assert [m["content"] for m in history] == [
+        "Explain the Matrix.", "The Matrix is", INTERRUPT_NOTE, "Actually, cookies?"]
+
+
+def test_mic_interrupts_when_speech_starts_a_recording():
+    import inspect
+    import modules.mic_input as mic
+    src = inspect.getsource(mic)
+    assert "on_recording_start=self._on_vad_start" in src
+    assert "on_vad_detect_start=self._on_vad_start" not in src

@@ -2986,6 +2986,7 @@ class Prompter:
                     self._game_order_note = None
                     self._dispatched_order = None
                     self._turn_epoch = getattr(self.signals, "speech_epoch", 0)
+                    self._turn_entry = self.signals.history[-1]
                     self.signals.interrupt_pending = False
                     entry = self.signals.history[-1]
                     if not is_sdk_event and entry.get("from_host"):
@@ -3504,14 +3505,21 @@ class Prompter:
                             except Exception:
                                 pass
 
-                        self.signals.history.append({"role": "assistant", "content": raw_reply})
                         if getattr(self.signals, "interrupt_pending", False):
-                            # Cut off mid-reply (TTS.interrupt): say so after
-                            # what she got out, so the next turn moves on.
-                            from modules.tts import INTERRUPT_NOTE
-                            self.signals.history.append({"role": "system", "content": INTERRUPT_NOTE,
-                                                         "hidden": True, "source": "interrupt"})
+                            # Cut off mid-reply (TTS.interrupt): what she got
+                            # out, then a note saying so, both before anything
+                            # the user said since, so that message is answered
+                            # next instead of being stuck behind her reply.
+                            from modules.tts import INTERRUPT_NOTE, insert_before_new_user
+                            insert_before_new_user(self.signals.history, [
+                                {"role": "assistant", "content": raw_reply},
+                                {"role": "system", "content": INTERRUPT_NOTE,
+                                 "hidden": True, "source": "interrupt"}], keep=self._turn_entry)
                             self.signals.interrupt_pending = False
+                            if self.signals.history and self.signals.history[-1].get("role") == "user":
+                                self.signals.new_message = True
+                        else:
+                            self.signals.history.append({"role": "assistant", "content": raw_reply})
 
                         if len(self.signals.history) > 20:
                             self.signals.history = self.signals.history[-20:]
