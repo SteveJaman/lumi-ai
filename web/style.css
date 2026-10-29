@@ -1099,6 +1099,10 @@ html[data-theme="dark"] .msg.user .msg-avatar {
   gap: 4px;
   margin-bottom: 6px;
 }
+/* Below the text: an order passed to Minecraft. */
+.msg-attachments.msg-game-order {
+  margin: 6px 0 0;
+}
 .msg-attachment-badge {
   display: inline-flex;
   align-items: center;

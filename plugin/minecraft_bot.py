@@ -1441,9 +1441,14 @@ class MinecraftAgent(LumiClient):
         if not text:
             return
         in_game = d.get("source") == "chat"
+        # Said to Lumi in her chat or out loud: she has already answered,
+        # so only a problem with the order is narrated.
+        talk = d.get("source") == "talk"
         who = (d.get("from") or (status.get("owner") or {}).get("name") or "my player") if in_game else None
-        heard = f'{who} told me in game: "{text}"' if in_game else f'I got an order from the Games page: "{text}"'
-        self._record("agent", f"order ({who or 'Games page'}): {text}")
+        heard = (f'{who} told me in game: "{text}"' if in_game
+                 else f'I was asked to "{text}" in Minecraft' if talk
+                 else f'I got an order from the Games page: "{text}"')
+        self._record("agent", f"order ({who or ('talking to Lumi' if talk else 'Games page')}): {text}")
 
         order = _parse_order(text)
         if order is None:
@@ -1451,6 +1456,8 @@ class MinecraftAgent(LumiClient):
         if order is None:
             await self._bot_action("chat", {"message": f"Sorry, I don't know how to do that: {text[:60]}"})
             self._record("warn", f"didn't understand the order: {text}")
+            if talk:
+                await self._narrate(f"{heard}, but I don't know how to do that in the game.", major=True)
             return
 
         if order["kind"] == "give":
@@ -1468,6 +1475,8 @@ class MinecraftAgent(LumiClient):
                 if fallback is None:
                     await self._bot_action("chat", {"message": f"I don't have any {order['item']}."})
                     self._record("warn", f"can't give {order['item']}: not in inventory")
+                    if talk:
+                        await self._narrate(f"{heard}, but I don't have any {order['item']}.", major=True)
                     return
                 order = fallback
 
@@ -1520,7 +1529,8 @@ class MinecraftAgent(LumiClient):
             self._order.update(text=text, who=who, fails=0, until=time.time() + 20 * 60)
         self._tel["current_order"], self._tel["mode"] = self._order_text() or None, self._mode
         self._think(f"New order: {text}")
-        await self._narrate(f"{heard}. {ack}.", major=True)
+        if not talk:
+            await self._narrate(f"{heard}. {ack}.", major=True)
         await self._push_status(status, force=True)
 
     async def _override_order(self, text: str, status: Dict) -> Optional[Dict[str, Any]]:

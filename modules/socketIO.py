@@ -1075,6 +1075,8 @@ class SocketIOServer:
         history_msg = {"role": "user", "content": text}
         if clean_atts:
             history_msg["attachments"] = clean_atts
+        if not self._is_remote(request):
+            history_msg["from_host"] = True     # may give Minecraft orders (game_orders.py)
 
         self.signals.history.append(history_msg)
         self.signals.new_message = True
@@ -2673,7 +2675,10 @@ class SocketIOServer:
         if _is_chat_command(text) and self._is_remote(request):
             return _json_error(403, "Commands only work on the host machine.")
 
-        self.signals.history.append({"role": "user", "content": text})
+        entry = {"role": "user", "content": text}
+        if not self._is_remote(request):
+            entry["from_host"] = True           # may give Minecraft orders (game_orders.py)
+        self.signals.history.append(entry)
         self.signals.new_message = True
         self.signals.last_message_time = time.time()
         if hasattr(self.signals, "save_history"):
@@ -3000,7 +3005,10 @@ class SocketIOServer:
                 return
             if _is_chat_command(text) and not sess.get("is_local"):
                 return
-            signals.history.append({"role": "user", "content": text})
+            entry = {"role": "user", "content": text}
+            if sess.get("is_local"):
+                entry["from_host"] = True       # may give Minecraft orders (game_orders.py)
+            signals.history.append(entry)
             signals.new_message = True
             signals.last_message_time = time.time()
             if hasattr(signals, "save_history"):

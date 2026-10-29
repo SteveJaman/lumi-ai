@@ -16,7 +16,8 @@ class STT:
             return
 
         print("STT OUTPUT: " + text)
-        self.signals.history.append({"role": "user", "content": text})
+        # The local mic is the host, so it may give Minecraft orders.
+        self.signals.history.append({"role": "user", "content": text, "from_host": True})
 
         self.signals.last_message_time = time.time()
         if not self.signals.AI_speaking:

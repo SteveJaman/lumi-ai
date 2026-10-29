@@ -1184,6 +1184,25 @@ MINECRAFT_GAMER_NOTE = (
 )
 
 
+# Added for the turn when what the host said was a Minecraft order and it
+# was passed to the game (modules/game_orders.py).
+GAME_ORDER_NOTE = (
+    "=== MINECRAFT ORDER ===\n"
+    "{host_name} just told you to \"{order}\" in Minecraft, and your other half "
+    "is already on it. Answer the way you'd answer someone who asked you for "
+    "something: one short line in your own voice, with a bit of attitude if it "
+    "fits (\"Fine, following you. Don't walk into lava.\"). Don't ask what they "
+    "mean, don't explain how, and don't call tools for it.\n"
+    "=== END MINECRAFT ORDER ==="
+)
+GAME_OFFLINE_NOTE = (
+    "=== MINECRAFT ORDER ===\n"
+    "{host_name} asked you to \"{order}\" in Minecraft, but the game isn't "
+    "running right now, so you can't. Tell them in a line; the Games page "
+    "switches Minecraft AI on.\n"
+    "=== END MINECRAFT ORDER ==="
+)
+
 # Offered on agent turns only while a Minecraft SDK client is connected.
 MINECRAFT_TOOL_SCHEMA = {
     "type": "function",
@@ -1601,6 +1620,34 @@ class Prompter:
         self._live_stream = stream
         return _finish_reply(resp.content, truncated) or "..."
 
+    def _forward_game_order(self, text, entry=None):
+        """If the host's message is a Minecraft order, hand it to the game
+        agent, mark its history entry (`game_order`, shown as a badge in the
+        chat) and return this turn's note. None if it isn't one. Blocking
+        (two local HTTP calls), so it runs in an executor."""
+        from modules.game_orders import bot_online, extract_order, is_explicit
+        order = extract_order(text)
+        if not order:
+            return None
+        games = getattr(self.signals, "game_manager", None)
+        if games is None or not bot_online():
+            # Only a "!mc ..." gets an answer about it; a plain "follow me"
+            # with no game running is just conversation.
+            if is_explicit(text):
+                return GAME_OFFLINE_NOTE.replace("{host_name}", HOST.name).replace("{order}", order)
+            return None
+        try:
+            games.send_directive("minecraft", order, source="talk")
+        except Exception as e:
+            print(f"{GRAY}[minecraft] couldn't pass the order on: {e}{RESET}")
+            return None
+        print(f"{GRAY}[minecraft] order from talking to Lumi: {order}{RESET}")
+        if entry is not None:
+            entry["game_order"] = order
+            if hasattr(self.signals, "save_history"):
+                self.signals.save_history()
+        return GAME_ORDER_NOTE.replace("{host_name}", HOST.name).replace("{order}", order)
+
     def _minecraft_connected(self):
         """True while bot.js or the game agent is connected and approved."""
         sdk = getattr(self.signals, "sdk", None)
@@ -1867,6 +1914,8 @@ class Prompter:
                     injections.append(f"[FROM SDK]\n{text}\n[END FROM SDK]")
                 if self._minecraft_connected():
                     injections.append(MINECRAFT_GAMER_NOTE.replace("{host_name}", HOST.name))
+                if getattr(self, "_game_order_note", None):
+                    injections.append(self._game_order_note)
             except Exception:
                 pass
 
@@ -2739,6 +2788,17 @@ class Prompter:
                     # Game events pushed through the SDK are not the user
                     # speaking, so they skip the user-message bookkeeping.
                     is_sdk_event = self.signals.history[-1].get("source") == "sdk_event"
+
+                    # A Minecraft order said or typed by the host goes to the
+                    # game; this turn's prompt tells her it's being done.
+                    self._game_order_note = None
+                    entry = self.signals.history[-1]
+                    if not is_sdk_event and entry.get("from_host"):
+                        try:
+                            self._game_order_note = await asyncio.get_running_loop().run_in_executor(
+                                None, self._forward_game_order, latest_user_text, entry)
+                        except Exception:
+                            self._game_order_note = None
 
                     if hasattr(self.signals, "emotional_state") and not is_sdk_event:
                         try:

@@ -25,6 +25,11 @@ iteration against real use, not new subsystems.
   Reverse chronological. What shipped, when, and why.
 
   2026-10-28
+    - Talk to Lumi to steer Minecraft: say or type "follow me", "make
+      me a stone axe", "go to sleep" in her chat or into the mic, and
+      it goes to the game as an order (a "Sent to Minecraft" badge on
+      your message) while she answers in a line. Host only. `!mc
+      <order>` always sends.
     - Minecraft beds: she makes one (three sheep), sets her respawn
       point at it by day, and sleeps at night, killing monsters that
       are too close first. She gets up in the morning or when needed.

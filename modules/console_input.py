@@ -164,7 +164,7 @@ class ConsoleInput(Module):
                 # command router on the same tick.
                 try:
                     self.signals.history.append(
-                        {"role": "user", "content": line}
+                        {"role": "user", "content": line, "from_host": True}
                     )
                     self.signals.new_message = True
                     self.signals.last_message_time = time.time()

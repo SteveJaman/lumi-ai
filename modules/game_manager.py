@@ -242,18 +242,20 @@ class GameManager:
             "server": _server_info(bot_status, bot_up),
         }
 
-    def send_directive(self, game: str, text: str) -> Dict[str, Any]:
+    def send_directive(self, game: str, text: str, source: str = "web") -> Dict[str, Any]:
         """Hand an order to the game agent through bot.js's /directive
         inbox. bot.js interrupts the running skill; the agent picks the
-        order up on its next tick. Raises ValueError for a bad order and
-        RuntimeError when bot.js isn't running."""
+        order up on its next tick. `source` is "web" (the Games page) or
+        "talk" (said to Lumi in chat or out loud). Raises ValueError for a
+        bad order and RuntimeError when bot.js isn't running."""
         if game not in GAMES:
             raise ValueError(f"unknown game: {game}")
         clean = " ".join(str(text or "").split())[:MAX_DIRECTIVE]
         clean = "".join(ch for ch in clean if ch.isprintable())
         if not clean:
             raise ValueError("The order is empty.")
-        body = json.dumps({"text": clean, "source": "web"}).encode()
+        source = source if source in ("web", "talk") else "web"
+        body = json.dumps({"text": clean, "source": source}).encode()
         req = urllib.request.Request(f"{BOT_API}/directive", data=body,
                                      headers={"Content-Type": "application/json"})
         try:
@@ -268,7 +270,8 @@ class GameManager:
             result["message"] = ((result.get("message") or "Order received") +
                                  " — the game agent isn't running, so it will wait "
                                  "until Minecraft AI is switched on.")
-        hub_emit(self.signals, "minecraft", f"order from the Games page: {clean}")
+        hub_emit(self.signals, "minecraft",
+                 f"order {'said to Lumi' if source == 'talk' else 'from the Games page'}: {clean}")
         return result
 
     def hud_action(self, game: str, action: str, args: Dict[str, Any]) -> Dict[str, Any]:

@@ -1157,6 +1157,18 @@ function buildChatMessage(msg, { animate = true } = {}) {
   text.textContent = cleaned;
   bubble.appendChild(text);
 
+  // What the host said was passed to Lumi in Minecraft as an order
+  // (modules/game_orders.py).
+  if (msg.game_order) {
+    const row = document.createElement('div');
+    row.className = 'msg-attachments msg-game-order';
+    const badge = document.createElement('span');
+    badge.className = 'msg-attachment-badge';
+    badge.textContent = `⛏️ Sent to Minecraft: ${msg.game_order}`;
+    row.appendChild(badge);
+    bubble.appendChild(row);
+  }
+
   div.appendChild(bubble);
   return div;
 }

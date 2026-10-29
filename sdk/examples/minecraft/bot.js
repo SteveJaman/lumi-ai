@@ -3264,7 +3264,8 @@ const _controlServer = http.createServer((req, res) => {
         res.end(JSON.stringify({ success: false, message: "text must be a string" }));
         return;
       }
-      const source = ["web", "chat", "lumi"].includes(payload.source) ? payload.source : "web";
+      // web: the Games page. talk: said to Lumi in her chat or out loud.
+      const source = ["web", "chat", "lumi", "talk"].includes(payload.source) ? payload.source : "web";
       const r = setDirective(payload.text, source, payload.from ? cleanDirective(payload.from).slice(0, 32) : null);
       res.writeHead(r.success ? 200 : 422);
       res.end(JSON.stringify({ success: r.success, message: r.message, directive: r.directive || null }));

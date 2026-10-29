@@ -134,8 +134,15 @@ succeeded can have a cooldown too: the dirt hut runs once per night.
 
 ## Orders
 
-Two ways to tell her what to do:
+Three ways to tell her what to do:
 
+- **Talking to Lumi**, in the web chat or out loud (the chat's mic button or
+  the local mic). Say it the way you'd say it to a friend: "follow me",
+  "Lumi, can you make me a stone axe?", "go to sleep", "in Minecraft, build
+  a house". When the bot is in a world, an order is passed to the game, your
+  message gets a **⛏️ Sent to Minecraft** badge, and Lumi answers in a line
+  ("Fine, following you."). Anything else is ordinary conversation. Typing
+  `!mc <order>` always sends it. See [Talking to her](#talking-to-her).
 - **In Minecraft chat**, as the owner, start with a wake word: `Lumi,`, `Lumi:`,
   `!lumi`, or just `Lumi ` followed by the order. She answers `Got it. …`.
 - **On the Games page**, type into **AI directive / nudge** and press
@@ -176,6 +183,31 @@ The full table is in
 [the agent's README](../plugin/README.md#orders).
 
 ---
+
+### Talking to her
+
+`modules/game_orders.py` decides, by rules alone (no model call, so no
+delay), whether what you said is an order:
+
+- `!mc <order>` or `!minecraft <order>` always is. With the game off, Lumi
+  tells you it isn't running.
+- "In Minecraft, …", "in game …" and "tell your other half to …" are, when
+  the rest is an order the agent understands.
+- Otherwise the message has to be short (16 words at most) and start with a
+  command verb (follow, come, go, get, make, craft, build, mine, chop, sleep,
+  …) after any "hey Lumi", "can you" or "please", and the agent's own order
+  parser has to understand it. "How do I make a stone axe?" doesn't start
+  with a verb, so it's a question, not an order. Bare "wait" or "stop" only
+  count as "stay here", "stop following" and the like, so "wait, what?" in
+  conversation doesn't freeze her in game.
+
+Only the host can do this: messages from the host machine's web chat, its
+mic and the terminal. A remote web user or someone in Discord voice can't
+steer the game, same as the Games page. The order goes through the same
+inbox as the Games page, marked as said to Lumi. The game agent doesn't say
+its usual "I got an order…" line for it, because Lumi has already answered,
+but it does speak up when it can't do it ("I don't have any golden
+carrots", "I don't know how to do that").
 
 ## Staying alive
 
