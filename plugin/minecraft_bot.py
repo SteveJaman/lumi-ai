@@ -50,8 +50,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 # ─── Path bootstrap ───────────────────────────────────────────────────────────
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
+# The repo root first: run as a script, Python puts this folder at the
+# front, and plugin/plugin.py would then shadow the `plugin` package.
+if _ROOT in sys.path:
+    sys.path.remove(_ROOT)
+sys.path.insert(0, _ROOT)
 
 from sdk import action
 from plugin import game_vision

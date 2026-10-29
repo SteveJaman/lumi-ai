@@ -97,3 +97,19 @@ def test_unknown_game_is_refused(monkeypatch, tmp_path):
     mgr, _ = _manager(monkeypatch, tmp_path)
     with pytest.raises(ValueError):
         mgr.set_enabled("valheim", True)
+
+
+@pytest.mark.parametrize("script", ["minecraft_bot.py", "game_agent_mock.py"])
+def test_agents_import_when_run_as_scripts(script):
+    """Run as a script, Python puts plugin/ first on the path, where
+    plugin/plugin.py used to shadow the plugin package
+    ("cannot import name 'game_vision' from 'plugin'")."""
+    import os
+    import subprocess
+    import sys
+    plugin_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugin")
+    code = ("import runpy, sys; sys.path.insert(0, sys.argv[1]); "
+            "runpy.run_path(sys.argv[2], run_name='script_import_check')")
+    r = subprocess.run([sys.executable, "-c", code, plugin_dir, os.path.join(plugin_dir, script)],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr[-800:]
