@@ -1780,7 +1780,8 @@ function gameCardHtml() {
       <button class="btn btn-primary" type="submit" id="game-directive-send">Send command</button>
     </form>
     <div class="game-hint" id="game-directive-msg">
-      In game, start a chat message with “Lumi,” to give her an order.
+      In game, start a chat message with “Lumi,” to give her an order. You can
+      also just tell Lumi in chat or out loud (“follow me”); agent mode isn’t needed.
     </div>
     <div class="game-error" id="game-error" hidden></div>
     <div class="game-label game-server-label">Server connection</div>

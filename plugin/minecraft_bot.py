@@ -1441,9 +1441,10 @@ class MinecraftAgent(LumiClient):
         if not text:
             return
         in_game = d.get("source") == "chat"
-        # Said to Lumi in her chat or out loud: she has already answered,
-        # so only a problem with the order is narrated.
-        talk = d.get("source") == "talk"
+        # Said to Lumi in her chat or out loud ("talk"), or sent by her
+        # dispatch_game_command tool ("lumi"): she has already answered, so
+        # only a problem with the order is narrated.
+        talk = d.get("source") in ("talk", "lumi")
         who = (d.get("from") or (status.get("owner") or {}).get("name") or "my player") if in_game else None
         heard = (f'{who} told me in game: "{text}"' if in_game
                  else f'I was asked to "{text}" in Minecraft' if talk
@@ -1529,7 +1530,10 @@ class MinecraftAgent(LumiClient):
             self._order.update(text=text, who=who, fails=0, until=time.time() + 20 * 60)
         self._tel["current_order"], self._tel["mode"] = self._order_text() or None, self._mode
         self._think(f"New order: {text}")
-        if not talk:
+        # Only a Games page order becomes a chat turn. One from in-game chat
+        # goes straight to the agent (bot.js already answered "Got it." in
+        # game), so Lumi's chat model isn't involved.
+        if not talk and not in_game:
             await self._narrate(f"{heard}. {ack}.", major=True)
         await self._push_status(status, force=True)
 

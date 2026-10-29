@@ -144,7 +144,9 @@ Three ways to tell her what to do:
   ("Fine, following you."). Anything else is ordinary conversation. Typing
   `!mc <order>` always sends it. See [Talking to her](#talking-to-her).
 - **In Minecraft chat**, as the owner, start with a wake word: `Lumi,`, `Lumi:`,
-  `!lumi`, or just `Lumi ` followed by the order. She answers `Got it. …`.
+  `!lumi`, or just `Lumi ` followed by the order. She answers `Got it. …` in
+  game chat. The order goes straight to the game agent and doesn't become a
+  turn for Lumi's chat model, so nothing interrupts the conversation.
 - **On the Games page**, type into **AI directive / nudge** and press
   **Send command**.
 
@@ -305,7 +307,7 @@ with before she walks back.
 | Channel | When | Lumi's reaction |
 |---|---|---|
 | Silent status | Every 30 s, and right away when her distance from you changes band | None. It updates her context, so if you ask what she's doing in Minecraft she answers from it |
-| Spoken event | Deaths (with what killed her), boss kills, diamonds and other top loot, a finished house, each new order, an order done or abandoned, you hitting her, you crouch-spamming at her | Lumi reacts in a short sentence, in her own voice ("[anxious] Oh, not now.") |
+| Spoken event | Deaths (with what killed her), boss kills, diamonds and other top loot, a finished house, each new order from the Games page, an order done or abandoned, an order said to her that she can't do, you hitting her, you crouch-spamming at her | Lumi reacts in a short sentence, in her own voice ("[anxious] Oh, not now.") |
 
 A reaction uses her persona prompt (the same one chat uses, from
 `config/lumi.yaml`) plus a short instruction: react in one short sentence,
@@ -320,6 +322,16 @@ model. `bot.js` sends the same kind of event at most 3 times in any minute, on
 top of its per-kind cooldowns. If one arrives while she's mid-reply, it's delivered as soon as she
 finishes, or dropped if she's still busy after 20 seconds. `EVENT_REACTIONS=all` (in `bot.js`'s `.env`) and `MC_NARRATE=all`
 bring back the full play-by-play: every hit, every mob, every new goal.
+
+**The game agent works on its own.** Lumi's chat and her other half are
+separate: the game agent (`plugin/minecraft_bot.py`) runs whenever the
+Games page's **Minecraft AI** switch is on, whatever agent mode is set to,
+and orders reach it without agent mode (talking to her, in-game chat, the
+Games page). Agent mode is only for multi-step work with tools. In agent
+mode Lumi also has `dispatch_game_command(game, order_text)`: she hands the
+order to the game agent and gets "Order dispatched" back at once, without
+waiting for it to finish. If the rules already passed this turn's order on,
+the tool says so instead of sending it twice.
 
 In agent mode Lumi can also call `look_at_minecraft`: she captures the
 Minecraft window, even when it's behind other windows, and a small vision model

@@ -25,6 +25,10 @@ iteration against real use, not new subsystems.
   Reverse chronological. What shipped, when, and why.
 
   2026-10-28
+    - Chat and the game agent are fully separate: in-game "Lumi, …"
+      orders go straight to the game agent without a chat turn, and in
+      agent mode Lumi has dispatch_game_command, which hands an order
+      over and returns at once.
     - Replies are one or two sentences again, like casual talk: a
       casual turn stops after two sentences. Stories, explanations,
       "how" and "why" questions and her backstory can still run long.

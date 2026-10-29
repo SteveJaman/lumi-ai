@@ -151,6 +151,7 @@ AGENT_TOOLS = {
     "vtube_set_expression": "Turn an appearance toggle on/off on Lumi's avatar",
     "vtube_move": "Move Lumi's avatar to a screen position",
     "look_at_minecraft": "Screenshot the Minecraft window and describe it (while Minecraft AI runs)",
+    "dispatch_game_command": "Hand an order to the Minecraft game agent and carry on (while Minecraft AI runs)",
 }
 
 
@@ -160,7 +161,7 @@ _KNOWN_TOOL_NAMES = {
     "read_file", "write_file", "list_dir", "search_files",
     "run_command", "run_in_terminal", "web_search", "browse_url",
     "recall_memory", "search_library",
-    "vtube_set_expression", "vtube_move", "look_at_minecraft",
+    "vtube_set_expression", "vtube_move", "look_at_minecraft", "dispatch_game_command",
 }
 
 _EXPRESSION_STATE_NAMES = frozenset({
@@ -397,7 +398,8 @@ _STATE_NAME_ALIASES = {
 _TOOL_CALL_SHAPE = re.compile(
     r'"name"\s*:\s*"(read_file|write_file|list_dir|search_files|'
     r'run_command|run_in_terminal|web_search|browse_url|recall_memory|'
-    r'search_library|vtube_set_expression|vtube_move|look_at_minecraft)"',
+    r'search_library|vtube_set_expression|vtube_move|look_at_minecraft|'
+    r'dispatch_game_command)"',
     re.IGNORECASE,
 )
 
@@ -1218,9 +1220,12 @@ MINECRAFT_GAMER_NOTE = (
     "You are playing Minecraft near {host_name}. You are independent, but you "
     "like to keep them in your sights. If you wander off to mine or build, let "
     "them know what you're doing.\n"
-    "In agent mode you can also call "
-    "look_at_minecraft to actually see the game, and use the sdk__minecraft_ "
-    "and sdk__mc_agent_ tools to act or steer it.\n"
+    "You have a dedicated game agent that controls your other half. When "
+    "{host_name} gives you an in-game command (\"follow me\", \"get diamonds\"), "
+    "it goes to that agent: in agent mode call dispatch_game_command with it; "
+    "otherwise it's passed on for you. Don't wait for the agent to finish, and "
+    "don't check on it. Answer in a line and carry on the conversation. In "
+    "agent mode you can also call look_at_minecraft to actually see the game.\n"
     "A message that starts with [FROM SDK: Minecraft...] and contains "
     "[MINECRAFT EVENT] is something big that just happened to you in the "
     "game, not the user talking. React to it out loud the way you would to "
@@ -1229,14 +1234,14 @@ MINECRAFT_GAMER_NOTE = (
     "Never read the event text back verbatim, never mention SDKs, bots, "
     "tools, or events, and do not break character. An event is not a "
     "request, so answer it with words, not tool calls.\n"
-    "{host_name} can give your other half orders: in game by starting a chat "
-    "message with \"Lumi,\", or from the Games page. A new order arrives as a "
-    "[MINECRAFT EVENT]; acknowledge it out loud the way you'd answer someone "
-    "who asked you for something, with a bit of attitude (\"Alright, I'll go "
-    "find some diamonds. Don't wander too far.\"). Your other half is already "
-    "carrying it out, so don't call tools for it. The current order also shows "
-    "in the status block; mention it when they ask what you're doing, and brag "
-    "when it's done.\n"
+    "{host_name} can also give your other half orders in game (a chat message "
+    "starting with \"Lumi,\") or from the Games page. Those go straight to the "
+    "game agent. A Games page order arrives as a [MINECRAFT EVENT]; acknowledge "
+    "it out loud the way you'd answer someone who asked you for something, "
+    "with a bit of attitude (\"Alright, I'll go find some diamonds.\"). Your "
+    "other half is already carrying it out, so don't call tools for it. The "
+    "current order also shows in the status block; mention it when they ask "
+    "what you're doing, and brag when it's done.\n"
     "=== END MINECRAFT ==="
 )
 
@@ -1259,6 +1264,30 @@ GAME_OFFLINE_NOTE = (
     "switches Minecraft AI on.\n"
     "=== END MINECRAFT ORDER ==="
 )
+
+# Offered on agent turns while a Minecraft SDK client is connected. The
+# game agent (plugin/minecraft_bot.py) runs the order in the background, so
+# the tool returns at once and the turn carries on.
+GAME_COMMAND_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "dispatch_game_command",
+        "description": (
+            "Give your other half in Minecraft an order, in plain words: 'follow me', "
+            "'get 5 diamonds', 'make a stone axe', 'go to sleep', 'build a house'. "
+            "Your game agent carries it out in the background; this returns at once. "
+            "Don't wait for it or check on it, just keep talking."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "game": {"type": "string", "enum": ["minecraft"], "description": "The game. Only minecraft."},
+                "order_text": {"type": "string", "description": "The order, e.g. 'follow me'."},
+            },
+            "required": ["order_text"],
+        },
+    },
+}
 
 # Offered on agent turns only while a Minecraft SDK client is connected.
 MINECRAFT_TOOL_SCHEMA = {
@@ -1685,6 +1714,31 @@ class Prompter:
             return _finish_reply(stream.spoken) or "..."
         return _finish_reply(resp.content, truncated) or "..."
 
+    async def _dispatch_game_command(self, order, game="minecraft"):
+        """The dispatch_game_command tool: hand the order to the game agent
+        and return at once. The agent runs it in the background."""
+        if game != "minecraft":
+            return f"There's no game agent for {game}. Only minecraft."
+        if not order:
+            return "No order given. Pass order_text, e.g. 'follow me'."
+        if getattr(self, "_dispatched_order", None):
+            # The rules already passed this turn's order on.
+            return (f"Already passed to your game agent this turn: \"{self._dispatched_order}\". "
+                    "Don't send it again; carry on talking.")
+        games = getattr(self.signals, "game_manager", None)
+        if games is None:
+            return "The game manager isn't loaded, so there's no game agent to send it to."
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, lambda: games.send_directive("minecraft", order, source="lumi"))
+        except ValueError as e:
+            return f"The game agent didn't take the order: {e}"
+        except RuntimeError as e:
+            return f"Couldn't reach the game agent: {e}"
+        self._dispatched_order = order
+        return ("Order dispatched to your game agent. It's carrying it out in the background; "
+                "don't wait for it or check on it. Tell them in a line and carry on.")
+
     def _forward_game_order(self, text, entry=None):
         """If the host's message is a Minecraft order, hand it to the game
         agent, mark its history entry (`game_order`, shown as a badge in the
@@ -1707,6 +1761,7 @@ class Prompter:
             print(f"{GRAY}[minecraft] couldn't pass the order on: {e}{RESET}")
             return None
         print(f"{GRAY}[minecraft] order from talking to Lumi: {order}{RESET}")
+        self._dispatched_order = order
         if entry is not None:
             entry["game_order"] = order
             if hasattr(self.signals, "save_history"):
@@ -1792,7 +1847,8 @@ class Prompter:
                 "- search_library(query, top_k) — search the user's reference library (PDFs, docs, notes) for factual passages\n"
                 "- vtube_set_expression(name, enabled) — turn an appearance toggle on your own avatar on or off\n"
                 "- vtube_move(location) — move your own avatar to a preset screen position\n"
-                "- look_at_minecraft() — see the Minecraft game your other half is playing (only while it runs)\n\n"
+                "- look_at_minecraft() — see the Minecraft game your other half is playing (only while it runs)\n"
+                "- dispatch_game_command(game, order_text) — give your other half in Minecraft an order; it runs in the background (only while it runs)\n\n"
                 "EXAMPLES OF CORRECT BEHAVIOR:\n"
                 '  User: "create a hello world script"\n'
                 '  You: [emit tool call] {"name": "write_file", "arguments": {"path": "hello.py", "content": "print(\\"Hello, World!\\")\\n"}}\n'
@@ -2334,6 +2390,11 @@ class Prompter:
                 parts.append(f"[{src}]\n{h['chunk']}")
             return "\n\n---\n\n".join(parts)
 
+        if name == "dispatch_game_command":
+            order = " ".join(str(arguments.get("order_text") or "").split())
+            print(f"\n{GRAY}[Lumi is using tool: dispatch_game_command({order!r})]{RESET}")
+            return await self._dispatch_game_command(order, arguments.get("game") or "minecraft")
+
         if name == "look_at_minecraft":
             print(f"\n{GRAY}[Lumi is using tool: look_at_minecraft()]{RESET}")
             from modules.game_manager import read_telemetry
@@ -2468,7 +2529,7 @@ class Prompter:
 
         all_tools = TOOL_SCHEMAS + EXTRA_TOOL_SCHEMAS
         if self._minecraft_connected():
-            all_tools = all_tools + [MINECRAFT_TOOL_SCHEMA]
+            all_tools = all_tools + [MINECRAFT_TOOL_SCHEMA, GAME_COMMAND_TOOL_SCHEMA]
         sdk = getattr(self.signals, "sdk", None)
         if sdk is not None:
             try:
@@ -2864,6 +2925,7 @@ class Prompter:
                     # A Minecraft order said or typed by the host goes to the
                     # game; this turn's prompt tells her it's being done.
                     self._game_order_note = None
+                    self._dispatched_order = None
                     entry = self.signals.history[-1]
                     if not is_sdk_event and entry.get("from_host"):
                         try:
