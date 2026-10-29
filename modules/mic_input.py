@@ -186,7 +186,9 @@ class MicInput(Module):
                         while getattr(self.signals, 'AI_thinking', False):
                             time.sleep(0.1)
 
-                        self.signals.add_message("user", cleaned_text)
+                        # The local mic is the host: spoken Minecraft
+                        # orders go through the same gate as typed ones.
+                        self.signals.add_message("user", cleaned_text, from_host=True)
                         self.signals.new_message = True
 
                 except Exception as e:

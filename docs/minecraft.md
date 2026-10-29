@@ -137,12 +137,13 @@ succeeded can have a cooldown too: the dirt hut runs once per night.
 Three ways to tell her what to do:
 
 - **Talking to Lumi**, in the web chat or out loud (the chat's mic button or
-  the local mic). Say it the way you'd say it to a friend: "follow me",
-  "Lumi, can you make me a stone axe?", "go to sleep", "in Minecraft, build
-  a house". When the bot is in a world, an order is passed to the game, your
-  message gets a **⛏️ Sent to Minecraft** badge, and Lumi answers in a line
-  ("Fine, following you."). Anything else is ordinary conversation. Typing
-  `!mc <order>` always sends it. See [Talking to her](#talking-to-her).
+  the local mic), addressed to her: "Lumi, follow me", "Lumi, can you make
+  me a stone axe?", "chop some trees, Lumi". While **Minecraft AI** is on,
+  the order goes to the game, your message gets a **⛏️ Sent to Minecraft**
+  badge, and Lumi answers in a line ("Fine, following you."). While it's
+  off, nothing is sent and she tells you to switch her game on. Anything
+  else is ordinary conversation. Typing `!mc <order>` always counts as an
+  order. See [Talking to her](#talking-to-her).
 - **In Minecraft chat**, as the owner, start with a wake word: `Lumi,`, `Lumi:`,
   `!lumi`, or just `Lumi ` followed by the order. She answers `Got it. …` in
   game chat. The order goes straight to the game agent and doesn't become a
@@ -191,17 +192,28 @@ The full table is in
 `modules/game_orders.py` decides, by rules alone (no model call, so no
 delay), whether what you said is an order:
 
-- `!mc <order>` or `!minecraft <order>` always is. With the game off, Lumi
-  tells you it isn't running.
-- "In Minecraft, …", "in game …" and "tell your other half to …" are, when
-  the rest is an order the agent understands.
-- Otherwise the message has to be short (16 words at most) and start with a
-  command verb (follow, come, go, get, make, craft, build, mine, chop, sleep,
-  …) after any "hey Lumi", "can you" or "please", and the agent's own order
-  parser has to understand it. "How do I make a stone axe?" doesn't start
-  with a verb, so it's a question, not an order. Bare "wait" or "stop" only
-  count as "stay here", "stop following" and the like, so "wait, what?" in
-  conversation doesn't freeze her in game.
+- `!mc <order>` or `!minecraft <order>` always is.
+- Otherwise it has to be addressed to her: start with "Lumi" ("Lumi, …",
+  "hey Lumi …") or end with ", Lumi". "Follow me" on its own, or "I told
+  Lumi to collect wood", is conversation.
+- After the wake word (and "in Minecraft", "can you", "please"), it has to
+  be short (16 words at most), start with a command verb, and be something
+  the agent's own order parser understands. The verbs: follow, come, stick
+  with; collect, get, grab, mine, chop, find, hunt, kill, smelt, craft,
+  make; give, hand, bring, drop, throw away; build, construct; stop, stay,
+  wait, go play, do your thing. "Lumi, how do I make a stone axe?" doesn't
+  start with a verb, so it's a question. Stance words count on their own or
+  as a stance ("Lumi, stop", "Lumi, stay here"), so "Lumi, stop it lol" or
+  "Lumi, wait, what?" stays conversation.
+
+Then the gate, `game_manager.is_game_active("minecraft")`: the Games page
+switch is on and the game agent is running (started by Lumi, or by hand and
+writing its telemetry). If it is, the order is sent and her prompt for that
+turn gets `[Game Order Dispatched: "…"]`, so she acknowledges it in a line
+with the fast chat model, without agent mode or tools. If it isn't, nothing
+is sent: the turn gets `[System Note: The user gave a Minecraft order, but
+the game agent is offline.]` and she tells you to switch her game on. In
+agent mode, `dispatch_game_command` refuses the same way.
 
 Only the host can do this: messages from the host machine's web chat, its
 mic and the terminal. A remote web user or someone in Discord voice can't

@@ -701,6 +701,8 @@ FREE_GOALS: Dict[str, Dict[str, Any]] = {
     "retrieve_items": {"desc": "Go back to where I died and pick up my items",
                        "when": lambda inv, st: False,
                        "action": ("retrieve_items", {})},
+    "drop_item":      {"desc": "Drop items on the ground",
+                       "when": lambda inv, st: False},
     "give_item":      {"desc": "Hand an item over to my player",
                        "when": lambda inv, st: False,
                        "action": ("give_item", {})},
@@ -759,6 +761,8 @@ FAIL_COOLDOWN_S = 300
 # game model as an override. Checked in this order, so "forget diamonds,
 # come back to me" is a "come back".
 
+# "drop the dirt", "drop 10 cobblestone", "throw away the rotten flesh"
+DROP_RE = re.compile(r"\b(?:drop|throw (?:away|out)|toss out|get rid of)\b\s+(.*)$")
 # "give me the pickaxe", "bring me 5 diamonds", "hand over your sword"
 GIVE_RE = re.compile(r"\b(?:give|hand|toss|pass|bring)\b(?:\s+(?:me|us|over|it))*\s+(.*)$")
 GIVE_FILLER = re.compile(r"\b(the|a|an|some|your|my|of|please|pls|now|here|back|to me|over)\b")
@@ -814,7 +818,7 @@ ORDER_TASKS = [
     (r"\b(set|make|change)\b.*\b(re)?spawn\b|\b(re)?spawn ?point\b", "set_spawn"),
     (r"\b(sleep|go to bed|bed ?time|get some rest|nap)\b", "sleep_in_bed"),
     (r"\b(go|head|run) home\b|\bto (the|your) house\b", "go_home"),
-    (r"\b(build|make)\b.*\b(house|home|base)\b|\bhouse\b", "build_house"),
+    (r"\b(build|make|construct)\b.*\b(house|home|base)\b|\bhouse\b", "build_house"),
     (r"\btorch", "craft_torches"),
     (r"\b(sort|organi[sz]e|tidy|chest|inventory)\b|\bput (stuff|things|it|everything) away\b",
      "organize_inventory"),
@@ -834,6 +838,13 @@ def _parse_order(text: str) -> Optional[Dict[str, Any]]:
         if re.search(pattern, t):
             return {"kind": mode}
     deliver = bool(DELIVER_RE.search(t))
+    drop = DROP_RE.search(t)
+    if drop:
+        rest = drop.group(1)
+        n = re.search(r"\b(\d{1,4})\b", rest)
+        item = " ".join(GIVE_FILLER.sub(" ", re.sub(r"\b\d{1,4}\b", " ", rest)).split())
+        if item:
+            return {"kind": "drop", "item": item, "count": int(n.group(1)) if n else None}
     give = GIVE_RE.search(t)
     if give:
         rest = give.group(1)
@@ -1414,6 +1425,13 @@ class MinecraftAgent(BaseGameAgent):
         return False
 
     async def _execute_goal(self, goal: str, status: Dict) -> Tuple[bool, str]:
+        if goal == "drop_item":
+            drop = dict((self._order or {}).get("drop") or {})
+            if not drop:
+                return False, "Nothing to drop"
+            self._record("skill", f"Executing: drop_item ({drop})")
+            r = await self._bot_action("drop_item", drop)
+            return bool(r.get("success")), r.get("message", "")
         if goal == "give_item":
             give = dict((self._order or {}).get("give") or {})
             if not give:
@@ -1560,6 +1578,19 @@ class MinecraftAgent(BaseGameAgent):
                 await self._narrate(f"{heard}, but I don't know how to do that in the game.", major=True)
             return
 
+        if order["kind"] == "drop":
+            inv = _inv(status)
+            item = _held_item(inv, order["item"])
+            if not item:
+                await self._bot_action("chat", {"message": f"I don't have any {order['item']}."})
+                self._record("warn", f"can't drop {order['item']}: not in inventory")
+                if talk:
+                    await self._narrate(f"{heard}, but I don't have any {order['item']}.", major=True)
+                return
+            # A number wins; otherwise all of it ("drop the dirt").
+            count = min(order["count"], inv[item]) if order["count"] else inv[item]
+            order = {"kind": "once", "goal": "drop_item", "drop": {"name": item, "count": count}}
+
         if order["kind"] == "give":
             inv = _inv(status)
             item = _held_item(inv, order["item"])
@@ -1621,6 +1652,9 @@ class MinecraftAgent(BaseGameAgent):
             elif kind == "once" and order["goal"] == "give_item":
                 g = order["give"]
                 ack = f"Here, I'll bring over {g['count']} {g['item_name'].replace('_', ' ')}"
+            elif kind == "once" and order["goal"] == "drop_item":
+                g = order["drop"]
+                ack = f"Dropping {g['count']} {g['name'].replace('_', ' ')}"
             elif kind == "house":
                 ack = "I'm going to build a house"
             else:

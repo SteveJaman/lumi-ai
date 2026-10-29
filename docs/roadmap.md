@@ -24,6 +24,12 @@ iteration against real use, not new subsystems.
 ================================================================
   Reverse chronological. What shipped, when, and why.
 
+  2026-10-29
+    - Talked Minecraft orders need her name ("Lumi, collect wood") and
+      are only sent while the Minecraft AI switch is on and the agent
+      runs; otherwise she says her game is off. New: "drop" orders and
+      "construct a house". Spoken orders from the local mic now work
+      (they were never marked as the host's).
   2026-10-28
     - Real barge-in: talking over her (mic, Discord, or hold-to-talk in
       the web chat) stops the audio, the queued sentences, a Fish Audio

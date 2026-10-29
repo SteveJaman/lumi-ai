@@ -1258,6 +1258,7 @@ MINECRAFT_GAMER_NOTE = (
 # was passed to the game (modules/game_orders.py).
 GAME_ORDER_NOTE = (
     "=== MINECRAFT ORDER ===\n"
+    "[Game Order Dispatched: \"{order}\"]\n"
     "{host_name} just told you to \"{order}\" in Minecraft, and your other half "
     "is already on it. Answer the way you'd answer someone who asked you for "
     "something: one short line in your own voice, with a bit of attitude if it "
@@ -1267,9 +1268,12 @@ GAME_ORDER_NOTE = (
 )
 GAME_OFFLINE_NOTE = (
     "=== MINECRAFT ORDER ===\n"
-    "{host_name} asked you to \"{order}\" in Minecraft, but the game isn't "
-    "running right now, so you can't. Tell them in a line; the Games page "
-    "switches Minecraft AI on.\n"
+    "[System Note: The user gave a Minecraft order, but the game agent is offline.]\n"
+    "{host_name} asked you to \"{order}\" in Minecraft, but your game isn't on, "
+    "so nothing was sent. Tell them in a line, in your own voice, that they "
+    "haven't turned your game on and need to flip the Minecraft AI switch on the "
+    "Games page (\"I'd love to, but you haven't turned my game on.\"). Don't "
+    "pretend you're doing it.\n"
     "=== END MINECRAFT ORDER ==="
 )
 
@@ -1736,6 +1740,9 @@ class Prompter:
         games = getattr(self.signals, "game_manager", None)
         if games is None:
             return "The game manager isn't loaded, so there's no game agent to send it to."
+        if not games.is_active("minecraft"):
+            return ("Not sent: your game isn't on (the Minecraft AI switch on the Games page "
+                    "is off, or the game agent isn't running). Tell them to switch it on.")
         loop = asyncio.get_running_loop()
         try:
             await loop.run_in_executor(None, lambda: games.send_directive("minecraft", order, source="lumi"))
@@ -1752,17 +1759,16 @@ class Prompter:
         agent, mark its history entry (`game_order`, shown as a badge in the
         chat) and return this turn's note. None if it isn't one. Blocking
         (two local HTTP calls), so it runs in an executor."""
-        from modules.game_orders import bot_online, extract_order, is_explicit
+        from modules.game_orders import extract_order
         order = extract_order(text)
         if not order:
             return None
         games = getattr(self.signals, "game_manager", None)
-        if games is None or not bot_online():
-            # Only a "!mc ..." gets an answer about it; a plain "follow me"
-            # with no game running is just conversation.
-            if is_explicit(text):
-                return GAME_OFFLINE_NOTE.replace("{host_name}", HOST.name).replace("{order}", order)
-            return None
+        if games is None or not games.is_active("minecraft"):
+            # The Games page switch is off or the agent isn't running:
+            # nothing is sent, and she says so.
+            print(f"{GRAY}[minecraft] order not sent, the game is off: {order}{RESET}")
+            return GAME_OFFLINE_NOTE.replace("{host_name}", HOST.name).replace("{order}", order)
         try:
             games.send_directive("minecraft", order, source="talk")
         except Exception as e:

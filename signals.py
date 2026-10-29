@@ -92,12 +92,14 @@ class Signals:
         except Exception as e:
             print(f"\033[90mHISTORY: Quantization skipped due to connection error: {e}\033[0m")
 
-    def add_message(self, role, content, speaker=None, source=None):
+    def add_message(self, role, content, speaker=None, source=None, from_host=False):
         msg = {"role": role, "content": content}
         if speaker:
             msg["speaker"] = speaker
         if source:
             msg["source"] = source
+        if from_host:
+            msg["from_host"] = True     # may give Minecraft orders (game_orders.py)
         self.history.append(msg)
 
         if len(self.history) > 25:

@@ -103,6 +103,30 @@ def read_autoplay() -> Dict[str, bool]:
         return {}
 
 
+# A hand-started agent (not Lumi's child) counts as running while it keeps
+# writing telemetry; it does every loop (about 4 s).
+TELEMETRY_FRESH_S = 30
+
+
+def is_game_active(game: str = "minecraft", manager: Optional["GameManager"] = None) -> bool:
+    """The game's Games page switch is on and its agent is running (Lumi's
+    child process, or one started by hand that wrote telemetry in the last
+    TELEMETRY_FRESH_S). Talking to Lumi only sends game orders while this
+    is true."""
+    if game not in GAME_REGISTRY or not read_autoplay().get(game, False):
+        return False
+    if manager is not None:
+        child = manager._children.get(f"{game}:agent")
+        if child is not None and child.running:
+            return True
+    if game == "minecraft":
+        try:
+            return time.time() - os.path.getmtime(TELEMETRY_PATH) < TELEMETRY_FRESH_S
+        except OSError:
+            return False
+    return False
+
+
 def read_telemetry() -> Dict[str, Any]:
     """The game agent's latest state (current_thought, health, ...)."""
     return _read_json(TELEMETRY_PATH)
@@ -232,6 +256,9 @@ class GameManager:
         else:
             self._stop_game(game)
         return self.status(game)
+
+    def is_active(self, game: str = "minecraft") -> bool:
+        return is_game_active(game, self)
 
     def list_games(self) -> list:
         """Every registered game, for the Games page's list of switches."""
