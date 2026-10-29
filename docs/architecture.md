@@ -154,10 +154,19 @@ only). `_SpokenStream` in the prompter sends each sentence to TTS as soon as
 it's complete and keeps a live `streaming: true` entry in `signals.history`,
 so the chat bubble grows while she talks. When the reply is done, the live
 entry is replaced by the final one. So a long answer starts speaking as fast
-as a short one (about 1 s once the model is warm), and her length follows
-the moment: a line for banter, paragraphs for a story. A 700-token cap (1400
-on the main model) only stops runaway generation; a sentence it cuts off
-isn't spoken.
+as a short one (about 1 s once the model is warm).
+
+Replies are one or two sentences, like a person talking. The prompt says
+so, and since an 8B model doesn't keep to it, `_SpokenStream` enforces it:
+on a casual turn it stops after `CASUAL_SENTENCES` (2) real sentences
+(tag-only bits like "[sighs]" don't count), and its `feed()` returning
+False closes the Ollama stream so the model stops writing. The cap is 160
+tokens. A turn that asks for more (`_LONG_ASK`: a story, "explain", "how
+does…", "why…", "go on", or a turn with her backstory in the prompt) gets
+no sentence limit and a 700-token cap (1400 on the main model), which only
+stops runaway generation; a sentence it cuts off isn't spoken. The
+heartbeat's unprompted lines are cut to two sentences too
+(`limit_sentences`).
 
 Turns about her past (`_PAST_QUERY`: "backstory", "who are you", "the
 Choir", …) add her backstory and lore notes (`get_backstory_block()`) for

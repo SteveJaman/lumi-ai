@@ -488,6 +488,33 @@ _PAST_QUERY = re.compile(
     r"were you (born|made|created))\b", re.I)
 BACKSTORY_TURNS = 3
 
+# Replies are one or two sentences, the way a person talks, unless the turn
+# asks for more: a story, an explanation, how or why something works, or
+# her past. Casual turns are cut off after CASUAL_SENTENCES.
+_LONG_ASK = re.compile(
+    r"\b(stor(y|ies)|explain\w*|tell me (more|about|everything)|describe|walk me through|"
+    r"in detail|elaborate|go on|keep going|continue|and then|what happened|"
+    r"how (do|does|did|would|can|could|is|are)|why (do|does|did|is|are|would)|"
+    r"teach me|summar\w*|step by step)\b", re.I)
+CASUAL_SENTENCES = 2
+CASUAL_REPLY_CAP = 160
+
+
+def limit_sentences(text, n):
+    """The first n sentences of text (tag-only bits like "[sighs]" don't
+    count), for replies that aren't streamed."""
+    out, count, start = [], 0, 0
+    text = text or ""
+    for m in SENTENCE_SPLIT_PATTERN.finditer(text):
+        sentence, start = text[start:m.start()], m.end()
+        out.append(sentence)
+        if re.search(r"\w{2,}", _BRACKET_ANY.sub("", sentence)):
+            count += 1
+            if count >= n:
+                return " ".join(s.strip() for s in out if s.strip())
+    out.append(text[start:])
+    return " ".join(s.strip() for s in out if s.strip())
+
 
 class _SpokenStream:
     """Speaks a reply sentence by sentence while the model is still writing
@@ -495,24 +522,54 @@ class _SpokenStream:
     as a short one. feed() runs on the executor thread doing the model
     call; tts_queue is a thread-safe queue."""
 
-    def __init__(self, prompter):
+    def __init__(self, prompter, max_sentences=None):
         self.prompter = prompter
         self.text = ""     # everything the model has written
         self.done = 0      # how much of it has been spoken
         self.entry = None  # the live history entry the chat shows
+        # Casual turns stop after this many sentences (tag-only bits like
+        # "[sighs]" don't count). feed() then returns False, which ends
+        # the model call.
+        self.max_sentences = max_sentences
+        self.sentences = 0
+        self.stopped = False
+
+    @property
+    def spoken(self):
+        return self.text[:self.done]
 
     def feed(self, piece):
+        if self.stopped:
+            return False
         self.text += piece
         pending = self.text[self.done:]
         parts = SENTENCE_SPLIT_PATTERN.split(pending)
         if len(parts) < 2:
-            return
+            return True
         complete = pending[:len(pending) - len(parts[-1])]
+        if self.max_sentences:
+            complete = self._within_limit(complete)
         self.done += len(complete)
         self._say(complete)
+        return not self.stopped
+
+    def _within_limit(self, chunk):
+        """The part of chunk up to the sentence that reaches the limit."""
+        start = 0
+        for m in SENTENCE_SPLIT_PATTERN.finditer(chunk):
+            sentence, start = chunk[start:m.start()], m.end()
+            if re.search(r"\w{2,}", _BRACKET_ANY.sub("", sentence)):
+                self.sentences += 1
+                if self.sentences >= self.max_sentences:
+                    self.stopped = True
+                    return chunk[:start]
+        return chunk
 
     def finish(self, truncated):
-        """Speak the last sentence, unless the token cap cut it off."""
+        """Speak the last sentence, unless the token cap or the sentence
+        limit cut it off."""
+        if self.stopped:
+            return
         rest = self.text[self.done:]
         self.done = len(self.text)
         if rest.strip() and not truncated:
@@ -1563,12 +1620,17 @@ class Prompter:
                 expanded["content"] = _clean_reply(expanded.get("content"))
             messages.append(expanded)
 
-        # Length follows the moment (see the format rules): a quip for
-        # small talk, a story when asked for one. Replies are streamed, so
-        # a long one starts speaking as soon as its first sentence is
-        # written. The cap only stops runaway generation; a sentence it
+        # One or two sentences unless the turn asks for more (_LONG_ASK, or
+        # her past). The model doesn't keep to that on its own, so a casual
+        # reply stops after CASUAL_SENTENCES. Replies are streamed, so a
+        # long one starts speaking as soon as its first sentence is
+        # written; its cap only stops runaway generation, and a sentence it
         # cuts off is dropped.
-        reply_cap = 700 if use_fast else 1400
+        long_ok = bool(_LONG_ASK.search(latest_user_text or "")) or getattr(self, "_backstory_now", False)
+        if long_ok:
+            reply_cap = 700 if use_fast else 1400
+        else:
+            reply_cap = CASUAL_REPLY_CAP
         options = {
             "temperature": 0.8,
             "top_p": 0.9,
@@ -1584,7 +1646,7 @@ class Prompter:
         loop = asyncio.get_running_loop()
 
         print(f"{GRAY}Thinking (conversational, {label})...{RESET}")
-        stream = _SpokenStream(self)
+        stream = _SpokenStream(self, max_sentences=None if long_ok else CASUAL_SENTENCES)
         try:
             resp: LLMResponse = await loop.run_in_executor(
                 None,
@@ -1618,6 +1680,9 @@ class Prompter:
                      or (raw.get("eval_count") or 0) >= reply_cap)
         stream.finish(truncated)
         self._live_stream = stream
+        if stream.stopped:
+            # The reply is what she said, up to the sentence limit.
+            return _finish_reply(stream.spoken) or "..."
         return _finish_reply(resp.content, truncated) or "..."
 
     def _forward_game_order(self, text, entry=None):
@@ -1826,10 +1891,10 @@ class Prompter:
             "Never break the reply into visual items.\n"
             "If you catch yourself starting a line with a dash or a number, STOP and "
             "rewrite that section as one continuous sentence.\n"
-            "Match the length to the moment, the way a person talking would: a quick "
-            "line or two for small talk and banter, and as long as it takes when you're "
-            "asked for a story, an explanation, or about yourself. Long answers are "
-            "spoken paragraphs, not lists.\n\n"
+            "Talk the way a person would: one or two short sentences for small talk, "
+            "banter and quick answers, and as long as it takes only when you're asked "
+            "for a story, an explanation, or about yourself. Long answers are spoken "
+            "paragraphs, not lists.\n\n"
             "BAD:\n"
             "  For example:\n"
             "  - Debugging errors\n"
@@ -1845,7 +1910,12 @@ class Prompter:
         else:
             injections.append(
                 "=== OUTPUT FORMAT ===\nPlain spoken words only: no lists, markdown, "
-                "code, emoji or *actions*.\n=== END OUTPUT FORMAT ===")
+                "code, emoji or *actions*.\n"
+                "Talk like a person in a casual conversation: one or two short "
+                "sentences, one thought, then stop. No speeches, no setting the scene, "
+                "no second paragraph. Only go longer when they ask for a story, an "
+                "explanation, how or why something works, or about your past.\n"
+                "=== END OUTPUT FORMAT ===")
 
         profanity_rule = (
             "=== VERBAL FREEDOM & PROFANITY ===\n"
@@ -1955,11 +2025,13 @@ class Prompter:
 
         if _PAST_QUERY.search(user_query or ""):
             self._backstory_turns = BACKSTORY_TURNS
+        self._backstory_now = False
         if getattr(self, "_backstory_turns", 0) > 0:
             self._backstory_turns -= 1
             block = get_backstory_block()
             if block:
                 injections.append(block)
+                self._backstory_now = True
 
         if self._turns_since_start < SESSION_CONTINUITY_TURNS:
             continuity = self.session_state.format_injection()

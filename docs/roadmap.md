@@ -25,6 +25,9 @@ iteration against real use, not new subsystems.
   Reverse chronological. What shipped, when, and why.
 
   2026-10-28
+    - Replies are one or two sentences again, like casual talk: a
+      casual turn stops after two sentences. Stories, explanations,
+      "how" and "why" questions and her backstory can still run long.
     - Talk to Lumi to steer Minecraft: say or type "follow me", "make
       me a stone axe", "go to sleep" in her chat or into the mic, and
       it goes to the game as an order (a "Sent to Minecraft" badge on

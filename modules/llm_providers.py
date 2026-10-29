@@ -717,7 +717,9 @@ class OllamaClient(LLMClient):
         else:
             # Streaming: hand each piece of the reply to on_text as it
             # arrives, then build the same response a non-streamed call
-            # returns (the final chunk carries the stats).
+            # returns (the final chunk carries the stats). on_text
+            # returning False stops the reply there: closing the
+            # connection makes Ollama stop generating.
             parts, calls, data = [], [], {}
             with requests.post(f"{self.base_url}/api/chat", json=payload,
                                timeout=self.timeout, stream=True) as r:
@@ -730,7 +732,9 @@ class OllamaClient(LLMClient):
                     piece = msg.get("content") or ""
                     if piece:
                         parts.append(piece)
-                        on_text(piece)
+                        if on_text(piece) is False:
+                            data = {"done_reason": "stopped"}
+                            break
                     calls.extend(msg.get("tool_calls") or [])
                     if chunk.get("done"):
                         data = dict(chunk)

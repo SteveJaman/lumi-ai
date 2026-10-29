@@ -89,8 +89,8 @@ EMOTION TAGS:
 
 RESPONSE FORMAT:
 - If you decide to speak: respond with your message only, starting with an emotion tag.
-  Usually a line or two in your normal voice; a few sentences if you actually have a
-  thought or a story to tell. Anchor to something specific.
+  One or two short sentences in your normal voice, like a person talking. Anchor to
+  something specific.
 - If you decide to stay silent: respond with exactly the word SILENCE
 
 Your response:"""
@@ -338,7 +338,7 @@ class Heartbeat(Module):
                  {"role": "user", "content": prompt}],
                 think=False,
                 keep_alive=FAST_MODEL_KEEP_ALIVE if fast else None,
-                options={"temperature": 0.7, "top_p": 0.9,
+                options={"temperature": 0.7, "top_p": 0.9, "num_predict": 120,
                          **({"num_ctx": FAST_MODEL_NUM_CTX} if fast else {})},
             )
             return (resp.content or "").strip()
@@ -349,8 +349,8 @@ class Heartbeat(Module):
 
     def _emit_utterance(self, text):
         """Push the message into the normal pipeline: history + TTS."""
-        from modules.prompter import _clean_reply
-        text = _clean_reply(text) or text
+        from modules.prompter import CASUAL_SENTENCES, _clean_reply, limit_sentences
+        text = limit_sentences(_clean_reply(text) or text, CASUAL_SENTENCES)
         # Notify the self-model that she spoke unprompted.
         if hasattr(self.signals, "self_model"):
             try:
