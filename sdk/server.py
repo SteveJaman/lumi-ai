@@ -516,6 +516,18 @@ class SDKServer(Module):
     def _handle_context(self, client: SDKClient, data: Dict[str, Any]):
         payload = data.get("data") if isinstance(data.get("data"), dict) else data
         text = str(payload.get("message") or data.get("text") or "")
+        # Optional extras on a context message, from approved clients only:
+        #   event_kind  a game moment ("death", "collect:diamond") that moves
+        #               her emotional state (EmotionalState.note_game_event)
+        #   remember    store the text as a long-term memory (a milestone)
+        #   event_only  nothing to show or react to: just the extras above
+        if client.approved:
+            if payload.get("event_kind"):
+                self._feel(client, str(payload["event_kind"])[:48])
+            if payload.get("remember") and text.strip():
+                self._remember(client, text)
+        if payload.get("event_only") or payload.get("remember"):
+            return
         # silent=false is a one-shot event for Lumi to react to. It
         # starts a turn and leaves the client's standing context alone.
         if payload.get("silent", True) is False:
@@ -525,6 +537,37 @@ class SDKServer(Module):
         priority = payload.get("priority")
         if isinstance(priority, int):
             client.context_priority = priority
+
+    def _feel(self, client: SDKClient, kind: str):
+        state = getattr(self.signals, "emotional_state", None)
+        if state is None or not hasattr(state, "note_game_event"):
+            return
+        try:
+            changed = state.note_game_event(kind)
+        except Exception:
+            return
+        if changed:
+            hub_emit(self.signals, "emotional",
+                     f"{client.game_name} {kind}: " + ", ".join(f"{k} {v:+.2f}" for k, v in changed.items()))
+
+    def _remember(self, client: SDKClient, text: str):
+        """A game milestone as a long-term memory, so she remembers it in
+        later sessions. Once per text per session."""
+        text = " ".join(text.split())[:300]
+        seen = self.__dict__.setdefault("_remembered", set())
+        if text in seen:
+            return
+        memory = getattr(self.signals, "memory", None)
+        if memory is None:
+            return
+        try:
+            memory.API.create_memory(f"In {client.game_name.replace('Agent', '').replace('Bot', '')}: {text}",
+                                     importance=0.7, memory_type="game")
+        except Exception as e:
+            hub_emit(self.signals, "sdk", f"couldn't store a game memory: {e}", level="warn")
+            return
+        seen.add(text)
+        hub_emit(self.signals, "memory", f"game memory from {client.game_name}: {text[:80]}")
 
     def _trigger_reaction(self, client: SDKClient, text: str):
         text = text.strip()[:MAX_REACTION_CHARS]

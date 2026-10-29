@@ -309,6 +309,7 @@ function createBot() {
     console.log("[mc] bot died");
     pushBotContext();
     pushEvent("death", `I just died!${deathCause()} I dropped everything I was carrying.`, true);
+    rememberMoment(`I died at ${posText()}.${deathCause()}`);
   });
 
   bot.on("respawn", () => {
@@ -757,6 +758,16 @@ function sendJson(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
+// A milestone Lumi keeps as a long-term memory, across sessions.
+function rememberMoment(text) {
+  sendJson({ command: "context", game: GAME_NAME, data: { message: text, silent: true, remember: true } });
+}
+
+function posText() {
+  const p = bot && bot.entity && bot.entity.position;
+  return p ? `${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)}` : "an unknown spot";
+}
+
 function pushBotContext(extra = null) {
   let text = buildStatusText();
   if (extra) text += "\n" + extra;
@@ -777,6 +788,10 @@ const _recentEvents = {};
 // events are sent unless EVENT_REACTIONS=all; the rest are just logged.
 function pushEvent(kind, text, major = false) {
   _logEv("event", text);
+  // Every moment moves her mood, even the ones she doesn't speak about.
+  // Lumi clamps and rate-limits it (EmotionalState.note_game_event).
+  sendJson({ command: "context", game: GAME_NAME,
+             data: { message: "", silent: true, event_kind: kind, event_only: true } });
   if (EVENT_REACTIONS === "off" || (EVENT_REACTIONS !== "all" && !major)) return;
   const now = Date.now();
   const cooldown = EVENT_COOLDOWN_MS[kind.split(":")[0]] ?? 0;

@@ -1744,6 +1744,7 @@ function renderGames(main) {
         </div>
       </div>
       <div class="page-scroll">
+        <div class="card game-list" id="game-list" hidden></div>
         ${gameCardHtml()}
       </div>
     </div>
@@ -1796,8 +1797,11 @@ function gameCardHtml() {
       The port changes each time you open a world to LAN. Open worlds on this network show up here.
     </div>
     <div class="game-live">
-      <div class="game-viewer" id="game-viewer">
-        <div class="empty">Live view appears here once the bot is in a world.</div>
+      <div class="game-viewer-wrap">
+        <div class="game-viewer" id="game-viewer">
+          <div class="empty">Live view appears here once the bot is in a world.</div>
+        </div>
+        <div class="game-mood" id="game-mood" hidden aria-label="Lumi's mood"></div>
       </div>
       <section class="mc-hud" id="mc-hud" aria-label="Lumi's inventory">
         <div class="mc-conn" id="mc-conn"><span class="dot"></span><span id="mc-conn-text">Offline</span></div>
@@ -1865,6 +1869,99 @@ async function refreshGameCard() {
   } catch (e) {
     $('#game-sub').textContent = `Unavailable: ${e.message}`;
   }
+  refreshGameList();
+}
+
+/* --------------------------------------------------------------
+   Other games (modules/game_manager.py's GAME_REGISTRY): one switch
+   each. Minecraft has the full card below, so the list only shows
+   when there's another game registered.
+   -------------------------------------------------------------- */
+let _gameListPrint = null;
+
+async function refreshGameList() {
+  const box = $('#game-list');
+  if (!box) return;
+  let games;
+  try { games = (await api('/api/games')).games || []; } catch { return; }
+  const others = games.filter(g => !g.detailed);
+  const print = fingerprint(others);
+  if (print === _gameListPrint) return;
+  _gameListPrint = print;
+  box.hidden = others.length === 0;
+  box.innerHTML = '<div class="card-header">Other games</div>';
+  for (const g of others) {
+    const row = document.createElement('div');
+    row.className = 'game-list-row';
+    const name = document.createElement('span');
+    name.textContent = g.label;
+    const state = document.createElement('span');
+    state.className = 'game-sub';
+    state.textContent = g.running ? 'Running' : g.enabled ? 'Starting…' : 'Off';
+    const sw = document.createElement('label');
+    sw.className = 'switch';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = !!g.enabled;
+    input.setAttribute('aria-label', g.label);
+    input.addEventListener('change', async () => {
+      input.disabled = true;
+      try {
+        await api('/api/game/toggle', { method: 'POST', csrf: true, body: { game: g.game, enabled: input.checked } });
+      } catch (e) {
+        input.checked = !input.checked;
+        state.textContent = `Couldn't switch: ${e.message}`;
+      } finally {
+        input.disabled = false;
+        _gameListPrint = null;
+      }
+    });
+    const knob = document.createElement('span');
+    knob.className = 'switch-slider';
+    sw.append(input, knob);
+    row.append(name, state, sw);
+    box.appendChild(row);
+  }
+}
+
+/* --------------------------------------------------------------
+   Lumi's mood over the live view (modules/emotional_state.py), and a
+   red flash on the card when her Minecraft body takes damage.
+   -------------------------------------------------------------- */
+const MOOD_BARS = [
+  ['valence', 'Mood', v => (v + 1) / 2],
+  ['arousal', 'Energy', v => v],
+  ['frustration', 'Frustration', v => v],
+  ['curiosity', 'Curiosity', v => v],
+  ['boredom', 'Boredom', v => v],
+];
+let _lastGameHealth = null;
+
+function renderGameMood(mood) {
+  const box = $('#game-mood');
+  if (!box) return;
+  box.hidden = !mood;
+  if (!mood) return;
+  const rows = MOOD_BARS.map(([key, label, scale]) => {
+    const pct = Math.round(Math.max(0, Math.min(1, scale(mood[key] ?? 0))) * 100);
+    return `<div class="game-mood-row"><span>${label}</span>` +
+           `<span class="game-mood-bar"><span class="game-mood-fill game-mood-${key}" style="width:${pct}%"></span></span></div>`;
+  }).join('');
+  const frame = mood.frame ? `<div class="game-mood-frame">${escapeHtml(String(mood.frame))}</div>` : '';
+  box.innerHTML = frame + rows;
+}
+
+function flashIfHurt(health) {
+  if (health == null) { _lastGameHealth = null; return; }
+  if (_lastGameHealth != null && health < _lastGameHealth - 0.01) {
+    const card = $('#game-card');
+    if (card) {
+      card.classList.remove('game-hurt');
+      void card.offsetWidth;            // restart the animation
+      card.classList.add('game-hurt');
+    }
+  }
+  _lastGameHealth = health;
 }
 
 async function sendGameDirective() {
@@ -1937,6 +2034,8 @@ function renderGameCard(s) {
   if (s.food != null) meta.push(`hunger ${s.food}/20`);
   if (s.position) meta.push(`at ${Math.round(s.position.x)}, ${Math.round(s.position.y)}, ${Math.round(s.position.z)}`);
   $('#game-meta').textContent = meta.join(' · ');
+  renderGameMood(s.mood);
+  flashIfHurt(s.hud && s.hud.health != null ? s.hud.health : s.health);
   renderHud(s.hud);
   renderGameServer(s.server);
   $('#game-order').textContent = !agent.running ? ''

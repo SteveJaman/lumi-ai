@@ -233,6 +233,9 @@ class Memory(Module):
         self.API = self.API(self)
         self.prompt_injection.text = ""
         self.prompt_injection.priority = 60
+        # For code without the module map, e.g. the SDK server storing game
+        # milestones.
+        signals.memory = self
 
         self.processed_count = 0
 
@@ -672,7 +675,7 @@ class Memory(Module):
         # -----------------------------------------------------------
         # Mutations
         # -----------------------------------------------------------
-        def create_memory(self, data, importance=0.9, valence=None):
+        def create_memory(self, data, importance=0.9, valence=None, memory_type="manual"):
             now_iso = datetime.datetime.now().isoformat(timespec="seconds")
             new_id = str(uuid.uuid4())
             try:
@@ -686,7 +689,7 @@ class Memory(Module):
                 ids=[new_id],
                 documents=[data],
                 metadatas=[{
-                    "type": "manual",
+                    "type": memory_type,
                     "timestamp": now_iso,
                     "importance": imp,
                     "valence": val,

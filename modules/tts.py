@@ -10,6 +10,7 @@ import array  # fallback RMS computation when numpy is absent
 from dotenv import load_dotenv
 
 from modules.subtitles import SubtitleWriter
+from modules.speech_filter import strip_slurs
 
 # Load environment variables from .env file
 load_dotenv()
@@ -24,6 +25,11 @@ except ImportError:
     OUTPUT_DEVICE_INDEX = None
     AUDIO_OUTPUT_MODE = "both"
     FISH_REFERENCE_IDS = {}
+
+try:
+    from constants import VOICE_ENGINE, LOCAL_VOICE
+except ImportError:
+    VOICE_ENGINE, LOCAL_VOICE = "fish", "af_heart"
 
 # Attempt to load PyAudio for hardware output device routing support
 try:
@@ -152,10 +158,15 @@ class TTS:
         return ref or FISH_REFERENCE_ID
 
     def fetch_audio(self, message):
-        """Fetches WAV bytes from Fish Audio."""
+        """WAV bytes for one sentence: from the local engine when
+        VOICE_ENGINE is "local_fast" and one is installed, else Fish Audio."""
         clean_message = re.sub(r'\*.*?\*', '', message).strip()
         if not clean_message:
             return None
+        if VOICE_ENGINE == "local_fast":
+            audio = self._fetch_local_fast(clean_message)
+            if audio:
+                return audio
 
         reference_id = self._reference_for(clean_message)
 
@@ -182,6 +193,39 @@ class TTS:
             return response.content
         except Exception as e:
             print(f"\033[91mTTS API Download Error: {e}\033[0m")
+            return None
+
+    def _fetch_local_fast(self, text):
+        """WAV bytes from Kokoro, a local TTS model, or None. Not installed
+        by default: `pip install kokoro soundfile` (the model is ~330 MB,
+        fetched on first use). Without it, Fish Audio speaks and this says
+        so once."""
+        if getattr(self, "_local_engine", None) is None:
+            try:
+                from kokoro import KPipeline
+                self._local_engine = KPipeline(lang_code="a")
+                print("\033[90mTTS: local_fast voice engine (Kokoro) ready.\033[0m")
+            except Exception as e:
+                self._local_engine = False
+                print(f"\033[93mTTS: VOICE_ENGINE is local_fast but no local engine is "
+                      f"installed ({e.__class__.__name__}); using Fish Audio.\033[0m")
+        if not self._local_engine:
+            return None
+        try:
+            import numpy as _np
+            chunks = [audio for _, _, audio in self._local_engine(text, voice=LOCAL_VOICE)]
+            if not chunks:
+                return None
+            pcm = (_np.clip(_np.concatenate([_np.asarray(c) for c in chunks]), -1, 1) * 32767).astype("<i2")
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(24000)
+                w.writeframes(pcm.tobytes())
+            return buf.getvalue()
+        except Exception as e:
+            print(f"\033[91mTTS local_fast error: {e}; using Fish Audio\033[0m")
             return None
 
     # ---------------------------------------------------------------
@@ -463,6 +507,9 @@ class TTS:
             try:
                 if hasattr(self.signals, 'tts_queue'):
                     message = self.signals.tts_queue.get(timeout=0.05)
+                    # Last gate for everything she says: replies, the
+                    # heartbeat, game reactions (modules/speech_filter.py).
+                    message = strip_slurs(message) if message else message
                     if message:
                         audio_bytes = self.fetch_audio(message)
                         if audio_bytes:

@@ -93,8 +93,20 @@ class LumiClient:
         self._actions.pop(name, None)
         self._handlers.pop(name, None)
 
-    async def send_context(self, text: str, silent: bool = True) -> None:
-        await self._send(context_message(self.game, text, silent=silent))
+    async def send_context(self, text: str, silent: bool = True,
+                           event_kind: Optional[str] = None) -> None:
+        """event_kind ("death", "collect:diamond", ...) also moves Lumi's
+        emotional state."""
+        await self._send(context_message(self.game, text, silent=silent, event_kind=event_kind))
+
+    async def feel(self, event_kind: str) -> None:
+        """Just the emotional nudge of a game moment: no context, no turn."""
+        await self._send(context_message(self.game, "", event_kind=event_kind, event_only=True))
+
+    async def remember(self, text: str) -> None:
+        """Store a milestone ("Built a house at 120, 64, -300") as one of
+        Lumi's long-term memories."""
+        await self._send(context_message(self.game, text, remember=True))
 
     async def clear_context(self) -> None:
         await self._send(context_clear_message(self.game))

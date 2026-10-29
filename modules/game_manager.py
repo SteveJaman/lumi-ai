@@ -21,6 +21,13 @@ boot when it is true.
 If bot.js is already running (started by hand), it is reused and never
 stopped by this module. On Windows the children are put in a job object
 that kills them when Lumi's process exits, even on a crash.
+
+Other games: GAME_REGISTRY lists every game the Games page can run, each as
+a list of processes (started in order, stopped in reverse). A game agent is
+a plugin/base_game_agent.py BaseGameAgent; it reads its own switch from
+autoplay.json under its game id. Only Minecraft has a bot.js, a HUD,
+orders and a server to switch. LUMI_DEV_GAMES=mock adds
+plugin/game_agent_mock.py, an agent that plays nothing.
 """
 
 from __future__ import annotations
@@ -50,7 +57,22 @@ BOT_DIR        = os.path.join(WORKSPACE_ROOT, "sdk", "examples", "minecraft")
 AGENT_SCRIPT   = os.path.join(WORKSPACE_ROOT, "plugin", "minecraft_bot.py")
 BOT_API        = os.environ.get("BOT_API", "http://127.0.0.1:5057")
 
-GAMES = ("minecraft",)
+MOCK_SCRIPT    = os.path.join(WORKSPACE_ROOT, "plugin", "game_agent_mock.py")
+
+# id → label, processes ("bot" is Minecraft's bot.js; "agent" runs the
+# script with Lumi's Python), the agent script.
+GAME_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "minecraft": {"label": "Minecraft", "processes": ["bot", "agent"], "agent": AGENT_SCRIPT},
+}
+if "mock" in os.environ.get("LUMI_DEV_GAMES", "").lower().replace(" ", "").split(","):
+    GAME_REGISTRY["mock"] = {"label": "Mock game (plays nothing)", "processes": ["agent"],
+                             "agent": MOCK_SCRIPT}
+GAMES = tuple(GAME_REGISTRY)   # kept for code that imports it
+
+
+def register_game(game: str, label: str, agent_script: str) -> None:
+    """Add a game whose only process is a BaseGameAgent script."""
+    GAME_REGISTRY[game] = {"label": label, "processes": ["agent"], "agent": agent_script}
 TAIL_LINES = 40
 MAX_DIRECTIVE = 200
 
@@ -165,6 +187,7 @@ class _KillOnCloseJob:
 class _Child:
     def __init__(self, name: str, proc: subprocess.Popen, log_path: str):
         self.name = name
+        self.game = "minecraft"
         self.proc = proc
         self.log_path = log_path
         self.started_at = time.time()
@@ -193,7 +216,7 @@ class GameManager:
     def __init__(self, signals):
         self.signals = signals
         self._lock = threading.Lock()
-        self._children: Dict[str, _Child] = {}   # "agent", "bot"
+        self._children: Dict[str, _Child] = {}   # "<game>:<process>", e.g. "minecraft:agent"
         self._job = _KillOnCloseJob()
         self._viewer_cache = (0.0, None)
         signals.game_manager = self
@@ -201,21 +224,38 @@ class GameManager:
     # ─── Public API (called from the web server's executor) ──────
 
     def set_enabled(self, game: str, enabled: bool) -> Dict[str, Any]:
-        if game not in GAMES:
+        if game not in GAME_REGISTRY:
             raise ValueError(f"unknown game: {game}")
         write_autoplay(game, enabled)
         if enabled:
-            self._start_minecraft()
+            self._start_game(game)
         else:
-            self._stop_minecraft()
+            self._stop_game(game)
         return self.status(game)
 
+    def list_games(self) -> list:
+        """Every registered game, for the Games page's list of switches."""
+        autoplay = read_autoplay()
+        out = []
+        for game, spec in GAME_REGISTRY.items():
+            agent = self._children.get(f"{game}:agent")
+            out.append({"game": game, "label": spec["label"],
+                        "enabled": autoplay.get(game, False),
+                        "running": bool(agent and agent.running),
+                        "detailed": game == "minecraft"})
+        return out
+
     def status(self, game: str = "minecraft") -> Dict[str, Any]:
-        if game not in GAMES:
+        if game not in GAME_REGISTRY:
             raise ValueError(f"unknown game: {game}")
+        if game != "minecraft":
+            agent = self._children.get(f"{game}:agent")
+            return {"game": game, "label": GAME_REGISTRY[game]["label"],
+                    "enabled": read_autoplay().get(game, False),
+                    "agent": agent.info() if agent else None}
         with self._lock:
-            agent = self._children.get("agent")
-            bot = self._children.get("bot")
+            agent = self._children.get("minecraft:agent")
+            bot = self._children.get("minecraft:bot")
             agent_info = agent.info() if agent else None
             bot_info = bot.info() if bot else None
         bot_status = _get_json(f"{BOT_API}/status")
@@ -249,8 +289,9 @@ class GameManager:
         "talk" (said to Lumi in chat or out loud) or "lumi" (her
         dispatch_game_command tool). Raises ValueError for a
         bad order and RuntimeError when bot.js isn't running."""
-        if game not in GAMES:
-            raise ValueError(f"unknown game: {game}")
+        if game != "minecraft":
+            raise ValueError(f"unknown game: {game}" if game not in GAME_REGISTRY
+                             else f"{game} doesn't take orders")
         clean = " ".join(str(text or "").split())[:MAX_DIRECTIVE]
         clean = "".join(ch for ch in clean if ch.isprintable())
         if not clean:
@@ -266,7 +307,7 @@ class GameManager:
             raise ValueError(json.loads(e.read() or b"{}").get("message") or f"bot.js said {e.code}")
         except Exception:
             raise RuntimeError("Minecraft AI isn't running (bot.js isn't answering on :5057).")
-        agent = self._children.get("agent")
+        agent = self._children.get("minecraft:agent")
         if not (agent and agent.running):
             result["message"] = ((result.get("message") or "Order received") +
                                  " — the game agent isn't running, so it will wait "
@@ -279,7 +320,7 @@ class GameManager:
         """Run one of the few bot.js actions the Games page may send
         (dropping items from the HUD). Raises ValueError for anything
         else, RuntimeError when bot.js isn't running."""
-        if game not in GAMES:
+        if game != "minecraft":
             raise ValueError(f"unknown game: {game}")
         if action not in HUD_ACTIONS:
             raise ValueError(f"'{action}' can't be sent from the Games page")
@@ -307,7 +348,7 @@ class GameManager:
         current connection if it doesn't. Without bot.js, the choice is
         saved for the next start. Raises ValueError for a bad address or
         an unreachable world."""
-        if game not in GAMES:
+        if game != "minecraft":
             raise ValueError(f"unknown game: {game}")
         host = str(host or "").strip()
         try:
@@ -378,32 +419,39 @@ class GameManager:
 
     def resume_if_enabled(self) -> None:
         """Called once at boot: restart games left switched on."""
-        for game in GAMES:
-            if read_autoplay().get(game):
+        autoplay = read_autoplay()
+        for game in GAME_REGISTRY:
+            if autoplay.get(game):
                 hub_emit(self.signals, game, "autoplay is on — starting game agent")
-                threading.Thread(target=self._start_minecraft, daemon=True).start()
+                threading.Thread(target=self._start_game, args=(game,), daemon=True).start()
 
     def shutdown(self) -> None:
         """Stop every child without touching the autoplay flag, so the
         games come back on the next boot."""
-        self._stop_minecraft()
+        for game in GAME_REGISTRY:
+            self._stop_game(game)
 
-    # ─── Minecraft ───────────────────────────────────────────────
+    # ─── Starting and stopping a game ────────────────────────────
 
-    def _start_minecraft(self) -> None:
+    def _start_game(self, game: str) -> None:
+        spec = GAME_REGISTRY[game]
         with self._lock:
-            bot = self._children.get("bot")
-            agent = self._children.get("agent")
-            if not (bot and bot.running) and not self._bot_api_up():
-                self._spawn_bot()
-            if not (agent and agent.running):
-                self._spawn("agent", [sys.executable, "-u", AGENT_SCRIPT], cwd=WORKSPACE_ROOT)
+            for proc in spec["processes"]:
+                child = self._children.get(f"{game}:{proc}")
+                if child and child.running:
+                    continue
+                if proc == "bot":
+                    if not self._bot_api_up():
+                        self._spawn_bot()
+                else:
+                    self._spawn(game, proc, [sys.executable, "-u", spec["agent"]], cwd=WORKSPACE_ROOT)
 
-    def _stop_minecraft(self) -> None:
+    def _stop_game(self, game: str) -> None:
         with self._lock:
-            # Agent first, so it doesn't log a burst of "bot unreachable".
-            for name in ("agent", "bot"):
-                child = self._children.get(name)
+            # Reverse order: Minecraft's agent first, so it doesn't log a
+            # burst of "bot unreachable".
+            for proc in reversed(GAME_REGISTRY[game]["processes"]):
+                child = self._children.get(f"{game}:{proc}")
                 if child and child.running:
                     child.stopping = True
                     child.proc.terminate()
@@ -411,7 +459,14 @@ class GameManager:
                         child.proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         child.proc.kill()
-                    hub_emit(self.signals, "minecraft", f"{name} stopped")
+                    hub_emit(self.signals, game, f"{proc} stopped")
+
+    # Kept for callers of the old names.
+    def _start_minecraft(self) -> None:
+        self._start_game("minecraft")
+
+    def _stop_minecraft(self) -> None:
+        self._stop_game("minecraft")
 
     def _spawn_bot(self) -> None:
         node = shutil.which("node")
@@ -427,11 +482,12 @@ class GameManager:
         # An explicit heap ceiling: Node's default depends on the machine's
         # RAM and can be as low as 2 GB. bot.js also pauses its live viewer
         # well before this (VIEWER_HEAP_LIMIT_MB).
-        self._spawn("bot", [node, "--max-old-space-size=4096", "bot.js"], cwd=BOT_DIR)
+        self._spawn("minecraft", "bot", [node, "--max-old-space-size=4096", "bot.js"], cwd=BOT_DIR)
 
-    def _spawn(self, name: str, cmd, cwd: str) -> None:
-        os.makedirs(LOG_DIR, exist_ok=True)
-        log_path = os.path.join(LOG_DIR, f"{name}.log")
+    def _spawn(self, game: str, name: str, cmd, cwd: str) -> None:
+        log_dir = LOG_DIR if game == "minecraft" else os.path.join(DATA_ROOT, "logs", game)
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, f"{name}.log")
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
@@ -441,12 +497,13 @@ class GameManager:
                 text=True, encoding="utf-8", errors="replace", bufsize=1,
             )
         except Exception as e:
-            hub_emit(self.signals, "minecraft", f"failed to start {name}: {e}", level="error")
+            hub_emit(self.signals, game, f"failed to start {name}: {e}", level="error")
             return
         self._job.add(proc)
         child = _Child(name, proc, log_path)
-        self._children[name] = child
-        hub_emit(self.signals, "minecraft", f"{name} started (pid {proc.pid})")
+        child.game = game
+        self._children[f"{game}:{name}"] = child
+        hub_emit(self.signals, game, f"{name} started (pid {proc.pid})")
         threading.Thread(target=self._pump, args=(child,), daemon=True,
                          name=f"game-{name}-output").start()
 
@@ -464,13 +521,13 @@ class GameManager:
                 log.flush()
                 if not _QUIET.search(line):
                     level = "error" if _ERRORISH.search(line) else "info"
-                    hub_emit(self.signals, "minecraft", f"[{child.name}] {line}", level=level)
+                    hub_emit(self.signals, child.game, f"[{child.name}] {line}", level=level)
         child.exit_code = child.proc.wait()
         if child.stopping:
             return
         last = " | ".join(list(child.tail)[-3:]) or "no output"
         level = "error" if child.exit_code else "warn"
-        hub_emit(self.signals, "minecraft",
+        hub_emit(self.signals, child.game,
                  f"{child.name} exited unexpectedly (code {child.exit_code}). Last output: {last}",
                  level=level)
 

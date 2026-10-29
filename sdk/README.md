@@ -213,6 +213,16 @@ An action whose capabilities exceed the client's ceiling is refused with an `err
 | `true` (default) | Standing context. Replaces this client's previous context and is shown to Lumi, as data, on every turn until replaced or cleared. |
 | `false` | One-shot event. Starts a turn so Lumi reacts to it out loud, and leaves the standing context unchanged. |
 
+Optional extras in `data`, honoured for approved clients only:
+
+| Field | Meaning |
+|---|---|
+| `event_kind` | A game moment that moves Lumi's emotional state: `death`, `hurt:<cause>`, `collect:diamond`, `kill`, `boss`, `house`, `milestone`, `order_done`, `order_failed`, `threat`, `hunger`, `social:<gesture>`, `spawn`. Small, clamped deltas, each kind at most once per 10 s (`EmotionalState.note_game_event`). |
+| `remember` | Store `message` as one of Lumi's long-term memories (type `game`), once per text per session: "Built a planks house near 120, 64, -300." Not used as context and starts no turn. |
+| `event_only` | Send only the extras above: no context change, no turn. bot.js sends one per game moment, so even the ones she doesn't talk about move her mood. |
+
+`LumiClient` has `send_context(text, silent, event_kind=None)`, `feel(event_kind)` and `remember(text)`.
+
 Event turns are spoken reactions only. They use Lumi's persona prompt plus a short instruction (one short sentence, starting with one emotion tag) instead of the full chat prompt, and no tools, even when agent mode is on. Lumi cuts a reply that runs past about 20 words, because small models drift. The event is stored in her history between `[FROM SDK: <game>]` markers, so later turns know it happened, but the web chat doesn't show it: only her reaction appears. If Lumi is already thinking or speaking, the server holds the event (the latest one per client) and starts the turn when she's free, or drops it after 20 s. An event less than 12 s after the same client's last event turn is dropped. Only approved clients can send events. To stop one client starting turns, set `"allow_reactions": false` on its allowlist entry.
 
 ### speech_finished

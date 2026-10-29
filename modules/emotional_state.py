@@ -145,6 +145,41 @@ def _save_state_file(user_id, data):
 
 
 # ===============================================================
+# GAME EVENTS
+# ===============================================================
+# How moments in a game move her (EmotionalState.note_game_event).
+_GAME_FEELINGS = {
+    "death":         {"frustration": 0.3, "valence": -0.2, "arousal": 0.1},
+    "hurt":          {"frustration": 0.05, "arousal": 0.05},
+    "hurt:player":   {"frustration": 0.1, "valence": -0.05},
+    "diamond":       {"valence": 0.3, "arousal": 0.2, "boredom": -0.2},
+    "collect":       {"valence": 0.15, "arousal": 0.1, "boredom": -0.1},
+    "kill":          {"valence": 0.05, "arousal": 0.05},
+    "boss":          {"valence": 0.4, "arousal": 0.3, "frustration": -0.1},
+    "house":         {"valence": 0.25, "frustration": -0.15, "boredom": -0.1},
+    "milestone":     {"valence": 0.15, "curiosity": 0.05},
+    "order_done":    {"valence": 0.1, "frustration": -0.05},
+    "order_failed":  {"frustration": 0.15, "valence": -0.1},
+    "threat":        {"arousal": 0.1},
+    "hunger":        {"frustration": 0.05},
+    "social":        {"arousal": 0.1, "valence": 0.05, "boredom": -0.1},
+    "spawn":         {"boredom": -0.1, "curiosity": 0.05},
+}
+_GAME_ALIASES = {"collect:diamond": "diamond", "collect:diamond_ore": "diamond",
+                 "collect:deepslate_diamond_ore": "diamond"}
+GAME_EVENT_COOLDOWN_S = 10
+MAX_GAME_DELTA = 0.4
+# Game events alone stay inside these: grumpy at worst, never unhinged.
+GAME_LIMITS = {
+    "valence": (-0.6, 0.9),
+    "arousal": (0.0, 0.9),
+    "frustration": (0.0, 0.8),
+    "curiosity": (0.0, 1.0),
+    "boredom": (0.0, 1.0),
+}
+
+
+# ===============================================================
 # STATE
 # ===============================================================
 class EmotionalState:
@@ -287,6 +322,39 @@ class EmotionalState:
         with self._lock:
             self._last_user_message_time = time.time()
             self.boredom = max(0.0, self.boredom - 0.15)
+
+    def note_game_event(self, kind):
+        """A moment from her other half in a game (the SDK `event_kind`):
+        dying stings, diamonds feel good. Deltas are small and clamped, each
+        kind counts at most once per GAME_EVENT_COOLDOWN_S, and game events
+        alone can't push her past GAME_LIMITS, so a bad fight makes her
+        grumpy, not unhinged. decay_step pulls it all back to baseline.
+        Returns the changes applied ({} if none)."""
+        kind = str(kind or "").lower()
+        feel = (_GAME_FEELINGS.get(kind) or _GAME_FEELINGS.get(_GAME_ALIASES.get(kind, ""))
+                or _GAME_FEELINGS.get(kind.split(":")[0]))
+        if not feel:
+            return {}
+        now = time.time()
+        with self._lock:
+            last = getattr(self, "_game_event_at", {})
+            self._game_event_at = last
+            key = kind.split(":")[0] if kind not in _GAME_FEELINGS else kind
+            if now - last.get(key, 0) < GAME_EVENT_COOLDOWN_S:
+                return {}
+            last[key] = now
+            applied = {}
+            for name, delta in feel.items():
+                delta = max(-MAX_GAME_DELTA, min(MAX_GAME_DELTA, delta))
+                lo, hi = GAME_LIMITS.get(name, (0.0, 1.0))
+                before = getattr(self, name)
+                # Never pull a value back out of range it was already in.
+                after = before + delta
+                after = min(max(after, min(lo, before)), max(hi, before))
+                setattr(self, name, after)
+                if after != before:
+                    applied[name] = round(after - before, 3)
+            return applied
 
     # ---------------------------------------------------------------
     # Time-based evolution

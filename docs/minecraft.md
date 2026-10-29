@@ -307,6 +307,9 @@ with before she walks back.
 | Channel | When | Lumi's reaction |
 |---|---|---|
 | Silent status | Every 30 s, and right away when her distance from you changes band | None. It updates her context, so if you ask what she's doing in Minecraft she answers from it |
+| Body status | Every chat turn, agent mode or not | None. A live `[BODY STATUS]` line read from bot.js that turn: what she's doing, health, hunger, position |
+| Mood | Every game moment, spoken or not (deaths, hits, diamonds, kills, a house, orders done or failed) | None out loud: her emotional state moves a little (dying stings, diamonds feel good), clamped so a bad fight makes her grumpy, not unhinged, and it fades back on its own |
+| Memory | A death, a finished house, diamonds, her first furnace and iron pickaxe | None. Stored as a long-term memory with the coordinates, so she remembers it in later sessions |
 | Spoken event | Deaths (with what killed her), boss kills, diamonds and other top loot, a finished house, each new order from the Games page, an order done or abandoned, an order said to her that she can't do, you hitting her, you crouch-spamming at her | Lumi reacts in a short sentence, in her own voice ("[anxious] Oh, not now.") |
 
 A reaction uses her persona prompt (the same one chat uses, from
@@ -322,6 +325,17 @@ model. `bot.js` sends the same kind of event at most 3 times in any minute, on
 top of its per-kind cooldowns. If one arrives while she's mid-reply, it's delivered as soon as she
 finishes, or dropped if she's still busy after 20 seconds. `EVENT_REACTIONS=all` (in `bot.js`'s `.env`) and `MC_NARRATE=all`
 bring back the full play-by-play: every hit, every mob, every new goal.
+
+**When she's stuck.** When a goal fails twice in a row with a path
+problem ("took too long to decide path", "stuck", a timeout), the agent
+screenshots the live viewer (first person) with Playwright and asks the
+vision model (`qwen2.5vl` by default, `MC_VISION_MODEL`) "what is blocking
+the way?". The answer goes into her status for 5 minutes, so Lumi can talk
+about it, and is narrated when `MC_NARRATE=all`. It's a hint, not something
+the agent acts on: a small vision model gets it wrong now and then. At most
+every 3 minutes; it runs in the background and unloads the model after, but
+loading it while the chat models are in VRAM can take a couple of minutes.
+Lumi can also call `mc_agent_look_around` in agent mode.
 
 **The game agent works on its own.** Lumi's chat and her other half are
 separate: the game agent (`plugin/minecraft_bot.py`) runs whenever the
@@ -341,6 +355,11 @@ live viewer.
 ---
 
 ## The Games page
+
+Over the live view, a small panel shows Lumi's mood (mood, energy,
+frustration, curiosity, boredom and her current frame), and the card's
+border flashes red when her body takes damage. Other registered games, if
+there are any, get a switch each above the Minecraft card.
 
 Everything on **Games → Minecraft AI**, refreshed every 2 seconds while the page
 is open:

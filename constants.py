@@ -53,6 +53,14 @@ FAST_MODEL_KEEP_ALIVE = "30m"  # it fits in VRAM next to GAME_AGENT_MODEL; a rel
 AUDIO_OUTPUT_MODE = "both"
 OUTPUT_DEVICE_INDEX = [24, 20]
 
+# Voice engine. "fish": Fish Audio (cloud). "local_fast": a local model on
+# the GPU, Kokoro, for lower latency if there's VRAM to spare. Kokoro isn't
+# installed by default (`pip install kokoro soundfile`); until it is,
+# local_fast falls back to Fish Audio. Either way each sentence is sent as
+# soon as the model has written it.
+VOICE_ENGINE = "fish"
+LOCAL_VOICE = "af_heart"     # Kokoro voice for local_fast
+
 
 # =======================================================
 # Host State (Phase 10.1)

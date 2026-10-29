@@ -61,7 +61,8 @@ Everything Lumi uses to speak, look, browse, and read.
 
 | File | Role | Status |
 |---|---|---|
-| `tts.py` | Fish Audio client with emotion-tag handling; routes audio to speakers, Discord, and browser tabs | spawned |
+| `tts.py` | Fish Audio client with emotion-tag handling; routes audio to speakers, Discord, and browser tabs. `VOICE_ENGINE = "local_fast"` uses Kokoro when it's installed. Every line passes `speech_filter.strip_slurs` first | spawned |
+| `speech_filter.py` | Removes slurs from what Lumi says and shows, silently. Ordinary swearing stays | imported |
 | `audioPlayer.py` | Earlier audio playback helper | legacy |
 | `multimodal.py` | On-demand screen capture and VLM description for "look at my screen" questions, and the Minecraft window capture behind the `look_at_minecraft` tool | spawned |
 | `browser_controller.py` | Playwright Firefox navigation; powers the `browse_url` tool | spawned |

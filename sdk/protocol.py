@@ -144,12 +144,20 @@ def context_message(
     game: str,
     message: str,
     silent: bool = True,
+    event_kind: Optional[str] = None,
+    remember: bool = False,
+    event_only: bool = False,
 ) -> Dict[str, Any]:
-    return {
-        "command": ClientCommand.CONTEXT,
-        "game": game,
-        "data": {"message": message, "silent": silent},
-    }
+    """event_kind moves Lumi's emotional state, remember stores message as
+    a long-term memory, event_only sends just those (no context, no turn)."""
+    data: Dict[str, Any] = {"message": message, "silent": silent}
+    if event_kind:
+        data["event_kind"] = event_kind
+    if remember:
+        data["remember"] = True
+    if event_only:
+        data["event_only"] = True
+    return {"command": ClientCommand.CONTEXT, "game": game, "data": data}
 
 
 def context_clear_message(game: str) -> Dict[str, Any]:

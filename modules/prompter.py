@@ -44,6 +44,8 @@ BOLD = "\033[1m"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
 
+from modules.speech_filter import strip_slurs
+
 SENTENCE_SPLIT_PATTERN = re.compile(r'(?<=[.!?;\n])\s+')
 
 MAX_AGENT_STEPS = 6
@@ -450,7 +452,7 @@ def _clean_reply(text):
     """Approved tags only, no emoji, tidy spaces. What gets shown, spoken
     and stored: an invented tag ([glancing], [patience]) left in history
     gets copied on the next turns."""
-    text = _strip_emoji(_strip_non_canonical_tags(text or ""))
+    text = strip_slurs(_strip_emoji(_strip_non_canonical_tags(text or "")))
     # A tag only affects what follows it, so one at the very end is noise.
     text = re.sub(r"(?:\s*\[[^\]]{1,40}\])+\s*$", "", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
@@ -1768,6 +1770,35 @@ class Prompter:
                 self.signals.save_history()
         return GAME_ORDER_NOTE.replace("{host_name}", HOST.name).replace("{order}", order)
 
+    def _body_status(self):
+        """[BODY STATUS]: a live read of her Minecraft body from bot.js, on
+        every turn, agent mode or not, so "what are you doing?" is answered
+        from now, not from the last 30 s status push. None when the bot
+        isn't in a world."""
+        try:
+            st = requests.get("http://127.0.0.1:5057/status", timeout=0.3).json()
+        except Exception:
+            return None
+        if not st.get("ready"):
+            return None
+        try:
+            from modules.game_manager import read_telemetry
+            tel = read_telemetry()
+        except Exception:
+            tel = {}
+        if st.get("sleeping"):
+            activity = "asleep in a bed"
+        else:
+            activity = (tel.get("goal_description") or tel.get("current_thought") or "idle").rstrip(".")
+            activity = activity[:1].lower() + activity[1:]
+        fmt = lambda v: "?" if v is None else (f"{v:.0f}" if isinstance(v, (int, float)) else str(v))
+        p = st.get("position") or {}
+        where = ", ".join(fmt(p.get(k)) for k in ("x", "y", "z")) if p else "unknown"
+        return ("[BODY STATUS]\n"
+                f"Your Minecraft body is currently: {activity}. Health: {fmt(st.get('health'))}/20, "
+                f"Hunger: {fmt(st.get('food'))}/20, Position: {where}.\n"
+                "[END BODY STATUS]")
+
     def _minecraft_connected(self):
         """True while bot.js or the game agent is connected and approved."""
         sdk = getattr(self.signals, "sdk", None)
@@ -2040,6 +2071,9 @@ class Prompter:
                     injections.append(f"[FROM SDK]\n{text}\n[END FROM SDK]")
                 if self._minecraft_connected():
                     injections.append(MINECRAFT_GAMER_NOTE.replace("{host_name}", HOST.name))
+                    body = self._body_status()
+                    if body:
+                        injections.append(body)
                 if getattr(self, "_game_order_note", None):
                     injections.append(self._game_order_note)
             except Exception:

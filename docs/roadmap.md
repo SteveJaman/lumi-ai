@@ -25,6 +25,17 @@ iteration against real use, not new subsystems.
   Reverse chronological. What shipped, when, and why.
 
   2026-10-28
+    - One Lumi across chat and game: a live [BODY STATUS] line in
+      every chat turn, game moments move her mood (clamped), and
+      milestones (a house, diamonds, a death) become memories.
+    - When her Minecraft body keeps getting stuck, she looks through
+      the live viewer and asks the vision model what's in the way.
+    - Slurs are removed from what she says, silently; swearing stays.
+    - Multi-game groundwork: BaseGameAgent, a game registry on the
+      Games page, and a mock agent that plays nothing.
+    - VOICE_ENGINE = "fish" | "local_fast" (Kokoro, not installed by
+      default). Mood panel over the live view, and a red flash when
+      she takes damage.
     - Chat and the game agent are fully separate: in-game "Lumi, …"
       orders go straight to the game agent without a chat turn, and in
       agent mode Lumi has dispatch_game_command, which hands an order

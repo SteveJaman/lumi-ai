@@ -371,6 +371,19 @@ The agent connects as `MinecraftAgent`. The allowlist entry needs
 | `mc_agent_set_goal` | `write` | Run a specific curriculum tier or free-play goal next |
 | `mc_agent_pause` | `write` | Pause the loop |
 | `mc_agent_resume` | `write` | Resume the loop |
+| `mc_agent_look_around` | `read` | Screenshot the live viewer and ask the vision model what's there (optionally a question). Can be wrong |
+
+### Other games
+
+`MinecraftAgent` is a `BaseGameAgent` ([`base_game_agent.py`](base_game_agent.py)):
+the shared loop, the Games page switch (`autoplay.json` under the game's
+id), and `narrate()`, `feel()` and `remember()` for talking to Lumi. A new
+game is a subclass with `GAME_ID`, `GAME_NAME` and `tick()`, plus an entry
+in `modules/game_manager.py`'s `GAME_REGISTRY` (or `register_game()`), and
+the Games page lists it with a switch. [`game_agent_mock.py`](game_agent_mock.py)
+is the smallest one: it plays nothing, and shows up when `LUMI_DEV_GAMES=mock`.
+Its log goes to `data/logs/mock/agent.log`. Each agent connects as its own SDK
+client, so each needs its own allowlist entry.
 
 ## Configuration
 
@@ -385,6 +398,7 @@ The agent connects as `MinecraftAgent`. The allowlist entry needs
 | `MC_STATUS_INTERVAL` | `30` | Seconds between silent status pushes to Lumi |
 | `MC_NARRATE` | `major` | Spoken events from the agent: `major` (diamonds), `all` (also goals, milestones, repeated failures), or `off` |
 | `MC_NARRATE_COOLDOWN` | `75` | Minimum seconds between non-major narration events |
+| `MC_VISION_MODEL` | `VISION_MODEL_NAME` from `constants.py` (`qwen2.5vl:latest`) | Vision model for looking around when stuck (`game_vision.py`). moondream is faster but answers these frames with junk |
 | `MC_DEFAULT_MODE` | `follow` | `follow`: she follows the player and goes back to following after each order, until told to do her own thing. `free`: she plays on her own near the player |
 
 ## Files it writes

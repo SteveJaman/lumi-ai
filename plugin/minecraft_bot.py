@@ -53,7 +53,9 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from sdk import LumiClient, action
+from sdk import action
+from plugin import game_vision
+from plugin.base_game_agent import BaseGameAgent
 
 # Lumi's LLM layer, for goal picking. Optional: the agent plays without it.
 try:
@@ -723,6 +725,16 @@ PICKER_SYSTEM = (
 GOAL_TIMEOUT_S = {"collect_wood": 60, "chop_trees": 60, "explore": 60,
                   "build_dirt_hut": 90, "hunt_food": 75, "mine_stone": 90,
                   "gather_cobblestone": 90}
+# Getting stuck: after a goal fails twice with a path problem, look through
+# the live viewer and ask the vision model what's in the way (game_vision).
+STUCK_RE = re.compile(r"path|stuck|took to long|timed out|couldn'?t (reach|get to)|no .* found", re.I)
+LOOK_EVERY_S = 180
+LOOK_MEMORY_S = 300      # how long the look stays in Lumi's status
+
+# Tool tiers kept as Lumi's long-term memories when reached.
+REMEMBERED_TIERS = {"craft_iron_pickaxe": "Made my first iron pickaxe",
+                    "craft_furnace": "Built my first furnace"}
+
 # After success, don't offer a goal again for this long (s).
 SUCCESS_COOLDOWN_S = {"build_dirt_hut": 600, "organize_inventory": 120}
 # After a single failure, rest these this long (s): an old server that only
@@ -905,17 +917,17 @@ OVERRIDE_SYSTEM = (
 
 # ─── Agent ────────────────────────────────────────────────────────────────────
 
-class MinecraftAgent(LumiClient):
-    """Autonomous Minecraft agent. Registers four SDK actions so Lumi can
-    observe and override the loop, but the loop runs whether or not Lumi's
-    agent mode is on."""
+class MinecraftAgent(BaseGameAgent):
+    """Autonomous Minecraft agent (a BaseGameAgent with its own goal loop).
+    Registers SDK actions so Lumi can observe and steer it, but the loop
+    runs whether or not Lumi's agent mode is on."""
+
+    GAME_ID = "minecraft"
+    GAME_NAME = "MinecraftAgent"
+    EVENT_TAG = "MINECRAFT EVENT"
 
     def __init__(self) -> None:
-        super().__init__(
-            game="MinecraftAgent",
-            token_path=TOKEN_PATH,
-            reconnect_delay=5.0,
-        )
+        super().__init__(token_path=TOKEN_PATH, reconnect_delay=5.0)
         os.makedirs(MC_DIR, exist_ok=True)
         self._paused = False
         self._override_goal: Optional[str] = None
@@ -937,6 +949,8 @@ class MinecraftAgent(LumiClient):
         self._last_narration = 0.0
         self._last_status_push = 0.0
         self._last_done: Optional[str] = None
+        self._last_look: Optional[Tuple[float, str]] = None   # (when, what the VLM saw)
+        self._last_look_at = 0.0
         self._autoplay_was = True
         self._defend_backoff_until = 0.0
         self._llm_ok = chat_sync is not None and GOAL_PICKER == "llm" and bool(GOAL_MODEL)
@@ -984,6 +998,15 @@ class MinecraftAgent(LumiClient):
             self._h_pause,
         )
         self.register_action(
+            action("mc_agent_look_around",
+                   "Look through your Minecraft body's eyes (the live viewer) and say what's "
+                   "there, using the local vision model. It can be wrong.")
+            .param("question", "string",
+                   description="Optional, e.g. 'What is blocking my path?'")
+            .capabilities("read").build(),
+            self._h_look_around,
+        )
+        self.register_action(
             action("mc_agent_resume",
                    "Resume the Minecraft agent's autonomous skill loop.")
             .capabilities("write").build(),
@@ -1003,9 +1026,10 @@ class MinecraftAgent(LumiClient):
         self._tel["lumi_sdk"] = "offline"
         self._record("sdk", "Disconnected from Lumi SDK — skill loop keeps running")
 
-    def start_loop(self) -> None:
-        if self._loop_task is None or self._loop_task.done():
-            self._loop_task = asyncio.create_task(self._skill_loop())
+    async def loop(self) -> None:
+        """BaseGameAgent.start_loop runs this: the assess → survive → goal
+        loop below instead of the base's plain tick()."""
+        await self._skill_loop()
 
     async def run(self) -> None:
         """Quiet reconnect: probe the port first so a missing Lumi doesn't
@@ -1084,6 +1108,34 @@ class MinecraftAgent(LumiClient):
         self._tel["loop_state"] = "running"
         self._record("agent", "Loop resumed")
         return True, "Resumed"
+
+    async def _h_look_around(self, args: Dict) -> tuple:
+        question = " ".join(str(args.get("question") or "").split())[:200]
+        q = (f"This is a first-person view in a blocky video game. {question} "
+             "Answer in one or two sentences.") if question else (
+             "This is a first-person view in a blocky video game. Describe what you see "
+             "in one or two sentences.")
+        loop = asyncio.get_running_loop()
+        answer, note = await loop.run_in_executor(None, game_vision.look, BOT_API, q)
+        return (True, answer) if answer else (False, f"Couldn't see anything: {note}")
+
+    async def _look_when_stuck(self, desc: str) -> None:
+        """Ask the vision model what's in the way, from the live viewer. The
+        answer is a hint for Lumi to talk about, not something the agent
+        acts on: a small VLM gets it wrong now and then."""
+        loop = asyncio.get_running_loop()
+        try:
+            answer, note = await loop.run_in_executor(None, game_vision.look, BOT_API)
+        except Exception as e:
+            answer, note = "", str(e)
+        if not answer:
+            self._record("vision", f"couldn't look around: {note}")
+            return
+        self._last_look = (time.time(), answer)
+        self._record("vision", f"stuck ({desc.lower()}), looked around: {answer}")
+        self._think(f"I'm stuck. Looking around... {answer[:140]}")
+        await self._narrate(f"I got stuck trying to {desc.lower()}, so I looked around. "
+                            f"What I see: {answer}")
 
     # ─── Bot control API (sync calls run in executor) ──────────────
 
@@ -1233,7 +1285,10 @@ class MinecraftAgent(LumiClient):
                     if goal_name == "build_house" and msg.startswith("Built a"):
                         self._wanted.clear()
                         await self._narrate("I just finished building a real house! "
-                                            "Floor, walls, windows, a roof, the works.", major=True)
+                                            "Floor, walls, windows, a roof, the works.", major=True,
+                                            event_kind="house")
+                        await self.remember(f"Built a {_house_material(_inv(status))} house near "
+                                            f"{_pos_text(status)}.")
                     elif goal_name == "build_house":
                         self._wanted.clear()
                         self._project_until = time.time() + PROJECT_HOLD_S   # keep at it
@@ -1244,13 +1299,23 @@ class MinecraftAgent(LumiClient):
                         await self._narrate(f"I went back to where I died and got my stuff back. {msg}",
                                             major=True)
                     if goal_name == "mine_diamond" or (goal_name == "branch_mine" and "diamond" in msg):
-                        await self._narrate("I just found and mined diamonds!", major=True)
+                        await self._narrate("I just found and mined diamonds!", major=True,
+                                            event_kind="diamond")
+                        await self.remember(f"Found and mined diamonds near {_pos_text(status)}.")
                     elif goal_name in _TIERS:
-                        await self._narrate(f"I just finished a milestone: {desc.lower()}.")
+                        await self._narrate(f"I just finished a milestone: {desc.lower()}.",
+                                            event_kind="milestone")
+                        if goal_name in REMEMBERED_TIERS:
+                            await self.remember(f"{REMEMBERED_TIERS[goal_name]} ({_pos_text(status)}).")
                     self._tel["current_goal"] = None
                 else:
                     n = self._failures[goal_name] = self._failures.get(goal_name, 0) + 1
                     self._record("error", f"FAIL {goal_name} (x{n}): {msg}")
+                    if (n >= 2 and STUCK_RE.search(msg)
+                            and time.time() - self._last_look_at > LOOK_EVERY_S):
+                        # In the background: a cold vision model can take minutes.
+                        self._last_look_at = time.time()
+                        asyncio.create_task(self._look_when_stuck(desc))
                     missing = re.search(r"Missing materials: (\w+)×(\d+)", msg)
                     if missing:
                         self._wanted[missing.group(1)] = int(missing.group(2))
@@ -1635,14 +1700,15 @@ class MinecraftAgent(LumiClient):
                 self._order = None
                 self._tel["current_order"] = None
                 await self._narrate(f"I failed my order: \"{o['text']}\". I am giving up. "
-                                    f"(Last problem: {msg[:140]})", major=True)
+                                    f"(Last problem: {msg[:140]})", major=True, event_kind="order_failed")
         await self._announce_done_order()
 
     async def _announce_done_order(self) -> None:
         if self._done_order:
             order, what = self._done_order
             self._done_order = None
-            await self._narrate(f'Done with the order "{order["text"]}": {what}.', major=True)
+            await self._narrate(f'Done with the order "{order["text"]}": {what}.', major=True,
+                                event_kind="order_done")
 
     async def _hold_mode(self, status: Dict) -> bool:
         """Follow or stay, from an order. True if this step was used."""
@@ -1803,17 +1869,20 @@ class MinecraftAgent(LumiClient):
     def _reenable_llm(self) -> None:
         self._llm_ok = chat_sync is not None and GOAL_PICKER == "llm" and bool(GOAL_MODEL)
 
-    async def _narrate(self, text: str, major: bool = False) -> None:
+    async def _narrate(self, text: str, major: bool = False,
+                       event_kind: Optional[str] = None) -> None:
         """Push an event Lumi reacts to out loud. Each one costs a turn of
         Lumi's chat model, so by default only major moments are sent;
-        MC_NARRATE=all adds the rest, rate-limited."""
-        if NARRATE == "off" or (NARRATE != "all" and not major):
-            return
+        MC_NARRATE=all adds the rest, rate-limited. event_kind moves her
+        emotional state either way."""
         now = time.time()
-        if not major and now - self._last_narration < NARRATE_COOLDOWN:
+        if (NARRATE == "off" or (NARRATE != "all" and not major)
+                or (not major and now - self._last_narration < NARRATE_COOLDOWN)):
+            if event_kind:
+                await self.feel(event_kind)
             return
         self._last_narration = now
-        await self.send_context(f"[MINECRAFT EVENT] {text}", silent=False)
+        await self.narrate(text, event_kind=event_kind)
 
     async def _push_status(self, status: Dict, force: bool = False) -> None:
         """Silent standing context: what Lumi knows about her other half
@@ -1856,17 +1925,15 @@ class MinecraftAgent(LumiClient):
             lines.append(f"You built a house at {o[0] + 3}, {o[1] + 1}, {o[2] + 3}.")
         if self._last_done:
             lines.append(f"Last finished: {self._last_done}.")
+        if self._last_look and now - self._last_look[0] < LOOK_MEMORY_S:
+            lines.append(f"When you got stuck just now, you looked around and saw: {self._last_look[1]}")
         await self.send_context("\n".join(lines), silent=True)
 
     def _autoplay_allowed(self) -> bool:
         """data/minecraft/autoplay.json, written by the dashboard switch.
         Checked every loop so switching off stops play even if the
         process is left running."""
-        try:
-            with open(AUTOPLAY_PATH, encoding="utf-8") as f:
-                allowed = bool(json.load(f).get("minecraft", True))
-        except Exception:
-            allowed = True
+        allowed = self.autoplay_allowed()
         if allowed != self._autoplay_was:
             self._autoplay_was = allowed
             self._tel["loop_state"] = "running" if allowed else "autoplay off"
@@ -1969,6 +2036,13 @@ def _missing_ollama_model(spec: Optional[str]) -> Optional[str]:
         return None
     wanted = model if ":" in model else model + ":latest"
     return None if wanted in names else model
+
+
+def _pos_text(status: Dict) -> str:
+    p = status.get("position") or {}
+    if not p:
+        return "an unknown spot"
+    return f"{p.get('x', 0):.0f}, {p.get('y', 0):.0f}, {p.get('z', 0):.0f}"
 
 
 def _inv(status: Dict) -> Dict[str, int]:

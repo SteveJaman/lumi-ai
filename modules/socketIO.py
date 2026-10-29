@@ -642,6 +642,7 @@ class SocketIOServer:
         # Background game agents (modules/game_manager.py). Host-only:
         # neither route is in _REMOTE_API_ALLOW.
         r.add_get("/api/game/status",   self._handle_game_status)
+        r.add_get("/api/games",         self._handle_games_list)
         r.add_post("/api/game/toggle",  self._handle_game_toggle)
         r.add_post("/api/games/{game}/directive", self._handle_game_directive)
         r.add_post("/api/games/{game}/action",    self._handle_game_hud_action)
@@ -1443,7 +1444,30 @@ class SocketIOServer:
             data = await loop.run_in_executor(None, games.status, game)
         except ValueError as e:
             return _json_error(400, str(e))
+        data["mood"] = self._mood_snapshot()
         return web.json_response(data)
+
+    async def _handle_games_list(self, request):
+        """Every registered game and its switch, for the Games page."""
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        games = getattr(self.signals, "game_manager", None)
+        if games is None:
+            return _json_error(503, "Game manager not available.")
+        loop = asyncio.get_running_loop()
+        return web.json_response({"games": await loop.run_in_executor(None, games.list_games)})
+
+    def _mood_snapshot(self):
+        """Lumi's emotional state for the Games page overlay, or None."""
+        state = getattr(self.signals, "emotional_state", None)
+        if state is None:
+            return None
+        try:
+            return {k: round(float(getattr(state, k)), 3)
+                    for k in ("valence", "arousal", "frustration", "curiosity", "boredom")} | {
+                    "frame": getattr(state, "current_frame", None)}
+        except Exception:
+            return None
 
     async def _handle_game_toggle(self, request):
         if not self._origin_ok(request):
