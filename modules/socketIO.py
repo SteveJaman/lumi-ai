@@ -620,6 +620,7 @@ class SocketIOServer:
         r.add_get("/login",    self._handle_login_page)
         r.add_get("/register", self._handle_register_page)
         r.add_get("/setup",    self._handle_setup_page)
+        r.add_get("/island",   self._handle_island_page)
 
         # --- Static files ---
         r.add_get("/web/{tail:.*}", self._handle_static)
@@ -2803,6 +2804,14 @@ class SocketIOServer:
         if self._current_user(request):
             raise web.HTTPFound("/")
         return await self._serve_file(os.path.join(_WEB_ROOT, "login.html"))
+
+    async def _handle_island_page(self, request):
+        """The HITL approval overlay (web/island.html). Host-only: the
+        approval socket it talks to listens on loopback. No login, so
+        launch_island.py's window works without a session."""
+        if self._is_remote(request):
+            return _json_error(403, _HOST_ONLY_MSG)
+        return await self._serve_file(os.path.join(_WEB_ROOT, "island.html"))
 
     async def _handle_register_page(self, request):
         return await self._handle_login_page(request)

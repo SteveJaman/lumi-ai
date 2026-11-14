@@ -1,0 +1,202 @@
+/* Lumi Island: the approval overlay at /island.
+   Every animation is a CSS transition that runs only when the island
+   opens or closes. Nothing animates while idle. */
+
+:root {
+  --page-bg: #eef0f3;
+  --page-fg: #4a4f57;
+  --island-bg: #000;
+  --island-fg: #fff;
+  --muted: rgba(255, 255, 255, 0.58);
+  --faint: rgba(255, 255, 255, 0.08);
+  --line: rgba(255, 255, 255, 0.12);
+  --accent: #57f287;
+  --accent-ink: #04140b;
+  --warn: #ffb547;
+  --danger: #ff8a7a;
+  --ease: cubic-bezier(0.2, 0.85, 0.25, 1);
+  --dur: 360ms;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --page-bg: #0d0f12; --page-fg: #8b919a; color-scheme: dark; }
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; }
+body {
+  min-height: 100vh;
+  background: var(--page-bg);
+  color: var(--page-fg);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Inside the desktop overlay window (launch_island.py adds ?overlay=1)
+   the page is see-through: only the island itself is drawn. */
+html.overlay, html.overlay body { background: transparent; }
+html.overlay .hint { display: none; }
+
+.stage {
+  display: flex;
+  justify-content: center;
+  padding: 8px 8px 0;
+}
+
+/* ── The island ─────────────────────────────────────────────── */
+
+.island {
+  width: 128px;
+  background: var(--island-bg);
+  color: var(--island-fg);
+  border-radius: 20px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+  transition:
+    width var(--dur) var(--ease),
+    border-radius var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+.island.open {
+  width: min(400px, calc(100vw - 16px));
+  border-radius: 26px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45),
+              0 0 0 1px var(--line);
+}
+
+.pill-row {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  white-space: nowrap;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: #6b7078;
+  transition: background-color 200ms linear;
+}
+.island[data-status="open"] .dot { background: var(--accent); }
+.island[data-status="connecting"] .dot { background: var(--warn); }
+.island.open .dot { background: var(--accent); }
+.island.open.danger .dot { background: var(--danger); }
+
+.pill-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.island.open .pill-label { color: var(--island-fg); }
+
+.more {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--faint);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+/* Height animates with the grid-rows trick: 0fr → 1fr. */
+.body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--dur) var(--ease);
+}
+.island.open .body { grid-template-rows: 1fr; }
+.body-clip { min-height: 0; overflow: hidden; }
+
+.card {
+  padding: 4px 16px 16px;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 160ms linear, transform var(--dur) var(--ease);
+}
+.island.open .card {
+  opacity: 1;
+  transform: none;
+  transition-delay: 90ms;
+}
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.island.danger .eyebrow { color: var(--danger); }
+
+.tool {
+  margin-top: 2px;
+  font-size: 17px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.preview {
+  margin: 10px 0 0;
+  max-height: 120px;
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: rgba(255, 255, 255, 0.82);
+  font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.preview:empty { display: none; }
+.preview::-webkit-scrollbar { width: 8px; }
+.preview::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.btn {
+  flex: 1;
+  height: 38px;
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms linear, transform 120ms var(--ease);
+}
+.btn:active { transform: scale(0.97); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn:disabled { cursor: default; opacity: 0.6; }
+
+.btn-decline { background: rgba(255, 255, 255, 0.1); color: var(--island-fg); }
+.btn-decline:hover { background: rgba(255, 255, 255, 0.18); }
+.btn-approve { background: var(--accent); color: var(--accent-ink); }
+.btn-approve:hover { background: #74f59d; }
+
+/* ── Browser-tab hint (hidden in the overlay) ───────────────── */
+
+.hint {
+  max-width: 400px;
+  margin: 28px auto 0;
+  padding: 0 16px;
+  text-align: center;
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; }
+}

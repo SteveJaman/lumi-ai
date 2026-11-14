@@ -27,7 +27,7 @@ from ctypes import wintypes
 
 import webview
 
-DEFAULT_URL = "http://127.0.0.1:5000/island"
+DEFAULT_URL = "http://127.0.0.1:5000/island?overlay=1"   # overlay=1: see-through page
 TITLE = "Lumi Island"          # used to find our window handle
 WIDTH, HEIGHT = 440, 260       # room for the expanded approval card
 TOP_MARGIN = 8

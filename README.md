@@ -157,7 +157,7 @@ for the pipeline.
 - **Human-in-the-loop approvals (HITL).** A WebSocket bridge at
   `ws://127.0.0.1:5090/hitl` that replaces the terminal `y/n` prompt for
   tool calls that need approval, such as `run_command` and `write_file`. A
-  connected client (for example the Island overlay in `ui/`) receives each
+  connected client (for example the Island overlay at `/island`) receives each
   request with the tool name and its arguments, and replies approve or
   decline. Requests auto-decline after 120 seconds, and with no client
   connected approvals fall back to the terminal. The bridge listens on

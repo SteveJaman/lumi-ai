@@ -555,8 +555,9 @@ hitl_server.request_approval(tool, preview, timeout=120)
   and any web page could otherwise approve commands. The server accepts only
   loopback origins (or none, for non-browser clients).
 
-The Island overlay (`ui/Island.jsx`, shown as a window by `launch_island.py`)
-is the reference client.
+The Island overlay is the reference client: `web/island.html`, served at
+`/island` (host-only, no login), and shown as a click-through window by
+`launch_island.py`.
 
 ### Gaming Mode
 
@@ -673,7 +674,7 @@ can answer them without alt-tabbing out of a full-screen game.
         Desktop (gaming PC)                          Surface Pro
 ┌──────────────────────────────────┐          ┌──────────────────────┐
 │ python main.py                   │          │ Island PWA           │
-│  Ollama, ChromaDB, TTS, STT      │          │  (ui/Island.jsx)     │
+│  Ollama, ChromaDB, TTS, STT      │          │  (/island page)      │
 │  prompter + tools                │          │                      │
 │  HITL server  127.0.0.1:5090     │◄────────►│  Approve / Decline   │
 │  Gaming Mode ON                  │ WebSocket│                      │
@@ -702,7 +703,7 @@ local-only today:
 | Approval protocol (request, response, expiry, timeout, terminal fallback) | Done |
 | Island client with auto-reconnect | Done, for `ws://127.0.0.1:5090/hitl` |
 | Reaching the server from another machine | **Not done.** The server binds `127.0.0.1` and refuses non-loopback origins |
-| Serving the PWA and an `/island` route | **Not done.** Nothing serves the Island page yet |
+| Serving the Island page | Done on the host (`/island`). **Not done** for tailnet visitors: the route is host-only |
 | Authentication on the WebSocket | **Not done.** Today the only barrier is being on the machine |
 
 Reaching the Desktop from the Surface needs three changes before this works:

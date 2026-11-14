@@ -12,7 +12,7 @@ architecture behind it is in
 > | Install Tailscale on both machines | Works now |
 > | Start Lumi and the HITL server on the Desktop | Works now |
 > | Check the server is listening on the Desktop | Works now |
-> | Serve the Island page at `/island` | **Not built.** No route serves it yet |
+> | Serve the Island page at `/island` | Works now, on the Desktop only (`http://127.0.0.1:5000/island`) |
 > | Reach the HITL server from the Surface over Tailscale | **Not built.** The server accepts only loopback origins |
 > | Authenticate the WebSocket | **Not built.** Anyone who can reach the port can approve tool calls |
 >
@@ -123,14 +123,16 @@ prompter's event loop, so launching Lumi starts it. (Working now.)
 
 ## 3. Open the Island PWA on the Surface Pro
 
-**Not yet working.** These steps describe the intended flow. They fail at
-step 2 today because nothing serves `/island`, and the origin check blocks the
-Surface.
+**Not yet working from the Surface.** The page is served on the Desktop, but
+the route is host-only and the approval server's origin check blocks the
+Surface. These steps describe the intended flow.
 
-### 3a. Serve the Island page (not built)
+### 3a. The Island page (works on the Desktop)
 
-The Island UI is `ui/Island.jsx`. It needs a build and a route that serves it,
-for example at `http://127.0.0.1:5000/island`. Neither exists yet.
+The Island UI is `web/island.html`, served at
+`http://127.0.0.1:5000/island`. Open it on the Desktop to check it: the pill
+shows a green dot when it's connected to the approval server. Serving it to
+the Surface needs the route opened to tailnet visitors, which isn't built.
 
 ### 3b. Expose the approval server to the tailnet (not built, do not do yet)
 

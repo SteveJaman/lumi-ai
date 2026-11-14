@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lumi Island</title>
+  <meta name="theme-color" content="#000000">
+  <link rel="stylesheet" href="/web/island.css">
+</head>
+<body>
+  <div class="stage">
+    <div id="island" class="island" data-status="connecting">
+      <div class="pill-row">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="label" class="pill-label">Lumi</span>
+        <span id="more" class="more" hidden></span>
+      </div>
+      <div class="body">
+        <div class="body-clip">
+          <div id="card" class="card" inert>
+            <div id="eyebrow" class="eyebrow">Lumi wants to run</div>
+            <div id="tool" class="tool"></div>
+            <pre id="preview" class="preview"></pre>
+            <div class="actions">
+              <button id="decline" class="btn btn-decline" type="button">Decline</button>
+              <button id="approve" class="btn btn-approve" type="button">Approve</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p id="hint" class="hint" role="status">Connecting to Lumi…</p>
+
+  <script src="/web/island.js"></script>
+</body>
+</html>
