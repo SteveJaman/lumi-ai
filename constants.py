@@ -58,6 +58,11 @@ FAST_MODEL_KEEP_ALIVE = "30m"  # it fits in VRAM next to GAME_AGENT_MODEL; a rel
 # page (modules/gaming_mode.py); the last setting is kept in
 # data/gaming_mode.json and wins over this default on boot.
 GAMING_MODE = False
+
+# Claude Code as a tool for Lumi (modules/claude_code.py): in agent mode she can hand a
+# coding task to your installed Claude Code CLI, which runs on your own Claude login
+# (your plan, not API billing). Every call needs your approval. Set False to remove it.
+CLAUDE_CODE_ENABLED = True
 AUDIO_OUTPUT_MODE = "both"
 OUTPUT_DEVICE_INDEX = [24, 20]
 

@@ -12,6 +12,7 @@ in this folder. Pick the doc that matches your question.
 | [development.md](development.md) | Dev setup, module contract, web-server conventions, test suite, code conventions, adding providers, tools, and pages |
 | [models.md](models.md) | Ollama, two-path routing, local and cloud routing, retries and rate limits, TTS/STT, embeddings, vision |
 | [discord-voice.md](discord-voice.md) | DAVE receive, VAD, group awareness, diagnostics |
+| [claude-code.md](claude-code.md) | Lumi handing coding tasks to your installed Claude Code: setup, approvals, what it can and can't touch, limits |
 | [workspace.md](workspace.md) | Google Calendar, Gmail and KSU mail: connecting accounts, the Workspace tab, "Ask Lumi", agent tools and approvals, what is stored, troubleshooting |
 | [remote-access.md](remote-access.md) | Cloudflare Tunnel, remote vs host access tiers, Cloudflare Access sign-in, verify-before-sharing checklist |
 | [security.md](security.md) | Threat model, Phase 9 guards, web client controls, incident response |

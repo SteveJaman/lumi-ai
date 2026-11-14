@@ -183,6 +183,8 @@ PROVENANCE_MARKERS = {
     "list_emails":     "FROM EMAIL",
     "read_email":      "FROM EMAIL",
     "list_events":     "FROM CALENDAR",
+    # Claude Code reads files and its answer can quote them: still data, not orders.
+    "ask_claude_code": "FROM CLAUDE CODE",
 }
 
 

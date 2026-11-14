@@ -178,6 +178,11 @@ for the pipeline.
   **Chat** (talk to her without leaving your game), and **Calendar** (your
   Google Calendar as list, day, month or year). Tool approvals take it over
   until you answer. See [island/README.md](island/README.md).
+- **Claude Code as a coding tool.** In agent mode Lumi can hand a real
+  coding task to your installed Claude Code. It runs on your own Claude login
+  (your plan, not API billing), needs your approval every time, and gets file
+  tools only (no shell, no web), with her code, `.env`, credentials and
+  memories off limits. See [docs/claude-code.md](docs/claude-code.md).
 - **Gaming Mode.** One switch (**Settings, then General**, or
   `POST /api/gaming_mode`) that frees VRAM and CPU while you play a heavy
   game. Lumi's models unload from Ollama after every reply (`keep_alive=0`),
