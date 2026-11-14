@@ -101,5 +101,5 @@ def test_a_tier_is_never_a_model_name():
     src = inspect.getsource(prompter.Prompter)
     assert "model = FAST_MODEL_NAME if use_fast else MODEL_NAME" in src
     flat = " ".join(src.split())
-    assert "chat_sync( MODEL_NAME," in flat                      # agent turns: always the main model
+    assert "chat_sync( AGENT_MODEL_NAME," in flat                # agent turns: always the tool-capable model
     assert "tier" not in flat.split("chat_sync(")[1].split(")")[0]   # no tier variable reaches a chat call

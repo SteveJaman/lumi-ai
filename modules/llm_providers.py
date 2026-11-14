@@ -692,6 +692,27 @@ class OllamaClient(LLMClient):
             out.append(entry)
         return out
 
+    _caps_cache: Dict[Tuple[str, str], Optional[frozenset]] = {}
+
+    def capabilities(self, model: str) -> Optional[frozenset]:
+        """What the model can do, from Ollama (e.g. {"completion", "tools",
+        "thinking"}). Cached per model. None when Ollama doesn't say (older
+        versions, or it can't be reached): then nothing is filtered."""
+        key = (self.base_url, model)
+        if key in self._caps_cache:
+            return self._caps_cache[key]
+        caps = None
+        try:
+            r = requests.post(f"{self.base_url}/api/show", json={"model": model}, timeout=10)
+            if r.status_code == 200:
+                got = (r.json() or {}).get("capabilities")
+                if isinstance(got, list):
+                    caps = frozenset(str(c) for c in got)
+        except Exception:
+            return None                         # not cached: try again next time
+        self._caps_cache[key] = caps
+        return caps
+
     def chat(self, messages, tools=None, think=None, options=None,
              keep_alive=None, model="", on_text=None):
         payload: Dict[str, Any] = {
@@ -699,6 +720,14 @@ class OllamaClient(LLMClient):
             "messages": self._convert_messages(messages),
             "stream": on_text is not None,
         }
+        caps = self.capabilities(model) if (tools or think) else None
+        if tools and caps is not None and "tools" not in caps:
+            # Ollama would answer a bare "400 Bad Request"; say what's wrong instead.
+            raise RuntimeError(
+                f"{model} can't call tools (Ollama capabilities: {', '.join(sorted(caps)) or 'none'}). "
+                f"Set AGENT_MODEL_NAME in constants.py to a tool model such as qwen3:8b.")
+        if think and caps is not None and "thinking" not in caps:
+            think = None                        # e.g. dolphin3: thinking isn't supported, so don't ask
         if tools:
             payload["tools"] = tools
         if think is not None:

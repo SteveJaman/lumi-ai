@@ -16,6 +16,7 @@ from docx import Document
 from constants import (
     LLM_ENDPOINT,
     MODEL_NAME,
+    AGENT_MODEL_NAME,
     VISION_MODEL_NAME,
     get_system_prompt,
     get_chat_system_prompt,
@@ -2703,7 +2704,7 @@ class Prompter:
         tier = await asyncio.get_running_loop().run_in_executor(
             None, model_router.route_model, latest_user_text)
         self._route_tier = tier
-        agent_tracker.update("main", "thinking", task="Planning", progress=0, model=tier, model_name=MODEL_NAME)
+        agent_tracker.update("main", "thinking", task="Planning", progress=0, model=tier, model_name=AGENT_MODEL_NAME)
         context_injections = self.gather_injections(latest_user_text, agent_context=True)
         messages = [{"role": "system", "content": f"{get_chat_system_prompt(agent=True)}\n\n{context_injections}"}]
 
@@ -2773,7 +2774,7 @@ class Prompter:
                 resp: LLMResponse = await loop.run_in_executor(
                     None,
                     lambda: chat_sync(
-                        MODEL_NAME,
+                        AGENT_MODEL_NAME,          # needs tool calling; MODEL_NAME may be a chat-only model
                         messages,
                         tools=all_tools,
                         think=True,

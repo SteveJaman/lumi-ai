@@ -26,6 +26,11 @@ LLM_ENDPOINT = "http://127.0.0.1:11434"  # not "localhost": on Windows that trie
 # 7B-8B range and verify it reads the QUICK REFERENCE block correctly.
 MODEL_NAME = "dolphin3:8b"
 FAST_MODEL_NAME = "dolphin3:8b"
+# AGENT_MODEL_NAME runs agent-mode turns. It MUST support tool calling (and
+# ideally thinking): dolphin3 supports neither, so Ollama answers 400 Bad
+# Request if it is asked to run tools. Check with:
+#   ollama show <model>     -> "Capabilities: completion, tools, thinking"
+AGENT_MODEL_NAME = "qwen3:8b"
 VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached this turn
 # GAME_AGENT_MODEL picks goals for background game agents (plugin/
 # minecraft_bot.py) so they never queue behind or evict the chat models.
