@@ -35,6 +35,7 @@ TIERS = ("haiku", "sonnet", "opus")
 DEFAULT_TIER = "sonnet"
 ROUTER_MODEL = getattr(constants, "ROUTER_MODEL", None) or getattr(constants, "GAME_AGENT_MODEL", "qwen2.5:3b")
 TIMEOUT_S = 4.0                # never hold up a reply longer than this
+COOLDOWN_S = 60.0              # after a failure, don't ask again for a minute (no 4 s wait per message)
 MAX_PROMPT_CHARS = 1500        # the router only needs the gist
 
 # Small talk the router doesn't need a model for.
@@ -60,6 +61,7 @@ _SYSTEM = (
 _TIER_WORD = re.compile(r"\b(haiku|sonnet|opus)\b", re.I)
 
 _last_error_log = {"t": 0.0}
+_down_until = {"t": 0.0}
 _lock = threading.Lock()
 
 
@@ -106,10 +108,13 @@ def route_model(prompt: str) -> str:
             return quick
         if _gaming():
             return DEFAULT_TIER                       # don't load the router model while gaming
+        if time.time() < _down_until["t"]:
+            return DEFAULT_TIER                       # it failed a moment ago: don't make every message wait
         return parse_tier(_ask_model(str(prompt)))
     except Exception as e:                            # Ollama down, model missing, timeout, bad JSON
         now = time.time()
         with _lock:
+            _down_until["t"] = now + COOLDOWN_S
             if now - _last_error_log["t"] > 300:      # say it once every 5 minutes, not every turn
                 _last_error_log["t"] = now
                 print(f"\033[90m[router] falling back to sonnet ({type(e).__name__}); "

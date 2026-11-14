@@ -11,6 +11,9 @@ from modules import model_router as mr
 @pytest.fixture(autouse=True)
 def no_gaming(monkeypatch):
     monkeypatch.setattr(constants, "GAMING_MODE", False, raising=False)
+    mr._down_until["t"] = 0.0
+    yield
+    mr._down_until["t"] = 0.0
 
 
 def asked(monkeypatch, answer=None, exc=None):
@@ -77,3 +80,26 @@ def test_the_request_is_short_bounded_and_not_thinking(monkeypatch):
 def test_tiers_map_to_claude_code_aliases_only():
     assert [mr.claude_code_model(t) for t in mr.TIERS] == ["haiku", "sonnet", "opus"]
     assert mr.claude_code_model(None) is None and mr.claude_code_model("gpt") is None
+
+
+def test_after_a_failure_the_router_is_skipped_for_a_minute(monkeypatch):
+    calls = asked(monkeypatch, exc=requests.Timeout("slow"))
+    for _ in range(3):
+        assert mr.route_model("find the memory leak in my reconnect loop") == "sonnet"
+    assert len(calls) == 1                       # only the first message paid the wait
+    mr._down_until["t"] = 0.0                    # cooldown over
+    asked(monkeypatch, "opus")
+    assert mr.route_model("find the memory leak in my reconnect loop") == "opus"
+
+
+def test_a_tier_is_never_a_model_name():
+    """Chat always runs on the configured Ollama names, never on 'sonnet' etc."""
+    import inspect
+    from modules import prompter
+    assert "haiku" not in (constants.MODEL_NAME, constants.FAST_MODEL_NAME)
+    assert not {constants.MODEL_NAME, constants.FAST_MODEL_NAME} & set(mr.TIERS)
+    src = inspect.getsource(prompter.Prompter)
+    assert "model = FAST_MODEL_NAME if use_fast else MODEL_NAME" in src
+    flat = " ".join(src.split())
+    assert "chat_sync( MODEL_NAME," in flat                      # agent turns: always the main model
+    assert "tier" not in flat.split("chat_sync(")[1].split(")")[0]   # no tier variable reaches a chat call
