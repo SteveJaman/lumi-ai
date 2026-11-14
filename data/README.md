@@ -20,6 +20,7 @@ The last column separates disposable files from destructive deletes. "Yes" means
 
 | Path | Contents | Safe to delete? |
 |---|---|---|
+| `data/display.json` | Display settings from the web client: 12/24-hour clock, units, and the city you typed for the weather. Git-ignored | Resets to 12-hour, °F, no weather |
 | `data/memories/chroma.db/` | ChromaDB vector store. A directory, not a file. Holds two collections: `neuro_collection` (personal memories) and `library_docs` (uploaded files and their sidecars). | Loses both |
 | `data/memories/users.db` | SQLite user accounts and sessions | Loses accounts |
 | `data/memories/emotional_state/` | Per-user emotional state JSON | Yes |

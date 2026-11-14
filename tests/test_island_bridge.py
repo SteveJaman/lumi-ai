@@ -4,14 +4,16 @@ websocket clients on a free port; the workspace hub is faked."""
 
 import asyncio
 import json
+import os
 import socket
+import tempfile
 import threading
 import types
 
 import aiohttp
 import pytest
 
-from modules import hitl_server, island_bridge
+from modules import hitl_server, home_info, island_bridge
 from modules.workspace_hub import InvalidInput, NotConnected, ProviderError
 from signals import Signals, _History
 
@@ -60,12 +62,13 @@ class Env:
         self.server = hitl_server.HITLServer("127.0.0.1", free_port())
         self.token = token
         self.sessions = []
+        self.info = home_info.HomeInfo(os.path.join(tempfile.mkdtemp(), "display.json"))   # never your real settings
 
     async def __aenter__(self):
         if self.token:
             self.server.set_token(self.token)
         await self.server.start(self.sig)
-        island_bridge.install(self.sig, self.server)
+        island_bridge.install(self.sig, self.server, info=self.info)
         return self
 
     async def __aexit__(self, *exc):
@@ -343,4 +346,50 @@ def test_a_handler_that_blows_up_reports_and_keeps_the_socket():
             await ws.send_json({"type": "no-such-thing"})
             await ws.send_json({"type": "get_home"})
             await recv(ws, "home")
+    run(t())
+
+
+# ── display preferences + weather ─────────────────────────────────
+
+def test_home_carries_the_users_time_format_and_units():
+    async def t():
+        async with Env() as e:
+            e.info.update({"time_format": "24h", "units": "metric"})
+            ws = await e.connect()
+            await ws.send_json({"type": "get_home"})
+            prefs = (await recv(ws, "home"))["prefs"]
+            assert prefs["time_format"] == "24h" and prefs["units"] == "metric" and prefs["has_location"] is False
+    run(t())
+
+
+def test_weather_replies_with_a_reading_or_a_reason():
+    async def t():
+        async with Env() as e:
+            ws = await e.connect()
+            await ws.send_json({"type": "get_weather", "id": 1})
+            res = await recv(ws, "weather")
+            assert res["id"] == 1 and res["weather"] is None and res["code"] == "not_configured" and "Settings" in res["error"]
+
+            e.info.get_weather = lambda refresh=False: {"temp": 58, "unit": "°F", "text": "Overcast", "refreshed": refresh}
+            await ws.send_json({"type": "get_weather", "refresh": True})
+            assert (await recv(ws, "weather"))["weather"]["refreshed"] is True
+
+            def down(refresh=False): raise home_info.HomeInfoError("Couldn't reach the weather service.")
+            e.info.get_weather = down
+            await ws.send_json({"type": "get_weather"})
+            res = await recv(ws, "weather")
+            assert res["code"] == "network" and res["weather"] is None
+            await ws.send_json({"type": "get_home"})                 # the socket survived
+            await recv(ws, "home")
+    run(t())
+
+
+def test_changing_a_setting_in_the_web_app_reaches_an_open_island_at_once():
+    async def t():
+        async with Env() as e:
+            ws = await e.connect()
+            await recv(ws, "hello_ok")
+            threading.Thread(target=lambda: e.info.update({"time_format": "24h"})).start()     # the web route runs in an executor
+            push = await recv(ws, "prefs")
+            assert push["prefs"]["time_format"] == "24h"
     run(t())

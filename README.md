@@ -174,7 +174,7 @@ for the pipeline.
 - **Lumi Island.** A small always-on-top island at the top of your screen
   (a lightweight Tauri app started from **Settings, then General**). Lumi's
   face, a looping video, is its icon, ringed by her live status. Hover to
-  peek and click to open three mini-apps: **Home** (next event, today, unread),
+  peek and click to open three mini-apps: **Home** (time, day and weather, next event, today, unread),
   **Chat** (talk to her without leaving your game), and **Calendar** (your
   Google Calendar as list, day, month or year). Tool approvals take it over
   until you answer. See [island/README.md](island/README.md).

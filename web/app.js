@@ -7,6 +7,7 @@
    ============================================================ */
 
 import * as workspace from './workspace.js';
+import * as display from './display.js';
 
 const $  = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -103,6 +104,7 @@ async function api(path, { method = 'GET', body, csrf = false } = {}) {
   return data;
 }
 
+display.init({ api });
 workspace.init({
   $, state, api, navigate,
   openSettingsTab: (id) => { _settingsState.activeTab = id; navigate('settings'); },
@@ -5408,6 +5410,7 @@ function renderGeneralTab(panel, data) {
 
   panel.appendChild(buildGamingModeField());
   panel.appendChild(buildIslandField());
+  panel.appendChild(display.buildDisplayCard());
 
   panel.appendChild(buildSettingsField({
     label: 'Timezone',

@@ -59,6 +59,10 @@
   let gaming = false;
   let queue = [];                  // pending approvals
   let home = { snapshot: null, today: null };
+  // Settings → General → Display in the web client; pushed to us when changed.
+  let prefs = { time_format: '12h', units: 'imperial', location: '', place: '', has_location: false };
+  let wx = { weather: null, error: null, code: null };
+  let clockTimer = null;
 
   const effStatus = () => (conn !== 'online' ? conn : (gaming && lumiState === 'idle' ? 'gaming' : lumiState));
 
@@ -74,6 +78,7 @@
     $('approval').inert = next !== 'approval';
     if (!grows) setTimeout(() => { if (state === next) fit(w, h); }, MORPH_MS);
     syncVideo();
+    syncClock();
     if (next === 'open' && app === 'chat') focusComposer();
   }
 
@@ -169,6 +174,7 @@
         cal.cache.clear();                       // calendar may have changed
         if (state === 'open' && app === 'calendar') loadCalendar(true);
         break;
+      case 'prefs': applyPrefs(msg.prefs); break;
       case 'chat_message': addMessage(msg.message); break;
       case 'chat_reset': loadChat(); break;
       case 'approval_request':
@@ -191,6 +197,7 @@
     app = name;
     document.querySelectorAll('.tab').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.app === name)));
     document.querySelectorAll('.app').forEach((s) => s.classList.toggle('on', s.id === `app-${name}`));
+    syncClock();
     if (name === 'home') loadHome();
     if (name === 'chat') { scrollMsgs(true); if (state === 'open') focusComposer(); }
     if (name === 'calendar') loadCalendar();
@@ -226,11 +233,67 @@
     try {
       const res = await req('get_home');
       home.snapshot = res.snapshot;
+      if (res.prefs) prefs = { ...prefs, ...res.prefs };
       if (STATUS_TEXT[res.state]) lumiState = res.state;
       render();
     } catch (_) { /* offline: keep what we have */ }
     renderHome();
+    syncClock();
     loadToday();
+    loadWeather(false);
+  }
+
+  // ── Now: time, day, weather ────────────────────────────────────
+  const is12 = () => prefs.time_format !== '24h';
+  const timeOpts = () => (is12() ? { hour: 'numeric', minute: '2-digit', hour12: true }
+                                 : { hour: '2-digit', minute: '2-digit', hour12: false, hourCycle: 'h23' });
+  function renderNow() {
+    const d = new Date();
+    const parts = new Intl.DateTimeFormat([], timeOpts()).formatToParts(d);
+    $('clock-t').textContent = parts.filter((p) => p.type !== 'dayPeriod').map((p) => p.value).join('').trim();
+    $('clock-ap').textContent = (parts.find((p) => p.type === 'dayPeriod') || {}).value || '';
+    $('date').textContent = d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+  }
+  // One tick a minute, and only while Home is actually on screen.
+  function syncClock() {
+    clearTimeout(clockTimer); clockTimer = null;
+    if (state !== 'open' || app !== 'home') return;
+    renderNow();
+    clockTimer = setTimeout(syncClock, 60000 - (Date.now() % 60000) + 50);
+  }
+  async function loadWeather(force) {
+    try {
+      const res = await req('get_weather', { refresh: !!force });
+      wx = { weather: res.weather, error: res.error || null, code: res.code || null };
+    } catch (_) { return; }
+    renderWeather();
+  }
+  function renderWeather() {
+    const w = wx.weather;
+    if (!w) {
+      const none = wx.code === 'not_configured';
+      $('wx-icon').textContent = none ? '' : '\u2601\uFE0F';
+      $('wx-temp').textContent = none ? 'No weather' : 'Weather offline';
+      $('wx-text').textContent = '';
+      $('wx-sub').textContent = none ? 'Add your city in Lumi: Settings, then General, then Display.' : (wx.error || '');
+      return;
+    }
+    $('wx-icon').textContent = w.icon;
+    $('wx-temp').textContent = `${w.temp}${w.unit}`;
+    $('wx-text').textContent = w.text;
+    const bits = [];
+    if (w.high != null && w.low != null) bits.push(`H ${w.high}\u00B0  L ${w.low}\u00B0`);
+    if (w.precip != null) bits.push(`Rain ${w.precip}%`);
+    if (w.feels != null) bits.push(`Feels ${w.feels}\u00B0`);
+    bits.push((w.place || '').split(', ').slice(0, 2).join(', '));      // "Kennesaw, Georgia", not the country too
+    $('wx-sub').textContent = bits.filter(Boolean).join('  \u00B7  ') + (w.stale ? '  (old reading)' : '');
+  }
+  function applyPrefs(p) {
+    if (!p) return;
+    const placeChanged = p.place !== prefs.place || p.units !== prefs.units || p.has_location !== prefs.has_location;
+    prefs = { ...prefs, ...p };
+    syncClock(); renderHome(); drawCal();
+    if (placeChanged) loadWeather(true);
   }
 
   async function loadToday() {
@@ -285,7 +348,7 @@
       const start = ev.all_day ? new Date(`${ev.start.slice(0, 10)}T00:00:00`) : new Date(ev.start);
       $('next-title').textContent = ev.title;
       const when = ev.all_day ? start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
-                              : start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+                              : clock(start);
       $('next-sub').textContent = [untilText(start, ev.all_day), when, ev.location].filter(Boolean).join('  ·  ');
     } else {
       $('next-title').textContent = 'Nothing scheduled';
@@ -403,7 +466,7 @@
   const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
   const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const clock = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const clock = (d) => d.toLocaleTimeString([], timeOpts());
   const sameDay = (a, b) => ymd(a) === ymd(b);
   const MONTHS = Array.from({ length: 12 }, (_, i) => new Date(2000, i, 1).toLocaleDateString([], { month: 'long' }));
   const WEEKDAYS = Array.from({ length: 7 }, (_, i) => new Date(2023, 0, 1 + i).toLocaleDateString([], { weekday: 'short' }));   // Sunday first
@@ -556,7 +619,7 @@
     const grid = el('div', 'grid');
     for (let h = 0; h < 24; h++) {
       const row = el('div', 'hour');
-      row.append(el('span', '', new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })));
+      row.append(el('span', '', is12() ? new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric', hour12: true }) : `${pad(h)}:00`));
       grid.append(row);
     }
     const dayStart = startOfDay(cal.cursor), dayEnd = addDays(dayStart, 1);

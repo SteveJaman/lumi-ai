@@ -9,6 +9,8 @@
    as HTML: mail and event titles are written by strangers.
    ============================================================ */
 
+import * as display from './display.js';
+
 let C = null;       // { $, state, api, navigate, openSettingsTab }
 export function init(ctx) { C = ctx; }
 
@@ -84,7 +86,7 @@ function dayLabel(d) {
   return diff === 0 ? `Today · ${date}` : diff === 1 ? `Tomorrow · ${date}` : date;
 }
 function when(s, allDay) { return allDay ? new Date(`${s}T00:00:00`) : new Date(s); }
-function clock(d) { return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+function clock(d) { return d.toLocaleTimeString([], display.timeOpts()); }      // follows Settings → Display
 function mailDate(ts) {
   if (!ts) return '';
   const d = new Date(ts * 1000);
@@ -111,6 +113,7 @@ function notice(root, message, { retry, connections } = {}) {
 
 export async function renderWorkspace(main) {
   stop();
+  await display.load();     // the 12/24-hour preference, before any time is drawn
   main.innerHTML = `
     <div class="page">
       <div class="page-header">

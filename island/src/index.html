@@ -40,6 +40,20 @@
 
       <!-- Home -->
       <section id="app-home" class="app" aria-label="Home">
+        <div class="card now">
+          <div class="now-time">
+            <div class="clock"><span id="clock-t">--:--</span><span id="clock-ap" class="ap"></span></div>
+            <div id="date" class="date"></div>
+          </div>
+          <div class="wx">
+            <div id="wx-icon" class="wx-icon" aria-hidden="true"></div>
+            <div class="wx-main">
+              <div id="wx-temp" class="wx-temp">--</div>
+              <div id="wx-text" class="wx-text"></div>
+            </div>
+          </div>
+          <div id="wx-sub" class="wx-sub"></div>
+        </div>
         <div class="card next">
           <div class="label">Next up</div>
           <div id="next-title" class="next-title">Nothing scheduled</div>

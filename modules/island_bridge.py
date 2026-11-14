@@ -4,7 +4,8 @@ same authenticated socket as tool approvals (modules/hitl_server.py).
 
 Client -> server (after the hello handshake), each with an optional "id"
 that is echoed back:
-    get_home                       -> home {snapshot, state, gaming}
+    get_home                       -> home {snapshot, state, prefs}
+    get_weather {refresh}          -> weather {weather} | {error, code}
     get_calendar {start, end}      -> calendar {events, at} | {error, code}
     get_chat {limit}               -> chat {messages: [{n, role, content}]}
     chat_send {text}               -> chat_ack {ok} | error
@@ -15,6 +16,7 @@ Server -> client (pushed, never polled):
     chat_message {message}         a message was added to the chat
     chat_reset                     the chat was wiped or rewritten
     snapshot {snapshot}            next event + unread changed
+    prefs {prefs}                  12/24 h, units or weather city changed in the web client
 
 Everything the island can do is something the signed-in owner can already do
 in the web client; the socket is loopback-only, origin-checked, and (when
@@ -24,7 +26,7 @@ Lumi launches the island) needs the per-launch secret.
 import asyncio
 import time
 
-from modules import hitl_server
+from modules import hitl_server, home_info
 from modules.workspace_hub import NotConnected, ProviderError
 
 MAX_CHAT_CHARS = 4000
@@ -49,7 +51,7 @@ def shape(n: int, msg: dict) -> dict:
     return {"n": n, "role": msg["role"], "content": msg["content"][:MAX_MESSAGE_CHARS]}
 
 
-def install(signals, server=None) -> None:
+def install(signals, server=None, info=None) -> None:
     """Register the handlers and the push hooks. Safe to call once, at boot,
     after the approval server exists. `server` is for tests; production uses
     the module singleton."""
@@ -57,6 +59,7 @@ def install(signals, server=None) -> None:
     send = server.send if server else hitl_server.send
     push = server.broadcast_threadsafe if server else hitl_server.broadcast_threadsafe
     state = {"last_send": 0.0}
+    prefs_src = info if info is not None else home_info.instance()
 
     def hub():
         return getattr(signals, "workspace_hub", None)
@@ -67,7 +70,19 @@ def install(signals, server=None) -> None:
             "type": "home", "id": data.get("id"),
             "snapshot": h.get_compressed_snapshot() if h is not None else None,
             "state": hitl_server.HITLServer._status_of(signals),
+            "prefs": prefs_src.get_prefs(),
         })
+
+    async def weather(ws, data):
+        base = {"type": "weather", "id": data.get("id")}
+        loop = asyncio.get_running_loop()
+        try:
+            wx = await loop.run_in_executor(None, prefs_src.get_weather, bool(data.get("refresh")))
+        except home_info.NotConfigured as e:
+            return await send(ws, {**base, "weather": None, "error": str(e), "code": "not_configured"})
+        except home_info.HomeInfoError as e:
+            return await send(ws, {**base, "weather": None, "error": str(e), "code": "network"})
+        await send(ws, {**base, "weather": wx})
 
     async def calendar(ws, data):
         base = {"type": "calendar", "id": data.get("id")}
@@ -113,6 +128,7 @@ def install(signals, server=None) -> None:
         await send(ws, {**base, "ok": True})
 
     reg("get_home", home)
+    reg("get_weather", weather)
     reg("get_calendar", calendar)
     reg("get_chat", chat)
     reg("chat_send", chat_send)
@@ -126,6 +142,8 @@ def install(signals, server=None) -> None:
                 push({"type": "chat_message", "message": shape(start + offset, m)})
 
     signals.on_history_change = on_history
+
+    prefs_src.add_listener(lambda prefs: push({"type": "prefs", "prefs": prefs}))
 
     h = hub()
     if h is not None:

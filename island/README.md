@@ -6,8 +6,11 @@ its icon: a looping video cropped from her art, ringed by her live status
 (here, thinking, speaking, gaming, offline). Open it for three mini-apps, so
 you don't have to switch to the web client:
 
-- **Home:** your next event, today's remaining events, and your top unread
-  mail.
+- **Home:** the time and day, the weather, your next event, today's
+  remaining events, and your top unread mail. The clock is 12- or 24-hour as
+  chosen in the web client (**Settings, then General, then Display**), and
+  changing it there updates an open island at once. Calendar times follow the
+  same choice. The weather needs a city set in that same card; see below.
 - **Chat:** talk to Lumi. Her replies appear the moment they exist, and
   while she thinks you see typing dots. Messages you send are host messages,
   the same as typing in the web client on this PC.
@@ -30,10 +33,20 @@ Behaviour is inspired by [coucou](https://github.com/Louis-CFM/coucou) (MIT).
 No coucou name, mascot, art or sounds are used. The face video is cropped
 from Lumi's own artwork (`assets/branding/`).
 
+## Weather
+
+Weather comes from [Open-Meteo](https://open-meteo.com) (free, no account or
+key). It is off until you enter a city under **Settings, then General, then
+Display**. The city name is sent once to find its coordinates, then the
+coordinates are sent to fetch the forecast. There is no IP lookup or
+auto-detect. A reading is kept for 15 minutes and fetched only when the Home
+tab asks, so nothing runs in the background. °F or °C is a setting too.
+
 ## Idle cost
 
 Hidden, the island plays no video and runs no timers; a reconnect timer only
-runs while Lumi is unreachable. The video also pauses in Gaming Mode.
+runs while Lumi is unreachable. The Home clock ticks once a minute, and only
+while the island is open on Home. The video also pauses in Gaming Mode.
 
 ## Build once
 

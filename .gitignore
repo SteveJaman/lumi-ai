@@ -79,6 +79,12 @@ data/memories/
 # OAuth client + tokens (Google, Microsoft) and the cached mailbox/calendar.
 # Never commit these.
 data/credentials/
+
+# Small per-machine settings written by the web client (display.json holds
+# the city you typed for the weather).
+data/display.json
+data/gaming_mode.json
+data/island.json
 data/workspace/
 !data/memories/readme.md
 !data/memories/.gitkeep

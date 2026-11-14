@@ -594,9 +594,10 @@ approval server (`register_handler`).
 ```
 Lumi Island (Tauri) ──ws://127.0.0.1:5090/hitl──► hitl_server  ── approvals (Future per request)
   hello {token} first                              │
-  get_home / get_calendar / get_chat / chat_send   └─► island_bridge ─► workspace_hub (calendar, snapshot)
-  ◄── pushed: lumi_status, lumi_mode,                                 └► signals.history (chat)
-      chat_message, chat_reset, snapshot
+  get_home / get_weather / get_calendar /          └─► island_bridge ─► workspace_hub (calendar, snapshot)
+  get_chat / chat_send                                               ├► home_info (12/24 h, units, weather)
+  ◄── pushed: lumi_status, lumi_mode,                                └► signals.history (chat)
+      chat_message, chat_reset, snapshot, prefs
 ```
 
 - **Handshake.** When Lumi launches the island, `IslandManager` makes a fresh
@@ -622,6 +623,14 @@ Lumi Island (Tauri) ──ws://127.0.0.1:5090/hitl──► hitl_server  ── 
   `WorkspaceHub.get_events_range()`: served from the 30-day cache when the
   range sits inside it, otherwise fetched from Google (paginated, up to 400
   days) and kept in memory for 5 minutes, at most 12 ranges.
+- **Display preferences and weather.** `modules/home_info.py` stores the
+  12/24-hour clock, °F/°C and the weather city in `data/display.json` (edited
+  under Settings → General → Display, `GET/PUT /api/settings/display`, host-only,
+  applied immediately). `get_home` carries them; a change pushes `prefs` to an
+  open island. `get_weather` returns an Open-Meteo reading, cached 15 minutes
+  and fetched only on request. Nothing is sent to Open-Meteo until a city is
+  set; then the city name once (to find coordinates) and the coordinates after.
+  If the service is down the last reading is returned marked `stale`.
 - **Approvals** still work exactly as described above; the island only adds
   messages around them.
 
