@@ -2626,6 +2626,11 @@ class Prompter:
             return f"Moved avatar to: {loc}"
 
         if name == claude_code.TOOL_NAME:
+            if not self.agent_mode_enabled:
+                # Hard gate: Claude Code spends your Claude plan, so it only runs
+                # while AI agent mode is switched on in the web app.
+                return ("Claude Code is only available when AI agent mode is switched on in Lumi's web app. "
+                        "Tell the user to turn it on if they want this.")
             if not claude_code.available():
                 return "Claude Code isn't available on this PC (or it's switched off in constants.py)."
             mode = "edit" if str(arguments.get("mode") or "") == "edit" else "read_only"
@@ -2721,7 +2726,7 @@ class Prompter:
         hub = getattr(self.signals, "workspace_hub", None)
         if hub is not None and hub.any_connected():
             all_tools = all_tools + workspace_hub.TOOL_SCHEMAS
-        if claude_code.available():
+        if self.agent_mode_enabled and claude_code.available():      # never offered while agent mode is off
             all_tools = all_tools + [claude_code.TOOL_SCHEMA]
         sdk = getattr(self.signals, "sdk", None)
         if sdk is not None:

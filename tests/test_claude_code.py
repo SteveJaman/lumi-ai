@@ -225,6 +225,7 @@ def make_prompter(approve, monkeypatch, ran):
     models.clear()
     p = Prompter.__new__(Prompter)
     p.signals = types.SimpleNamespace(workspace_hub=None, sdk=None)
+    p.agent_mode_enabled = True
     p.modules = []
     asked, agents = [], []
 
@@ -346,3 +347,20 @@ def test_the_office_card_follows_the_run(monkeypatch):
     with pytest.raises(RuntimeError):
         dispatch(p, {"task": "explain it again"})
     assert agent_tracker.get("office")["status"] == "error"          # stays on show until the next run
+
+
+def test_claude_code_never_runs_while_agent_mode_is_off(monkeypatch):
+    ran = []
+    p, asked = make_prompter(True, monkeypatch, ran)
+    p.agent_mode_enabled = False
+    out = dispatch(p, {"task": "explain the reconnect loop"})
+    assert "agent mode" in out and ran == [] and asked == []        # no approval prompt, no Claude call
+    p.agent_mode_enabled = True
+    assert dispatch(p, {"task": "explain the reconnect loop"}) == "done"
+
+
+def test_the_tool_isnt_even_offered_while_agent_mode_is_off():
+    import inspect
+    from modules import prompter
+    src = inspect.getsource(prompter.Prompter)
+    assert "self.agent_mode_enabled and claude_code.available()" in src
