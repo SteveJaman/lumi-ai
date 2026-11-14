@@ -267,7 +267,7 @@ def test_research_product_builds_a_budgeted_table(monkeypatch):
 
     async def scrape(ctx, urls):
         assert "http://127.0.0.1/admin" not in urls
-        return {u: "page text " * 100 for u in urls}
+        return {u: "Anker Q30 $59.99 rated 4.4 of 5. Sony XM5 $329.00. " * 20 for u in urls}
     monkeypatch.setattr(finance_agent, "_scrape", scrape)
     monkeypatch.setattr(finance_agent, "ask_llm", fake_llm(
         {"products": [{"name": "Anker Q30", "price": 59.99, "key_specs": "ANC, 40h", "rating": "4.4/5"}]},
