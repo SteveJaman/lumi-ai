@@ -50,6 +50,14 @@ FAST_MODEL_ENABLED = True
 FAST_MODEL_NUM_CTX = 8192
 MAIN_NUM_CTX = 8192
 FAST_MODEL_KEEP_ALIVE = "30m"  # it fits in VRAM next to GAME_AGENT_MODEL; a reload costs ~8 s
+
+# Gaming Mode: free VRAM/CPU while a heavy game runs. Chat models load
+# with keep_alive=0 (unloaded right after each reply, so every reply pays
+# a reload), and the Minecraft agent sleeps until it gets an order through
+# the API. Toggled at runtime by POST /api/gaming_mode or the Settings
+# page (modules/gaming_mode.py); the last setting is kept in
+# data/gaming_mode.json and wins over this default on boot.
+GAMING_MODE = False
 AUDIO_OUTPUT_MODE = "both"
 OUTPUT_DEVICE_INDEX = [24, 20]
 

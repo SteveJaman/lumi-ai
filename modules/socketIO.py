@@ -640,6 +640,8 @@ class SocketIOServer:
         r.add_post("/api/chat/upload",  self._handle_chat_upload)
         r.add_post("/api/tts/interrupt", self._handle_tts_interrupt)
         r.add_post("/api/agent/toggle", self._handle_agent_toggle)
+        r.add_get("/api/gaming_mode",   self._handle_gaming_mode_get)
+        r.add_post("/api/gaming_mode",  self._handle_gaming_mode_toggle)
 
         # Background game agents (modules/game_manager.py). Host-only:
         # neither route is in _REMOTE_API_ALLOW.
@@ -1430,6 +1432,41 @@ class SocketIOServer:
         return web.json_response({
             "enabled": self.prompter.agent_mode_enabled,
         })
+
+    async def _handle_gaming_mode_get(self, request):
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        from modules import gaming_mode
+        return web.json_response({"enabled": gaming_mode.is_enabled()})
+
+    async def _handle_gaming_mode_toggle(self, request):
+        """POST /api/gaming_mode. Body {"enabled": bool} sets it; an
+        empty body toggles it. Host-only (not in _REMOTE_API_ALLOW)."""
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        from modules import gaming_mode
+        enabled = body.get("enabled")
+        if enabled is None:
+            enabled = not gaming_mode.is_enabled()
+        elif not isinstance(enabled, bool):
+            return _json_error(400, "'enabled' must be true or false.")
+        # Unloading models talks to Ollama; keep it off the event loop.
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(
+            None, gaming_mode.set_enabled, enabled, self.signals)
+        return web.json_response(data)
 
     # ------------------------------------------------------------------
     # Game agents

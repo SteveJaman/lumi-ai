@@ -45,6 +45,8 @@ GREEN = "\033[92m"
 YELLOW = "\033[93m"
 
 from modules.speech_filter import strip_slurs
+from modules import hitl_server
+from modules import gaming_mode
 
 SENTENCE_SPLIT_PATTERN = re.compile(r'(?<=[.!?;\n])\s+')
 
@@ -1591,7 +1593,7 @@ class Prompter:
             resp: LLMResponse = await loop.run_in_executor(
                 None,
                 lambda: chat_sync(model, messages, think=False,
-                                  keep_alive=FAST_MODEL_KEEP_ALIVE if use_fast else "30s",
+                                  keep_alive=gaming_mode.keep_alive(FAST_MODEL_KEEP_ALIVE if use_fast else "30s"),
                                   options={"temperature": 0.9, "num_predict": 64,
                                            "num_ctx": FAST_MODEL_NUM_CTX if use_fast
                                            else MAIN_NUM_CTX}),
@@ -1608,7 +1610,7 @@ class Prompter:
                 resp = await loop.run_in_executor(
                     None,
                     lambda: chat_sync(model, messages, think=False,
-                                      keep_alive=FAST_MODEL_KEEP_ALIVE if use_fast else "30s",
+                                      keep_alive=gaming_mode.keep_alive(FAST_MODEL_KEEP_ALIVE if use_fast else "30s"),
                                       options={"temperature": 1.1, "num_predict": 64,
                                                "num_ctx": FAST_MODEL_NUM_CTX if use_fast
                                                else MAIN_NUM_CTX}),
@@ -1643,7 +1645,8 @@ class Prompter:
             label = "fast" if use_fast else "full"
             think_flag = not use_fast
 
-        keep_alive = FAST_MODEL_KEEP_ALIVE if use_fast else "30s"
+        # Gaming Mode: 0 unloads the model from VRAM right after the reply.
+        keep_alive = gaming_mode.keep_alive(FAST_MODEL_KEEP_ALIVE if use_fast else "30s")
     
     
         context_injections = self.gather_injections(latest_user_text, agent_context=False)
@@ -2317,14 +2320,21 @@ class Prompter:
         except Exception as e:
             return f"System Info - Search error: {e}"
 
-    async def _confirm(self, prompt_text):
-        loop = asyncio.get_running_loop()
-        self.signals.input_paused = True
+    async def _confirm(self, tool_name, arguments, timeout=120):
+        """Ask the human to approve a tool call.
+
+        Routes through the HITL WebSocket server when a client is
+        connected (auto-declines after `timeout`), otherwise falls back
+        to a terminal y/n prompt.
+        """
         try:
-            answer = await loop.run_in_executor(None, input, prompt_text)
-        finally:
-            self.signals.input_paused = False
-        return answer.strip().lower() in ("y", "yes")
+            preview = json.dumps(arguments, indent=2, ensure_ascii=False,
+                                 default=str)
+        except (TypeError, ValueError):
+            preview = str(arguments)
+        if len(preview) > 4000:
+            preview = preview[:4000] + "\n... (truncated)"
+        return await hitl_server.request_approval(tool_name, preview, timeout)
 
     async def _dispatch_tool_call(self, name, arguments):
         loop = asyncio.get_running_loop()
@@ -2377,9 +2387,7 @@ class Prompter:
 
                 if needs_confirm:
                     print(f"\n{GRAY}[SDK] '{action_name}' wants to run{RESET}")
-                    allowed = await self._confirm(
-                        f"{GRAY}  -> Allow this? (y/n): {RESET}"
-                    )
+                    allowed = await self._confirm(name, arguments)
                     if not allowed:
                         return "The user declined to allow this SDK action."
 
@@ -2567,7 +2575,7 @@ class Prompter:
         print(f"\n{GRAY}[Lumi wants to use tool: {name}({arguments})]{RESET}")
 
         if name in CONFIRM_REQUIRED_TOOLS:
-            allowed = await self._confirm(f"{GRAY}  -> Allow this? (y/n): {RESET}")
+            allowed = await self._confirm(name, arguments)
             if not allowed:
                 return "The user declined to allow this action."
 
@@ -2642,7 +2650,7 @@ class Prompter:
                         messages,
                         tools=all_tools,
                         think=True,
-                        keep_alive="30s",
+                        keep_alive=gaming_mode.keep_alive("30s"),
                         options=agent_options,
                     ),
                 )
@@ -2966,6 +2974,9 @@ class Prompter:
         return "I've hit my step limit working on that one — want me to keep going, or narrow it down?"
 
     async def run(self):
+        # The HITL server must share this loop so approval Futures
+        # resolve here without cross-thread hand-offs.
+        await hitl_server.start(self.signals)
         while not self.signals.terminate:
             if self.signals.new_message and not self.signals.AI_thinking and not self.signals.AI_speaking:
                 self.signals.AI_thinking = True

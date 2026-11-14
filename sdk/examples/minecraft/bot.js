@@ -3004,7 +3004,9 @@ async function voyagerOr(code, label, fallback) {
 
 async function handleStop(_args) {
   if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
-  bot.pathfinder.setGoal(null);
+  // Everything, not just the path goal: a running skill would otherwise
+  // set a new one (Gaming Mode relies on this to park the bot).
+  stopAllActivity();
   return { success: true, message: "Stopped movement" };
 }
 

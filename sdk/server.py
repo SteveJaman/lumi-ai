@@ -131,6 +131,13 @@ def _save_allowlist(data: Dict[str, Any]) -> bool:
 
 # ─── Internal state ───────────────────────────────────────────────
 
+def _gaming_mode_message(wake: bool, enabled: Optional[bool] = None) -> Dict[str, Any]:
+    import constants
+    on = constants.GAMING_MODE if enabled is None else enabled
+    return {"command": ServerCommand.GAMING_MODE,
+            "data": {"enabled": bool(on), "wake": bool(wake)}}
+
+
 @dataclass
 class RegisteredAction:
     spec: ActionSpec
@@ -349,6 +356,7 @@ class SDKServer(Module):
                 Session(session_id=client_id, display_name="Lumi Voidwright"),
                 protocol_version=SDK_PROTOCOL_VERSION,
             ))
+            await ws.send_json(_gaming_mode_message(wake=False))
 
             if not client.approved:
                 hub_emit(
@@ -759,6 +767,27 @@ class SDKServer(Module):
         except asyncio.TimeoutError:
             client.pending_invocations.pop(inv_id, None)
             return {"success": False, "error": "action timed out"}
+
+    def broadcast_gaming_mode(self, enabled: bool, wake: bool = False) -> None:
+        """Thread-safe: push Gaming Mode (and an optional wake) to every
+        client. Game agents sleep on it instead of polling."""
+        if not self.clients or self._loop is None:
+            return
+        payload = _gaming_mode_message(wake=wake, enabled=enabled)
+
+        async def _send_all():
+            for c in list(self.clients.values()):
+                if c.ws.closed:
+                    continue
+                try:
+                    await c.ws.send_json(payload)
+                except Exception:
+                    pass
+
+        try:
+            asyncio.run_coroutine_threadsafe(_send_all(), self._loop)
+        except Exception:
+            pass
 
     def broadcast_lumi_message(self, content: str, role: str = "assistant"):
         if not self.clients:

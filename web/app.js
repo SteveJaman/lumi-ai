@@ -5383,6 +5383,8 @@ function renderGeneralTab(panel, data) {
     'write and changes take effect on the next turn — no restart required.';
   panel.appendChild(help);
 
+  panel.appendChild(buildGamingModeField());
+
   panel.appendChild(buildSettingsField({
     label: 'Timezone',
     help: 'IANA timezone name, e.g. America/New_York or Europe/London.',
@@ -5428,6 +5430,57 @@ function renderGeneralTab(panel, data) {
   saveBtn.addEventListener('click', onSaveGeneral);
   actions.appendChild(saveBtn);
   panel.appendChild(actions);
+}
+
+// Gaming Mode applies the moment it's flipped (POST /api/gaming_mode),
+// separate from the Save button below.
+function buildGamingModeField() {
+  const wrap = document.createElement('div');
+  wrap.className = 'settings-field settings-toggle';
+
+  const text = document.createElement('div');
+  const lbl = document.createElement('div');
+  lbl.className = 'settings-label';
+  lbl.id = 'gaming-mode-label';
+  lbl.textContent = 'Gaming Mode';
+  const h = document.createElement('div');
+  h.className = 'settings-field-help';
+  h.textContent = 'Frees VRAM and CPU for a heavy game: models unload after ' +
+    'every reply (replies start slower), and the Minecraft agent rests ' +
+    'until you send it an order.';
+  text.append(lbl, h);
+
+  const sw = document.createElement('label');
+  sw.className = 'switch';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.disabled = true;
+  input.setAttribute('aria-labelledby', 'gaming-mode-label');
+  const knob = document.createElement('span');
+  knob.className = 'switch-slider';
+  sw.append(input, knob);
+  wrap.append(text, sw);
+
+  api('/api/gaming_mode')
+    .then(d => { input.checked = !!d.enabled; })
+    .catch(() => { h.textContent += ' (Couldn’t read the current state.)'; })
+    .finally(() => { input.disabled = false; });
+
+  input.addEventListener('change', async () => {
+    input.disabled = true;
+    try {
+      const d = await api('/api/gaming_mode', {
+        method: 'POST', csrf: true, body: { enabled: input.checked },
+      });
+      input.checked = !!d.enabled;
+    } catch (e) {
+      input.checked = !input.checked;
+      alert(`Couldn't switch Gaming Mode: ${e.message}`);
+    } finally {
+      input.disabled = false;
+    }
+  });
+  return wrap;
 }
 
 function buildSettingsField({ label, help, value, key, type = 'text' }) {

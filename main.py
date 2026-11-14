@@ -30,6 +30,7 @@ from modules.self_model import SelfModel
 from modules.obs_control import OBSControl
 from modules.tunnel import start_quick_tunnel
 from modules.game_manager import GameManager
+from modules import gaming_mode
 
 from sdk.server import SDKServer
 
@@ -190,6 +191,11 @@ def main():
     signals.log_hub.start()
 
     _global_signals = signals
+
+    # Gaming Mode survives restarts (data/gaming_mode.json).
+    if gaming_mode.load_persisted():
+        print("Gaming Mode is ON: models unload after each reply, "
+              "Minecraft agent sleeps until ordered.")
 
     # MicInput spins up its own local Whisper model (~1 GB RAM, several
     # seconds of startup). Skip it entirely when audio is routed to

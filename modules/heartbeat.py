@@ -22,6 +22,7 @@ import datetime
 import requests
 
 from modules.module import Module
+from modules import gaming_mode
 from constants import (LLM_ENDPOINT, MODEL_NAME, AI_NAME, HOST, FAST_MODEL_NAME,
                        FAST_MODEL_ENABLED, FAST_MODEL_NUM_CTX, FAST_MODEL_KEEP_ALIVE,
                        get_chat_system_prompt)
@@ -337,7 +338,7 @@ class Heartbeat(Module):
                 [{"role": "system", "content": get_chat_system_prompt()},
                  {"role": "user", "content": prompt}],
                 think=False,
-                keep_alive=FAST_MODEL_KEEP_ALIVE if fast else None,
+                keep_alive=gaming_mode.keep_alive(FAST_MODEL_KEEP_ALIVE if fast else None),
                 options={"temperature": 0.7, "top_p": 0.9, "num_predict": 120,
                          **({"num_ctx": FAST_MODEL_NUM_CTX} if fast else {})},
             )
