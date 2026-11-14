@@ -30,9 +30,23 @@ fn fit(window: WebviewWindow, width: f64, height: f64) -> Result<(), String> {
     Ok(())
 }
 
+/// The per-launch secret Lumi put in this process's environment; the page
+/// sends it as the first message on the socket. Empty when started by hand.
+#[tauri::command]
+fn island_token() -> String {
+    std::env::var("LUMI_ISLAND_TOKEN").unwrap_or_default()
+}
+
+/// Where Lumi's approval/bridge socket listens. Lumi's island manager sets
+/// LUMI_ISLAND_WS from its configured port; the default is the standard one.
+#[tauri::command]
+fn island_ws_url() -> String {
+    std::env::var("LUMI_ISLAND_WS").unwrap_or_else(|_| "ws://127.0.0.1:5090/hitl".to_string())
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![fit])
+        .invoke_handler(tauri::generate_handler![fit, island_token, island_ws_url])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("island") {
                 let _ = fit(window, 200.0, 8.0);

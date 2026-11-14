@@ -23,6 +23,7 @@ web/
 ├── index.html      SPA shell only (sidebar, #main-content); auth lives on /login
 ├── app.js          SPA router, shared helpers, and all seven pages (~4900 lines)
 ├── style.css       Design system: tokens, components, responsive and motion rules
+├── cyber.css       The cyberpunk skin, loaded after style.css: Lumi's palette, neon glows, HUD panels
 ├── theme-init.js   Blocking <head> script that applies the theme before first paint
 ├── login.html      Standalone login/register page
 ├── login.js        Form handling for login.html

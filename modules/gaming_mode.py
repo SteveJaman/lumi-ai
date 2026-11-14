@@ -59,6 +59,11 @@ def set_enabled(enabled: bool, signals=None) -> dict:
 
     unloaded = _unload_all() if enabled else []
     _push_to_sdk(signals, enabled, wake=not enabled)
+    try:
+        from modules import hitl_server
+        hitl_server.broadcast_threadsafe({"type": "lumi_mode", "gaming": enabled})
+    except Exception:
+        pass
     if signals is not None:
         hub_emit(signals, "system",
                  f"gaming mode {'ON' if enabled else 'OFF'}"

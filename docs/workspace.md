@@ -54,6 +54,13 @@ never asks to permanently delete mail.
 
 ## Connect KSU mail
 
+> **Hidden by default.** KSU doesn't let students register apps in Microsoft
+> Entra (creating one fails with a 403 "Insufficient privileges"), so the KSU
+> card and the KSU inbox filter are switched off in the web client. The code
+> still works. To bring them back, run
+> `localStorage.setItem('lumi-ksu', '1')` in the browser console and reload.
+> Option B below needs no Entra access.
+
 KSU student mail is Microsoft 365. Pick whichever of these your university
 allows.
 
@@ -193,5 +200,7 @@ enough to push over a socket:
 
 `add_listener(fn)` calls `fn(snapshot)` whenever the snapshot changes (the
 per-minute `in_min` countdown doesn't count as a change), from whichever
-thread refreshed the cache. Lumi Island isn't subscribed yet; it can register
-a listener and forward the payload over the HITL socket.
+thread refreshed the cache. Lumi Island subscribes (through
+`modules/island_bridge.py`) and shows it on its Home tab; its Calendar tab
+reads ranges through `get_events_range()`. See
+[architecture.md](architecture.md#lumi-island-bridge).

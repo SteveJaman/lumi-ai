@@ -7,20 +7,87 @@
   <link rel="stylesheet" href="island.css">
 </head>
 <body>
-  <div id="island" class="island hidden" data-status="offline">
+  <div id="island" class="island hidden" data-status="connecting">
 
-    <!-- Peek (hover) and open (click): Lumi and what she's doing -->
-    <button id="face" class="face" type="button" aria-label="Lumi">
-      <img class="avatar" src="lumi.png" alt="" draggable="false">
-      <span class="who">
-        <span class="name">Lumi</span>
-        <span id="status" class="status">Offline</span>
-      </span>
-      <span class="dot" aria-hidden="true"></span>
-    </button>
-    <p id="note" class="note">Nothing needs you. Approval requests will appear here.</p>
+    <!-- Header: Lumi's face (a looping video), her status, and the app tabs.
+         In "peek" it is the whole island; in "open" it sits above the app. -->
+    <header class="hdr">
+      <button id="avatar" class="avatar" type="button" aria-label="Open Lumi">
+        <video id="vid" src="lumi.mp4" poster="lumi_poster.jpg" muted loop playsinline preload="auto"></video>
+        <span class="ring" aria-hidden="true"></span>
+      </button>
+      <div class="who">
+        <span class="name">LUMI</span>
+        <span id="status" class="status">Connecting…</span>
+      </div>
+      <nav class="tabs" role="tablist" aria-label="Lumi apps">
+        <button class="tab" data-app="home" role="tab" aria-label="Home" aria-selected="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10"/></svg><span>Home</span>
+        </button>
+        <button class="tab" data-app="chat" role="tab" aria-label="Chat" aria-selected="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Chat</span>
+        </button>
+        <button class="tab" data-app="calendar" role="tab" aria-label="Calendar" aria-selected="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><span>Calendar</span>
+        </button>
+      </nav>
+      <button id="collapse" class="collapse" type="button" aria-label="Collapse">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+      </button>
+    </header>
 
-    <!-- Approval: stays until answered -->
+    <main class="apps">
+
+      <!-- Home -->
+      <section id="app-home" class="app" aria-label="Home">
+        <div class="card next">
+          <div class="label">Next up</div>
+          <div id="next-title" class="next-title">Nothing scheduled</div>
+          <div id="next-sub" class="sub"></div>
+        </div>
+        <div class="card" id="today-card">
+          <div class="label">Today</div>
+          <ul id="today" class="today"></ul>
+        </div>
+        <div class="card">
+          <div class="label">Unread <span id="unread-count" class="count"></span></div>
+          <ul id="unread" class="unread"></ul>
+        </div>
+        <p id="home-note" class="note"></p>
+      </section>
+
+      <!-- Chat -->
+      <section id="app-chat" class="app" aria-label="Chat">
+        <div id="msgs" class="msgs" aria-live="polite"></div>
+        <form id="composer" class="composer" autocomplete="off">
+          <textarea id="input" rows="1" maxlength="4000" placeholder="Message Lumi…" aria-label="Message Lumi"></textarea>
+          <button id="send" class="send" type="submit" aria-label="Send">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-6 17-3-7z"/></svg>
+          </button>
+        </form>
+      </section>
+
+      <!-- Calendar -->
+      <section id="app-calendar" class="app" aria-label="Calendar">
+        <div class="cal-bar">
+          <div class="cal-nav">
+            <button id="cal-prev" type="button" aria-label="Previous">‹</button>
+            <button id="cal-today" type="button">Today</button>
+            <button id="cal-next" type="button" aria-label="Next">›</button>
+          </div>
+          <div id="cal-title" class="cal-title"></div>
+          <div id="cal-views" class="seg" role="tablist" aria-label="Calendar view">
+            <button data-view="list" role="tab">List</button>
+            <button data-view="day" role="tab">Day</button>
+            <button data-view="month" role="tab">Month</button>
+            <button data-view="year" role="tab">Year</button>
+          </div>
+        </div>
+        <div id="cal-body" class="cal-body"></div>
+      </section>
+    </main>
+
+    <!-- Approval: takes over until answered -->
     <section id="approval" class="ask" role="alertdialog" aria-labelledby="tool" inert>
       <div id="eyebrow" class="eyebrow">Lumi wants to run</div>
       <div id="tool" class="tool"></div>

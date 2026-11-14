@@ -1,17 +1,39 @@
 # Lumi Island
 
 A small island that hangs from the top of the screen. It's hidden as a thin
-sliver, peeks out when you hover, and opens when you click. It shows Lumi's
-live status (here, thinking, speaking, offline). Tool approvals from Lumi's
-HITL server (`modules/hitl_server.py`, `ws://127.0.0.1:5090/hitl`) take it
-over until you answer them.
+sliver, peeks out when you hover, and opens when you click. Lumi's face is
+its icon: a looping video cropped from her art, ringed by her live status
+(here, thinking, speaking, gaming, offline). Open it for three mini-apps, so
+you don't have to switch to the web client:
+
+- **Home:** your next event, today's remaining events, and your top unread
+  mail.
+- **Chat:** talk to Lumi. Her replies appear the moment they exist, and
+  while she thinks you see typing dots. Messages you send are host messages,
+  the same as typing in the web client on this PC.
+- **Calendar:** your Google Calendar as **List**, **Day**, **Month** or
+  **Year**, with previous/next/today. Click a day to open it, a month name to
+  zoom in.
+
+Tool approvals take the island over until you answer them, then it goes back
+to what you were doing. An open island stays open while you work in it; it
+tucks away on Esc, the collapse button, or when you click back into a game.
+
+All of it comes over one local socket (`ws://127.0.0.1:5090/hitl`) and is
+pushed, never polled. See [../docs/architecture.md](../docs/architecture.md#lumi-island-bridge).
 
 It's a [Tauri 2](https://tauri.app) app: a native window with real
 transparency and a small memory footprint. The page in `src/` is plain
 HTML/CSS/JS with no bundler; `src-tauri/` is the Rust shell.
 
 Behaviour is inspired by [coucou](https://github.com/Louis-CFM/coucou) (MIT).
-No coucou name, mascot, art or sounds are used.
+No coucou name, mascot, art or sounds are used. The face video is cropped
+from Lumi's own artwork (`assets/branding/`).
+
+## Idle cost
+
+Hidden, the island plays no video and runs no timers; a reconnect timer only
+runs while Lumi is unreachable. The video also pauses in Gaming Mode.
 
 ## Build once
 
@@ -42,7 +64,9 @@ running so the island can connect).
 | Path | What |
 |---|---|
 | `src/index.html`, `island.css`, `island.js` | The island: states, status, approvals |
-| `src/lumi.png` | Lumi's avatar (from `assets/branding`) |
-| `src-tauri/src/main.rs` | Window setup and the `fit` command that sizes the window to the island |
-| `src-tauri/tauri.conf.json` | Transparent, frameless, always-on-top window; CSP allows only the HITL socket |
-| `../modules/island_manager.py` | Starts/stops the app for the Settings switch |
+| `src/lumi.mp4`, `lumi_poster.jpg` | Lumi's face: a 128 px, 42 KB loop and its still frame (cropped from `assets/branding/.../lumi_sleeping_brb.mp4`) |
+| `src/lumi.png` | Spare avatar image |
+| `src-tauri/src/main.rs` | Window setup, the `fit` command that sizes the window to the island, and `island_token` / `island_ws_url`, which hand the page the launch secret and socket address Lumi put in its environment |
+| `src-tauri/tauri.conf.json` | Transparent, frameless, always-on-top window; CSP allows scripts and media from the app itself and sockets to loopback only |
+| `../modules/island_manager.py` | Starts/stops the app for the Settings switch; gives each launch a fresh secret |
+| `../modules/island_bridge.py` | The Home / Chat / Calendar messages on the socket |

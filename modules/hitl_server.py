@@ -20,8 +20,9 @@ prompter's loop), so Futures resolve without cross-thread hand-offs.
 
 import asyncio
 import json
+import secrets
 import uuid
-from typing import Dict, Optional, Set
+from typing import Awaitable, Callable, Dict, Optional, Set
 from urllib.parse import urlparse
 
 from aiohttp import web, WSMsgType
@@ -54,6 +55,8 @@ class HITLServer:
         self._terminal_lock: Optional[asyncio.Lock] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._status = "idle"
+        self._token: Optional[str] = None
+        self._handlers: Dict[str, Callable[[web.WebSocketResponse, dict], Awaitable[None]]] = {}
         self.signals = None
 
     @property
@@ -112,7 +115,11 @@ class HITLServer:
         # heartbeat=None (the default) -> no ping timer while idle.
         ws = web.WebSocketResponse(heartbeat=None, max_msg_size=64 * 1024)
         await ws.prepare(request)
+        if self._token is not None and not await self._authenticate(ws):
+            await ws.close(code=4401, message=b"auth failed")
+            return ws
         self._clients.add(ws)
+        await self._safe_send(ws, self._hello_payload())
         await self._safe_send(ws, {"type": "lumi_status", "state": self._status})
 
         # A client that connects while requests are already waiting
@@ -126,7 +133,7 @@ class HITLServer:
             # Suspends on the socket until a frame arrives — no polling.
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
-                    self._handle_message(msg.data)
+                    self._dispatch(ws, msg.data)
                 elif msg.type == WSMsgType.ERROR:
                     break
         finally:
@@ -139,13 +146,79 @@ class HITLServer:
                         fut.set_result(_NO_CLIENT)
         return ws
 
-    def _handle_message(self, raw: str) -> None:
+    # ── handshake and extra message types ────────────────────────────
+
+    def set_token(self, token: Optional[str]) -> None:
+        """Require clients to open with {"type":"hello","token":...}. Set by
+        the island manager, which starts the island with the same secret in
+        its environment, so only the process Lumi launched can connect.
+        With no token set the server behaves as before (loopback + origin
+        check only)."""
+        self._token = token or None
+
+    def register_handler(self, msg_type: str,
+                         fn: Callable[[web.WebSocketResponse, dict], Awaitable[None]]) -> None:
+        """Route {"type": msg_type, ...} from a client to `await fn(ws, data)`.
+        Used by the Lumi Island bridge (modules/island_bridge.py) so chat and
+        calendar requests don't live in the approval code."""
+        self._handlers[msg_type] = fn
+
+    async def send(self, ws: web.WebSocketResponse, payload: dict) -> bool:
+        return await self._safe_send(ws, payload)
+
+    def broadcast_threadsafe(self, payload: dict) -> None:
+        """Push to every client from any thread. No-op with no loop/clients."""
+        loop = self._loop
+        if loop is None or not self._clients:
+            return
+        try:
+            loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._broadcast(payload)))
+        except RuntimeError:
+            pass  # loop closed during shutdown
+
+    async def _authenticate(self, ws: web.WebSocketResponse) -> bool:
+        """The first frame must be hello with the right token (5 s to send it)."""
+        try:
+            msg = await asyncio.wait_for(ws.receive(), 5)
+            if msg.type != WSMsgType.TEXT:
+                return False
+            data = json.loads(msg.data)
+        except (asyncio.TimeoutError, ValueError, TypeError):
+            return False
+        if not isinstance(data, dict) or data.get("type") != "hello":
+            return False
+        return secrets.compare_digest(str(data.get("token") or ""), self._token or "")
+
+    def _hello_payload(self) -> dict:
+        import constants
+        return {"type": "hello_ok", "gaming": bool(getattr(constants, "GAMING_MODE", False))}
+
+    def _dispatch(self, ws: web.WebSocketResponse, raw: str) -> None:
         try:
             data = json.loads(raw)
         except (ValueError, TypeError):
             return
-        if not isinstance(data, dict) or data.get("type") != "approval_response":
+        if not isinstance(data, dict):
             return
+        kind = data.get("type")
+        if kind == "approval_response":
+            self._handle_approval(data)
+            return
+        if kind == "hello":      # a client without a token set still says hello
+            asyncio.ensure_future(self._safe_send(ws, self._hello_payload()))
+            return
+        handler = self._handlers.get(kind)
+        if handler is not None:
+            asyncio.ensure_future(self._run_handler(handler, ws, data))
+
+    async def _run_handler(self, handler, ws, data) -> None:
+        try:
+            await handler(ws, data)
+        except Exception as e:                      # a bad request must not drop the socket
+            await self._safe_send(ws, {"type": "error", "id": data.get("id"),
+                                       "message": f"{type(e).__name__}: {str(e)[:120]}"})
+
+    def _handle_approval(self, data: dict) -> None:
         fut = self._pending.get(str(data.get("id")))
         if fut is None or fut.done():
             return  # unknown, late (already timed out), or answered elsewhere
@@ -275,3 +348,21 @@ async def stop() -> None:
 async def request_approval(tool_name: str, preview_text: str,
                            timeout: float = 120) -> bool:
     return await _server.request_approval(tool_name, preview_text, timeout)
+
+
+# ── Helpers for the Lumi Island bridge (modules/island_bridge.py) ────
+
+def set_token(token: Optional[str]) -> None:
+    _server.set_token(token)
+
+
+def register_handler(msg_type: str, fn) -> None:
+    _server.register_handler(msg_type, fn)
+
+
+def broadcast_threadsafe(payload: dict) -> None:
+    _server.broadcast_threadsafe(payload)
+
+
+async def send(ws, payload: dict) -> bool:
+    return await _server.send(ws, payload)

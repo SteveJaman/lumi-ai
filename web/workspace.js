@@ -12,6 +12,13 @@
 let C = null;       // { $, state, api, navigate, openSettingsTab }
 export function init(ctx) { C = ctx; }
 
+/** KSU mail is switched off in the UI (KSU blocks students from registering the
+ *  Microsoft app it needs). The backend still supports it. To bring it back, run
+ *  localStorage.setItem('lumi-ksu', '1') in the browser console and reload. */
+function showKsu() {
+  try { return localStorage.getItem('lumi-ksu') === '1'; } catch { return false; }
+}
+
 const DAYS = 14;
 const SEARCH_SOON_MS = 2500;       // re-check once after "refreshing"
 const MAX_SOON_TRIES = 3;
@@ -295,7 +302,8 @@ function buildInboxShell(body) {
   const bar = el('div', 'ws-inbox-bar');
   const chips = el('div', 'ws-chips');
   chips.id = 'ws-chips';
-  for (const [id, label] of [['all', 'All'], ['gmail', 'Gmail'], ['ksu', 'KSU']]) {
+  if (_filter === 'ksu' && !showKsu()) _filter = 'all';
+  for (const [id, label] of [['all', 'All'], ['gmail', 'Gmail'], ...(showKsu() ? [['ksu', 'KSU']] : [])]) {
     const c = el('button', 'filter-chip' + (id === _filter ? ' active' : ''), label);
     c.type = 'button';
     c.dataset.filter = id;
@@ -479,7 +487,10 @@ async function refreshConnections(holder) {
   } catch (e) {
     return notice(holder, `Couldn’t load connections: ${e.message}`, { retry: () => refreshConnections(holder) });
   }
-  holder.replaceChildren(googleCard(holder, st), ksuCard(holder, st));
+  // Hidden unless switched on, or already set up from before it was hidden.
+  const cards = [googleCard(holder, st)];
+  if (showKsu() || st.ksu.mode) cards.push(ksuCard(holder, st));
+  holder.replaceChildren(...cards);
 }
 
 function card(title, emoji, state, stateLabel, desc) {

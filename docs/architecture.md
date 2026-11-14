@@ -531,7 +531,7 @@ web client ──► /api/workspace/* ──► WorkspaceHub ──► GoogleCal
  (Workspace,                          │  cache in memory + data/workspace/cache.json
   Connections)                        │                ├► GraphMailProvider        (Microsoft Graph)
 Prompter ──► list_events, send_email… │                └► GmailProvider(label=KSU) (fallback)
- (agent mode; send_email,             └► get_compressed_snapshot() ─ listeners ─► (Lumi Island, later)
+ (agent mode; send_email,             └► get_compressed_snapshot() ─ listeners ─► (Lumi Island, Home tab)
   delete_event, create_event ask first through HITL)
 ```
 
@@ -583,12 +583,47 @@ hitl_server.request_approval(tool, preview, timeout=120)
   and any web page could otherwise approve commands. The server accepts only
   loopback origins (or none, for non-browser clients).
 
+### Lumi Island bridge
+
 The reference client is Lumi Island (`island/`, a Tauri app), started and
 stopped by `modules/island_manager.py` from **Settings → General**. Besides
-approvals, the server pushes `{"type":"lumi_status","state":"idle"|"thinking"|"speaking"}`
-when `signals.AI_thinking` or `signals.AI_speaking` changes (a `Signals.__setattr__`
-hook), so the island never polls. The server also accepts the Tauri
-webview's origin, `http://tauri.localhost`.
+approvals it has three mini-apps (Home, Chat, Calendar). They ride on the same
+socket through `modules/island_bridge.py`, which registers handlers on the
+approval server (`register_handler`).
+
+```
+Lumi Island (Tauri) ──ws://127.0.0.1:5090/hitl──► hitl_server  ── approvals (Future per request)
+  hello {token} first                              │
+  get_home / get_calendar / get_chat / chat_send   └─► island_bridge ─► workspace_hub (calendar, snapshot)
+  ◄── pushed: lumi_status, lumi_mode,                                 └► signals.history (chat)
+      chat_message, chat_reset, snapshot
+```
+
+- **Handshake.** When Lumi launches the island, `IslandManager` makes a fresh
+  secret (`secrets.token_urlsafe`) for that launch, calls
+  `hitl_server.set_token()`, and puts it in the child's environment
+  (`LUMI_ISLAND_TOKEN`; the socket address goes in `LUMI_ISLAND_WS`). The first
+  frame on the socket must be `{"type":"hello","token":...}` or the socket is
+  closed with code 4401. An unauthenticated socket is never counted as a
+  client, so it can't receive an approval request, send chat, or read mail.
+  Without a token set (nothing launched by Lumi) the server behaves as before:
+  loopback + origin check only.
+- **Pushed, not polled.** `signals.history` is an observable list
+  (`signals._History`): every `append`/`extend` from any module or thread calls
+  `signals.on_history_change`, which the bridge turns into `chat_message`
+  pushes. Thinking/speaking flags are pushed as `lumi_status` through the same
+  kind of hook, Gaming Mode as `lumi_mode`, and a changed
+  `get_compressed_snapshot()` as `snapshot`.
+- **Chat.** `chat_send` appends a `from_host` user message exactly like typing
+  in the web client on this PC, so the prompter handles it the same way.
+  Messages a person wouldn't see in the web chat (`sdk_event`, hidden,
+  system) are not sent to the island.
+- **Calendar.** `get_calendar {start, end}` becomes
+  `WorkspaceHub.get_events_range()`: served from the 30-day cache when the
+  range sits inside it, otherwise fetched from Google (paginated, up to 400
+  days) and kept in memory for 5 minutes, at most 12 ranges.
+- **Approvals** still work exactly as described above; the island only adds
+  messages around them.
 
 ### Gaming Mode
 

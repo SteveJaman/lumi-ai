@@ -48,6 +48,7 @@ from modules.speech_filter import strip_slurs
 from modules import hitl_server
 from modules import gaming_mode
 from modules import workspace_hub
+from modules import island_bridge
 
 SENTENCE_SPLIT_PATTERN = re.compile(r'(?<=[.!?;\n])\s+')
 
@@ -3003,6 +3004,7 @@ class Prompter:
         # The HITL server must share this loop so approval Futures
         # resolve here without cross-thread hand-offs.
         await hitl_server.start(self.signals)
+        island_bridge.install(self.signals)    # Lumi Island: chat, calendar, home
         while not self.signals.terminate:
             if self.signals.new_message and not self.signals.AI_thinking and not self.signals.AI_speaking:
                 self.signals.AI_thinking = True

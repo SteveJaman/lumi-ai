@@ -11,14 +11,73 @@ from modules.log_hub import emit as hub_emit
 _WATCHED_FLAGS = ("AI_thinking", "AI_speaking")
 
 
+class _History(list):
+    """The chat history. A list, but it tells `signals.on_history_change`
+    when messages are added, so the Island can show a reply the moment it
+    lands instead of polling. Messages are appended from many modules and
+    threads; this is the one place that sees all of them.
+
+    Listener: fn("append", index_of_first_new, [new messages]) or fn("reset", 0, [])."""
+
+    def __init__(self, items=(), owner=None):
+        super().__init__(items)
+        self._owner = owner
+
+    def _tell(self, kind, start, msgs):
+        owner = self._owner
+        listener = owner.__dict__.get("on_history_change") if owner is not None else None
+        if listener is not None:
+            try:
+                listener(kind, start, msgs)
+            except Exception:
+                pass
+
+    def append(self, item):
+        super().append(item)
+        self._tell("append", len(self) - 1, [item])
+
+    def extend(self, items):
+        items = list(items)
+        start = len(self)
+        super().extend(items)
+        if items:
+            self._tell("append", start, items)
+
+    def insert(self, index, item):
+        super().insert(index, item)
+        self._tell("reset", 0, [])
+
+    def pop(self, *args):
+        out = super().pop(*args)
+        self._tell("reset", 0, [])
+        return out
+
+    def clear(self):
+        super().clear()
+        self._tell("reset", 0, [])
+
+    def __delitem__(self, key):
+        super().__delitem__(key)
+        self._tell("reset", 0, [])
+
+
 class Signals:
     def __setattr__(self, name, value):
+        if name == "history" and not isinstance(value, _History):
+            value = _History(value, self)
         object.__setattr__(self, name, value)
         if name in _WATCHED_FLAGS:
             listener = self.__dict__.get("on_state_change")
             if listener is not None:
                 try:
                     listener(self)
+                except Exception:
+                    pass
+        elif name == "history":
+            listener = self.__dict__.get("on_history_change")
+            if listener is not None:
+                try:
+                    listener("reset", 0, [])
                 except Exception:
                     pass
 

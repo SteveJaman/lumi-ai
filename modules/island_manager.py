@@ -12,11 +12,13 @@ the Settings switch, so it never needs its own terminal.
 
 import json
 import os
+import secrets
 import subprocess
 import threading
 from typing import Any, Dict, Optional
 
 from constants import DATA_ROOT, WORKSPACE_ROOT
+from modules import hitl_server
 from modules.game_manager import _KillOnCloseJob
 from modules.log_hub import emit as hub_emit
 
@@ -99,10 +101,17 @@ class IslandManager:
         if not os.path.isfile(EXE_PATH):
             raise RuntimeError(NOT_BUILT_MSG)
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        # A fresh secret each launch. The island gets it through its
+        # environment, and the socket refuses clients without it, so only the
+        # process Lumi started can approve tools, send chat or read mail.
+        token = secrets.token_urlsafe(32)
+        hitl_server.set_token(token)
         self._proc = subprocess.Popen(
             [EXE_PATH], cwd=os.path.dirname(EXE_PATH), creationflags=flags,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=dict(os.environ, LUMI_ISLAND_TOKEN=token,
+                     LUMI_ISLAND_WS=f"ws://{hitl_server.HITL_HOST}:{hitl_server.HITL_PORT}{hitl_server.HITL_PATH}"),
         )
         self._job.add(self._proc)
         hub_emit(self.signals, "system", f"island started (pid {self._proc.pid})")

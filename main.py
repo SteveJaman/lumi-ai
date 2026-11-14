@@ -181,7 +181,7 @@ def _build_module_map(modules_list):
     """SocketIOServer expects a dict keyed by short names."""
     mapping = {}
     for m in modules_list:
-        cls = m.__class__.__name__
+        cls   = m.__class__.__name__
         if cls == "VtubeStudio":
             mapping["vtube_studio"] = m
         elif cls == "AudioPlayer":

@@ -186,16 +186,16 @@ document.addEventListener('click', (e) => {
 // these pages are refused server-side. feature: hidden unless the
 // server reports that feature enabled.
 const NAV = [
-  { id: 'chat',         label: 'Chat',         icon: 'chat' },
+  { id: 'chat',         label: 'Chat',         icon: 'chat',      group: 'Core' },
   { id: 'dashboard',    label: 'Dashboard',    icon: 'dashboard' },
   { id: 'workspace',    label: 'Workspace',    icon: 'workspace', hostOnly: true },
-  { id: 'games',        label: 'Games',        icon: 'gamepad',  hostOnly: true },
+  { id: 'games',        label: 'Games',        icon: 'gamepad',  hostOnly: true, group: 'Systems' },
   { id: 'persona',      label: 'Persona',      icon: 'persona',  hostOnly: true },
   { id: 'memory',       label: 'Memory',       icon: 'memory',   hostOnly: true },
   { id: 'models',       label: 'Models',       icon: 'models',   hostOnly: true },
   { id: 'integrations', label: 'Integrations', icon: 'plugs',    hostOnly: true },
   { id: 'stream',       label: 'Stream',       icon: 'stream',   hostOnly: true, feature: 'stream' },
-  { id: 'settings',     label: 'Settings',     icon: 'settings', hostOnly: true },
+  { id: 'settings',     label: 'Settings',     icon: 'settings', hostOnly: true, group: 'Config' },
 ];
 
 function visibleNav() {
@@ -216,7 +216,16 @@ function showShell() {
 
   const nav = $('#nav');
   nav.innerHTML = '';
+  let lastGroup = null;
   for (const item of visibleNav()) {
+    // A group label starts each section (an item without `group` joins the one above).
+    if (item.group && item.group !== lastGroup) {
+      lastGroup = item.group;
+      const label = document.createElement('div');
+      label.className = 'nav-label';
+      label.textContent = item.group;
+      nav.appendChild(label);
+    }
     // Real links: keyboard/focus/middle-click work for free, and the
     // hashchange listener does the routing.
     const el = document.createElement('a');
@@ -5460,8 +5469,10 @@ function buildIslandField() {
   lbl.textContent = 'Lumi Island';
   const h = document.createElement('div');
   h.className = 'settings-field-help';
-  const defaultHelp = 'A small island at the top of the screen with Lumi’s ' +
-    'status. Hover to peek, click to open; tool approvals show up there.';
+  const defaultHelp = 'A small island at the top of the screen: Lumi’s face and ' +
+    'status, plus Home, Chat and Calendar mini-apps so you can talk to her and ' +
+    'check your day without leaving a game. Hover to peek, click to open; ' +
+    'tool approvals show up there too.';
   h.textContent = defaultHelp;
   text.append(lbl, h);
 

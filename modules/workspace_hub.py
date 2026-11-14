@@ -61,6 +61,8 @@ EVENTS_TTL = 300        # seconds before cached events count as stale
 MAIL_TTL = 120
 EVENT_WINDOW_DAYS = 30  # what the cache holds; callers can ask for fewer
 MAIL_LIMIT = 30
+MAX_RANGE_DAYS = 400     # one year view, with slack
+MAX_CACHED_RANGES = 12
 MAX_BODY_CHARS = 6000
 MAX_RECIPIENTS = 10
 MAX_SENDS_PER_HOUR = 10
@@ -885,6 +887,24 @@ class GoogleCalendar:
             singleEvents=True, orderBy="startTime", maxResults=limit).execute())
         return [norm_event(e) for e in res.get("items", []) if e.get("status") != "cancelled"]
 
+    def list_range(self, start: date, end: date, pages: int = 4) -> List[dict]:
+        """Events overlapping [start, end) (dates, local time). Up to
+        pages x 250 events; a year of a busy calendar fits."""
+        svc = self.account.service("calendar", "v3")
+        tmin = datetime.combine(start, dtime.min).astimezone().isoformat()
+        tmax = datetime.combine(end, dtime.min).astimezone().isoformat()
+        items: List[dict] = []
+        token = None
+        for _ in range(pages):
+            res = self.account.run(lambda: svc.events().list(
+                calendarId="primary", timeMin=tmin, timeMax=tmax, singleEvents=True,
+                orderBy="startTime", maxResults=250, pageToken=token).execute())
+            items += res.get("items", [])
+            token = res.get("nextPageToken")
+            if not token:
+                break
+        return [norm_event(e) for e in items if e.get("status") != "cancelled"]
+
     def get_event(self, event_id: str) -> dict:
         svc = self.account.service("calendar", "v3")
         return norm_event(self.account.run(lambda: svc.events().get(calendarId="primary", eventId=event_id).execute()))
@@ -898,6 +918,15 @@ class GoogleCalendar:
     def delete_event(self, event_id: str) -> None:
         svc = self.account.service("calendar", "v3")
         self.account.run(lambda: svc.events().delete(calendarId="primary", eventId=event_id).execute())
+
+
+def _overlaps(ev: dict, lo: datetime, hi: datetime) -> bool:
+    """Does the event overlap [lo, hi)? (All-day ends are exclusive dates.)"""
+    start = _parse_dt(ev.get("start") or "")
+    if start is None:
+        return False
+    end = _parse_dt(ev.get("end") or "") or start
+    return start < hi and (end > lo or start >= lo)
 
 
 def _is_naive(value: str) -> bool:
@@ -1029,6 +1058,7 @@ class WorkspaceHub:
         self._last_snapshot: Optional[str] = None
         self._sends: deque = deque()
         self._providers: Dict[str, MailProvider] = {}      # tests may inject
+        self._ranges: Dict[str, dict] = {}                 # month/year views; memory only
         self._cache: Dict[str, dict] = (_read_json(cache_path) or {})
         if signals is not None:
             signals.workspace_hub = self
@@ -1203,6 +1233,39 @@ class WorkspaceHub:
                          if (_parse_dt(e["start"]) or horizon) <= horizon]
         return res
 
+    def get_events_range(self, start: str, end: str, refresh: bool = False) -> Dict[str, Any]:
+        """Events overlapping [start, end), dates as YYYY-MM-DD (the island's
+        Day, Month and Year views). Served from the 30-day cache when the
+        range sits inside it; otherwise fetched, kept in memory for a few
+        minutes, and bounded to MAX_CACHED_RANGES so it can't grow."""
+        try:
+            s, e = date.fromisoformat(str(start)[:10]), date.fromisoformat(str(end)[:10])
+        except ValueError:
+            raise InvalidInput("Dates should look like 2026-11-17.")
+        if e <= s or (e - s).days > MAX_RANGE_DAYS:
+            raise InvalidInput(f"Ask for between 1 and {MAX_RANGE_DAYS} days.")
+        if not self.calendar.connected():
+            raise NotConnected("Google Calendar isn't connected. Connect it in Settings → Connections.")
+        now = time.time()
+        today = date.today()
+        entry = self._cache.get("events")
+        if (not refresh and entry and now - entry["at"] < EVENTS_TTL
+                and s >= today and e <= today + timedelta(days=EVENT_WINDOW_DAYS)):
+            lo = datetime.combine(s, dtime.min).astimezone()
+            hi = datetime.combine(e, dtime.min).astimezone()
+            return {"events": [ev for ev in entry["data"] if _overlaps(ev, lo, hi)], "at": entry["at"]}
+        key = f"{s}:{e}"
+        with self._lock:
+            hit = self._ranges.get(key)
+        if hit and not refresh and now - hit["at"] < EVENTS_TTL:
+            return {"events": hit["data"], "at": hit["at"]}
+        data = self.calendar.list_range(s, e)
+        with self._lock:
+            self._ranges[key] = {"at": now, "data": data}
+            while len(self._ranges) > MAX_CACHED_RANGES:
+                self._ranges.pop(min(self._ranges, key=lambda k: self._ranges[k]["at"]))
+        return {"events": data, "at": now}
+
     def create_event(self, title: str, start: str, end: Optional[str] = None, all_day: bool = False,
                      location: str = "", description: str = "", attendees: Any = None,
                      timezone: Optional[str] = None) -> dict:
@@ -1213,6 +1276,7 @@ class WorkspaceHub:
             raise ValueError(f"At most {MAX_RECIPIENTS} attendees.")
         body = build_event_body(title, start, end, bool(all_day), location, description, people, timezone)
         ev = self.calendar.create_event(body, notify=bool(people))
+        self._ranges.clear()
         self._drop_cache("events")
         self._log("calendar event created")
         return ev
@@ -1223,6 +1287,7 @@ class WorkspaceHub:
         if not re.fullmatch(r"[A-Za-z0-9_\-]{5,1024}", event_id or ""):
             raise ValueError("That doesn't look like an event id. Use list_events to get one.")
         self.calendar.delete_event(event_id)
+        self._ranges.clear()
         self._drop_cache("events")
         self._log("calendar event deleted")
 

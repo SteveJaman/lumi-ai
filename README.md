@@ -160,8 +160,8 @@ for the pipeline.
   **Ask Lumi** button that has her summarize a thread or draft a reply. In
   agent mode she can list, create and delete events and read, send and
   archive mail; sending, inviting and deleting need your approval through
-  the HITL flow. Google uses your own OAuth app, and KSU mail connects
-  through Microsoft Graph or, if the university blocks that, a Gmail label.
+  the HITL flow. Google uses your own OAuth app. KSU mail support (Microsoft
+  Graph, or a Gmail label) exists but is hidden in the UI by default.
   Sign-ins stay on your PC. See [docs/workspace.md](docs/workspace.md).
 - **Human-in-the-loop approvals (HITL).** A WebSocket bridge at
   `ws://127.0.0.1:5090/hitl` that replaces the terminal `y/n` prompt for
@@ -171,6 +171,13 @@ for the pipeline.
   decline. Requests auto-decline after 120 seconds, and with no client
   connected approvals fall back to the terminal. The bridge listens on
   localhost only and refuses connections from other web origins.
+- **Lumi Island.** A small always-on-top island at the top of your screen
+  (a lightweight Tauri app started from **Settings, then General**). Lumi's
+  face, a looping video, is its icon, ringed by her live status. Hover to
+  peek and click to open three mini-apps: **Home** (next event, today, unread),
+  **Chat** (talk to her without leaving your game), and **Calendar** (your
+  Google Calendar as list, day, month or year). Tool approvals take it over
+  until you answer. See [island/README.md](island/README.md).
 - **Gaming Mode.** One switch (**Settings, then General**, or
   `POST /api/gaming_mode`) that frees VRAM and CPU while you play a heavy
   game. Lumi's models unload from Ollama after every reply (`keep_alive=0`),
