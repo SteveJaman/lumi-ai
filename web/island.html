@@ -9,29 +9,54 @@
 </head>
 <body>
   <div class="stage">
-    <div id="island" class="island" data-status="connecting">
-      <div class="pill-row">
+    <div id="island" class="island-container idle" data-status="connecting">
+
+      <!-- Idle: the pill -->
+      <button id="pill" class="view view-idle pill" type="button"
+              aria-label="Open Lumi dashboard">
         <span class="dot" aria-hidden="true"></span>
-        <span id="label" class="pill-label">Lumi</span>
-        <span id="more" class="more" hidden></span>
-      </div>
-      <div class="body">
-        <div class="body-clip">
-          <div id="card" class="card" inert>
-            <div id="eyebrow" class="eyebrow">Lumi wants to run</div>
-            <div id="tool" class="tool"></div>
-            <pre id="preview" class="preview"></pre>
-            <div class="actions">
-              <button id="decline" class="btn btn-decline" type="button">Decline</button>
-              <button id="approve" class="btn btn-approve" type="button">Approve</button>
-            </div>
+        <span class="pill-label">Lumi</span>
+      </button>
+
+      <!-- Dashboard: tabs -->
+      <section id="dashboard" class="view view-dashboard" aria-label="Lumi dashboard" inert>
+        <header class="dash-head">
+          <div class="tabs" role="tablist">
+            <button class="tab" role="tab" data-tab="thinking" aria-selected="true">Thinking</button>
+            <button class="tab" role="tab" data-tab="calendar" aria-selected="false">Calendar</button>
+            <button class="tab" role="tab" data-tab="tasks" aria-selected="false">Tasks</button>
           </div>
+          <button id="close" class="icon-btn" type="button" aria-label="Close dashboard">✕</button>
+        </header>
+        <div class="panel" id="panel-thinking" role="tabpanel">
+          <p id="thinking" class="thinking empty">No thoughts yet.</p>
         </div>
-      </div>
+        <div class="panel" id="panel-calendar" role="tabpanel" hidden>
+          <ul id="calendar" class="list"></ul>
+        </div>
+        <div class="panel" id="panel-tasks" role="tabpanel" hidden>
+          <ul id="tasks" class="list"></ul>
+        </div>
+      </section>
+
+      <!-- Approval: overrides everything -->
+      <section id="approval" class="view view-approval" role="alertdialog"
+               aria-labelledby="tool" inert>
+        <div class="approval-head">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="eyebrow" class="eyebrow">Lumi wants to run</span>
+          <span id="more" class="more" hidden></span>
+        </div>
+        <div id="tool" class="tool"></div>
+        <pre id="preview" class="preview"></pre>
+        <div class="actions">
+          <button id="decline" class="btn btn-decline" type="button">Decline</button>
+          <button id="approve" class="btn btn-approve" type="button">Approve</button>
+        </div>
+      </section>
+
     </div>
   </div>
-
-  <p id="hint" class="hint" role="status">Connecting to Lumi…</p>
 
   <script src="/web/island.js"></script>
 </body>
