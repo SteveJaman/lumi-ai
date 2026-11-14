@@ -247,6 +247,7 @@ Background loops (independent threads):
   ambient_perception   · self_model (60s/600s)
   memory reflection    · discord client
   log hub (HTTP :5001) · SDK server (:5056)
+  HITL server (WS :5090, runs on the prompter's loop, no thread)
   library_indexer (60s)
   web server (aiohttp + socket.io, :5000)
     └─ web-memory worker (1 thread, memory/library calls from HTTP)
@@ -398,7 +399,9 @@ Format recovery chain (in order):
    5. Bracket-positional: [tool "val" true]
     │
     ▼
-Confirmation gate (write_file, run_command, run_in_terminal)
+Confirmation gate (write_file, run_command, run_in_terminal, and SDK
+actions that need one) → HITL bridge if a client is connected, else the
+terminal. See [HITL approval bridge](#hitl-approval-bridge).
     │
     ▼
 _dispatch_tool_call(name, args)
@@ -515,6 +518,82 @@ primitives in scope. The whole feature is described in
 [minecraft.md](minecraft.md). The control API is unauthenticated; see
 [security.md](security.md#minecraft-bot-control-api).
 
+### HITL approval bridge
+
+`modules/hitl_server.py` replaces the blocking terminal `input()` for tool
+approvals. It is an aiohttp WebSocket endpoint at `ws://127.0.0.1:5090/hitl`
+that starts at the top of `Prompter.run()`, so it shares the prompter's event
+loop and needs no thread of its own.
+
+```
+prompter._confirm(tool, args)
+    │
+    ▼
+hitl_server.request_approval(tool, preview, timeout=120)
+    │
+    ├─ no client connected ─────────────► terminal y/n (as before)
+    │
+    └─ client connected
+         creates an asyncio.Future, sends to every client:
+           {"type":"approval_request","id":<uuid>,"tool":..,"preview":..}
+         awaits it with a timeout
+              ▲
+   client ────┘ {"type":"approval_response","id":<uuid>,
+                 "decision":"approve"|"decline"}
+```
+
+- **First answer wins.** Any connected client can answer; later replies,
+  unknown ids and malformed frames are ignored.
+- **Timeout declines.** After 120 s the request auto-declines and clients get
+  `{"type":"approval_expired","id":..}` so they can clear the prompt.
+- **Disconnects fall back.** If the last client drops mid-request, the
+  request moves to the terminal instead of timing out silently. A client that
+  connects late is sent any requests still waiting.
+- **Zero idle cost.** No polling loop and no heartbeat. The loop wakes only
+  for socket I/O, a new request, or a request's timeout timer.
+- **Origin check.** Browsers send an `Origin` header on WebSocket upgrades,
+  and any web page could otherwise approve commands. The server accepts only
+  loopback origins (or none, for non-browser clients).
+
+The Island overlay (`ui/Island.jsx`, shown as a window by `launch_island.py`)
+is the reference client.
+
+### Gaming Mode
+
+A runtime switch that trades response speed for free VRAM and CPU while a
+heavy game runs on the same machine. State lives in `constants.GAMING_MODE`
+and is saved to `data/gaming_mode.json`, which overrides the constant on the
+next boot. Read it as `constants.GAMING_MODE`; a `from constants import`
+copy would never see a toggle.
+
+```
+POST /api/gaming_mode  (or Settings → General)
+    │
+    ▼
+modules/gaming_mode.set_enabled()
+    ├─ constants.GAMING_MODE + data/gaming_mode.json
+    ├─ unload everything Ollama has loaded (keep_alive: 0)
+    └─ sdk.broadcast_gaming_mode()  ──► "gaming_mode" SDK message
+                                           │ (also sent on every connect)
+chat calls (prompter, heartbeat)           ▼
+  keep_alive = gaming_mode.keep_alive()   plugin/minecraft_bot.py
+  → 0 while on: unload after each reply   parks on an asyncio.Event: no
+                                          timer, no HTTP, bot stopped
+                                          until an order arrives
+```
+
+- **Chat models.** Every chat call asks Ollama for `keep_alive=0`, so a model
+  unloads right after its reply. Each reply then pays a reload (about 8 s for
+  the fast model), and in agent mode every tool step does.
+- **Minecraft agent.** With nothing ordered, its loop stops and `bot.js`
+  drops the pathfinder and any running skill. An order sent through
+  `game_manager.send_directive()` (Games page, talking to Lumi, or her
+  `dispatch_game_command` tool) wakes it, and it sleeps again once the order
+  is done. In-game chat orders do not wake it. The `bot.js` process itself
+  keeps running.
+- **Host-only.** `/api/gaming_mode` is not in the remote API allowlist, so it
+  can't be toggled over the tunnel.
+
 ### Web server (`modules/socketIO.py`)
 
 One aiohttp application with python-socketio attached, bound to
@@ -583,6 +662,74 @@ There is no push channel. `emit()` never blocks on a network
 call, which is why high-frequency loops (ambient sampling, heartbeat) use it
 instead of `print()`.
 
+## Two-machine setup
+
+The intended layout splits Lumi across two computers. The Desktop runs
+everything heavy, including the game you are playing. A second device, such
+as a Surface Pro, runs only a small PWA that shows permission prompts, so you
+can answer them without alt-tabbing out of a full-screen game.
+
+```
+        Desktop (gaming PC)                          Surface Pro
+┌──────────────────────────────────┐          ┌──────────────────────┐
+│ python main.py                   │          │ Island PWA           │
+│  Ollama, ChromaDB, TTS, STT      │          │  (ui/Island.jsx)     │
+│  prompter + tools                │          │                      │
+│  HITL server  127.0.0.1:5090     │◄────────►│  Approve / Decline   │
+│  Gaming Mode ON                  │ WebSocket│                      │
+│  the AAA game                    │ over     │  no models, no       │
+└──────────────────────────────────┘ Tailscale│  secrets, no tools   │
+                                              └──────────────────────┘
+```
+
+- **Desktop:** all inference, memory, tool execution and the HITL server.
+  Gaming Mode keeps Lumi's footprint small while the game runs.
+- **Surface Pro:** a thin client. It holds no model, key or file access. It
+  renders `approval_request` messages and sends back one decision.
+- **Tailscale:** both machines join the same tailnet, so the connection is
+  encrypted and reachable only by your own devices. Nothing is opened on your
+  router or the public internet. This is separate from the Cloudflare tunnel
+  used for the main web client.
+
+### Status
+
+The HITL protocol and the Island client are implemented. The network path
+between the two machines is not yet, because the server is deliberately
+local-only today:
+
+| Piece | State |
+|---|---|
+| Approval protocol (request, response, expiry, timeout, terminal fallback) | Done |
+| Island client with auto-reconnect | Done, for `ws://127.0.0.1:5090/hitl` |
+| Reaching the server from another machine | **Not done.** The server binds `127.0.0.1` and refuses non-loopback origins |
+| Serving the PWA and an `/island` route | **Not done.** Nothing serves the Island page yet |
+| Authentication on the WebSocket | **Not done.** Today the only barrier is being on the machine |
+
+Reaching the Desktop from the Surface needs three changes before this works:
+
+1. **Expose the endpoint to the tailnet only.** Preferably keep the server on
+   loopback and put `tailscale serve` in front of it. That gives HTTPS and a
+   MagicDNS name (needed for a PWA to install) without binding a LAN
+   interface. Never bind `0.0.0.0`.
+2. **Allow the PWA's origin.** Add the tailnet origin (for example
+   `https://<desktop>.<tailnet>.ts.net`) to an explicit allowlist in
+   `hitl_server.py`. The loopback-only rule stays the default.
+3. **Authenticate the socket.** Require a shared secret on connect, the way
+   the SDK uses `data/memories/sdk_token.txt`. A tailnet is a strong boundary
+   but not a substitute: anything else on it, or a compromised device, could
+   otherwise approve `run_command`.
+
+### Failure behavior
+
+- **Surface unreachable when a prompt fires.** The request falls back to the
+  Desktop terminal. That prompt has no timeout, so a turn can sit waiting
+  while you are away from the keyboard. If you rely on the second machine,
+  keep it connected, or turn agent mode off while it isn't.
+- **Surface drops mid-prompt.** Same fallback, and the pending request moves
+  to the terminal immediately.
+- **No answer in 120 s.** The request declines, and the agent is told the
+  user declined.
+
 ## Key files (top level)
 
 | File | Role |
@@ -602,6 +749,8 @@ instead of `print()`.
 | `library_indexer.py` | Walks `data/library/`, indexes into `library_docs` |
 | `llm_providers.py` | Multi-provider LLM clients, `chat_sync()` |
 | `model_manager.py` | Ollama management + live `constants.py` patching |
+| `hitl_server.py` | WebSocket approval bridge on `:5090`; falls back to the terminal |
+| `gaming_mode.py` | Gaming Mode flag, persistence, model unload, SDK push |
 | `socketIO.py` | aiohttp HTTP routes + python-socketio + static serving, JSON error middleware, web-memory worker |
 | `emotional_state.py` | Traits, state variables, cognitive frames |
 | `self_model.py` | Pattern tracking, periodic reflection |
@@ -672,7 +821,7 @@ stay clean, agent turns should be thorough.
 - [configuration.md](configuration.md) — where the paths and constants live
 - [models.md](models.md) — how the two model paths differ
 - [discord-voice.md](discord-voice.md) — the DAVE receive pipeline
-- [security.md](security.md) — what's protected and what isn't
+- [security.md](security.md) — what's protected and what isn't (it does not yet cover the HITL bridge)
 - [known-limitations.md](known-limitations.md) — what doesn't work yet
 - [../modules/README.md](../modules/README.md) — file-level map of the modules folder
 - [../sdk/README.md](../sdk/README.md) — the external SDK protocol

@@ -90,8 +90,9 @@ for the pipeline.
   commands, web search, browser control, memory recall, library search, avatar
   control) plus any actions registered by SDK plugins. She picks tools
   herself, chains up to six steps per turn, and reads each result before
-  deciding what to do next. File writes and shell commands need your `y/n`
-  approval. Agent mode is a plain on/off toggle (`!agent_on` / `!agent_off`).
+  deciding what to do next. File writes and shell commands need your
+  approval, from the terminal or the HITL bridge below. Agent mode is a
+  plain on/off toggle (`!agent_on` / `!agent_off`).
   See [docs/architecture.md](docs/architecture.md) and
   [docs/security.md](docs/security.md).
 - **Persona and voice.** Personality, lore, and rules live in `lumi.yaml` and
@@ -141,12 +142,33 @@ for the pipeline.
   their own actions, and push context. See [sdk/README.md](sdk/README.md).
 - **Minecraft.** Lumi's "other half" plays in your world as `LumiBot`,
   switched on from the web UI's **Games** page. It works up the tech tree to
-  an iron pickaxe, defends itself, builds a house, branch-mines, organizes
-  chests, and stays near you. Orders come from in-game chat ("Lumi, get me 5
-  diamonds") or the Games page, and Lumi reacts out loud to the big moments.
-  Goals are picked by a small separate model, so chat stays responsive.
-  Skills run on [Voyager](https://github.com/MineDojo/Voyager)'s control
-  primitives. See [docs/minecraft.md](docs/minecraft.md).
+  an iron pickaxe, branch-mines, organizes chests, and stays near you. Orders
+  come from in-game chat ("Lumi, get me 5 diamonds") or the Games page, and
+  Lumi reacts out loud to the big moments. Goals are picked by a small
+  separate model, so chat stays responsive. Skills run on
+  [Voyager](https://github.com/MineDojo/Voyager)'s control primitives. See
+  [docs/minecraft.md](docs/minecraft.md). Progression features:
+  - **Survival overrides.** Drowning and lava are handled before any goal
+    runs: she swims up for air or backs away from lava first.
+  - **Item recovery.** After a death she returns to where she died and picks
+    her items back up before they despawn.
+  - **Autonomous building.** She builds a 7x7 house on her own, gathering the
+    materials it needs, and sleeps in a bed at night.
+- **Human-in-the-loop approvals (HITL).** A WebSocket bridge at
+  `ws://127.0.0.1:5090/hitl` that replaces the terminal `y/n` prompt for
+  tool calls that need approval, such as `run_command` and `write_file`. A
+  connected client (for example the Island overlay in `ui/`) receives each
+  request with the tool name and its arguments, and replies approve or
+  decline. Requests auto-decline after 120 seconds, and with no client
+  connected approvals fall back to the terminal. The bridge listens on
+  localhost only and refuses connections from other web origins.
+- **Gaming Mode.** One switch (**Settings, then General**, or
+  `POST /api/gaming_mode`) that frees VRAM and CPU while you play a heavy
+  game. Lumi's models unload from Ollama after every reply (`keep_alive=0`),
+  so replies start slower, and the Minecraft agent stops its loop and
+  pathfinding until you send it an order. The setting survives restarts.
+- **Google Workspace (planned).** A development branch adds tools for Google
+  Calendar, Docs, and Drive. Not yet part of the released feature set.
 
 ### Architecture
 
@@ -160,6 +182,8 @@ Lumi is a single Python process. The parts:
 | Web server | aiohttp with python-socketio at `127.0.0.1:5000`. The browser polls for chat; socket.io carries TTS audio to tabs that opted in. API errors always come back as JSON |
 | Background memory thread | Blocking memory and library work from the web server (ChromaDB queries, indexing, the upload duplicate scan) runs on a dedicated worker, so it never stalls other requests |
 | Log hub | A small threaded HTTP server at `127.0.0.1:5001` |
+| HITL server | An aiohttp WebSocket endpoint at `127.0.0.1:5090/hitl`, started on the prompter's event loop. Each approval is an `asyncio.Future` resolved by a client reply, so it uses no CPU while idle |
+| Gaming Mode | A runtime flag (`constants.GAMING_MODE`, saved to `data/gaming_mode.json`). Chat calls read it to set Ollama's `keep_alive`, and it is pushed to SDK clients so the Minecraft agent can sleep without polling |
 
 The turn flow, process and thread layout, web server internals, and
 telemetry are documented in [docs/architecture.md](docs/architecture.md). For
@@ -365,7 +389,8 @@ Thinking (agent step 2/6)...
 ```
 
 The same turn can be driven from the web chat with the **Agent mode** chip.
-Confirmations still happen in the terminal.
+Confirmations go to the HITL bridge when a client is connected, and to
+the terminal otherwise.
 
 ### Web client
 
