@@ -200,7 +200,7 @@
       case 'approval_request':
         if (msg.id && !queue.some((r) => r.id === msg.id)) {   // re-sent on reconnect
           queue.push({ id: String(msg.id), tool: String(msg.tool || ''), preview: String(msg.preview || ''),
-                       agent: ['main', 'minecraft', 'office'].includes(msg.agent) ? msg.agent : 'main' });
+                       agent: ['main', 'minecraft', 'office', 'system'].includes(msg.agent) ? msg.agent : 'main' });
           renderApproval();
         }
         break;
@@ -776,7 +776,7 @@
   }
 
   // ── Pipeline ───────────────────────────────────────────────────
-  const AGENTS = [['main', 'Main'], ['minecraft', 'Minecraft'], ['office', 'Office']];
+  const AGENTS = [['main', 'Main'], ['minecraft', 'Minecraft'], ['office', 'Office'], ['system', 'System']];
   const STATUS_LABEL = { idle: 'Idle', thinking: 'Thinking', executing: 'Executing', waiting_approval: 'Needs you', error: 'Error' };
   let agents = {};
   const cards = {};

@@ -60,7 +60,7 @@ def test_a_new_island_gets_every_agents_state():
         async with Env() as e:
             ws = await e.connect()
             agents = (await recv(ws, "agent_update"))["agents"]
-            assert set(agents) == {"main", "minecraft", "office"}
+            assert set(agents) == {"main", "minecraft", "office", "system"}
             assert agents["office"]["status"] == "executing" and agents["office"]["model"] == "opus"
     run(t())
 

@@ -582,6 +582,9 @@ class MailProvider:
     def get_message(self, mid: str) -> dict: raise NotImplementedError
     def set_read(self, mid: str, read: bool) -> None: raise NotImplementedError
     def archive(self, mid: str) -> None: raise NotImplementedError
+    def create_draft(self, to: List[str], cc: List[str], subject: str, body: str,
+                     reply_to: Optional[str] = None) -> None:
+        raise ProviderError("This mail account can't save drafts.")
     def send(self, to: List[str], cc: List[str], subject: str, body: str,
              reply_to: Optional[str] = None) -> None: raise NotImplementedError
 
@@ -763,6 +766,31 @@ class GmailProvider(MailProvider):
         svc = self.account.service("gmail", "v1")
         self.account.run(lambda: svc.users().messages().send(userId="me", body=payload).execute())
 
+    def create_draft(self, to, cc, subject, body, reply_to=None) -> None:
+        """Save (not send) a message in Gmail's Drafts, threaded under
+        reply_to when given. gmail.modify covers drafts."""
+        if not self.can_send:
+            raise ProviderError("Drafts would be saved in Gmail, not your KSU mailbox. Draft KSU "
+                                "replies in KSU mail, or connect KSU through Microsoft Graph.")
+        msg = EmailMessage()
+        msg["To"] = ", ".join(to)
+        if cc:
+            msg["Cc"] = ", ".join(cc)
+        msg["Subject"] = subject
+        thread_id = None
+        if reply_to:
+            orig = self.get_message(reply_to)
+            thread_id = reply_to
+            if orig.get("message_id"):
+                msg["In-Reply-To"] = orig["message_id"]
+                msg["References"] = orig["message_id"]
+        msg.set_content(body)
+        message = {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}
+        if thread_id:
+            message["threadId"] = thread_id
+        svc = self.account.service("gmail", "v1")
+        self.account.run(lambda: svc.users().drafts().create(userId="me", body={"message": message}).execute())
+
 
 def graph_summary(m: dict) -> dict:
     frm = (m.get("from") or {}).get("emailAddress") or {}
@@ -851,6 +879,18 @@ class GraphMailProvider(MailProvider):
             "subject": subject, "body": {"contentType": "Text", "content": body},
             "toRecipients": addrs(to), "ccRecipients": addrs(cc)}})
 
+    def create_draft(self, to, cc, subject, body, reply_to=None) -> None:
+        """Save (not send) a message in the Drafts folder. A reply starts
+        from createReply so Outlook keeps it in the conversation."""
+        def addrs(xs): return [{"emailAddress": {"address": a}} for a in xs]
+        fields = {"subject": subject, "body": {"contentType": "Text", "content": body},
+                  "toRecipients": addrs(to), "ccRecipients": addrs(cc)}
+        if reply_to:
+            draft = self._call("POST", f"/me/messages/{requests.utils.quote(reply_to, safe='')}/createReply")
+            self._call("PATCH", f"/me/messages/{requests.utils.quote(draft['id'], safe='')}", json=fields)
+        else:
+            self._call("POST", "/me/messages", json=fields)
+
 
 # ───────────────────────────── Calendar ────────────────────────────────
 
@@ -918,6 +958,13 @@ class GoogleCalendar:
     def delete_event(self, event_id: str) -> None:
         svc = self.account.service("calendar", "v3")
         self.account.run(lambda: svc.events().delete(calendarId="primary", eventId=event_id).execute())
+
+    def patch_event(self, event_id: str, body: dict, notify: bool) -> dict:
+        svc = self.account.service("calendar", "v3")
+        res = self.account.run(lambda: svc.events().patch(
+            calendarId="primary", eventId=event_id, body=body,
+            sendUpdates="all" if notify else "none").execute())
+        return norm_event(res)
 
 
 def _overlaps(ev: dict, lo: datetime, hi: datetime) -> bool:
@@ -1290,6 +1337,53 @@ class WorkspaceHub:
         self._ranges.clear()
         self._drop_cache("events")
         self._log("calendar event deleted")
+
+    def reschedule_event(self, event_id: str, new_start: str) -> Tuple[dict, dict]:
+        """Move an event so it starts at new_start, keeping its length.
+        Timed events take '2026-11-17T15:00' (local time unless an offset
+        is given); all-day events take a date. Attendees are notified.
+        Returns (before, after)."""
+        if not self.calendar.connected():
+            raise NotConnected("Google Calendar isn't connected. Connect it in Settings → Connections.")
+        if not re.fullmatch(r"[A-Za-z0-9_\-]{5,1024}", event_id or ""):
+            raise ValueError("That doesn't look like an event id. Use list_events to get one.")
+        new_start = str(new_start or "").strip()
+        ev = self.calendar.get_event(event_id)
+        if ev["all_day"]:
+            try:
+                d0, d1 = date.fromisoformat(ev["start"][:10]), date.fromisoformat(ev["end"][:10])
+                nd = date.fromisoformat(new_start[:10])
+            except ValueError:
+                raise ValueError("That's an all-day event: give the new date like 2026-11-17.")
+            body = {"start": {"date": nd.isoformat()}, "end": {"date": (nd + (d1 - d0)).isoformat()}}
+        else:
+            if len(new_start) <= 10:
+                raise ValueError("Give the new start with a time, like 2026-11-17T15:00.")
+            s, e, ns = _parse_dt(ev["start"]), _parse_dt(ev["end"]), _parse_dt(new_start)
+            if ns is None:
+                raise ValueError("New start should look like 2026-11-17T15:00.")
+            if s is None or e is None:
+                raise ProviderError("That event has no usable start or end time.")
+            body = {"start": {"dateTime": ns.isoformat()}, "end": {"dateTime": (ns + (e - s)).isoformat()}}
+        after = self.calendar.patch_event(event_id, body, notify=bool(ev.get("attendees")))
+        self._ranges.clear()
+        self._drop_cache("events")
+        self._log("calendar event rescheduled")
+        return ev, after
+
+    def create_draft(self, account: str, to: Any, subject: str, body: str, cc: Any = None,
+                     reply_to_id: Optional[str] = None) -> None:
+        """Save a message to the account's Drafts folder. Nothing is sent."""
+        provider = self._require(account)
+        recipients, ccs = _addr_list(to), _addr_list(cc)
+        if len(recipients) + len(ccs) > MAX_RECIPIENTS:
+            raise ValueError(f"At most {MAX_RECIPIENTS} recipients.")
+        subject = " ".join(str(subject or "").split())[:200]
+        body = str(body or "").strip()
+        if not body:
+            raise ValueError("A draft needs a body.")
+        provider.create_draft(recipients, ccs, subject, body[:20000], reply_to_id)
+        self._log(f"email draft saved in {account}")
 
     # -- mail -----------------------------------------------------------
     def get_mail(self, filter: str = "all", refresh: bool = False, limit: int = MAIL_LIMIT) -> Dict[str, Any]:

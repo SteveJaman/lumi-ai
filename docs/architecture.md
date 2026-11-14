@@ -653,8 +653,8 @@ user message ─► model_router.route_model() ─► "haiku" | "sonnet" | "opus
   user's plan; if the plan lacks that model the run is retried once on Claude
   Code's default and the answer says so. The tier is saved on the prompter
   (`_route_tier`) for the rest of the turn.
-- **Tracker.** `modules/agent_tracker.py` holds `main`, `minecraft` and
-  `office`, each with `status` (idle, thinking, executing, waiting_approval,
+- **Tracker.** `modules/agent_tracker.py` holds `main`, `minecraft`,
+  `office` and `system`, each with `status` (idle, thinking, executing, waiting_approval,
   error), `task`, `progress`, `model` (the tier) and `model_name` (what really
   runs). `update()` is thread-safe, ignores no-op changes and calls its
   callbacks outside the lock; the approval server's callback broadcasts
@@ -662,11 +662,15 @@ user message ─► model_router.route_model() ─► "haiku" | "sonnet" | "opus
   connect.
 - **Who updates what.**
   - The prompter sets `main` to thinking for each reply or agent step (with
-    step progress), executing while a non-Office tool runs, error on a model
+    step progress), executing while one of its own tools runs (including the
+    meeting tools), error on a model
     failure, and settles it to idle after the turn. An error stays on show
     until the next turn.
-  - Calendar, email and Claude Code tools set `office` to executing, then
-    idle or error.
+  - Claude Code sets `office` to executing, then idle or error.
+  - Calendar and email (workspace hub), and the Everyday Life tools for email,
+    finance and the desktop (`email_agent`, `finance_agent`,
+    `windows_agent`, registered in `agent_tools.EVERYDAY_*`), set `system` to
+    executing, then idle or error. Their approvals wait on the System card.
   - The SDK server sets `minecraft` from the "Currently:" line the Minecraft
     agent already sends with its context (idle words map to idle), and to
     "Not running" when it disconnects. The bot itself is unchanged.

@@ -17,7 +17,7 @@ def t():
 
 def test_starts_with_three_idle_agents(t):
     snap = t.snapshot()
-    assert tuple(snap) == AGENTS == ("main", "minecraft", "office")
+    assert tuple(snap) == AGENTS == ("main", "minecraft", "office", "system")
     assert all(a["status"] == "idle" and a["progress"] == 0 and a["model"] is None for a in snap.values())
 
 
@@ -97,8 +97,8 @@ def test_snapshots_are_copies(t):
 def test_threads_can_update_at_once(t):
     def work(i):
         for k in range(50):
-            t.update(AGENTS[i % 3], "executing", progress=k)
-    threads = [threading.Thread(target=work, args=(i,)) for i in range(6)]
+            t.update(AGENTS[i % len(AGENTS)], "executing", progress=k)
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(2 * len(AGENTS))]
     for th in threads:
         th.start()
     for th in threads:

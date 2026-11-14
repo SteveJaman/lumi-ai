@@ -17,9 +17,10 @@ you don't have to switch to the web client:
 - **Calendar:** your Google Calendar as **List**, **Day**, **Month** or
   **Year**, with previous/next/today. Click a day to open it, a month name to
   zoom in.
-- **Pipeline:** what each of Lumi's agents is doing right now, as three cards
-  side by side: **Main** (Lumi herself), **Minecraft** (her in-game half) and
-  **Office** (calendar, email and Claude Code work). Each card shows a status,
+- **Pipeline:** what each of Lumi's agents is doing right now, as four cards
+  in a 2x2 grid: **Main** (Lumi herself, research and meetings), **Minecraft**
+  (her in-game half), **Office** (Claude Code work) and **System** (your
+  computer and accounts: email, calendar, finance and desktop control). Each card shows a status,
   the task, a progress bar, the model tier (HAIKU green, SONNET blue, OPUS
   purple) and the model that actually runs it, such as `qwen3:8b` or
   `Claude Code (opus)`. Thinking pulses blue, executing is green with a moving

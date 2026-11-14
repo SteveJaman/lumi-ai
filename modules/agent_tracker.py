@@ -2,9 +2,15 @@
 Agent tracker: what each of Lumi's agents is doing right now, for the Pipeline
 view on Lumi Island.
 
-    main       Lumi herself: chat and agent turns
+    main       Lumi herself: chat and agent turns, research (web search,
+               browsing, product research) and meetings (summaries,
+               action items, follow-up drafts)
     minecraft  her Minecraft "other half" (a separate process, via the SDK)
-    office     desk work for you: calendar / email tools and Claude Code runs
+    office     coding work handed to Claude Code
+    system     your computer and accounts: OS control (active window,
+               reading windows, clicking buttons), finance (expenses,
+               wishlist) and email & calendar (inbox triage, drafts,
+               free time, rescheduling, plus the workspace mail/calendar tools)
 
 Each agent has:
     status      idle | thinking | executing | waiting_approval | error
@@ -26,7 +32,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-AGENTS = ("main", "minecraft", "office")
+AGENTS = ("main", "minecraft", "office", "system")
 STATUSES = ("idle", "thinking", "executing", "waiting_approval", "error")
 MODELS = ("haiku", "sonnet", "opus")
 MAX_TASK_CHARS = 140

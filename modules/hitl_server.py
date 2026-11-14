@@ -337,7 +337,7 @@ class HITLServer:
 
         Returns True on approve, False on decline or timeout. Falls back
         to a terminal y/n prompt when no client is connected. The agent
-        (main / minecraft / office) shows as waiting_approval meanwhile and
+        (main / minecraft / office / system) shows as waiting_approval meanwhile and
         goes back to what it was doing afterwards.
         """
         agent = agent if agent in agent_tracker.AGENTS else "main"

@@ -185,6 +185,16 @@ PROVENANCE_MARKERS = {
     "list_events":     "FROM CALENDAR",
     # Claude Code reads files and its answer can quote them: still data, not orders.
     "ask_claude_code": "FROM CLAUDE CODE",
+    # Everyday Life tools (see EVERYDAY TOOLS below).
+    "triage_inbox":           "FROM EMAIL",
+    "auto_draft_reply":       "FROM EMAIL",
+    "find_free_time":         "FROM CALENDAR",
+    "research_product":       "FROM WEB",
+    "summarize_meeting":      "FROM MEETING",
+    "extract_action_items":   "FROM MEETING",
+    "draft_follow_up_email":  "FROM MEETING",
+    "get_active_window_info": "FROM WINDOW",
+    "read_window_text":       "FROM WINDOW",
 }
 
 
@@ -335,6 +345,61 @@ TOOL_SCHEMAS = [
 ]
 
 CONFIRM_REQUIRED_TOOLS = {"write_file", "run_command", "run_in_terminal"}
+
+# ===============================================================
+# EVERYDAY TOOLS
+# ---------------------------------------------------------------
+# Email & calendar, finance & shopping, meetings, and the desktop.
+# Each branch lives in its own module with the same interface
+# (see modules/everyday_common.py). Their irreversible / outward
+# actions join CONFIRM_REQUIRED_TOOLS; those tools ask for HITL
+# approval themselves, once they know exactly what they'll do.
+# ===============================================================
+from modules import email_agent, finance_agent, meeting_agent, windows_agent  # noqa: E402
+
+EVERYDAY_MODULES = (email_agent, finance_agent, meeting_agent, windows_agent)
+EVERYDAY_TOOL_MODULE = {
+    s["function"]["name"]: m for m in EVERYDAY_MODULES for s in m.TOOL_SCHEMAS
+}
+EVERYDAY_TOOL_NAMES = frozenset(EVERYDAY_TOOL_MODULE)
+# Pipeline card per tool: "system" (OS, finance, email) or "main" (meetings).
+EVERYDAY_TOOL_AGENT = {n: m.AGENT for n, m in EVERYDAY_TOOL_MODULE.items()}
+EVERYDAY_CONFIRM_TOOLS = frozenset().union(*(m.CONFIRM_TOOLS for m in EVERYDAY_MODULES))
+CONFIRM_REQUIRED_TOOLS |= EVERYDAY_CONFIRM_TOOLS
+
+
+def everyday_tool_schemas(ctx):
+    """Schemas for the branches usable right now (e.g. email only when an
+    account is connected), so the model isn't offered dead tools."""
+    out = []
+    for m in EVERYDAY_MODULES:
+        try:
+            ok = m.available(ctx)
+        except Exception:
+            ok = False
+        if ok:
+            out += m.TOOL_SCHEMAS
+    return out
+
+
+def everyday_task(name):
+    """Short Pipeline-card text for a tool, e.g. 'Triaging your inbox'."""
+    m = EVERYDAY_TOOL_MODULE.get(name)
+    return getattr(m, "TASKS", {}).get(name, f"Running {name}") if m else f"Running {name}"
+
+
+async def execute_everyday_tool(name, arguments, ctx):
+    """Run one everyday tool. Never raises for ordinary failures; returns
+    text for the model (errors start with 'Error')."""
+    m = EVERYDAY_TOOL_MODULE.get(name)
+    if m is None:
+        return f"Unknown tool: {name}"
+    try:
+        return await m.run_tool(name, arguments if isinstance(arguments, dict) else {}, ctx)
+    except ToolError as e:
+        return f"Error: {e}"
+    except Exception as e:                        # a bug in one tool must not end the turn
+        return f"Error running {name}: {type(e).__name__}: {e}"
 
 # ===============================================================
 # VLM IMAGE ANALYSIS (frontier-model pattern)
