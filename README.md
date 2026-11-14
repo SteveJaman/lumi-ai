@@ -174,10 +174,19 @@ for the pipeline.
 - **Lumi Island.** A small always-on-top island at the top of your screen
   (a lightweight Tauri app started from **Settings, then General**). Lumi's
   face, a looping video, is its icon, ringed by her live status. Hover to
-  peek and click to open three mini-apps: **Home** (time, day and weather, next event, today, unread),
-  **Chat** (talk to her without leaving your game), and **Calendar** (your
-  Google Calendar as list, day, month or year). Tool approvals take it over
-  until you answer. See [island/README.md](island/README.md).
+  peek and click to open four mini-apps: **Home** (time, day and weather, next event, today, unread),
+  **Chat** (talk to her without leaving your game), **Calendar** (your
+  Google Calendar as list, day, month or year) and **Pipeline** (live cards
+  for her Main, Minecraft and Office agents, with status, task, progress and
+  model). Tool approvals take it over until you answer. It also installs on
+  a second device such as a Surface and connects to your desktop over
+  Tailscale with a one-time pairing code. See [island/README.md](island/README.md).
+- **Model routing.** Before she answers, a small local model sorts your
+  message into **haiku** (small talk), **sonnet** (normal tasks) or **opus**
+  (hard problems). Haiku replies come from her fast local model; sonnet and
+  opus from her main one. When she hands work to Claude Code, the tier picks
+  Claude Code's model (`--model haiku|sonnet|opus`) on your plan. If the
+  router is unavailable she uses sonnet, and in Gaming Mode it isn't loaded.
 - **Claude Code as a coding tool.** In agent mode Lumi can hand a real
   coding task to your installed Claude Code. It runs on your own Claude login
   (your plan, not API billing), needs your approval every time, and gets file

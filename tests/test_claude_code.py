@@ -218,18 +218,24 @@ def test_not_installed_gives_instructions(monkeypatch):
 
 # ── approval and prompt wiring ────────────────────────────────────
 
+models = []
+
+
 def make_prompter(approve, monkeypatch, ran):
+    models.clear()
     p = Prompter.__new__(Prompter)
     p.signals = types.SimpleNamespace(workspace_hub=None, sdk=None)
     p.modules = []
-    asked = []
+    asked, agents = [], []
 
-    async def confirm(name, arguments, timeout=120):
+    async def confirm(name, arguments, timeout=120, agent="main"):
         asked.append((name, arguments))
+        agents.append(agent)
         return approve
     p._confirm = confirm
     monkeypatch.setattr(cc, "available", lambda: True)
-    monkeypatch.setattr(cc, "run", lambda task, mode: ran.append((task, mode)) or "done")
+    monkeypatch.setattr(cc, "run", lambda task, mode, model=None: ran.append((task, mode)) or models.append(model) or "done")
+    p._agents_asked = agents
     return p, asked
 
 
@@ -286,3 +292,57 @@ def test_the_model_is_told_about_the_marker_and_the_tool():
     src = inspect.getsource(prompter)
     assert "[FROM CLAUDE CODE] ... [END FROM CLAUDE CODE]" in src and "ask_claude_code hands a real coding task" in src
     assert cc.TOOL_SCHEMA["function"]["name"] == cc.TOOL_NAME
+
+
+def test_office_approval_and_the_routed_claude_model(monkeypatch):
+    ran = []
+    p, asked = make_prompter(True, monkeypatch, ran)
+    p._route_tier = "opus"
+    dispatch(p, {"task": "find the race condition in the reconnect loop"})
+    assert p._agents_asked == ["office"]                             # the Office card waits, not Main
+    assert models == ["opus"] and asked[0][1]["model"] == "opus"     # the tier picks Claude Code's model
+
+
+def test_the_routed_model_becomes_a_model_flag():
+    cmd = cc.build_command("claude.exe", "read_only", "opus")
+    assert cmd[cmd.index("--model") + 1] == "opus"
+    assert "--model" not in cc.build_command("claude.exe", "read_only", None)
+    assert "--model" not in cc.build_command("claude.exe", "read_only", "gpt-9")      # only Claude's own aliases
+
+
+def test_a_model_the_plan_lacks_falls_back_to_the_default(fake):
+    calls = []
+    real_execute = cc._execute
+    def fake_execute(exe, task, mode, timeout, model=None):
+        calls.append(model)
+        if model:
+            raise cc.ClaudeCodeError("Claude Code reported a problem: model opus is not available on your plan")
+        return "ok"
+    import pytest as _p
+    mp = _p.MonkeyPatch()
+    mp.setattr(cc, "_execute", fake_execute)
+    try:
+        out = cc.run("t", "read_only", "opus")
+    finally:
+        mp.undo()
+    assert calls == ["opus", None] and out.startswith("ok") and "wasn't available" in out
+
+
+def test_the_office_card_follows_the_run(monkeypatch):
+    from modules import agent_tracker
+    monkeypatch.setattr(agent_tracker, "tracker", agent_tracker.AgentTracker())
+    seen = []
+    agent_tracker.register(lambda snap: seen.append(dict(snap["office"])))
+    ran = []
+    p, _ = make_prompter(True, monkeypatch, ran)
+    p._route_tier = "sonnet"
+    dispatch(p, {"task": "explain the reconnect loop"})
+    assert any(s["status"] == "executing" and "Claude Code" in s["task"] and s["model"] == "sonnet" for s in seen)
+    assert agent_tracker.get("office")["status"] == "idle"
+
+    def boom(task, mode, model=None):
+        raise RuntimeError("claude crashed")
+    monkeypatch.setattr(cc, "run", boom)
+    with pytest.raises(RuntimeError):
+        dispatch(p, {"task": "explain it again"})
+    assert agent_tracker.get("office")["status"] == "error"          # stays on show until the next run

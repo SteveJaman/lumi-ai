@@ -60,6 +60,10 @@ class _History(list):
         super().__delitem__(key)
         self._tell("reset", 0, [])
 
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self._tell("reset", 0, [])
+
 
 class Signals:
     def __setattr__(self, name, value):

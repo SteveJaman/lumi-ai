@@ -6,9 +6,17 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build --no-bundle",
+    "build:standalone": "tauri build",
     "icons": "tauri icon ../assets/branding/lumi_png_samples/Lumi.png"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.9.4"
-  }
+  },
+  "//": [
+    "build: the exe Lumi starts on this PC (src-tauri/target/release/lumi-island.exe), no installer.",
+    "build:standalone: also makes installers for other devices (your Surface):",
+    "  src-tauri/target/release/bundle/nsis/Lumi Island_<version>_x64-setup.exe  (per-user, no admin)",
+    "  src-tauri/target/release/bundle/msi/Lumi Island_<version>_x64_en-US.msi",
+    "Copy either one to the other device, install, then use the gear to enter this PC's Tailscale address and pairing code."
+  ]
 }

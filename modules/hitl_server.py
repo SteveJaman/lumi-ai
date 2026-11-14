@@ -27,6 +27,8 @@ from urllib.parse import urlparse
 
 from aiohttp import web, WSMsgType
 
+from modules import agent_tracker, island_remote
+
 HITL_HOST = "127.0.0.1"
 HITL_PORT = 5090
 HITL_PATH = "/hitl"
@@ -56,6 +58,10 @@ class HITLServer:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._status = "idle"
         self._token: Optional[str] = None
+        self._remote_site: Optional[web.TCPSite] = None     # the Tailscale listener, when turned on
+        self._remote_host: Optional[str] = None
+        self._remote_clients: Set[web.WebSocketResponse] = set()
+        self._tracking = None          # our agent_tracker callback while running
         self._handlers: Dict[str, Callable[[web.WebSocketResponse, dict], Awaitable[None]]] = {}
         self.signals = None
 
@@ -92,6 +98,34 @@ class HITLServer:
         self._runner = runner
         print(f"{GRAY}[HITL] approval server on "
               f"ws://{self.host}:{self.port}{HITL_PATH}{RESET}")
+        if self._tracking is None:
+            self._tracking = lambda snap: self.broadcast_threadsafe({"type": "agent_update", "agents": snap})
+            agent_tracker.register(self._tracking)
+        err = await self.apply_remote()
+        if err:
+            print(f"{YELLOW}[HITL] remote island: {err}{RESET}")
+
+    async def apply_remote(self) -> Optional[str]:
+        """Open, move or close the Tailscale listener to match the saved
+        setting (modules/island_remote.py). Every change also disconnects the
+        remote islands, so a new code or turning it off takes effect at once.
+        Returns an error message, or None."""
+        want = island_remote.bind_host()
+        for ws in list(self._remote_clients):
+            await ws.close(code=4401, message=b"pairing changed")
+        if self._remote_site is not None and want != self._remote_host:
+            await self._remote_site.stop()
+            self._remote_site, self._remote_host = None, None
+            print(f"{GRAY}[HITL] remote island listener closed{RESET}")
+        if want and self._remote_site is None and self._runner is not None:
+            site = web.TCPSite(self._runner, want, self.port)
+            try:
+                await site.start()
+            except OSError as e:
+                return f"couldn't listen on {want}:{self.port} ({e.__class__.__name__}). Is Tailscale up?"
+            self._remote_site, self._remote_host = site, want
+            print(f"{GRAY}[HITL] remote islands can pair at ws://{want}:{self.port}{HITL_PATH}{RESET}")
+        return None
 
     async def stop(self) -> None:
         for fut in self._pending.values():
@@ -101,9 +135,14 @@ class HITLServer:
         for ws in list(self._clients):
             await ws.close()
         self._clients.clear()
+        self._remote_clients.clear()
+        if self._tracking is not None:
+            agent_tracker.unregister(self._tracking)
+            self._tracking = None
         if self._runner is not None:
-            await self._runner.cleanup()
+            await self._runner.cleanup()      # also stops the Tailscale site
             self._runner = None
+        self._remote_site, self._remote_host = None, None
 
     # ── websocket ────────────────────────────────────────────────────
 
@@ -112,15 +151,30 @@ class HITLServer:
         if origin and urlparse(origin).hostname not in _ALLOWED_ORIGIN_HOSTS:
             return web.Response(status=403, text="origin not allowed")
 
+        peer = request.remote or ""
+        remote = self._is_remote_peer(request)
+        if remote and not island_remote.is_enabled():
+            return web.Response(status=403, text="remote islands are off")
+        if remote and island_remote.locked(peer):
+            return web.Response(status=429, text="too many wrong pairing codes; try again later")
+
         # heartbeat=None (the default) -> no ping timer while idle.
         ws = web.WebSocketResponse(heartbeat=None, max_msg_size=64 * 1024)
         await ws.prepare(request)
-        if self._token is not None and not await self._authenticate(ws):
+        if remote:
+            # Another device: the pairing code is always required, whatever
+            # the local token setting is.
+            if not await self._authenticate_remote(ws, peer):
+                await ws.close(code=4401, message=b"pairing failed")
+                return ws
+            self._remote_clients.add(ws)
+        elif self._token is not None and not await self._authenticate(ws):
             await ws.close(code=4401, message=b"auth failed")
             return ws
         self._clients.add(ws)
-        await self._safe_send(ws, self._hello_payload())
+        await self._safe_send(ws, {**self._hello_payload(), "remote": remote})
         await self._safe_send(ws, {"type": "lumi_status", "state": self._status})
+        await self._safe_send(ws, {"type": "agent_update", "agents": agent_tracker.snapshot()})
 
         # A client that connects while requests are already waiting
         # should see them; otherwise they'd only ever time out.
@@ -138,6 +192,7 @@ class HITLServer:
                     break
         finally:
             self._clients.discard(ws)
+            self._remote_clients.discard(ws)
             if not self._clients:
                 # Nobody left to answer: hand open requests back to the
                 # terminal instead of letting them silently time out.
@@ -188,6 +243,23 @@ class HITLServer:
         if not isinstance(data, dict) or data.get("type") != "hello":
             return False
         return secrets.compare_digest(str(data.get("token") or ""), self._token or "")
+
+    @staticmethod
+    def _is_remote_peer(request) -> bool:
+        return (request.remote or "") not in ("127.0.0.1", "::1")
+
+    async def _authenticate_remote(self, ws: web.WebSocketResponse, peer: str) -> bool:
+        """A remote island's first frame must be hello with the pairing code."""
+        try:
+            msg = await asyncio.wait_for(ws.receive(), 5)
+            if msg.type != WSMsgType.TEXT:
+                return False
+            data = json.loads(msg.data)
+        except (asyncio.TimeoutError, ValueError, TypeError):
+            return False
+        if not isinstance(data, dict) or data.get("type") != "hello":
+            return False
+        return island_remote.verify(data.get("pair"), peer)
 
     def _hello_payload(self) -> dict:
         import constants
@@ -260,12 +332,23 @@ class HITLServer:
     # ── approval API ─────────────────────────────────────────────────
 
     async def request_approval(self, tool_name: str, preview_text: str,
-                               timeout: float = 120) -> bool:
+                               timeout: float = 120, agent: str = "main") -> bool:
         """Ask the connected client(s) to approve a tool call.
 
         Returns True on approve, False on decline or timeout. Falls back
-        to a terminal y/n prompt when no client is connected.
+        to a terminal y/n prompt when no client is connected. The agent
+        (main / minecraft / office) shows as waiting_approval meanwhile and
+        goes back to what it was doing afterwards.
         """
+        agent = agent if agent in agent_tracker.AGENTS else "main"
+        before = agent_tracker.get(agent)
+        agent_tracker.update(agent, "waiting_approval", task=f"Approve {tool_name}?")
+        try:
+            return await self._ask(tool_name, preview_text, timeout, agent)
+        finally:
+            agent_tracker.update(agent, before["status"], task=before["task"], progress=before["progress"])
+
+    async def _ask(self, tool_name: str, preview_text: str, timeout: float, agent: str) -> bool:
         if not self._clients:
             return await self._terminal_confirm(tool_name, preview_text)
 
@@ -276,6 +359,7 @@ class HITLServer:
             "id": req_id,
             "tool": tool_name,
             "preview": preview_text,
+            "agent": agent,
         }
         fut = loop.create_future()
         fut.hitl_payload = payload
@@ -346,8 +430,8 @@ async def stop() -> None:
 
 
 async def request_approval(tool_name: str, preview_text: str,
-                           timeout: float = 120) -> bool:
-    return await _server.request_approval(tool_name, preview_text, timeout)
+                           timeout: float = 120, agent: str = "main") -> bool:
+    return await _server.request_approval(tool_name, preview_text, timeout, agent)
 
 
 # ── Helpers for the Lumi Island bridge (modules/island_bridge.py) ────

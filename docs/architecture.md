@@ -587,7 +587,7 @@ hitl_server.request_approval(tool, preview, timeout=120)
 
 The reference client is Lumi Island (`island/`, a Tauri app), started and
 stopped by `modules/island_manager.py` from **Settings → General**. Besides
-approvals it has three mini-apps (Home, Chat, Calendar). They ride on the same
+approvals it has four mini-apps (Home, Chat, Calendar, Pipeline). They ride on the same
 socket through `modules/island_bridge.py`, which registers handlers on the
 approval server (`register_handler`).
 
@@ -597,7 +597,8 @@ Lumi Island (Tauri) ──ws://127.0.0.1:5090/hitl──► hitl_server  ── 
   get_home / get_weather / get_calendar /          └─► island_bridge ─► workspace_hub (calendar, snapshot)
   get_chat / chat_send                                               ├► home_info (12/24 h, units, weather)
   ◄── pushed: lumi_status, lumi_mode,                                └► signals.history (chat)
-      chat_message, chat_reset, snapshot, prefs
+      chat_message, chat_reset, snapshot, prefs,
+      agent_update                               agent_tracker ──callback──► broadcast agent_update
 ```
 
 - **Handshake.** When Lumi launches the island, `IslandManager` makes a fresh
@@ -632,7 +633,70 @@ Lumi Island (Tauri) ──ws://127.0.0.1:5090/hitl──► hitl_server  ── 
   set; then the city name once (to find coordinates) and the coordinates after.
   If the service is down the last reading is returned marked `stale`.
 - **Approvals** still work exactly as described above; the island only adds
-  messages around them.
+  messages around them. Each `approval_request` now names its `agent`.
+
+### Model routing and the agent pipeline
+
+```
+user message ─► model_router.route_model() ─► "haiku" | "sonnet" | "opus"
+                  small-talk regex → haiku (no model call)
+                  Gaming Mode      → sonnet (no model call)
+                  else qwen2.5:3b via Ollama, 4 s timeout, 4 tokens
+                  any failure      → sonnet
+              ─► prompter: haiku → FAST_MODEL_NAME, sonnet/opus → MODEL_NAME
+                           ask_claude_code → claude -p --model <tier>
+```
+
+- **Tiers.** Lumi's chat is local, so a tier only chooses between her fast and
+  main local models (attachments always use the main one). The Claude names
+  are real for Claude Code runs, which use `--model haiku|sonnet|opus` on the
+  user's plan; if the plan lacks that model the run is retried once on Claude
+  Code's default and the answer says so. The tier is saved on the prompter
+  (`_route_tier`) for the rest of the turn.
+- **Tracker.** `modules/agent_tracker.py` holds `main`, `minecraft` and
+  `office`, each with `status` (idle, thinking, executing, waiting_approval,
+  error), `task`, `progress`, `model` (the tier) and `model_name` (what really
+  runs). `update()` is thread-safe, ignores no-op changes and calls its
+  callbacks outside the lock; the approval server's callback broadcasts
+  `{"type":"agent_update","agents":{...}}`. A new island gets a snapshot on
+  connect.
+- **Who updates what.**
+  - The prompter sets `main` to thinking for each reply or agent step (with
+    step progress), executing while a non-Office tool runs, error on a model
+    failure, and settles it to idle after the turn. An error stays on show
+    until the next turn.
+  - Calendar, email and Claude Code tools set `office` to executing, then
+    idle or error.
+  - The SDK server sets `minecraft` from the "Currently:" line the Minecraft
+    agent already sends with its context (idle words map to idle), and to
+    "Not running" when it disconnects. The bot itself is unchanged.
+  - `request_approval(..., agent=)` sets that agent to waiting_approval and
+    restores its previous state afterwards.
+
+### Remote islands (pairing)
+
+Lumi Island can run on a second device and connect over Tailscale.
+`modules/island_remote.py` holds the setting in `data/island_remote.json`
+(git-ignored), edited from **Settings → General → Remote island**
+(`GET/POST /api/island/remote`, host-only, CSRF).
+
+- **Off by default.** Turning it on adds a second `TCPSite` on the same
+  runner, bound to this PC's Tailscale IPv4 (100.64.0.0/10) only. Any other
+  address is refused, and it never binds `0.0.0.0`. Loopback stays as before.
+- **Pairing code.** 16 symbols from a 30-letter alphabet with no look-alikes
+  (about 78 bits), shown once. Only a salted SHA-256 hash is stored, compared
+  in constant time.
+- **Handshake.** Any non-loopback peer is refused (403) while remote is off.
+  Otherwise its first frame must be `{"type":"hello","pair":"<code>"}`;
+  the local launch token is not accepted remotely. A wrong code closes with
+  4401. Five wrong codes from one address in ten minutes return 429 for ten
+  minutes.
+- **Revocation.** **New code** and **Turn off** call `apply_remote()` on the
+  approval server's loop, which closes every remote socket with 4401 and moves
+  or stops the listener.
+- **Client side.** The gear panel saves host, port and code in the island's
+  `localStorage` on that device. After a 4401 it stops retrying until a new
+  code is saved, so it can't lock itself out.
 
 ### Gaming Mode
 
@@ -740,18 +804,19 @@ instead of `print()`.
 
 ## Two-machine setup
 
-The intended layout splits Lumi across two computers. The Desktop runs
-everything heavy, including the game you are playing. A second device, such
-as a Surface Pro, runs only a small PWA that shows permission prompts, so you
-can answer them without alt-tabbing out of a full-screen game.
+Lumi can be split across two computers. The Desktop runs everything heavy,
+including the game you are playing. A second device, such as a Surface Pro,
+runs only Lumi Island, so you can answer permission prompts, chat and watch
+the Pipeline without alt-tabbing out of a full-screen game.
 
 ```
         Desktop (gaming PC)                          Surface Pro
 ┌──────────────────────────────────┐          ┌──────────────────────┐
-│ python main.py                   │          │ Island PWA           │
+│ python main.py                   │          │ Lumi Island          │
 │  Ollama, ChromaDB, TTS, STT      │          │  (island/, Tauri)    │
 │  prompter + tools                │          │                      │
-│  HITL server  127.0.0.1:5090     │◄────────►│  Approve / Decline   │
+│  HITL server  127.0.0.1:5090     │          │  Approve / Decline   │
+│   + 100.x.x.x:5090 (opt-in)      │◄────────►│  chat, Pipeline      │
 │  Gaming Mode ON                  │ WebSocket│                      │
 │  the AAA game                    │ over     │  no models, no       │
 └──────────────────────────────────┘ Tailscale│  secrets, no tools   │
@@ -760,8 +825,9 @@ can answer them without alt-tabbing out of a full-screen game.
 
 - **Desktop:** all inference, memory, tool execution and the HITL server.
   Gaming Mode keeps Lumi's footprint small while the game runs.
-- **Surface Pro:** a thin client. It holds no model, key or file access. It
-  renders `approval_request` messages and sends back one decision.
+- **Surface Pro:** a thin client with no model, API key or file access. It
+  keeps only the Desktop's address and the pairing code, renders what the
+  Desktop pushes, and sends back decisions and chat.
 - **Tailscale:** both machines join the same tailnet, so the connection is
   encrypted and reachable only by your own devices. Nothing is opened on your
   router or the public internet. This is separate from the Cloudflare tunnel
@@ -769,30 +835,20 @@ can answer them without alt-tabbing out of a full-screen game.
 
 ### Status
 
-The HITL protocol and the Island client are implemented. The network path
-between the two machines is not yet, because the server is deliberately
-local-only today:
+Built. See [Remote islands (pairing)](#remote-islands-pairing) and the setup
+steps in [island/README.md](../island/README.md#use-on-another-device-your-surface).
 
 | Piece | State |
 |---|---|
 | Approval protocol (request, response, expiry, timeout, terminal fallback) | Done |
-| Island client (Lumi Island, `island/`) | Done on the Desktop; must be built once with Rust |
-| Reaching the server from another machine | **Not done.** The server binds `127.0.0.1` and refuses non-loopback origins |
-| Authentication on the WebSocket | **Not done.** Today the only barrier is being on the machine |
+| Island client (Lumi Island, `island/`) | Done; `npm run build:standalone` makes installers for the Surface |
+| Reaching the server from another machine | Done: an opt-in listener on the Tailscale address only |
+| Authentication on the WebSocket | Done: per-launch token locally, pairing code remotely |
 
-Reaching the Desktop from the Surface needs three changes before this works:
-
-1. **Expose the endpoint to the tailnet only.** Preferably keep the server on
-   loopback and put `tailscale serve` in front of it. That gives HTTPS and a
-   MagicDNS name (needed for a PWA to install) without binding a LAN
-   interface. Never bind `0.0.0.0`.
-2. **Allow the PWA's origin.** Add the tailnet origin (for example
-   `https://<desktop>.<tailnet>.ts.net`) to an explicit allowlist in
-   `hitl_server.py`. The loopback-only rule stays the default.
-3. **Authenticate the socket.** Require a shared secret on connect, the way
-   the SDK uses `data/memories/sdk_token.txt`. A tailnet is a strong boundary
-   but not a substitute: anything else on it, or a compromised device, could
-   otherwise approve `run_command`.
+The design follows the three rules this section set out before it was built:
+the listener is reachable on the tailnet only (never `0.0.0.0`), a browser
+`Origin` other than loopback is still refused (the Tauri app sends its own
+`tauri.localhost` origin), and every remote socket must authenticate.
 
 ### Failure behavior
 

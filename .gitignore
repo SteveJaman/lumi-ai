@@ -85,6 +85,8 @@ data/credentials/
 data/display.json
 data/gaming_mode.json
 data/island.json
+# Remote island pairing (a salted hash of the code, and the Tailscale address).
+data/island_remote.json
 data/workspace/
 !data/memories/readme.md
 !data/memories/.gitkeep

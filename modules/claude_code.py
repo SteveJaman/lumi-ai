@@ -44,6 +44,7 @@ MAX_TASK_CHARS = 3000      # the approval prompt shows at most ~4000 characters;
 MAX_OUTPUT_CHARS = 6000
 
 READ_TOOLS = ["Read", "Grep", "Glob"]
+MODEL_ALIASES = ("haiku", "sonnet", "opus")    # Claude Code's own model aliases (the router's tiers)
 EDIT_TOOLS = READ_TOOLS + ["Edit", "Write"]
 
 # Never readable by Claude Code, in either mode.
@@ -120,7 +121,7 @@ def _deny_lists() -> Dict[str, List[str]]:
             "edit": [f"Edit(./{p})" for p in edit]}
 
 
-def build_command(exe: str, mode: str) -> List[str]:
+def build_command(exe: str, mode: str, model: Optional[str] = None) -> List[str]:
     tools = EDIT_TOOLS if mode == "edit" else READ_TOOLS
     deny = _deny_lists()["read"] + (_deny_lists()["edit"] if mode == "edit" else [])
     cmd = [exe, "-p", "--output-format", "json",
@@ -133,6 +134,8 @@ def build_command(exe: str, mode: str) -> List[str]:
         # Headless runs have nobody to ask, so edits would all be refused. Accepting
         # edits is safe here only because the deny rules above still win over it.
         cmd += ["--permission-mode", "acceptEdits"]
+    if model in MODEL_ALIASES:
+        cmd += ["--model", model]
     return cmd
 
 
@@ -146,13 +149,16 @@ def child_env() -> Dict[str, str]:
     return env
 
 
-def preview(task: str, mode: str) -> Dict[str, Any]:
+def preview(task: str, mode: str, model: Optional[str] = None) -> Dict[str, Any]:
     """What the approval prompt shows: the whole task, not a summary."""
-    return {"action": "Ask Claude Code" + (" (may edit files)" if mode == "edit" else " (read-only)"),
-            "folder": WORKSPACE_ROOT, "mode": mode, "task": task}
+    out = {"action": "Ask Claude Code" + (" (may edit files)" if mode == "edit" else " (read-only)"),
+           "folder": WORKSPACE_ROOT, "mode": mode, "task": task}
+    if model:
+        out["model"] = model
+    return out
 
 
-def run(task: Any, mode: str = "read_only", timeout: int = TIMEOUT_S) -> str:
+def run(task: Any, mode: str = "read_only", model: Optional[str] = None, timeout: int = TIMEOUT_S) -> str:
     """Blocking. Returns Claude Code's answer, or raises ClaudeCodeError."""
     task = str(task or "").strip()
     if not task:
@@ -177,7 +183,14 @@ def run(task: Any, mode: str = "read_only", timeout: int = TIMEOUT_S) -> str:
             raise ClaudeCodeError("Claude Code is already working on something. One task at a time.")
         _runs.append(now)
     try:
-        return _execute(exe, task, mode, timeout)
+        try:
+            return _execute(exe, task, mode, timeout, model)
+        except ClaudeCodeError as e:
+            # The routed model may not be on the user's plan (e.g. opus): try
+            # once more with Claude Code's own default rather than failing.
+            if model and "model" in str(e).lower():
+                return _execute(exe, task, mode, timeout, None) + f"\n(Ran on Claude Code's default model; {model} wasn't available.)"
+            raise
     finally:
         _running.release()
 
@@ -185,12 +198,12 @@ def run(task: Any, mode: str = "read_only", timeout: int = TIMEOUT_S) -> str:
 _running = threading.Lock()
 
 
-def _execute(exe: str, task: str, mode: str, timeout: int) -> str:
+def _execute(exe: str, task: str, mode: str, timeout: int, model: Optional[str] = None) -> str:
     kw: Dict[str, Any] = {}
     if os.name == "nt":
         kw["creationflags"] = subprocess.CREATE_NO_WINDOW
     try:
-        proc = subprocess.Popen(build_command(exe, mode), cwd=WORKSPACE_ROOT, env=child_env(),
+        proc = subprocess.Popen(build_command(exe, mode, model), cwd=WORKSPACE_ROOT, env=child_env(),
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, encoding="utf-8", errors="replace", **kw)
     except OSError as e:

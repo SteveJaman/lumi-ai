@@ -34,12 +34,14 @@ def make(tmp_path, approve):
     p = Prompter.__new__(Prompter)
     p.signals = types.SimpleNamespace(workspace_hub=hub, sdk=None)
     p.modules = []
-    asked = []
+    asked, agents = [], []
 
-    async def confirm(name, arguments, timeout=120):
+    async def confirm(name, arguments, timeout=120, agent="main"):
         asked.append((name, arguments))
+        agents.append(agent)
         return approve
     p._confirm = confirm
+    p._agents_asked = agents
     return p, hub, mail, asked
 
 
@@ -83,3 +85,10 @@ def test_tools_refuse_politely_when_nothing_is_connected(tmp_path):
     hub._providers = {}
     out = dispatch(p, "list_emails", {})
     assert "aren't connected" in out and asked == []
+
+
+def test_calendar_and_email_approvals_wait_on_the_office_card(tmp_path):
+    p, hub, mail, asked = make(tmp_path, approve=False)
+    dispatch(p, "send_email", {"account": "gmail", "to": ["bob@x.org"], "subject": "Hi", "body": "x"})
+    dispatch(p, "delete_event", {"event_id": "abcde12345"})
+    assert p._agents_asked == ["office", "office"]

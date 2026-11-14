@@ -31,9 +31,22 @@
     const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
     if (invoke) invoke('fit', { width: w, height: h }).catch(() => {});
   }
+  // Another PC (your desktop, over Tailscale): saved from the gear panel. When set,
+  // it wins over everything else and the hello carries the pairing code.
+  const REMOTE_KEY = 'lumi-island-remote';
+  function loadRemote() {
+    try { const r = JSON.parse(localStorage.getItem(REMOTE_KEY) || 'null'); return r && r.host ? r : null; } catch (_) { return null; }
+  }
+  function saveRemote(r) {
+    try { if (r) localStorage.setItem(REMOTE_KEY, JSON.stringify(r)); else localStorage.removeItem(REMOTE_KEY); } catch (_) {}
+  }
+  let remote = loadRemote();
+  const hostForUrl = (h) => (h.includes(':') && !h.startsWith('[') ? `[${h}]` : h);
+
   // ?ws=... is for opening the page in a browser during development; the app
   // itself gets the address from Lumi through its environment (island_ws_url).
   async function getWsUrl() {
+    if (remote) return `ws://${hostForUrl(remote.host)}:${remote.port || 5090}/hitl`;
     const q = new URLSearchParams(location.search).get('ws');
     if (q) return q;
     const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
@@ -89,7 +102,8 @@
     const s = effStatus();
     island.dataset.status = s;
     const authFailed = conn === 'offline' && lastClose === 4401;
-    $('status').textContent = authFailed ? 'Restart from Lumi settings' : STATUS_TEXT[s];
+    $('status').textContent = authFailed ? (remote ? 'Pairing code rejected' : 'Restart from Lumi settings')
+      : conn === 'offline' && remote ? `Can't reach ${remote.host}` : STATUS_TEXT[s];
     updateTyping();
     syncVideo();
   }
@@ -127,7 +141,7 @@
     try { sock = new WebSocket(url); } catch (_) { scheduleReconnect(); return; }
     ws = sock; ready = false;
 
-    sock.onopen = () => sock.send(JSON.stringify({ type: 'hello', token }));
+    sock.onopen = () => sock.send(JSON.stringify(remote ? { type: 'hello', pair: remote.code || '' } : { type: 'hello', token }));
     sock.onmessage = (e) => {
       let msg;
       try { msg = JSON.parse(e.data); } catch (_) { return; }
@@ -140,6 +154,9 @@
       conn = 'offline'; lumiState = 'idle';
       if (queue.length) { queue = []; renderApproval(); }     // Lumi fell back to the terminal
       render();
+      // A rejected pairing code won't get better by retrying (and five tries
+      // lock this device out): wait until a new code is saved in the gear panel.
+      if (remote && ev.code === 4401) return;
       scheduleReconnect();
     };
     sock.onerror = () => { try { sock.close(); } catch (_) {} };
@@ -166,6 +183,9 @@
       case 'lumi_status':
         if (STATUS_TEXT[msg.state]) { lumiState = msg.state; render(); }
         break;
+      case 'agent_update':
+        agents = msg.agents || agents; renderPipeline();
+        break;
       case 'lumi_mode':
         gaming = !!msg.gaming; render();
         break;
@@ -179,7 +199,8 @@
       case 'chat_reset': loadChat(); break;
       case 'approval_request':
         if (msg.id && !queue.some((r) => r.id === msg.id)) {   // re-sent on reconnect
-          queue.push({ id: String(msg.id), tool: String(msg.tool || ''), preview: String(msg.preview || '') });
+          queue.push({ id: String(msg.id), tool: String(msg.tool || ''), preview: String(msg.preview || ''),
+                       agent: ['main', 'minecraft', 'office'].includes(msg.agent) ? msg.agent : 'main' });
           renderApproval();
         }
         break;
@@ -201,6 +222,7 @@
     if (name === 'home') loadHome();
     if (name === 'chat') { scrollMsgs(true); if (state === 'open') focusComposer(); }
     if (name === 'calendar') loadCalendar();
+    if (name === 'pipeline') renderPipeline();
   }
   function openApp(name) { setApp(name); setState(queue.length ? 'approval' : 'open'); }
 
@@ -222,7 +244,7 @@
     clearTimeout(blurTimer);
     if (state !== 'open') return;
     blurTimer = setTimeout(() => {
-      if (state === 'open' && !document.hasFocus() && !$('input').value.trim()) collapse();
+      if (state === 'open' && !document.hasFocus() && !$('input').value.trim() && $('settings').hidden) collapse();
     }, BLUR_CLOSE_MS);
   });
   window.addEventListener('focus', () => clearTimeout(blurTimer));
@@ -728,6 +750,8 @@
     const cur = queue[0];
     if (!cur) {
       island.classList.remove('danger');
+      renderPipeline();
+      if (state !== 'approval') return;                      // answered on a Pipeline card: stay where we are
       return setState(beforeApproval === 'open' ? 'open' : hovering ? 'peek' : 'hidden');
     }
     const danger = DANGER.test(cur.tool);
@@ -739,14 +763,110 @@
     $('preview').scrollTop = 0;
     $('more').hidden = queue.length < 2;
     $('more').textContent = `+${queue.length - 1}`;
+    renderPipeline();
+    if (state === 'open' && app === 'pipeline') return;      // answered on the agent's card instead
     if (state !== 'approval') beforeApproval = state;
     setState('approval');
   }
-  function respond(decision) {
-    const cur = queue.shift();
+  function respond(decision, id) {
+    const i = id ? queue.findIndex((r) => r.id === id) : 0;
+    const cur = i >= 0 ? queue.splice(i, 1)[0] : null;
     if (cur && ws && ready) ws.send(JSON.stringify({ type: 'approval_response', id: cur.id, decision }));
     renderApproval();
   }
+
+  // ── Pipeline ───────────────────────────────────────────────────
+  const AGENTS = [['main', 'Main'], ['minecraft', 'Minecraft'], ['office', 'Office']];
+  const STATUS_LABEL = { idle: 'Idle', thinking: 'Thinking', executing: 'Executing', waiting_approval: 'Needs you', error: 'Error' };
+  let agents = {};
+  const cards = {};
+
+  function card(id, name) {
+    const c = el('article', 'agent-card s-idle');
+    c.dataset.agent = id;
+    const head = el('header', 'ac-head');
+    const badge = el('span', 'badge');
+    head.append(el('span', 'ac-name', name), badge);
+    const stat = el('div', 'ac-status');
+    const task = el('div', 'ac-task');
+    const bar = el('div', 'bar');
+    const fill = el('i');
+    bar.append(fill);
+    const model = el('div', 'ac-model');
+    const ask = el('div', 'ac-ask');
+    const askTool = el('div', 'ac-tool');
+    const yes = el('button', 'btn btn-approve', 'Approve'); yes.type = 'button';
+    const no = el('button', 'btn btn-decline', 'Decline'); no.type = 'button';
+    yes.addEventListener('click', () => c.dataset.req && respond('approve', c.dataset.req));
+    no.addEventListener('click', () => c.dataset.req && respond('decline', c.dataset.req));
+    ask.append(askTool, no, yes);
+    c.append(head, stat, task, bar, model, ask);
+    return { c, badge, stat, task, fill, model, ask, askTool };
+  }
+
+  function renderPipeline() {
+    const host = $('pipe');
+    if (!host.childElementCount) {
+      for (const [id, name] of AGENTS) { cards[id] = card(id, name); host.append(cards[id].c); }
+    }
+    for (const [id] of AGENTS) {
+      const a = agents[id] || { status: 'idle', task: '', progress: 0, model: null, model_name: null };
+      const k = cards[id];
+      const req = queue.find((r) => r.agent === id);
+      const status = req ? 'waiting_approval' : (STATUS_LABEL[a.status] ? a.status : 'idle');
+      k.c.className = `agent-card s-${status}${req ? ' expanded' : ''}`;
+      k.badge.className = `badge${a.model ? ' b-' + a.model : ''}`;
+      k.badge.textContent = a.model ? a.model.toUpperCase() : '—';
+      k.stat.textContent = STATUS_LABEL[status];
+      k.task.textContent = req ? `Wants to run ${req.tool}` : (a.task || (status === 'idle' ? 'Nothing to do' : ''));
+      const pct = status === 'idle' ? 0 : Math.max(0, Math.min(100, Number(a.progress) || 0));
+      k.fill.style.width = `${status === 'executing' && !pct ? 50 : pct}%`;
+      k.model.textContent = a.model_name || '';
+      k.c.dataset.req = req ? req.id : '';
+      k.askTool.textContent = req ? req.tool : '';
+      k.ask.hidden = !req;
+    }
+    const open = queue.length;
+    $('pipe-note').textContent = conn !== 'online' ? 'Not connected' : open ? `${open} waiting for you` : '';
+  }
+
+  // ── Connection settings (the gear) ─────────────────────────────
+  const CODE_RE = /^[A-Z2-9]{4}(-?[A-Z2-9]{4}){3}$/;
+  function openSettings() {
+    $('set-host').value = remote ? remote.host : '';
+    $('set-port').value = remote ? String(remote.port || 5090) : '';
+    $('set-code').value = remote ? remote.code || '' : '';
+    $('set-msg').textContent = remote ? `Connected to ${remote.host}` : 'Using Lumi on this PC.';
+    $('set-msg').classList.remove('bad');
+    $('settings').hidden = false;
+    $('set-host').focus();
+  }
+  function closeSettings() { $('settings').hidden = true; }
+  function reconnect() {
+    clearTimeout(reconnectTimer); reconnectTimer = null; retry = 500;
+    const old = ws; ws = null; ready = false;
+    if (old) { old.onclose = null; try { old.close(); } catch (_) {} }
+    failAll(new Error('offline'));
+    conn = 'connecting'; render(); connect();
+  }
+  $('gear').addEventListener('click', () => ($('settings').hidden ? openSettings() : closeSettings()));
+  $('set-cancel').addEventListener('click', closeSettings);
+  $('set-local').addEventListener('click', () => { remote = null; saveRemote(null); closeSettings(); reconnect(); });
+  $('set-save').addEventListener('click', () => {
+    const host = $('set-host').value.trim().replace(/^wss?:\/\//, '').replace(/\/.*$/, '').replace(/:\d+$/, '');
+    const port = parseInt($('set-port').value.trim() || '5090', 10);
+    const code = $('set-code').value.trim().toUpperCase().replace(/\s+/g, '');
+    const bad = (t) => { $('set-msg').textContent = t; $('set-msg').classList.add('bad'); };
+    if (!host) { remote = null; saveRemote(null); closeSettings(); return reconnect(); }
+    if (!/^[A-Za-z0-9.:\-\[\]]{1,253}$/.test(host)) return bad('That host doesn\u2019t look right. Use an address like 100.101.102.103.');
+    if (!(port > 0 && port < 65536)) return bad('The port should be a number like 5090.');
+    if (!CODE_RE.test(code)) return bad('Enter the pairing code from Lumi\u2019s web app (like ABCD-EFGH-JKMN-PQRS).');
+    remote = { host, port, code };
+    saveRemote(remote);
+    closeSettings();
+    reconnect();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('settings').hidden) { e.stopPropagation(); closeSettings(); } }, true);
   $('approve').addEventListener('click', () => respond('approve'));
   $('decline').addEventListener('click', () => respond('decline'));
 

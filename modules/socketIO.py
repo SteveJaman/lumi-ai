@@ -648,6 +648,8 @@ class SocketIOServer:
         workspace_routes.register(r, self)      # /api/workspace/* (host-only)
         from modules import home_info
         home_info.register(r, self)             # /api/settings/display (host-only)
+        from modules import island_remote
+        island_remote.register(r, self)         # /api/island/remote (host-only)
 
         # Background game agents (modules/game_manager.py). Host-only:
         # neither route is in _REMOTE_API_ALLOW.

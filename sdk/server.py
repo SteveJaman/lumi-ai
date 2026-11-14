@@ -542,6 +542,7 @@ class SDKServer(Module):
             self._trigger_reaction(client, text)
             return
         client.context_text = text
+        self._track_minecraft(client, text)
         priority = payload.get("priority")
         if isinstance(priority, int):
             client.context_priority = priority
@@ -645,10 +646,38 @@ class SDKServer(Module):
             "actions/force is not yet implemented on this build"
         ))
 
+    # Words in the Minecraft agent's "Currently:" line that mean it isn't doing anything.
+    _MC_IDLE_WORDS = ("idle", "resting", "standing by", "waiting", "gaming mode", "asleep", "zzz",
+                      "taking a breather", "starting up", "autoplay is off")
+
+    def _track_minecraft(self, client: SDKClient, text: str = "", gone: bool = False) -> None:
+        """Feed the Pipeline view's Minecraft card from the status line the
+        agent already sends every 30 s ("Currently: ..."). No bot changes."""
+        if client.game_name != "MinecraftAgent":
+            return
+        try:
+            from modules import agent_tracker
+            from constants import GAME_AGENT_MODEL
+            if gone:
+                agent_tracker.update("minecraft", "idle", task="Not running")
+                return
+            doing = ""
+            for line in str(text or "").splitlines():
+                if line.startswith("Currently:"):
+                    doing = line[len("Currently:"):].strip()
+            low = doing.lower()
+            if not doing or any(w in low for w in self._MC_IDLE_WORDS):
+                agent_tracker.update("minecraft", "idle", task=doing or "In the game", model_name=GAME_AGENT_MODEL)
+            else:
+                agent_tracker.update("minecraft", "executing", task=doing, progress=50, model_name=GAME_AGENT_MODEL)
+        except Exception:
+            pass
+
     def _cleanup_client(self, client_id: str):
         client = self.clients.pop(client_id, None)
         if client is None:
             return
+        self._track_minecraft(client, gone=True)
         for fut in client.pending_invocations.values():
             if not fut.done():
                 fut.set_result({"success": False, "error": "client disconnected"})

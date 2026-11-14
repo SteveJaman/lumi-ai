@@ -50,6 +50,7 @@ from modules import gaming_mode
 from modules import workspace_hub
 from modules import island_bridge
 from modules import claude_code
+from modules import model_router, agent_tracker
 
 SENTENCE_SPLIT_PATTERN = re.compile(r'(?<=[.!?;\n])\s+')
 
@@ -1057,6 +1058,14 @@ def _check_fast_model_available():
     return _FAST_MODEL_AVAILABLE
 
 
+_OFFICE_TASKS = {
+    "list_events": "Checking your calendar", "create_event": "Adding a calendar event",
+    "delete_event": "Deleting a calendar event", "list_emails": "Checking your inbox",
+    "read_email": "Reading an email", "send_email": "Sending an email",
+    "mark_email_read": "Marking an email read", "archive_email": "Archiving an email",
+}
+
+
 def _should_use_fast_model(user_text, agent_mode):
     if not FAST_MODEL_ENABLED:
         return False
@@ -1592,6 +1601,8 @@ class Prompter:
         model = FAST_MODEL_NAME if use_fast else MODEL_NAME
         loop = asyncio.get_running_loop()
         print(f"{GRAY}Reacting to a game event ({'fast' if use_fast else 'full'})...{RESET}")
+        agent_tracker.update("main", "thinking", task="Reacting to a game event", progress=0,
+                             model="haiku" if use_fast else "sonnet", model_name=model)
         try:
             resp: LLMResponse = await loop.run_in_executor(
                 None,
@@ -1641,12 +1652,22 @@ class Prompter:
             label = "full"
             think_flag = True
         else:
-            use_fast = _should_use_fast_model(
+            # The router (a small local model) sorts the prompt into a tier.
+            # The fast model is used only when it says "haiku" AND the old
+            # safety rules agree, so a hard prompt never lands on the small model.
+            tier = await asyncio.get_running_loop().run_in_executor(
+                None, model_router.route_model, latest_user_text)
+            self._route_tier = tier
+            use_fast = tier == "haiku" and _should_use_fast_model(
                 latest_user_text, self.agent_mode_enabled,
             )
             model = FAST_MODEL_NAME if use_fast else MODEL_NAME
             label = "fast" if use_fast else "full"
             think_flag = not use_fast
+        if has_attachment:
+            self._route_tier = "sonnet"
+        agent_tracker.update("main", "thinking", task="Generating response", progress=0,
+                             model=getattr(self, "_route_tier", None) or model_router.DEFAULT_TIER, model_name=model)
 
         # Gaming Mode: 0 unloads the model from VRAM right after the reply.
         keep_alive = gaming_mode.keep_alive(FAST_MODEL_KEEP_ALIVE if use_fast else "30s")
@@ -1708,6 +1729,7 @@ class Prompter:
             )
         except Exception as e:
             print(f"\n{GRAY}[System Error: Chat request failed - {e}]{RESET}")
+            agent_tracker.update("main", "error", task=f"Chat model failed: {e}")
             if stream.entry is None:
                 return "Something went wrong talking to my own model — check the terminal for the error."
             stream.finish(truncated=True)
@@ -2338,7 +2360,7 @@ class Prompter:
         except Exception as e:
             return f"System Info - Search error: {e}"
 
-    async def _confirm(self, tool_name, arguments, timeout=120):
+    async def _confirm(self, tool_name, arguments, timeout=120, agent="main"):
         """Ask the human to approve a tool call.
 
         Routes through the HITL WebSocket server when a client is
@@ -2352,9 +2374,22 @@ class Prompter:
             preview = str(arguments)
         if len(preview) > 4000:
             preview = preview[:4000] + "\n... (truncated)"
-        return await hitl_server.request_approval(tool_name, preview, timeout)
+        return await hitl_server.request_approval(tool_name, preview, timeout, agent=agent)
 
     async def _dispatch_tool_call(self, name, arguments):
+        """Run one tool, showing it on the Pipeline view. Calendar, email and
+        Claude Code are Office work (shown on that card inside the branches
+        below); everything else is the main agent executing a tool."""
+        office = name == claude_code.TOOL_NAME or name in workspace_hub.TOOL_NAMES
+        if office:
+            return await self._run_tool(name, arguments)
+        agent_tracker.update("main", "executing", task=f"Running {name}", progress=50)
+        try:
+            return await self._run_tool(name, arguments)
+        finally:
+            agent_tracker.update("main", "thinking", task="Reading the result", progress=None)
+
+    async def _run_tool(self, name, arguments):
         loop = asyncio.get_running_loop()
 
         # ─── SDK action dispatch ───
@@ -2602,13 +2637,23 @@ class Prompter:
                 return (f"Error: the task is too long ({len(task)} characters; the limit is "
                         f"{claude_code.MAX_TASK_CHARS}). Split it up.")
             # Always asked, in both modes: it spends the user's Claude plan and can change files.
-            if not await self._confirm(name, claude_code.preview(task, mode)):
+            tier = getattr(self, "_route_tier", None) or model_router.DEFAULT_TIER
+            cc_model = model_router.claude_code_model(tier)
+            if not await self._confirm(name, claude_code.preview(task, mode, cc_model), agent="office"):
                 return "The user declined to allow this action."
-            print(f"{GRAY}[Claude Code is working… this can take a few minutes]{RESET}")
+            print(f"{GRAY}[Claude Code ({cc_model}) is working… this can take a few minutes]{RESET}")
+            agent_tracker.update("office", "executing", task=f"Claude Code: {task}", progress=50,
+                                 model=tier, model_name=f"Claude Code ({cc_model})")
             try:
-                return await loop.run_in_executor(None, claude_code.run, task, mode)
+                out = await loop.run_in_executor(None, claude_code.run, task, mode, cc_model)
             except claude_code.ClaudeCodeError as e:
+                agent_tracker.update("office", "error", task=str(e))
                 return f"Error: {e}"
+            except BaseException as e:                   # never leave the card stuck on "executing"
+                agent_tracker.update("office", "error", task=f"{type(e).__name__}: {e}")
+                raise
+            agent_tracker.settle("office")
+            return out
 
         if name in workspace_hub.TOOL_NAMES:
             hub = getattr(self.signals, "workspace_hub", None)
@@ -2620,9 +2665,20 @@ class Prompter:
                 # Sending, inviting and deleting reach other people or can't be
                 # undone: the user approves each one (HITL bridge or terminal).
                 preview = await loop.run_in_executor(None, hub.preview_for, name, arguments)
-                if not await self._confirm(name, preview):
+                if not await self._confirm(name, preview, agent="office"):
                     return "The user declined to allow this action."
-            return await loop.run_in_executor(None, hub.call_tool, name, arguments)
+            agent_tracker.update("office", "executing", task=_OFFICE_TASKS.get(name, name), progress=50,
+                                 model_name="Google")
+            try:
+                out = await loop.run_in_executor(None, hub.call_tool, name, arguments)
+            except BaseException as e:                   # never leave the card stuck on "executing"
+                agent_tracker.update("office", "error", task=f"{type(e).__name__}: {e}")
+                raise
+            if str(out).startswith("Error"):
+                agent_tracker.update("office", "error", task=str(out)[7:])
+            else:
+                agent_tracker.settle("office")
+            return out
 
         print(f"\n{GRAY}[Lumi wants to use tool: {name}({arguments})]{RESET}")
 
@@ -2636,6 +2692,13 @@ class Prompter:
         )
 
     async def run_agent_turn(self, latest_user_text):
+        # Agent turns always run on the main model (it has the tools); the tier
+        # still shows on the Pipeline view and picks Claude Code's model if she
+        # delegates.
+        tier = await asyncio.get_running_loop().run_in_executor(
+            None, model_router.route_model, latest_user_text)
+        self._route_tier = tier
+        agent_tracker.update("main", "thinking", task="Planning", progress=0, model=tier, model_name=MODEL_NAME)
         context_injections = self.gather_injections(latest_user_text, agent_context=True)
         messages = [{"role": "system", "content": f"{get_chat_system_prompt(agent=True)}\n\n{context_injections}"}]
 
@@ -2698,6 +2761,8 @@ class Prompter:
             }
 
             print(f"{GRAY}Thinking (agent step {step + 1}/{MAX_AGENT_STEPS})...{RESET}")
+            agent_tracker.update("main", "thinking", task=f"Thinking (step {step + 1} of {MAX_AGENT_STEPS})",
+                                 progress=int(step * 100 / MAX_AGENT_STEPS))
 
             try:
                 resp: LLMResponse = await loop.run_in_executor(
@@ -2713,6 +2778,7 @@ class Prompter:
                 )
             except Exception as e:
                 print(f"\n{GRAY}[System Error: Agent request failed - {e}]{RESET}")
+                agent_tracker.update("main", "error", task=f"Agent model failed: {e}")
                 return "Something went wrong talking to my own model — check the terminal for the error."
 
             tool_calls = [tc.as_ollama() for tc in resp.tool_calls]
@@ -3520,12 +3586,17 @@ class Prompter:
                     print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {mode_tag} ", end="", flush=True)
 
                     self._live_stream = None
-                    if use_agent:
-                        raw_reply = await self.run_agent_turn(latest_user_text)
-                    elif is_sdk_event:
-                        raw_reply = await self.run_event_reaction(latest_user_text)
-                    else:
-                        raw_reply = await self.run_conversational(latest_user_text)
+                    try:
+                        if use_agent:
+                            raw_reply = await self.run_agent_turn(latest_user_text)
+                        elif is_sdk_event:
+                            raw_reply = await self.run_event_reaction(latest_user_text)
+                        else:
+                            raw_reply = await self.run_conversational(latest_user_text)
+                    except Exception as e:
+                        agent_tracker.update("main", "error", task=f"{type(e).__name__}: {e}")
+                        raise
+                    agent_tracker.settle("main")      # idle again, unless the turn ended in an error
 
                     display_reply = _clean_reply(raw_reply)
                     if not use_agent:

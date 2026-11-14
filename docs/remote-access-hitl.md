@@ -1,28 +1,13 @@
 # Remote access: approving Lumi's tool calls from a Surface Pro
 
 This guide covers putting Tailscale on the Desktop and a Surface Pro, starting
-the HITL approval server, and opening the Island PWA on the Surface. The
-architecture behind it is in
-[architecture.md](architecture.md#two-machine-setup).
+the approval server, and pairing Lumi Island on the Surface. The architecture
+behind it is in [architecture.md](architecture.md#remote-islands-pairing).
 
-> **Status: partly built.** Read this before you start.
->
-> The Island is now a desktop app (`island/`, see its README), so the PWA
-> steps below are out of date.
->
-> | Step | State |
-> |---|---|
-> | Install Tailscale on both machines | Works now |
-> | Start Lumi and the HITL server on the Desktop | Works now |
-> | Check the server is listening on the Desktop | Works now |
-> | Serve the Island page at `/island` | Works now, on the Desktop only (`http://127.0.0.1:5000/island`) |
-> | Reach the HITL server from the Surface over Tailscale | **Not built.** The server accepts only loopback origins |
-> | Authenticate the WebSocket | **Not built.** Anyone who can reach the port can approve tool calls |
->
-> Do not expose port 5090 to your tailnet until the authentication step is
-> built. Any device on the tailnet, or anything running on a compromised
-> device, could approve `run_command` or `write_file`. The Surface steps below
-> are marked as not yet working for this reason.
+> **Status: built.** Lumi Island installs on the Surface and connects to the
+> Desktop over Tailscale with a pairing code. Remote access is off until you
+> turn it on in Lumi's web client, and it listens on the Tailscale address
+> only.
 
 ---
 
@@ -115,56 +100,62 @@ prompter's event loop, so launching Lumi starts it. (Working now.)
 
 ### What the server accepts
 
-- It listens on `127.0.0.1` only. Other machines can't connect to it yet.
+- It always listens on `127.0.0.1`. When you turn on **Remote island** it
+  also listens on this PC's Tailscale address (100.x.x.x), never on Wi-Fi, a
+  LAN or `0.0.0.0`.
 - It refuses any WebSocket upgrade that carries a browser `Origin` header other
-  than `localhost`, `127.0.0.1` or `::1`. A PWA on the Surface sends its own
-  origin, so it is refused today.
-- Non-browser clients send no `Origin` header and are accepted. Only do this
-  on your own machine.
+  than `localhost`, `127.0.0.1` or `::1` (the island app sends its own
+  `tauri.localhost` origin, which is allowed).
+- A connection from another machine must open with the pairing code. The
+  local launch token doesn't work remotely, and with remote turned off other
+  machines are refused outright.
 
 ---
 
-## 3. Open the Island PWA on the Surface Pro
+## 3. Pair Lumi Island on the Surface Pro
 
-**Not yet working from the Surface.** The page is served on the Desktop, but
-the route is host-only and the approval server's origin check blocks the
-Surface. These steps describe the intended flow.
-
-### 3a. The Island page (works on the Desktop)
-
-The Island UI is `web/island.html`, served at
-`http://127.0.0.1:5000/island`. Open it on the Desktop to check it: the pill
-shows a green dot when it's connected to the approval server. Serving it to
-the Surface needs the route opened to tailnet visitors, which isn't built.
-
-### 3b. Expose the approval server to the tailnet (not built, do not do yet)
-
-When the authentication step is built, the intended command is:
+### 3a. Build the installer (Desktop, once)
 
 ```powershell
-tailscale serve --bg 5090
-tailscale serve status
+cd island
+npm run build:standalone
 ```
 
-- `tailscale serve` gives the Desktop an HTTPS address on the tailnet, which a
-  PWA needs before it can be installed.
-- `tailscale serve reset` removes the forwarding. Run it when you're done.
-- The HITL server would also need its origin allowlist updated for the
-  tailnet address. Until it is, these commands only produce refused
-  connections.
+The installer is
+`island\src-tauri\target\release\bundle\nsis\Lumi Island_0.1.0_x64-setup.exe`
+(about 1 MB; there is also an `.msi` next to it under `bundle\msi`). Copy it
+to the Surface by USB, OneDrive or Taildrop.
 
-### 3c. Install the PWA on the Surface (not built)
+### 3b. Turn on remote islands (Desktop)
 
-Once the page is served over HTTPS:
+- [ ] In Lumi's web client open **Settings, then General, then Remote island**.
+      It shows the Tailscale address it found. If it says Tailscale isn't
+      running, start Tailscale and sign in, then reload.
+- [ ] Select **Turn on and show a pairing code**. Write the code down; it is
+      shown only this once (Lumi keeps only a hash of it).
+- [ ] Windows Firewall may ask about Python the first time. Allow it on
+      **Private** networks; Tailscale traffic counts as private.
 
-- [ ] Open Edge on the Surface and go to
-      `https://desktop.<tailnet>.ts.net/island`.
-- [ ] Select **⋯ → Apps → Install this site as an app**.
-- [ ] Pin it to the Start menu or taskbar.
+### 3c. Install and connect (Surface)
 
-The window should sit at the top of the screen, stay out of the way, and show
-an approval card when Lumi asks to run a tool. Approve or decline there, and
-the decision goes back to the Desktop.
+- [ ] Run the setup exe. It installs for your account only, with no admin
+      prompt.
+- [ ] Start **Lumi Island** from the Start menu. Hover the top of the screen,
+      click Lumi's face, then the gear.
+- [ ] Enter the Desktop's Tailscale address, port `5090` and the pairing code,
+      then **Save**.
+
+The status under Lumi's name changes to **Here with you**. Approvals, chat,
+calendar and the Pipeline view now come from the Desktop. The island
+reconnects by itself after either machine restarts.
+
+### 3d. Unpair
+
+- **New code** on the Desktop disconnects every paired island; enter the new
+  code on the devices you still want.
+- **Turn off** closes the Tailscale listener.
+- **Use this PC** in the island's gear panel forgets the Desktop on that
+  device.
 
 ---
 
@@ -196,14 +187,20 @@ Gaming Mode unloads the models from VRAM and pauses the Minecraft agent. (Workin
 | `[HITL] could not bind` in the log | Port 5090 is in use | Use the `Get-NetTCPConnection` command in step 2 |
 | `Test-NetConnection` fails on 5090 | Lumi isn't running, or the server didn't start | Check the terminal for the `[HITL]` line |
 | Approval prompts only appear in the terminal | No client is connected | Expected. The fallback is working |
-| Surface prompts never reach the Desktop | Not built yet (see step 3) | Keep approvals on the Desktop until the steps above are built |
+| Island on the Surface says **Can't reach** *address* | Remote island is off, Tailscale is down on either machine, or the firewall blocks Python | Check **Remote island** shows **On**, run `tailscale ping <desktop>`, and allow Python on Private networks |
+| Island says **Pairing code rejected** | Wrong code, or a new code was made | Make a new code on the Desktop and enter it in the gear panel. Five wrong tries lock that device out for ten minutes |
+| **Remote island** says it couldn't listen | Tailscale started after Lumi, or its address changed | Select **Turn off**, then turn it on again |
 
 ## Security notes
 
 - Tailscale encrypts the traffic between your devices, and only devices on your
   tailnet can reach them. Keep the tailnet to devices you own.
 - Turn on two-factor sign-in for the account Tailscale uses.
-- Keep `tailscale serve` off until the WebSocket is authenticated.
+- A paired island can approve tools, chat as you and read your calendar and
+  mail summary. Pair only your own devices, and make a new code if one may
+  have leaked.
+- You don't need `tailscale serve`; the island connects to the Tailscale
+  address directly.
 - Never bind the HITL server to `0.0.0.0`. That exposes it on every network
   the Desktop is connected to, including public Wi-Fi.
 - If you lose the Surface, remove it in the Tailscale admin console under
