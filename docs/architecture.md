@@ -518,6 +518,34 @@ primitives in scope. The whole feature is described in
 [minecraft.md](minecraft.md). The control API is unauthenticated; see
 [security.md](security.md#minecraft-bot-control-api).
 
+### Workspace hub
+
+`modules/workspace_hub.py` owns the Google (Calendar + Gmail) and KSU mail
+accounts, a cache, the agent tools, and a compressed snapshot.
+`modules/workspace_routes.py` adds the host-only `/api/workspace/*` routes
+(registered by one line in `socketIO.py`), and `web/workspace.js` is the
+Workspace view and the Settings → Connections tab.
+
+```
+web client ──► /api/workspace/* ──► WorkspaceHub ──► GoogleCalendar / GmailProvider  (Google APIs)
+ (Workspace,                          │  cache in memory + data/workspace/cache.json
+  Connections)                        │                ├► GraphMailProvider        (Microsoft Graph)
+Prompter ──► list_events, send_email… │                └► GmailProvider(label=KSU) (fallback)
+ (agent mode; send_email,             └► get_compressed_snapshot() ─ listeners ─► (Lumi Island, later)
+  delete_event, create_event ask first through HITL)
+```
+
+- **No timers.** The cache is served instantly and refreshed on demand when
+  it is older than its TTL (events 5 min, mail 2 min), so an idle Lumi does
+  no network work.
+- **Untrusted text.** Mail and invites are cleaned (control and bidi
+  characters removed, look-alike provenance markers defused) and wrapped in
+  `[FROM EMAIL]` / `[FROM CALENDAR]` by `wrap_tool_result`. "Ask Lumi"
+  messages are not flagged `from_host`.
+- **Secrets.** Tokens live in `data/credentials/`, which is git-ignored and
+  refused by the file tools (`_safe_path`). The status endpoint never returns
+  them. See [workspace.md](workspace.md).
+
 ### HITL approval bridge
 
 `modules/hitl_server.py` replaces the blocking terminal `input()` for tool

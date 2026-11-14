@@ -154,6 +154,15 @@ for the pipeline.
     her items back up before they despawn.
   - **Autonomous building.** She builds a 7x7 house on her own, gathering the
     materials it needs, and sleeps in a bed at night.
+- **Workspace (Calendar, Gmail, KSU mail).** A **Workspace** tab in the web
+  client shows your upcoming events (with quick event creation) and a unified
+  inbox filtered by All, Gmail or KSU, with read, mark-read, archive, and an
+  **Ask Lumi** button that has her summarize a thread or draft a reply. In
+  agent mode she can list, create and delete events and read, send and
+  archive mail; sending, inviting and deleting need your approval through
+  the HITL flow. Google uses your own OAuth app, and KSU mail connects
+  through Microsoft Graph or, if the university blocks that, a Gmail label.
+  Sign-ins stay on your PC. See [docs/workspace.md](docs/workspace.md).
 - **Human-in-the-loop approvals (HITL).** A WebSocket bridge at
   `ws://127.0.0.1:5090/hitl` that replaces the terminal `y/n` prompt for
   tool calls that need approval, such as `run_command` and `write_file`. A
@@ -182,6 +191,7 @@ Lumi is a single Python process. The parts:
 | Web server | aiohttp with python-socketio at `127.0.0.1:5000`. The browser polls for chat; socket.io carries TTS audio to tabs that opted in. API errors always come back as JSON |
 | Background memory thread | Blocking memory and library work from the web server (ChromaDB queries, indexing, the upload duplicate scan) runs on a dedicated worker, so it never stalls other requests |
 | Log hub | A small threaded HTTP server at `127.0.0.1:5001` |
+| Workspace hub | `modules/workspace_hub.py`, created in `main.py` (no thread). Accounts, cache and tools for Google Calendar, Gmail and KSU mail; idle until you connect an account. See [docs/workspace.md](docs/workspace.md) |
 | HITL server | An aiohttp WebSocket endpoint at `127.0.0.1:5090/hitl`, started on the prompter's event loop. Each approval is an `asyncio.Future` resolved by a client reply, so it uses no CPU while idle |
 | Gaming Mode | A runtime flag (`constants.GAMING_MODE`, saved to `data/gaming_mode.json`). Chat calls read it to set Ollama's `keep_alive`, and it is pushed to SDK clients so the Minecraft agent can sleep without polling |
 

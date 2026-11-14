@@ -18,7 +18,7 @@ import base64
 import shutil
 import subprocess
 
-from constants import WORKSPACE_ROOT
+from constants import WORKSPACE_ROOT, DATA_ROOT
 
 # Skip these when walking the workspace. "data" and "assets" are skipped
 # because they hold runtime state (ChromaDB, browser profile, screenshots)
@@ -66,6 +66,8 @@ PROTECTED_PREFIXES = (
     "web/",
     "data/memories/",
     "data/API/",
+    "data/credentials/",    # OAuth tokens (Google, Microsoft)
+    "data/workspace/",      # cached mail and calendar
 )
 
 # Basenames of critical files that must never be shadowed. If a
@@ -176,6 +178,11 @@ PROVENANCE_MARKERS = {
     "recall_memory":   "FROM MEMORY",
     "search_library":  "FROM LIBRARY",
     "sdk__":           "FROM SDK",     # prefix match
+    # Workspace (modules/workspace_hub.py). Anyone can email you or invite
+    # you to an event, so what they wrote is data, never instructions.
+    "list_emails":     "FROM EMAIL",
+    "read_email":      "FROM EMAIL",
+    "list_events":     "FROM CALENDAR",
 }
 
 
@@ -492,6 +499,19 @@ class ToolError(Exception):
     pass
 
 
+# Never readable or writable through the file tools, whatever the prompt
+# says: OAuth tokens and the cached mailbox. (Protected-prefix rules only
+# stop writes; reading a token would let an injected instruction leak it.)
+_PRIVATE_DIRS = tuple(
+    os.path.normcase(os.path.realpath(os.path.join(DATA_ROOT, name)))
+    for name in ("credentials", "workspace")
+)
+_PRIVATE_COMMAND_RE = re.compile(
+    r"data[\\/]+(credentials|workspace)|google_token|google_client|microsoft_token",
+    re.IGNORECASE,
+)
+
+
 def _safe_path(relative_path):
     """Resolves a relative path against WORKSPACE_ROOT and refuses to
     leave it.
@@ -521,6 +541,12 @@ def _safe_path(relative_path):
             f"Refusing to access '{relative_path}' — it resolves to "
             f"a path outside the project workspace."
         )
+    for private in _PRIVATE_DIRS:
+        if t == private or t.startswith(private + os.sep):
+            raise ToolError(
+                f"Refusing to access '{relative_path}' — it holds account "
+                f"sign-ins or private mail and calendar data."
+            )
     return target
 
 
@@ -777,6 +803,12 @@ def run_command(command):
             f"If you need this specific binary, ask the user to run it "
             f"manually."
         )
+
+    # A speed bump, not a wall (python/powershell can reach anything):
+    # the y/n or HITL prompt shows the command, which is the real guard.
+    if _PRIVATE_COMMAND_RE.search(cmd):
+        return ("Error: that command touches account sign-ins or private mail "
+                "data, which Lumi isn't allowed to open.")
 
     # Phase 9.4 — metachar refusal. A pipe or chain lets the
     # allowlisted binary hand off to an arbitrary second command.

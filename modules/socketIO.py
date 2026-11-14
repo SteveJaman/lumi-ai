@@ -644,6 +644,8 @@ class SocketIOServer:
         r.add_post("/api/gaming_mode",  self._handle_gaming_mode_toggle)
         r.add_get("/api/island",        self._handle_island_get)
         r.add_post("/api/island",       self._handle_island_set)
+        from modules import workspace_routes
+        workspace_routes.register(r, self)      # /api/workspace/* (host-only)
 
         # Background game agents (modules/game_manager.py). Host-only:
         # neither route is in _REMOTE_API_ALLOW.

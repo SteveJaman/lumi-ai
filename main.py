@@ -32,6 +32,7 @@ from modules.tunnel import start_quick_tunnel
 from modules.game_manager import GameManager
 from modules import gaming_mode
 from modules.island_manager import IslandManager
+from modules.workspace_hub import WorkspaceHub
 
 from sdk.server import SDKServer
 
@@ -70,6 +71,12 @@ def stop_games():
             _global_games.shutdown()
         except Exception as e:
             print(f"\033[91mGAMES: shutdown failed: {e}\033[0m")
+    workspace = getattr(_global_signals, "workspace_hub", None)
+    if workspace is not None:
+        try:
+            workspace.shutdown()
+        except Exception as e:
+            print(f"\033[91mWORKSPACE: shutdown failed: {e}\033[0m")
     island = getattr(_global_signals, "island_manager", None)
     if island is not None:
         try:
@@ -264,6 +271,7 @@ def main():
     signals.log_hub.emit("system", f"Lumi booting — audio mode = {selected_audio_mode}")
     _global_games.resume_if_enabled()
     IslandManager(signals).resume_if_enabled()
+    WorkspaceHub(signals)       # Google Calendar / Gmail / KSU mail; idle until you connect
 
     try:
         asyncio.run(prompter.run())

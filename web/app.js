@@ -6,6 +6,8 @@
    Login / register live on their own page (/login).
    ============================================================ */
 
+import * as workspace from './workspace.js';
+
 const $  = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
@@ -101,6 +103,11 @@ async function api(path, { method = 'GET', body, csrf = false } = {}) {
   return data;
 }
 
+workspace.init({
+  $, state, api, navigate,
+  openSettingsTab: (id) => { _settingsState.activeTab = id; navigate('settings'); },
+});
+
 /* --------------------------------------------------------------
    Fingerprinting — cheap stable hash of any JSON-able value.
    Used to skip DOM work when polled state is identical.
@@ -132,6 +139,7 @@ const ICONS = {
   plugs:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></svg>',
   stream:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>',
   gamepad:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.98 3.59l-.9 8.2A2.62 2.62 0 0 0 4.4 19.7c.94 0 1.8-.5 2.27-1.32L7.6 16.6a2 2 0 0 1 1.73-1h5.34a2 2 0 0 1 1.73 1l.93 1.78a2.62 2.62 0 0 0 2.27 1.32 2.62 2.62 0 0 0 2.6-2.91l-.9-8.2A4 4 0 0 0 17.32 5z"/></svg>',
+  workspace: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>',
   settings:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
 };
 
@@ -180,6 +188,7 @@ document.addEventListener('click', (e) => {
 const NAV = [
   { id: 'chat',         label: 'Chat',         icon: 'chat' },
   { id: 'dashboard',    label: 'Dashboard',    icon: 'dashboard' },
+  { id: 'workspace',    label: 'Workspace',    icon: 'workspace', hostOnly: true },
   { id: 'games',        label: 'Games',        icon: 'gamepad',  hostOnly: true },
   { id: 'persona',      label: 'Persona',      icon: 'persona',  hostOnly: true },
   { id: 'memory',       label: 'Memory',       icon: 'memory',   hostOnly: true },
@@ -234,6 +243,7 @@ function navigate(view, replace = false) {
   if (view !== 'chat') stopChatPolling();
   if (view !== 'stream') stopStreamPolling();
   if (view !== 'games') stopGamePolling();
+  if (view !== 'workspace') workspace.stop();
   if (view !== 'chat') resetMoodAccent();
 
   if (view !== 'models') {
@@ -695,6 +705,7 @@ function render() {
   switch (state.view) {
     case 'chat':         return renderChatView(main);
     case 'dashboard':    return renderDashboard(main);
+    case 'workspace':    return workspace.renderWorkspace(main);
     case 'games':        return renderGames(main);
     case 'memory':       return renderMemory(main);
     case 'persona':      return renderPersona(main);
@@ -5286,6 +5297,7 @@ const _settingsState = {
 
 const SETTINGS_TABS = [
   { id: 'general',  label: 'General' },
+  { id: 'connections', label: 'Connections' },
   { id: 'security', label: 'Security' },
   { id: 'advanced', label: 'Advanced' },
   { id: 'about',    label: 'About' },
@@ -5349,6 +5361,8 @@ async function loadSettingsTab() {
       const data = await api('/api/settings/general');
       _settingsState.general = data;
       renderGeneralTab(panel, data);
+    } else if (tab === 'connections') {
+      await workspace.renderConnectionsTab(panel);
     } else if (tab === 'security') {
       const sessions = await api('/api/settings/security/sessions');
       _settingsState.sessions = sessions.sessions || [];

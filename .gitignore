@@ -75,6 +75,11 @@ realtimesst_*.log
 # ChromaDB database, self-model, session continuity,
 # emotional state, user database, SDK token.
 data/memories/
+
+# OAuth client + tokens (Google, Microsoft) and the cached mailbox/calendar.
+# Never commit these.
+data/credentials/
+data/workspace/
 !data/memories/readme.md
 !data/memories/.gitkeep
 
