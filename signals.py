@@ -6,7 +6,22 @@ from constants import LLM_ENDPOINT, MODEL_NAME, DATA_ROOT
 from modules.log_hub import emit as hub_emit
 
 
+# Flags whose changes are pushed to listeners (the HITL server forwards
+# them to the Island as lumi_status, so it never has to poll).
+_WATCHED_FLAGS = ("AI_thinking", "AI_speaking")
+
+
 class Signals:
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
+        if name in _WATCHED_FLAGS:
+            listener = self.__dict__.get("on_state_change")
+            if listener is not None:
+                try:
+                    listener(self)
+                except Exception:
+                    pass
+
     def __init__(self):
         # Engine State Flags
         self.terminate = False

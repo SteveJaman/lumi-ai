@@ -7,6 +7,9 @@ architecture behind it is in
 
 > **Status: partly built.** Read this before you start.
 >
+> The Island is now a desktop app (`island/`, see its README), so the PWA
+> steps below are out of date.
+>
 > | Step | State |
 > |---|---|
 > | Install Tailscale on both machines | Works now |

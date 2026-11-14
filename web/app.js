@@ -5384,6 +5384,7 @@ function renderGeneralTab(panel, data) {
   panel.appendChild(help);
 
   panel.appendChild(buildGamingModeField());
+  panel.appendChild(buildIslandField());
 
   panel.appendChild(buildSettingsField({
     label: 'Timezone',
@@ -5430,6 +5431,61 @@ function renderGeneralTab(panel, data) {
   saveBtn.addEventListener('click', onSaveGeneral);
   actions.appendChild(saveBtn);
   panel.appendChild(actions);
+}
+
+// Lumi Island (island/, a Tauri app): Lumi starts and stops it, so it
+// needs no terminal. POST /api/island; 409 means it isn't built yet.
+function buildIslandField() {
+  const wrap = document.createElement('div');
+  wrap.className = 'settings-field settings-toggle';
+
+  const text = document.createElement('div');
+  const lbl = document.createElement('div');
+  lbl.className = 'settings-label';
+  lbl.id = 'island-label';
+  lbl.textContent = 'Lumi Island';
+  const h = document.createElement('div');
+  h.className = 'settings-field-help';
+  const defaultHelp = 'A small island at the top of the screen with Lumi’s ' +
+    'status. Hover to peek, click to open; tool approvals show up there.';
+  h.textContent = defaultHelp;
+  text.append(lbl, h);
+
+  const sw = document.createElement('label');
+  sw.className = 'switch';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.disabled = true;
+  input.setAttribute('aria-labelledby', 'island-label');
+  const knob = document.createElement('span');
+  knob.className = 'switch-slider';
+  sw.append(input, knob);
+  wrap.append(text, sw);
+
+  const show = (d) => {
+    input.checked = !!d.enabled;
+    h.textContent = d.message ? `${defaultHelp} ${d.message}` : defaultHelp;
+  };
+
+  api('/api/island')
+    .then(show)
+    .catch(() => { h.textContent = `${defaultHelp} (Couldn’t read the current state.)`; })
+    .finally(() => { input.disabled = false; });
+
+  input.addEventListener('change', async () => {
+    input.disabled = true;
+    try {
+      show(await api('/api/island', {
+        method: 'POST', csrf: true, body: { enabled: input.checked },
+      }));
+    } catch (e) {
+      input.checked = !input.checked;
+      h.textContent = `${defaultHelp} ${e.message}`;
+    } finally {
+      input.disabled = false;
+    }
+  });
+  return wrap;
 }
 
 // Gaming Mode applies the moment it's flipped (POST /api/gaming_mode),

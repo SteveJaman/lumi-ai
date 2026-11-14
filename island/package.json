@@ -1,0 +1,14 @@
+{
+  "name": "lumi-island",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Lumi's top-of-screen island (Tauri). Lumi starts it from Settings.",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build --no-bundle",
+    "icons": "tauri icon ../assets/branding/lumi_png_samples/Lumi.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.9.4"
+  }
+}

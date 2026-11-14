@@ -555,9 +555,12 @@ hitl_server.request_approval(tool, preview, timeout=120)
   and any web page could otherwise approve commands. The server accepts only
   loopback origins (or none, for non-browser clients).
 
-The Island overlay is the reference client: `web/island.html`, served at
-`/island` (host-only, no login), and shown as a click-through window by
-`launch_island.py`.
+The reference client is Lumi Island (`island/`, a Tauri app), started and
+stopped by `modules/island_manager.py` from **Settings → General**. Besides
+approvals, the server pushes `{"type":"lumi_status","state":"idle"|"thinking"|"speaking"}`
+when `signals.AI_thinking` or `signals.AI_speaking` changes (a `Signals.__setattr__`
+hook), so the island never polls. The server also accepts the Tauri
+webview's origin, `http://tauri.localhost`.
 
 ### Gaming Mode
 
@@ -674,7 +677,7 @@ can answer them without alt-tabbing out of a full-screen game.
         Desktop (gaming PC)                          Surface Pro
 ┌──────────────────────────────────┐          ┌──────────────────────┐
 │ python main.py                   │          │ Island PWA           │
-│  Ollama, ChromaDB, TTS, STT      │          │  (/island page)      │
+│  Ollama, ChromaDB, TTS, STT      │          │  (island/, Tauri)    │
 │  prompter + tools                │          │                      │
 │  HITL server  127.0.0.1:5090     │◄────────►│  Approve / Decline   │
 │  Gaming Mode ON                  │ WebSocket│                      │
@@ -701,9 +704,8 @@ local-only today:
 | Piece | State |
 |---|---|
 | Approval protocol (request, response, expiry, timeout, terminal fallback) | Done |
-| Island client with auto-reconnect | Done, for `ws://127.0.0.1:5090/hitl` |
+| Island client (Lumi Island, `island/`) | Done on the Desktop; must be built once with Rust |
 | Reaching the server from another machine | **Not done.** The server binds `127.0.0.1` and refuses non-loopback origins |
-| Serving the Island page | Done on the host (`/island`). **Not done** for tailnet visitors: the route is host-only |
 | Authentication on the WebSocket | **Not done.** Today the only barrier is being on the machine |
 
 Reaching the Desktop from the Surface needs three changes before this works:

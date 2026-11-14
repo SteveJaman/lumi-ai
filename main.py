@@ -31,6 +31,7 @@ from modules.obs_control import OBSControl
 from modules.tunnel import start_quick_tunnel
 from modules.game_manager import GameManager
 from modules import gaming_mode
+from modules.island_manager import IslandManager
 
 from sdk.server import SDKServer
 
@@ -69,6 +70,12 @@ def stop_games():
             _global_games.shutdown()
         except Exception as e:
             print(f"\033[91mGAMES: shutdown failed: {e}\033[0m")
+    island = getattr(_global_signals, "island_manager", None)
+    if island is not None:
+        try:
+            island.shutdown()     # the switch stays on; it returns next boot
+        except Exception as e:
+            print(f"\033[91mISLAND: shutdown failed: {e}\033[0m")
 
 
 def handle_exit(sig, frame):
@@ -256,6 +263,7 @@ def main():
 
     signals.log_hub.emit("system", f"Lumi booting — audio mode = {selected_audio_mode}")
     _global_games.resume_if_enabled()
+    IslandManager(signals).resume_if_enabled()
 
     try:
         asyncio.run(prompter.run())

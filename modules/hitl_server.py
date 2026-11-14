@@ -37,7 +37,8 @@ RESET = "\033[0m"
 # Browsers send an Origin header on WebSocket upgrades; any web page
 # could otherwise open ws://127.0.0.1:5090 and approve shell commands.
 # Non-browser clients (Python, Node) send no Origin and are allowed.
-_ALLOWED_ORIGIN_HOSTS = {"127.0.0.1", "localhost", "::1"}
+# tauri.localhost: the Lumi Island desktop app (island/), a Tauri webview.
+_ALLOWED_ORIGIN_HOSTS = {"127.0.0.1", "localhost", "::1", "tauri.localhost"}
 
 # Sentinel: the last client disconnected mid-request -> use terminal.
 _NO_CLIENT = object()
@@ -51,6 +52,8 @@ class HITLServer:
         self._pending: Dict[str, asyncio.Future] = {}
         self._runner: Optional[web.AppRunner] = None
         self._terminal_lock: Optional[asyncio.Lock] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._status = "idle"
         self.signals = None
 
     @property
@@ -68,6 +71,10 @@ class HITLServer:
             return
         self.signals = signals
         self._terminal_lock = asyncio.Lock()
+        self._loop = asyncio.get_running_loop()
+        if signals is not None:
+            signals.on_state_change = self._on_signals
+            self._status = self._status_of(signals)
         app = web.Application()
         app.router.add_get(HITL_PATH, self._ws_handler)
         runner = web.AppRunner(app, access_log=None)
@@ -106,6 +113,7 @@ class HITLServer:
         ws = web.WebSocketResponse(heartbeat=None, max_msg_size=64 * 1024)
         await ws.prepare(request)
         self._clients.add(ws)
+        await self._safe_send(ws, {"type": "lumi_status", "state": self._status})
 
         # A client that connects while requests are already waiting
         # should see them; otherwise they'd only ever time out.
@@ -152,6 +160,29 @@ class HITLServer:
         except (ConnectionError, RuntimeError):
             self._clients.discard(ws)
             return False
+
+    # ── live status (idle / thinking / speaking) ─────────────────────
+
+    @staticmethod
+    def _status_of(signals) -> str:
+        if getattr(signals, "AI_speaking", False):
+            return "speaking"
+        if getattr(signals, "AI_thinking", False):
+            return "thinking"
+        return "idle"
+
+    def _on_signals(self, signals) -> None:
+        """Called from whichever thread flipped a flag; hop to our loop."""
+        state = self._status_of(signals)
+        if state == self._status or self._loop is None:
+            return
+        self._status = state
+        try:
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(
+                    self._broadcast({"type": "lumi_status", "state": state})))
+        except RuntimeError:
+            pass  # loop closed during shutdown
 
     # ── approval API ─────────────────────────────────────────────────
 

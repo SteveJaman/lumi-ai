@@ -620,7 +620,6 @@ class SocketIOServer:
         r.add_get("/login",    self._handle_login_page)
         r.add_get("/register", self._handle_register_page)
         r.add_get("/setup",    self._handle_setup_page)
-        r.add_get("/island",   self._handle_island_page)
 
         # --- Static files ---
         r.add_get("/web/{tail:.*}", self._handle_static)
@@ -643,6 +642,8 @@ class SocketIOServer:
         r.add_post("/api/agent/toggle", self._handle_agent_toggle)
         r.add_get("/api/gaming_mode",   self._handle_gaming_mode_get)
         r.add_post("/api/gaming_mode",  self._handle_gaming_mode_toggle)
+        r.add_get("/api/island",        self._handle_island_get)
+        r.add_post("/api/island",       self._handle_island_set)
 
         # Background game agents (modules/game_manager.py). Host-only:
         # neither route is in _REMOTE_API_ALLOW.
@@ -1467,6 +1468,43 @@ class SocketIOServer:
         loop = asyncio.get_running_loop()
         data = await loop.run_in_executor(
             None, gaming_mode.set_enabled, enabled, self.signals)
+        return web.json_response(data)
+
+    async def _handle_island_get(self, request):
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        island = getattr(self.signals, "island_manager", None)
+        if island is None:
+            return _json_error(503, "Island manager not available.")
+        return web.json_response(island.status())
+
+    async def _handle_island_set(self, request):
+        """POST /api/island {"enabled": bool}: start or stop Lumi Island.
+        Host-only (not in _REMOTE_API_ALLOW)."""
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            return _json_error(400, "'enabled' must be true or false.")
+        island = getattr(self.signals, "island_manager", None)
+        if island is None:
+            return _json_error(503, "Island manager not available.")
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, island.set_enabled, enabled)
+        except RuntimeError as e:
+            return _json_error(409, str(e))
         return web.json_response(data)
 
     # ------------------------------------------------------------------
@@ -2804,14 +2842,6 @@ class SocketIOServer:
         if self._current_user(request):
             raise web.HTTPFound("/")
         return await self._serve_file(os.path.join(_WEB_ROOT, "login.html"))
-
-    async def _handle_island_page(self, request):
-        """The HITL approval overlay (web/island.html). Host-only: the
-        approval socket it talks to listens on loopback. No login, so
-        launch_island.py's window works without a session."""
-        if self._is_remote(request):
-            return _json_error(403, _HOST_ONLY_MSG)
-        return await self._serve_file(os.path.join(_WEB_ROOT, "island.html"))
 
     async def _handle_register_page(self, request):
         return await self._handle_login_page(request)

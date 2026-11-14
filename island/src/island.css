@@ -1,0 +1,196 @@
+/* Lumi Island. The window is transparent and exactly as big as the
+   island (island.js asks Rust to resize it), so the island hangs from the
+   top edge of the screen like a notch. Transitions run only on a state
+   change; the only looping animation is the status dot while Lumi is
+   thinking or speaking. */
+
+:root {
+  --bg: rgba(12, 12, 14, 0.82);
+  --line: rgba(255, 255, 255, 0.1);
+  --faint: rgba(255, 255, 255, 0.07);
+  --muted: rgba(255, 255, 255, 0.58);
+  --accent: #57f287;
+  --accent-ink: #04140b;
+  --warn: #ffb547;
+  --danger: #ff8a7a;
+  --ease: cubic-bezier(0.2, 0.85, 0.25, 1);
+  --dur: 320ms;
+  color-scheme: normal; /* "dark" would paint an opaque canvas */
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body {
+  color: #fff;
+  font: 13px/1.35 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+* { box-sizing: border-box; }
+button { font: inherit; color: inherit; }
+
+/* ── The island: one box that morphs between states ──────────── */
+
+.island {
+  position: relative;
+  margin: 0 auto;
+  width: 200px;
+  height: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 12px 12px;   /* hangs from the top edge */
+  overflow: hidden;
+  transition:
+    width var(--dur) var(--ease),
+    height var(--dur) var(--ease),
+    border-radius var(--dur) var(--ease);
+}
+.island.hidden   { width: 200px; height: 8px;   border-radius: 0 0 8px 8px; }
+.island.peek     { width: 260px; height: 44px;  border-radius: 0 0 22px 22px; }
+.island.open     { width: 340px; height: 116px; border-radius: 0 0 26px 26px; }
+.island.approval { width: 420px; height: 276px; border-radius: 0 0 28px 28px; }
+
+/* Parts fade in per state. */
+.face, .note, .ask {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 150ms linear, visibility 0s linear 150ms;
+}
+.peek .face, .open .face, .open .note, .island.approval .ask {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 200ms linear 100ms, visibility 0s;
+}
+
+/* ── Lumi: avatar, name, status ──────────────────────────────── */
+
+.face {
+  position: absolute;
+  top: 6px;
+  left: 10px;
+  right: 14px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.avatar {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  object-fit: cover;
+  transition: border-color 200ms linear;
+}
+.who { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.name { font-weight: 650; font-size: 13px; }
+.status { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.peek .name { display: none; }               /* compact: status only */
+.peek .status { color: #fff; font-weight: 600; }
+
+.dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: #6b7078;
+}
+[data-status="idle"] .dot     { background: var(--accent); }
+[data-status="thinking"] .dot { background: var(--warn); animation: pulse 1.1s ease-in-out infinite; }
+[data-status="speaking"] .dot { background: #7cc4ff; animation: pulse 0.7s ease-in-out infinite; }
+[data-status="offline"] .avatar { border-color: #6b7078; filter: grayscale(1); }
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+.open .face { top: 12px; left: 16px; right: 18px; height: 44px; }
+.open .avatar { width: 44px; height: 44px; }
+
+.note {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 14px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── Approval ────────────────────────────────────────────────── */
+
+.ask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 16px;
+}
+.eyebrow {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.danger .eyebrow { color: var(--danger); }
+.tool { margin-top: 3px; font-size: 17px; font-weight: 650; overflow-wrap: anywhere; }
+.preview {
+  flex: 1;
+  min-height: 0;
+  margin: 10px 0 0;
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  font: 12px/1.45 "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.actions { display: flex; gap: 8px; margin-top: 12px; }
+.btn {
+  flex: 1;
+  height: 38px;
+  border: 0;
+  border-radius: 999px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background-color 120ms linear, transform 120ms var(--ease);
+}
+.btn:active { transform: scale(0.97); }
+.btn-decline { background: rgba(255, 255, 255, 0.1); }
+.btn-decline:hover { background: rgba(255, 255, 255, 0.18); }
+.btn-approve { background: var(--accent); color: var(--accent-ink); }
+.btn-approve:hover { background: #74f59d; }
+.more {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--muted);
+  background: var(--faint);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}

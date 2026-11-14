@@ -1,0 +1,19 @@
+[package]
+name = "lumi-island"
+version = "0.1.0"
+description = "Lumi's top-of-screen island"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[profile.release]
+# Small and lean: this runs all day next to games.
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
