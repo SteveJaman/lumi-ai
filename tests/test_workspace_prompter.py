@@ -87,8 +87,8 @@ def test_tools_refuse_politely_when_nothing_is_connected(tmp_path):
     assert "aren't connected" in out and asked == []
 
 
-def test_calendar_and_email_approvals_wait_on_the_planner_card(tmp_path):
+def test_calendar_and_email_approvals_wait_on_the_system_card(tmp_path):
     p, hub, mail, asked = make(tmp_path, approve=False)
     dispatch(p, "send_email", {"account": "gmail", "to": ["bob@x.org"], "subject": "Hi", "body": "x"})
     dispatch(p, "delete_event", {"event_id": "abcde12345"})
-    assert p._agents_asked == ["planner", "planner"]
+    assert p._agents_asked == ["system", "system"]

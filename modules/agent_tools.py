@@ -369,7 +369,7 @@ EVERYDAY_TOOL_MODULE = {
     s["function"]["name"]: m for m in EVERYDAY_MODULES for s in m.TOOL_SCHEMAS
 }
 EVERYDAY_TOOL_NAMES = frozenset(EVERYDAY_TOOL_MODULE)
-# Pipeline card per tool: "planner" (email, calendar, meetings, money) or "system" (the OS).
+# Pipeline card per tool: "system" (OS, finance, email) or "main" (meetings).
 EVERYDAY_TOOL_AGENT = {n: m.AGENT for n, m in EVERYDAY_TOOL_MODULE.items()}
 EVERYDAY_CONFIRM_TOOLS = frozenset().union(*(m.CONFIRM_TOOLS for m in EVERYDAY_MODULES))
 CONFIRM_REQUIRED_TOOLS |= EVERYDAY_CONFIRM_TOOLS

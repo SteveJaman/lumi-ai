@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 
 from modules.everyday_common import EverydayError, ToolContext, ask_llm, clip, one_line, parse_json
 
-AGENT = "planner"
+AGENT = "main"
 
 TASKS = {
     "summarize_meeting": "Summarizing a meeting",

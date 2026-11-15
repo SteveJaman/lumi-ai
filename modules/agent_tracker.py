@@ -3,14 +3,14 @@ Agent tracker: what each of Lumi's agents is doing right now, for the Pipeline
 view on Lumi Island.
 
     main       Lumi herself: chat and agent turns, research (web search,
-               browsing), MCP tools and coding work handed to Claude Code
+               browsing, product research) and meetings (summaries,
+               action items, follow-up drafts)
     minecraft  her Minecraft "other half" (a separate process, via the SDK)
-    planner    your day: email & calendar (inbox triage, drafts, free time,
-               rescheduling, plus the workspace mail/calendar tools),
-               meetings (summaries, action items, follow-up drafts) and
-               money (expenses, wishlist, product research)
-    system     your computer: OS control (active window, reading windows,
-               clicking buttons) and the game watchdog
+    office     coding work handed to Claude Code
+    system     your computer and accounts: OS control (active window,
+               reading windows, clicking buttons), finance (expenses,
+               wishlist) and email & calendar (inbox triage, drafts,
+               free time, rescheduling, plus the workspace mail/calendar tools)
 
 Each agent has:
     status      idle | thinking | executing | waiting_approval | error
@@ -22,7 +22,7 @@ Each agent has:
 
 For the pixel-art Pipeline (web/pipeline.js, island/src/pipeline.js) each
 agent also reports where it works and how to draw it:
-    station       desk | window | planner_desk | server_rack (fixed per agent)
+    station       desk | window | bookshelf | server_rack (fixed per agent)
     visual_state  derived from status, e.g. Main thinking -> typing,
                   Minecraft executing -> swinging, System executing ->
                   blinking, any waiting_approval -> waving, any error -> alarm
@@ -39,18 +39,18 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-AGENTS = ("main", "minecraft", "planner", "system")
+AGENTS = ("main", "minecraft", "office", "system")
 STATUSES = ("idle", "thinking", "executing", "waiting_approval", "error")
 MODELS = ("haiku", "sonnet", "opus")
 MAX_TASK_CHARS = 140
 
-STATIONS = {"main": "desk", "minecraft": "window", "planner": "planner_desk", "system": "server_rack"}
+STATIONS = {"main": "desk", "minecraft": "window", "office": "bookshelf", "system": "server_rack"}
 
 # status -> visual_state, per agent (what the pixel character is doing).
 _VISUALS = {
     "main":      {"idle": "sitting",  "thinking": "typing",   "executing": "typing"},
     "minecraft": {"idle": "standing", "thinking": "swinging", "executing": "swinging"},
-    "planner":   {"idle": "sitting",  "thinking": "reading",  "executing": "typing"},
+    "office":    {"idle": "sitting",  "thinking": "reading",  "executing": "reading"},
     "system":    {"idle": "standing", "thinking": "blinking", "executing": "blinking"},
 }
 

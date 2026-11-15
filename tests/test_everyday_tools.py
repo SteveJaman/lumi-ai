@@ -50,13 +50,8 @@ def test_registry_wires_every_tool_with_its_card_and_gate():
                      "summarize_meeting", "extract_action_items", "draft_follow_up_email",
                      "get_active_window_info", "read_window_text", "click_button", "restart_crashed_game"}
     agents = agent_tools.EVERYDAY_TOOL_AGENT
-    # Planner: your day (email, calendar, meetings, money); System: the computer.
-    assert {n for n, a in agents.items() if a == "planner"} == {
-        "triage_inbox", "auto_draft_reply", "find_free_time", "reschedule_event",
-        "track_expenses", "research_product", "add_to_wishlist",
+    assert {n for n, a in agents.items() if a == "main"} == {
         "summarize_meeting", "extract_action_items", "draft_follow_up_email"}
-    assert {n for n, a in agents.items() if a == "system"} == {
-        "get_active_window_info", "read_window_text", "click_button", "restart_crashed_game"}
     assert all(a in agent_tracker.AGENTS for a in agents.values())
     gated = {"auto_draft_reply", "reschedule_event", "add_to_wishlist", "click_button", "restart_crashed_game"}
     assert agent_tools.EVERYDAY_CONFIRM_TOOLS == gated
@@ -377,24 +372,25 @@ def make_prompter(approve, hub=None):
     return p
 
 
-def test_prompter_runs_calendar_tools_on_the_planner_card(tmp_path, monkeypatch):
+def test_prompter_runs_system_tools_on_the_system_card(tmp_path, monkeypatch):
     seen = []
-    agent_tracker.register(cb := lambda snap: seen.append(snap["planner"]["status"]))
+    agent_tracker.register(cb := lambda snap: seen.append(snap["system"]["status"]))
     try:
         p = make_prompter(False, hub=Hub())
         out = run(p._dispatch_tool_call("reschedule_event", {"event_id": "abcde123", "new_time": "2026-11-18T10:00"}))
     finally:
         agent_tracker.unregister(cb)
-    assert "declined" in out and p.asked == [("reschedule_event", "planner")]
-    assert "executing" in seen and agent_tracker.get("planner")["status"] == "idle"
+    assert "declined" in out and p.asked == [("reschedule_event", "system")]
+    assert "executing" in seen and agent_tracker.get("system")["status"] == "idle"
 
 
-def test_prompter_runs_meeting_tools_on_planner(monkeypatch):
+def test_prompter_runs_meeting_tools_on_main(monkeypatch):
     monkeypatch.setattr(meeting_agent, "ask_llm", fake_llm({"action_items": []}))
     p = make_prompter(True)
     out = run(p._dispatch_tool_call("extract_action_items", {"text": "nothing to do"}))
     assert json.loads(out) == {"action_items": []} and p.asked == []
-    assert agent_tracker.get("planner")["status"] == "idle"          # ran on the Planner card and settled
+    assert agent_tracker.get("main")["status"] == "thinking"
+    agent_tracker.update("main", "idle")
 
 
 def test_tool_failures_put_the_system_card_in_error():

@@ -17,7 +17,7 @@ def t():
 
 def test_starts_with_three_idle_agents(t):
     snap = t.snapshot()
-    assert tuple(snap) == AGENTS == ("main", "minecraft", "planner", "system")
+    assert tuple(snap) == AGENTS == ("main", "minecraft", "office", "system")
     assert all(a["status"] == "idle" and a["progress"] == 0 and a["model"] is None for a in snap.values())
 
 
@@ -30,9 +30,9 @@ def test_update_calls_back_with_the_whole_snapshot(t):
 
 
 def test_nothing_changed_means_no_callback(t):
-    t.update("planner", "executing", task="x", progress=50)
+    t.update("office", "executing", task="x", progress=50)
     n = len(t.seen)
-    assert t.update("planner", "executing", task="x", progress=50) is False
+    assert t.update("office", "executing", task="x", progress=50) is False
     assert len(t.seen) == n
 
 
@@ -71,12 +71,12 @@ def test_a_failing_callback_doesnt_break_updates_or_others(t):
 
 
 def test_settle_goes_idle_but_keeps_errors_on_show(t):
-    t.update("planner", "executing", task="Claude Code")
-    t.settle("planner")
-    assert t.get("planner")["status"] == "idle"
-    t.update("planner", "error", task="boom")
-    t.settle("planner")
-    assert t.get("planner")["status"] == "error"
+    t.update("office", "executing", task="Claude Code")
+    t.settle("office")
+    assert t.get("office")["status"] == "idle"
+    t.update("office", "error", task="boom")
+    t.settle("office")
+    assert t.get("office")["status"] == "error"
 
 
 def test_unregister_stops_callbacks(t):
@@ -109,7 +109,7 @@ def test_threads_can_update_at_once(t):
 def test_agents_report_station_and_visual_state(t):
     snap = t.snapshot()
     assert {a: s["station"] for a, s in snap.items()} == {
-        "main": "desk", "minecraft": "window", "planner": "planner_desk", "system": "server_rack"}
+        "main": "desk", "minecraft": "window", "office": "bookshelf", "system": "server_rack"}
     assert snap["main"]["visual_state"] == "sitting"
     t.update("main", "thinking")
     t.update("minecraft", "executing")

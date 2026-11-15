@@ -56,12 +56,12 @@ async def closed_with(ws):
 
 def test_a_new_island_gets_every_agents_state():
     async def t():
-        agent_tracker.update("planner", "executing", task="Claude Code: tests", progress=50, model="opus")
+        agent_tracker.update("office", "executing", task="Claude Code: tests", progress=50, model="opus")
         async with Env() as e:
             ws = await e.connect()
             agents = (await recv(ws, "agent_update"))["agents"]
-            assert set(agents) == {"main", "minecraft", "planner", "system"}
-            assert agents["planner"]["status"] == "executing" and agents["planner"]["model"] == "opus"
+            assert set(agents) == {"main", "minecraft", "office", "system"}
+            assert agents["office"]["status"] == "executing" and agents["office"]["model"] == "opus"
     run(t())
 
 
@@ -93,16 +93,16 @@ def test_an_approval_marks_its_agent_waiting_then_restores_it():
         async with Env() as e:
             ws = await e.connect()
             await recv(ws, "hello_ok")                 # connected before asking, or it goes to the terminal
-            agent_tracker.update("planner", "executing", task="Claude Code: refactor", progress=50)
-            ask = asyncio.ensure_future(e.server.request_approval("ask_claude_code", "{}", timeout=5, agent="planner"))
+            agent_tracker.update("office", "executing", task="Claude Code: refactor", progress=50)
+            ask = asyncio.ensure_future(e.server.request_approval("ask_claude_code", "{}", timeout=5, agent="office"))
             req = await recv(ws, "approval_request")
-            assert req["agent"] == "planner"
-            planner = agent_tracker.get("planner")
-            assert planner["status"] == "waiting_approval" and "ask_claude_code" in planner["task"]
+            assert req["agent"] == "office"
+            office = agent_tracker.get("office")
+            assert office["status"] == "waiting_approval" and "ask_claude_code" in office["task"]
             await ws.send_json({"type": "approval_response", "id": req["id"], "decision": "approve"})
             assert await ask is True
-            planner = agent_tracker.get("planner")
-            assert planner["status"] == "executing" and planner["task"] == "Claude Code: refactor"
+            office = agent_tracker.get("office")
+            assert office["status"] == "executing" and office["task"] == "Claude Code: refactor"
     run(t())
 
 

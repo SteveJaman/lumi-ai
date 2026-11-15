@@ -297,12 +297,12 @@ def test_the_model_is_told_about_the_marker_and_the_tool():
     assert cc.TOOL_SCHEMA["function"]["name"] == cc.TOOL_NAME
 
 
-def test_claude_code_approval_and_the_routed_claude_model(monkeypatch):
+def test_office_approval_and_the_routed_claude_model(monkeypatch):
     ran = []
     p, asked = make_prompter(True, monkeypatch, ran)
     p._route_tier = "opus"
     dispatch(p, {"task": "find the race condition in the reconnect loop"})
-    assert p._agents_asked == ["main"]                               # Main waits (Office became Planner)
+    assert p._agents_asked == ["office"]                             # the Office card waits, not Main
     assert models == ["opus"] and asked[0][1]["model"] == "opus"     # the tier picks Claude Code's model
 
 
@@ -331,24 +331,24 @@ def test_a_model_the_plan_lacks_falls_back_to_the_default(fake):
     assert calls == ["opus", None] and out.startswith("ok") and "wasn't available" in out
 
 
-def test_the_main_card_follows_the_run(monkeypatch):
+def test_the_office_card_follows_the_run(monkeypatch):
     from modules import agent_tracker
     monkeypatch.setattr(agent_tracker, "tracker", agent_tracker.AgentTracker())
     seen = []
-    agent_tracker.register(lambda snap: seen.append(dict(snap["main"])))
+    agent_tracker.register(lambda snap: seen.append(dict(snap["office"])))
     ran = []
     p, _ = make_prompter(True, monkeypatch, ran)
     p._route_tier = "sonnet"
     dispatch(p, {"task": "explain the reconnect loop"})
     assert any(s["status"] == "executing" and "Claude Code" in s["task"] and s["model"] == "sonnet" for s in seen)
-    assert agent_tracker.get("main")["status"] == "idle"
+    assert agent_tracker.get("office")["status"] == "idle"
 
     def boom(task, mode, model=None):
         raise RuntimeError("claude crashed")
     monkeypatch.setattr(cc, "run", boom)
     with pytest.raises(RuntimeError):
         dispatch(p, {"task": "explain it again"})
-    assert agent_tracker.get("main")["status"] == "error"          # stays on show until the next run
+    assert agent_tracker.get("office")["status"] == "error"          # stays on show until the next run
 
 
 def test_claude_code_never_runs_while_agent_mode_is_off(monkeypatch):

@@ -2538,9 +2538,9 @@ class Prompter:
         return await hitl_server.request_approval(tool_name, preview, timeout, agent=agent)
 
     async def _dispatch_tool_call(self, name, arguments):
-        """Run one tool, showing it on the Pipeline view. Calendar, email,
-        meeting and money tools are Planner work, desktop tools are System
-        work, Claude Code runs on Main. Those branches update their own
+        """Run one tool, showing it on the Pipeline view. Claude Code is
+        Office work; calendar, email, finance and desktop tools are System
+        work; meeting tools run on Main. Those branches update their own
         card. Everything else is the main agent executing a tool."""
         own_card = (name == claude_code.TOOL_NAME or name in workspace_hub.TOOL_NAMES
                     or name in EVERYDAY_TOOL_NAMES)
@@ -2813,20 +2813,20 @@ class Prompter:
             # Always asked, in both modes: it spends the user's Claude plan and can change files.
             tier = getattr(self, "_route_tier", None) or model_router.DEFAULT_TIER
             cc_model = model_router.claude_code_model(tier)
-            if not await self._confirm(name, claude_code.preview(task, mode, cc_model), agent="main"):
+            if not await self._confirm(name, claude_code.preview(task, mode, cc_model), agent="office"):
                 return "The user declined to allow this action."
             print(f"{GRAY}[Claude Code ({cc_model}) is working… this can take a few minutes]{RESET}")
-            agent_tracker.update("main", "executing", task=f"Claude Code: {task}", progress=50,
+            agent_tracker.update("office", "executing", task=f"Claude Code: {task}", progress=50,
                                  model=tier, model_name=f"Claude Code ({cc_model})")
             try:
                 out = await loop.run_in_executor(None, claude_code.run, task, mode, cc_model)
             except claude_code.ClaudeCodeError as e:
-                agent_tracker.update("main", "error", task=str(e))
+                agent_tracker.update("office", "error", task=str(e))
                 return f"Error: {e}"
             except BaseException as e:                   # never leave the card stuck on "executing"
-                agent_tracker.update("main", "error", task=f"{type(e).__name__}: {e}")
+                agent_tracker.update("office", "error", task=f"{type(e).__name__}: {e}")
                 raise
-            agent_tracker.settle("main")
+            agent_tracker.settle("office")
             return out
 
         if name in EVERYDAY_TOOL_NAMES:
@@ -2842,19 +2842,19 @@ class Prompter:
                 # Sending, inviting and deleting reach other people or can't be
                 # undone: the user approves each one (HITL bridge or terminal).
                 preview = await loop.run_in_executor(None, hub.preview_for, name, arguments)
-                if not await self._confirm(name, preview, agent="planner"):
+                if not await self._confirm(name, preview, agent="system"):
                     return "The user declined to allow this action."
-            agent_tracker.update("planner", "executing", task=_OFFICE_TASKS.get(name, name), progress=50,
+            agent_tracker.update("system", "executing", task=_OFFICE_TASKS.get(name, name), progress=50,
                                  model_name="Google")
             try:
                 out = await loop.run_in_executor(None, hub.call_tool, name, arguments)
             except BaseException as e:                   # never leave the card stuck on "executing"
-                agent_tracker.update("planner", "error", task=f"{type(e).__name__}: {e}")
+                agent_tracker.update("system", "error", task=f"{type(e).__name__}: {e}")
                 raise
             if str(out).startswith("Error"):
-                agent_tracker.update("planner", "error", task=str(out)[7:])
+                agent_tracker.update("system", "error", task=str(out)[7:])
             else:
-                agent_tracker.settle("planner")
+                agent_tracker.settle("system")
             return out
 
         print(f"\n{GRAY}[Lumi wants to use tool: {name}({arguments})]{RESET}")
