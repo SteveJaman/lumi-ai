@@ -341,6 +341,9 @@ class GameManager:
                                  "until Minecraft AI is switched on.")
         hub_emit(self.signals, "minecraft",
                  f"order {'from the Games page' if source == 'web' else 'said to Lumi'}: {clean}")
+        # Gaming Mode: the agent is asleep; this order is what wakes it.
+        from modules import gaming_mode
+        gaming_mode.wake_game_agents(self.signals)
         return result
 
     def hud_action(self, game: str, action: str, args: Dict[str, Any]) -> Dict[str, Any]:

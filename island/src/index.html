@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lumi Island</title>
+  <link rel="stylesheet" href="island.css">
+  <link rel="stylesheet" href="themes/engine.css">
+</head>
+<body>
+  <div id="island" class="island hidden" data-status="connecting">
+
+    <!-- Header: Lumi's face (a looping video), her status, and the app tabs.
+         In "peek" it is the whole island; in "open" it sits above the app. -->
+    <header class="hdr">
+      <button id="avatar" class="avatar" type="button" aria-label="Open Lumi">
+        <video id="vid" src="lumi.mp4" poster="lumi_poster.jpg" muted loop playsinline preload="auto"></video>
+        <span class="ring" aria-hidden="true"></span>
+      </button>
+      <div class="who">
+        <span class="name">LUMI</span>
+        <span id="status" class="status">Connecting…</span>
+      </div>
+      <nav class="tabs" role="tablist" aria-label="Lumi apps">
+        <button class="tab" data-app="home" role="tab" aria-label="Home" aria-selected="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10"/></svg><span>Home</span>
+        </button>
+        <button class="tab" data-app="chat" role="tab" aria-label="Chat" aria-selected="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Chat</span>
+        </button>
+        <button class="tab" data-app="calendar" role="tab" aria-label="Calendar" aria-selected="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><span>Calendar</span>
+        </button>
+        <button class="tab" data-app="pipeline" role="tab" aria-label="Pipeline" aria-selected="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="6" height="16" rx="1.5"/><rect x="9" y="4" width="6" height="16" rx="1.5"/><rect x="16" y="4" width="6" height="16" rx="1.5"/></svg><span>Pipeline</span>
+        </button>
+      </nav>
+      <button id="gear" class="gear" type="button" aria-label="Connection settings" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+      <button id="collapse" class="collapse" type="button" aria-label="Collapse">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+      </button>
+    </header>
+
+    <main class="apps">
+
+      <!-- Home -->
+      <section id="app-home" class="app" aria-label="Home">
+        <div class="card brain-card">
+          <div class="label">Lumi's brain <span id="privacy" class="privacy">…</span></div>
+          <label class="brain-row"><span>Cloud Escalation<small id="hybrid-sub">Hard prompts may use a cloud model</small></span>
+            <input id="hybrid" type="checkbox" class="brain-switch" disabled></label>
+          <div class="brain-row">
+            <span>Theme<small><label class="brain-sync"><input id="theme-sync" type="checkbox"> Sync with Desktop</label></small></span>
+            <select id="theme-pick" aria-label="Theme"></select>
+          </div>
+          <div id="feed" class="feed" hidden><div class="feed-text"></div><div class="feed-bar"><i></i></div></div>
+          <p class="note brain-hint">Drop files here to teach Lumi.</p>
+        </div>
+        <div class="card now">
+          <div class="now-time">
+            <div class="clock"><span id="clock-t">--:--</span><span id="clock-ap" class="ap"></span></div>
+            <div id="date" class="date"></div>
+          </div>
+          <div class="wx">
+            <div id="wx-icon" class="wx-icon" aria-hidden="true"></div>
+            <div class="wx-main">
+              <div id="wx-temp" class="wx-temp">--</div>
+              <div id="wx-text" class="wx-text"></div>
+            </div>
+          </div>
+          <div id="wx-sub" class="wx-sub"></div>
+        </div>
+        <div class="card next">
+          <div class="label">Next up</div>
+          <div id="next-title" class="next-title">Nothing scheduled</div>
+          <div id="next-sub" class="sub"></div>
+        </div>
+        <div class="card" id="today-card">
+          <div class="label">Today</div>
+          <ul id="today" class="today"></ul>
+        </div>
+        <div class="card">
+          <div class="label">Unread <span id="unread-count" class="count"></span></div>
+          <ul id="unread" class="unread"></ul>
+        </div>
+        <p id="home-note" class="note"></p>
+      </section>
+
+      <!-- Chat -->
+      <section id="app-chat" class="app" aria-label="Chat">
+        <div id="msgs" class="msgs" aria-live="polite"></div>
+        <form id="composer" class="composer" autocomplete="off">
+          <textarea id="input" rows="1" maxlength="4000" placeholder="Message Lumi…" aria-label="Message Lumi"></textarea>
+          <button id="send" class="send" type="submit" aria-label="Send">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-6 17-3-7z"/></svg>
+          </button>
+        </form>
+      </section>
+
+      <!-- Calendar -->
+      <section id="app-calendar" class="app" aria-label="Calendar">
+        <div class="cal-bar">
+          <div class="cal-nav">
+            <button id="cal-prev" type="button" aria-label="Previous">‹</button>
+            <button id="cal-today" type="button">Today</button>
+            <button id="cal-next" type="button" aria-label="Next">›</button>
+          </div>
+          <div id="cal-title" class="cal-title"></div>
+          <div id="cal-views" class="seg" role="tablist" aria-label="Calendar view">
+            <button data-view="list" role="tab">List</button>
+            <button data-view="day" role="tab">Day</button>
+            <button data-view="month" role="tab">Month</button>
+            <button data-view="year" role="tab">Year</button>
+          </div>
+        </div>
+        <div id="cal-body" class="cal-body"></div>
+      </section>
+
+      <!-- Pipeline: what each of Lumi's agents is doing -->
+      <section id="app-pipeline" class="app" aria-label="Agent pipeline">
+        <div class="pipe-head">
+          <span class="label">Agent pipeline</span>
+          <span id="pipe-note" class="pipe-note"></span>
+        </div>
+        <div id="pipe" class="pipe-stage" aria-label="Lumi's agents at work"><canvas id="pipeline-canvas"></canvas></div>
+        <ul id="pipe-tasks" class="pipe-tasks" aria-live="polite"></ul>
+        <div class="legend">
+          <span><i class="lg haiku"></i>Haiku · fast local</span>
+          <span><i class="lg sonnet"></i>Sonnet · main local</span>
+          <span><i class="lg opus"></i>Opus · deep / Claude Code</span>
+        </div>
+      </section>
+
+      <!-- Connection settings (the gear): this PC, or another PC over Tailscale -->
+      <section id="settings" class="settings" role="dialog" aria-modal="true" aria-labelledby="set-title" hidden>
+        <h3 id="set-title">Connect to Lumi</h3>
+        <p class="set-help">Leave Host empty to use Lumi on this PC. On another device (your Surface), enter your desktop's
+          Tailscale address and the pairing code from Lumi's web app (Settings, General, Remote island).</p>
+        <label class="field"><span>Host</span><input id="set-host" placeholder="this PC (e.g. 100.101.102.103)" autocomplete="off" spellcheck="false"></label>
+        <label class="field"><span>Port</span><input id="set-port" inputmode="numeric" placeholder="5090" autocomplete="off"></label>
+        <label class="field"><span>Pairing code</span><input id="set-code" placeholder="ABCD-EFGH-JKMN-PQRS" autocomplete="off" spellcheck="false"></label>
+        <div id="set-msg" class="set-msg" role="status"></div>
+        <div class="set-actions">
+          <button id="set-local" class="btn btn-decline" type="button">Use this PC</button>
+          <button id="set-cancel" class="btn btn-decline" type="button">Cancel</button>
+          <button id="set-save" class="btn btn-approve" type="button">Save</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- Approval: takes over until answered -->
+    <section id="approval" class="ask" role="alertdialog" aria-labelledby="tool" inert>
+      <div id="eyebrow" class="eyebrow">Lumi wants to run</div>
+      <div id="tool" class="tool"></div>
+      <pre id="preview" class="preview"></pre>
+      <div class="actions">
+        <button id="decline" class="btn btn-decline" type="button">Decline</button>
+        <button id="approve" class="btn btn-approve" type="button">Approve</button>
+      </div>
+      <span id="more" class="more" hidden></span>
+    </section>
+
+  </div>
+  <script src="theme-engine.js"></script>
+  <script src="pipeline.js"></script>
+  <script src="island.js"></script>
+</body>
+</html>

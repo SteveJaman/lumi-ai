@@ -29,7 +29,11 @@ from constants import DATA_ROOT
 
 # ─── TUNING ─────────────────────────────────────────────────────
 LIBRARY_DIR = os.path.join(DATA_ROOT, "library")
-SUPPORTED_EXTS = {".pdf", ".txt", ".md", ".docx", ".doc", ".json"}
+# Plain text and code are read as text (drag-and-drop knowledge, modules/knowledge.py).
+TEXT_EXTS = {".txt", ".md", ".json", ".csv", ".log", ".rst", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".xml",
+             ".html", ".css", ".py", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".java", ".kt", ".c", ".h", ".cpp",
+             ".hpp", ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".lua", ".sql", ".sh", ".ps1", ".bat"}
+SUPPORTED_EXTS = {".pdf", ".docx", ".doc"} | TEXT_EXTS
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 RESCAN_INTERVAL = 60
@@ -86,7 +90,7 @@ def index_single_file(signals, path):
     file and re-index it, but `index_library_file` upserts by
     deterministic IDs so there's no duplication.
 
-    Returns True on success.
+    Returns the number of chunks indexed (0 / False on failure).
     """
     mem = getattr(signals, "memory_module", None)
     if mem is None or not hasattr(mem, "API"):
@@ -113,7 +117,7 @@ def index_single_file(signals, path):
         elif ext in (".docx", ".doc"):
             from modules.agent_tools import _read_docx
             text = _read_docx(path)
-        elif ext in (".txt", ".md", ".json"):
+        elif ext in TEXT_EXTS:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 text = f.read()
         else:
@@ -143,7 +147,7 @@ def index_single_file(signals, path):
             fingerprint=fp,
             chunks=chunks,
         )
-        return True
+        return len(chunks)          # truthy: callers that only ask "did it work?" still can
     except Exception as e:
         hub_emit(signals, "memory",
                  f"library: single-file index failed for {source} — {e}",
@@ -170,7 +174,7 @@ class LibraryIndexer(Module):
             if ext in (".docx", ".doc"):
                 from modules.agent_tools import _read_docx
                 return _read_docx(path)
-            if ext in (".txt", ".md", ".json"):
+            if ext in TEXT_EXTS:
                 with open(path, "r", encoding="utf-8",
                           errors="replace") as f:
                     return f.read()

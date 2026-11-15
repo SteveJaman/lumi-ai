@@ -6,6 +6,11 @@
    Login / register live on their own page (/login).
    ============================================================ */
 
+import * as workspace from './workspace.js';
+import * as display from './display.js';
+import * as islandRemote from './island_remote.js';
+import * as lumiUi from './lumi-ui.js';
+
 const $  = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
@@ -96,10 +101,47 @@ async function api(path, { method = 'GET', body, csrf = false } = {}) {
     const msg = (data && data.error) || `HTTP ${res.status}`;
     const err = new Error(msg);
     err.status = res.status;
+    if (res.status >= 500 && !path.startsWith('/api/debug/')) {
+      setTimeout(() => reportClientError({ message: `${method} ${path} failed: ${msg}`, source: 'api' }), 0);
+    }
     throw err;
   }
   return data;
 }
+
+/* --------------------------------------------------------------
+   Browser errors -> Dashboard -> Diagnostics (modules/diagnostics.py).
+   Host only (the route isn't open to remote sessions); each distinct
+   message is sent at most once every 30 s.
+   -------------------------------------------------------------- */
+const _reported = new Map();
+let _reporting = false;
+function reportClientError(info) {
+  try {
+    if (!state.user || !state.isLocal || _reporting) return;
+    const msg = String(info.message || 'Unknown error').slice(0, 500);
+    const now = Date.now();
+    if (now - (_reported.get(msg) || 0) < 30000) return;
+    _reported.set(msg, now);
+    _reporting = true;
+    api('/api/debug/client_error', { method: 'POST', csrf: true, body: { ...info, message: msg, view: state.view } })
+      .catch(() => {}).finally(() => { _reporting = false; });
+  } catch (_) { _reporting = false; }
+}
+window.addEventListener('error', (e) => reportClientError({
+  message: e.message, source: e.filename, line: `${e.lineno}:${e.colno}`, stack: e.error && e.error.stack,
+}));
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason || {};
+  reportClientError({ message: `Unhandled promise: ${r.message || r}`, stack: r.stack });
+});
+
+display.init({ api });
+islandRemote.init({ api });
+workspace.init({
+  $, state, api, navigate,
+  openSettingsTab: (id) => { _settingsState.activeTab = id; navigate('settings'); },
+});
 
 /* --------------------------------------------------------------
    Fingerprinting — cheap stable hash of any JSON-able value.
@@ -124,6 +166,7 @@ function fingerprint(value) {
 }
 
 const ICONS = {
+  pipeline:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/></svg>',
   chat:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
   dashboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>',
   persona:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>',
@@ -132,6 +175,7 @@ const ICONS = {
   plugs:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></svg>',
   stream:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>',
   gamepad:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.98 3.59l-.9 8.2A2.62 2.62 0 0 0 4.4 19.7c.94 0 1.8-.5 2.27-1.32L7.6 16.6a2 2 0 0 1 1.73-1h5.34a2 2 0 0 1 1.73 1l.93 1.78a2.62 2.62 0 0 0 2.27 1.32 2.62 2.62 0 0 0 2.6-2.91l-.9-8.2A4 4 0 0 0 17.32 5z"/></svg>',
+  workspace: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>',
   settings:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
 };
 
@@ -148,6 +192,7 @@ async function checkAuth() {
     state.features = me.features || { stream: false };
 
     showShell();
+    lumiUi.initUi({ api, state });       // theme, Cloud Escalation badge, sync, drag and drop
 
     // Refresh theme button icon now that the sidebar exists
     const t = document.documentElement.getAttribute('data-theme') || 'light';
@@ -178,15 +223,17 @@ document.addEventListener('click', (e) => {
 // these pages are refused server-side. feature: hidden unless the
 // server reports that feature enabled.
 const NAV = [
-  { id: 'chat',         label: 'Chat',         icon: 'chat' },
+  { id: 'chat',         label: 'Chat',         icon: 'chat',      group: 'Core' },
   { id: 'dashboard',    label: 'Dashboard',    icon: 'dashboard' },
-  { id: 'games',        label: 'Games',        icon: 'gamepad',  hostOnly: true },
+  { id: 'workspace',    label: 'Workspace',    icon: 'workspace', hostOnly: true },
+  { id: 'pipeline',     label: 'Pipeline',     icon: 'pipeline',  hostOnly: true },
+  { id: 'games',        label: 'Games',        icon: 'gamepad',  hostOnly: true, group: 'Systems' },
   { id: 'persona',      label: 'Persona',      icon: 'persona',  hostOnly: true },
   { id: 'memory',       label: 'Memory',       icon: 'memory',   hostOnly: true },
   { id: 'models',       label: 'Models',       icon: 'models',   hostOnly: true },
   { id: 'integrations', label: 'Integrations', icon: 'plugs',    hostOnly: true },
   { id: 'stream',       label: 'Stream',       icon: 'stream',   hostOnly: true, feature: 'stream' },
-  { id: 'settings',     label: 'Settings',     icon: 'settings', hostOnly: true },
+  { id: 'settings',     label: 'Settings',     icon: 'settings', hostOnly: true, group: 'Config' },
 ];
 
 function visibleNav() {
@@ -207,7 +254,16 @@ function showShell() {
 
   const nav = $('#nav');
   nav.innerHTML = '';
+  let lastGroup = null;
   for (const item of visibleNav()) {
+    // A group label starts each section (an item without `group` joins the one above).
+    if (item.group && item.group !== lastGroup) {
+      lastGroup = item.group;
+      const label = document.createElement('div');
+      label.className = 'nav-label';
+      label.textContent = item.group;
+      nav.appendChild(label);
+    }
     // Real links: keyboard/focus/middle-click work for free, and the
     // hashchange listener does the routing.
     const el = document.createElement('a');
@@ -234,6 +290,7 @@ function navigate(view, replace = false) {
   if (view !== 'chat') stopChatPolling();
   if (view !== 'stream') stopStreamPolling();
   if (view !== 'games') stopGamePolling();
+  if (view !== 'workspace') workspace.stop();
   if (view !== 'chat') resetMoodAccent();
 
   if (view !== 'models') {
@@ -689,12 +746,17 @@ async function toggleAgentMode() {
 /* --------------------------------------------------------------
    View dispatcher
    -------------------------------------------------------------- */
+let _pageTeardown = null;     // set by pages that hold sockets/timers (Pipeline)
+
 function render() {
   const main = $('#main-content');
+  if (_pageTeardown) { try { _pageTeardown(); } catch (_) {} _pageTeardown = null; }
   main.innerHTML = '';
   switch (state.view) {
     case 'chat':         return renderChatView(main);
     case 'dashboard':    return renderDashboard(main);
+    case 'workspace':    return workspace.renderWorkspace(main);
+    case 'pipeline':     return renderPipeline(main);
     case 'games':        return renderGames(main);
     case 'memory':       return renderMemory(main);
     case 'persona':      return renderPersona(main);
@@ -1547,10 +1609,9 @@ function ensureVoiceSocket() {
   }
 
   try {
-    _voiceSocket = io({
-      transports: ['websocket', 'polling'],
-      withCredentials: true,
-    });
+    _voiceSocket = lumiUi.socket();             // the page's shared socket
+    if (!_voiceSocket) return;
+    if (_voiceSocket.connected) _voiceSocket.emit('web_voice_optin', { enabled: _voiceEnabled });
 
     _voiceSocket.on('connect', () => {
       _voiceSocket.emit('web_voice_optin', { enabled: _voiceEnabled });
@@ -1691,6 +1752,118 @@ function stopMicRecording() {
 }
 
 /* ==============================================================
+   DASHBOARD -> DIAGNOSTICS
+   Health checks + every error Lumi caught (backend, console, browser),
+   each with a suggested fix. Data: GET /api/debug/diagnostics.
+   ============================================================== */
+const DIAG_ICON = { ok: '✓', warn: '!', error: '✕', info: 'i' };
+
+function mountDiagnostics() {
+  const host = $('#dash-diag');
+  if (!host) return;
+  if (!state.isLocal) {
+    host.innerHTML = '<div class="diag-head"><span class="diag-title">Diagnostics</span></div>'
+      + '<p class="diag-empty">Diagnostics are only available on the PC running Lumi.</p>';
+    return;
+  }
+  let data = null, showOk = false, timer = null;
+  const open = new Set();
+  async function load(refresh) {
+    try {
+      data = await api(`/api/debug/diagnostics${refresh ? '?refresh=1' : ''}`);
+    } catch (e) {
+      data = { error: e.message };
+    }
+    draw();
+  }
+  function ago(ts) {
+    const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+    return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`;
+  }
+  function checkRow(c) {
+    return `<li class="diag-row s-${c.status}">
+      <span class="diag-ico">${DIAG_ICON[c.status] || '·'}</span>
+      <div class="diag-body"><div><b>${escapeHtml(c.name)}</b> <span class="diag-detail">${escapeHtml(c.detail || '')}</span></div>
+      ${c.fix ? `<div class="diag-fix"><span>Fix:</span> ${escapeHtml(c.fix)}</div>` : ''}</div></li>`;
+  }
+  function errorRow(e) {
+    const key = `${e.source}|${e.first}`;
+    const fix = e.fix ? `<div class="diag-fix"><span>${escapeHtml(e.fix.title)}.</span> ${escapeHtml(e.fix.fix)}</div>`
+      : '<div class="diag-fix diag-nofix">No known fix yet. Expand for details, or copy the report.</div>';
+    return `<li class="diag-row s-${e.level === 'warn' ? 'warn' : 'error'}">
+      <span class="diag-ico">${e.level === 'warn' ? '!' : '✕'}</span>
+      <div class="diag-body">
+        <div class="diag-msg">${escapeHtml(e.message)}</div>
+        <div class="diag-meta">${escapeHtml(e.source)} · ${ago(e.last)}${e.count > 1 ? ` · ×${e.count}` : ''}</div>
+        ${fix}
+        ${e.detail ? `<button class="diag-more" data-act="detail" data-key="${escapeHtml(key)}">${open.has(key) ? 'Hide' : 'Show'} details</button>
+          ${open.has(key) ? `<pre class="diag-pre">${escapeHtml(e.detail)}</pre>` : ''}` : ''}
+      </div></li>`;
+  }
+  function draw() {
+    if (!host.isConnected) return;
+    if (!data || data.error) {
+      host.innerHTML = `<div class="diag-head"><span class="diag-title">Diagnostics</span></div>
+        <p class="diag-empty">${escapeHtml(data ? `Couldn't load diagnostics: ${data.error}` : 'Loading…')}</p>`;
+      return;
+    }
+    const s = data.summary;
+    const failing = data.checks.filter((c) => c.status !== 'ok');
+    const passing = data.checks.filter((c) => c.status === 'ok');
+    const headline = s.status === 'ok' ? 'Everything looks healthy'
+      : s.status === 'error' ? 'Something needs fixing' : 'A few things to look at';
+    host.innerHTML = `
+      <div class="diag-head">
+        <span class="diag-title">Diagnostics</span>
+        <span class="diag-pill s-${s.status}">${escapeHtml(headline)}</span>
+        <span class="grow"></span>
+        <button class="btn btn-sm" data-act="recheck">Re-check</button>
+        <button class="btn btn-sm" data-act="copy">Copy report</button>
+        <button class="btn btn-sm btn-ghost" data-act="clear">Clear errors</button>
+      </div>
+      <div class="diag-cols">
+        <div class="diag-col">
+          <div class="diag-sub">Health checks</div>
+          <ul class="diag-list">
+            ${failing.map(checkRow).join('') || '<li class="diag-row s-ok"><span class="diag-ico">✓</span><span>All checks pass.</span></li>'}
+            ${showOk ? passing.map(checkRow).join('') : ''}
+          </ul>
+          ${passing.length ? `<button class="diag-more" data-act="toggle-ok">${showOk ? 'Hide' : 'Show'} ${passing.length} passing</button>` : ''}
+        </div>
+        <div class="diag-col">
+          <div class="diag-sub">Errors caught <span class="diag-count">${s.errors_last_hour} in the last hour</span></div>
+          <ul class="diag-list">
+            ${data.errors.slice(0, 40).map(errorRow).join('') || '<li class="diag-empty">No errors caught.</li>'}
+          </ul>
+        </div>
+      </div>`;
+  }
+  host.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-act]');
+    if (!b) return;
+    const act = b.dataset.act;
+    if (act === 'recheck') { b.disabled = true; await load(true); }
+    else if (act === 'toggle-ok') { showOk = !showOk; draw(); }
+    else if (act === 'detail') { const k = b.dataset.key; if (open.has(k)) open.delete(k); else open.add(k); draw(); }
+    else if (act === 'clear') {
+      try { await api('/api/debug/clear', { method: 'POST', csrf: true, body: {} }); } catch (_) { /* shown on reload */ }
+      await load(false);
+    } else if (act === 'copy') {
+      const text = JSON.stringify({ ...data, errors: data.errors.slice(0, 50) }, null, 2);
+      try { await navigator.clipboard.writeText(text); b.textContent = 'Copied'; } catch (_) { b.textContent = 'Copy failed'; }
+      setTimeout(() => { b.textContent = 'Copy report'; }, 1500);
+    }
+  });
+  load(false);
+  timer = setInterval(() => {
+    if (state.view !== 'dashboard') { clearInterval(timer); return; }
+    if (!document.hidden) load(false);
+  }, 10000);
+  const prev = _pageTeardown;
+  _pageTeardown = () => { clearInterval(timer); if (prev) prev(); };
+}
+
+/* ==============================================================
    DASHBOARD
    ============================================================== */
 async function renderDashboard(main) {
@@ -1704,6 +1877,7 @@ async function renderDashboard(main) {
         <button class="btn btn-sm" id="dash-refresh">Refresh</button>
       </div>
       <div class="page-scroll">
+        <section class="diag" id="dash-diag"></section>
         <div class="stat-grid" id="dash-stats"></div>
         <div class="event-stream">
           <div class="event-stream-header" id="dash-filters"></div>
@@ -1712,6 +1886,8 @@ async function renderDashboard(main) {
       </div>
     </div>
   `;
+
+  mountDiagnostics();
 
   // Events come through the web server so this works from any device.
   // Remote sessions can't read them (they can include window titles
@@ -5010,6 +5186,93 @@ function stopStreamPolling() {
   _streamState.fp = null;
 }
 
+/* --------------------------------------------------------------
+   Pipeline: Lumi's agents at work in her pixel room (web/pipeline.js).
+   -------------------------------------------------------------- */
+function renderPipeline(main) {
+  main.innerHTML = `
+    <div class="page">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Pipeline</div>
+          <div class="page-sub">Lumi's agents at work. Approve requests right on the agent that's asking.</div>
+        </div>
+      </div>
+      <div class="page-scroll">
+        <div class="pl-web">
+          <div class="pl-web-head"><span class="label">Agents</span><span class="pl-note" id="pl-note"></span></div>
+          <div id="pl-stage" class="pipe-stage" aria-label="Lumi's agents at work"><canvas id="pipeline-canvas"></canvas></div>
+          <ul id="pl-tasks" class="pipe-tasks" aria-live="polite"></ul>
+        </div>
+      </div>
+    </div>
+  `;
+  mountPixelPipeline();
+}
+
+// Pixel office: agent_update + approvals over a socket that joins the
+// "pipeline" room (host only). Answers go back as approval_response.
+function mountPixelPipeline() {
+  if (!window.LumiPipeline || typeof io === 'undefined') return;
+  const STATUS = { idle: 'Idle', thinking: 'Thinking', executing: 'Executing', waiting_approval: 'Needs you', error: 'Error' };
+  const NAMES = { main: 'Main', minecraft: 'Minecraft', office: 'Office', system: 'System' };
+  let agents = {};
+  let approvals = [];
+  const sock = lumiUi.socket();                 // shared: visiting this page never reconnects
+  if (!sock) return;
+  const pl = window.LumiPipeline.mount($('#pl-stage'), {
+    base: '/web/pixel-office/',
+    onDecision: (id, decision) => {
+      approvals = approvals.filter((a) => a.id !== id);
+      sock.emit('approval_response', { id, decision });
+      draw();
+    },
+  });
+  function draw() {
+    const view = {};
+    for (const id of Object.keys(NAMES)) {
+      const a = agents[id] || { status: 'idle', task: '' };
+      view[id] = approvals.some((r) => r.agent === id) ? { ...a, status: 'waiting_approval', visual_state: 'waving' } : a;
+    }
+    pl.update(view);
+    pl.setApprovals(approvals);
+    const list = $('#pl-tasks');
+    if (list) {
+      list.innerHTML = '';
+      for (const [id, name] of Object.entries(NAMES)) {
+        const a = view[id];
+        const li = document.createElement('li');
+        li.className = `pt s-${STATUS[a.status] ? a.status : 'idle'}`;
+        for (const [cls, text] of [['pt-name', name], ['pt-status', STATUS[a.status] || 'Idle'], ['pt-task', a.task || a.model_name || '']]) {
+          const span = document.createElement('span'); span.className = cls; span.textContent = text; li.appendChild(span);
+        }
+        list.appendChild(li);
+      }
+    }
+    const note = $('#pl-note');
+    if (note) note.textContent = !sock.connected ? 'Not connected' : approvals.length ? `${approvals.length} waiting for you` : '';
+  }
+  const onConnect = () => { sock.emit('pipeline_join'); draw(); };
+  const onAgents = (d) => { agents = (d && d.agents) || agents; draw(); };
+  const onRequest = (p) => {
+    if (p && p.id && !approvals.some((a) => a.id === p.id)) {
+      approvals.push({ id: String(p.id), tool: String(p.tool || ''), preview: String(p.preview || ''), agent: p.agent || 'main' });
+      draw();
+    }
+  };
+  const drop = (p) => { approvals = approvals.filter((a) => a.id !== (p && p.id)); draw(); };
+  const handlers = [['connect', onConnect], ['disconnect', draw], ['agent_update', onAgents],
+                    ['approval_request', onRequest], ['approval_resolved', drop], ['approval_expired', drop]];
+  for (const [ev, fn] of handlers) sock.on(ev, fn);
+  if (sock.connected) sock.emit('pipeline_join');       // rejoin (re-sends agents and open approvals)
+  draw();
+  _pageTeardown = () => {
+    try { sock.emit('pipeline_leave'); } catch (_) {}
+    for (const [ev, fn] of handlers) sock.off(ev, fn);  // keep the socket, drop this page's listeners
+    pl.destroy();
+  };
+}
+
 async function renderStream(main) {
   main.innerHTML = `
     <div class="page">
@@ -5286,6 +5549,7 @@ const _settingsState = {
 
 const SETTINGS_TABS = [
   { id: 'general',  label: 'General' },
+  { id: 'connections', label: 'Connections' },
   { id: 'security', label: 'Security' },
   { id: 'advanced', label: 'Advanced' },
   { id: 'about',    label: 'About' },
@@ -5349,6 +5613,8 @@ async function loadSettingsTab() {
       const data = await api('/api/settings/general');
       _settingsState.general = data;
       renderGeneralTab(panel, data);
+    } else if (tab === 'connections') {
+      await workspace.renderConnectionsTab(panel);
     } else if (tab === 'security') {
       const sessions = await api('/api/settings/security/sessions');
       _settingsState.sessions = sessions.sessions || [];
@@ -5382,6 +5648,13 @@ function renderGeneralTab(panel, data) {
     'These values write to constants.py. A .bak is saved before every ' +
     'write and changes take effect on the next turn — no restart required.';
   panel.appendChild(help);
+
+  panel.appendChild(lumiUi.buildAppearanceCard());
+  panel.appendChild(lumiUi.buildHybridCard());
+  panel.appendChild(buildGamingModeField());
+  panel.appendChild(buildIslandField());
+  panel.appendChild(islandRemote.buildRemoteCard());
+  panel.appendChild(display.buildDisplayCard());
 
   panel.appendChild(buildSettingsField({
     label: 'Timezone',
@@ -5428,6 +5701,114 @@ function renderGeneralTab(panel, data) {
   saveBtn.addEventListener('click', onSaveGeneral);
   actions.appendChild(saveBtn);
   panel.appendChild(actions);
+}
+
+// Lumi Island (island/, a Tauri app): Lumi starts and stops it, so it
+// needs no terminal. POST /api/island; 409 means it isn't built yet.
+function buildIslandField() {
+  const wrap = document.createElement('div');
+  wrap.className = 'settings-field settings-toggle';
+
+  const text = document.createElement('div');
+  const lbl = document.createElement('div');
+  lbl.className = 'settings-label';
+  lbl.id = 'island-label';
+  lbl.textContent = 'Lumi Island';
+  const h = document.createElement('div');
+  h.className = 'settings-field-help';
+  const defaultHelp = 'A small island at the top of the screen: Lumi’s face and ' +
+    'status, plus Home, Chat and Calendar mini-apps so you can talk to her and ' +
+    'check your day without leaving a game. Hover to peek, click to open; ' +
+    'tool approvals show up there too.';
+  h.textContent = defaultHelp;
+  text.append(lbl, h);
+
+  const sw = document.createElement('label');
+  sw.className = 'switch';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.disabled = true;
+  input.setAttribute('aria-labelledby', 'island-label');
+  const knob = document.createElement('span');
+  knob.className = 'switch-slider';
+  sw.append(input, knob);
+  wrap.append(text, sw);
+
+  const show = (d) => {
+    input.checked = !!d.enabled;
+    h.textContent = d.message ? `${defaultHelp} ${d.message}` : defaultHelp;
+  };
+
+  api('/api/island')
+    .then(show)
+    .catch(() => { h.textContent = `${defaultHelp} (Couldn’t read the current state.)`; })
+    .finally(() => { input.disabled = false; });
+
+  input.addEventListener('change', async () => {
+    input.disabled = true;
+    try {
+      show(await api('/api/island', {
+        method: 'POST', csrf: true, body: { enabled: input.checked },
+      }));
+    } catch (e) {
+      input.checked = !input.checked;
+      h.textContent = `${defaultHelp} ${e.message}`;
+    } finally {
+      input.disabled = false;
+    }
+  });
+  return wrap;
+}
+
+// Gaming Mode applies the moment it's flipped (POST /api/gaming_mode),
+// separate from the Save button below.
+function buildGamingModeField() {
+  const wrap = document.createElement('div');
+  wrap.className = 'settings-field settings-toggle';
+
+  const text = document.createElement('div');
+  const lbl = document.createElement('div');
+  lbl.className = 'settings-label';
+  lbl.id = 'gaming-mode-label';
+  lbl.textContent = 'Gaming Mode';
+  const h = document.createElement('div');
+  h.className = 'settings-field-help';
+  h.textContent = 'Frees VRAM and CPU for a heavy game: models unload after ' +
+    'every reply (replies start slower), and the Minecraft agent rests ' +
+    'until you send it an order.';
+  text.append(lbl, h);
+
+  const sw = document.createElement('label');
+  sw.className = 'switch';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.disabled = true;
+  input.setAttribute('aria-labelledby', 'gaming-mode-label');
+  const knob = document.createElement('span');
+  knob.className = 'switch-slider';
+  sw.append(input, knob);
+  wrap.append(text, sw);
+
+  api('/api/gaming_mode')
+    .then(d => { input.checked = !!d.enabled; })
+    .catch(() => { h.textContent += ' (Couldn’t read the current state.)'; })
+    .finally(() => { input.disabled = false; });
+
+  input.addEventListener('change', async () => {
+    input.disabled = true;
+    try {
+      const d = await api('/api/gaming_mode', {
+        method: 'POST', csrf: true, body: { enabled: input.checked },
+      });
+      input.checked = !!d.enabled;
+    } catch (e) {
+      input.checked = !input.checked;
+      alert(`Couldn't switch Gaming Mode: ${e.message}`);
+    } finally {
+      input.disabled = false;
+    }
+  });
+  return wrap;
 }
 
 function buildSettingsField({ label, help, value, key, type = 'text' }) {

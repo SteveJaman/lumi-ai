@@ -265,22 +265,23 @@ class TTS:
         return None
 
     def _audio_to_mouth_envelope(self, audio_bytes, samples_per_chunk=1024):
-        """Decode WAV bytes and return a list of normalized volume
-        values, one per playback chunk. Used to drive VTube Studio's
-        MouthOpen parameter in sync with playback.
+        """Decode WAV bytes and return one (mouth_open, mouth_form) pair per
+        playback chunk, aligned 1:1 with the device_worker chunk loop.
 
-        The returned list is aligned 1:1 with the device_worker chunk
-        loop — envelope[i] corresponds to the i-th chunk written.
+        mouth_open (0..1) follows loudness, scaled by the vowel; mouth_form
+        (-1..1) is the vowel's lip shape, found by formant analysis
+        (modules/vts_motion.analyze_visemes): E/I pull the lips wide, O/U
+        round them. Without numpy, form stays 0 (volume-only lip-sync).
 
-        Returns a list of floats in [0.0, 1.0]. If decoding fails or
-        the format isn't 16-bit PCM, returns an empty list and the
-        caller skips lip-sync for this utterance (audio still plays).
+        If decoding fails or the format isn't 16-bit PCM, returns an empty
+        list and the caller skips lip-sync for this utterance.
         """
         try:
             wf = wave.open(io.BytesIO(audio_bytes), 'rb')
             n_channels = wf.getnchannels()
             sampwidth = wf.getsampwidth()
             n_frames = wf.getnframes()
+            rate = wf.getframerate()
             raw = wf.readframes(n_frames)
             wf.close()
 
@@ -308,32 +309,8 @@ class TTS:
                 else:
                     samples = array.array('f', [float(s) for s in samples])
 
-            # Compute per-chunk RMS
-            rms_values = []
-            step = samples_per_chunk
-            for i in range(0, len(samples), step):
-                chunk = samples[i:i + step]
-                if len(chunk) == 0:
-                    continue
-                if HAS_NUMPY:
-                    rms = float(np.sqrt(np.mean(chunk ** 2)))
-                else:
-                    rms = (sum(float(s) * float(s) for s in chunk) / len(chunk)) ** 0.5
-                rms_values.append(rms)
-
-            if not rms_values:
-                return []
-
-            # Normalize to [0, 1]. Apply a mild gamma so quiet syllables
-            # still move the mouth — without it, soft consonants get
-            # flattened and the avatar looks stiff.
-            peak = max(rms_values) or 1.0
-            envelope = []
-            for rms in rms_values:
-                norm = rms / peak
-                envelope.append(min(1.0, norm ** 0.6))
-
-            return envelope
+            from modules.vts_motion import analyze_visemes
+            return analyze_visemes(samples, rate, samples_per_chunk)
         except Exception as e:
             print(f"\033[90mTTS: envelope decode failed — {e}\033[0m")
             return []
@@ -421,7 +398,12 @@ class TTS:
 
                                 if is_mouth_driver and mouth_tick < len(envelope):
                                     try:
-                                        vts.API.set_mouth_open(envelope[mouth_tick])
+                                        open_, form = envelope[mouth_tick]
+                                        shape = getattr(vts.API, "set_mouth_shape", None)
+                                        if shape is not None:
+                                            shape(open_, form)
+                                        else:
+                                            vts.API.set_mouth_open(open_)
                                     except Exception:
                                         pass
                                     mouth_tick += 1

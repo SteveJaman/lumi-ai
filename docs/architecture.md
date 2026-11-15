@@ -247,6 +247,7 @@ Background loops (independent threads):
   ambient_perception   · self_model (60s/600s)
   memory reflection    · discord client
   log hub (HTTP :5001) · SDK server (:5056)
+  HITL server (WS :5090, runs on the prompter's loop, no thread)
   library_indexer (60s)
   web server (aiohttp + socket.io, :5000)
     └─ web-memory worker (1 thread, memory/library calls from HTTP)
@@ -384,6 +385,89 @@ The first canonical Fish Audio tag in each reply is also forwarded to
 VTube Studio as an expression trigger. The tag drives both voice and
 avatar.
 
+### Pixel Pipeline, Watchdog, Diagnostics
+
+- **Pixel Pipeline** (`web/pipeline.js` = `island/src/pipeline.js`, kept
+  identical): a 192x108 pixel office drawn with `fillRect` into an off-screen
+  buffer and scaled up crisp. `agent_tracker` adds `station` and
+  `visual_state` (typing, swinging, reading, blinking, waving, alarm,
+  sitting, standing) to every agent. Characters walk to their station or
+  resting spot when the state changes; approvals put an HTML Approve/Decline
+  card over the waving character. 30 fps only while something animates,
+  2 fps otherwise, stopped while hidden. The island gets updates on its HITL
+  socket; the web Pipeline page joins a socket.io room (`pipeline_join`, host
+  only) that receives `agent_update` and approval requests, and answers with
+  `approval_response` (`hitl_server.add_approver` / `resolve_threadsafe`).
+  Only tabs on that page count as approvers, so with none open approvals
+  still fall back to the island or the terminal.
+- **Watchdog** (`modules/watchdog_agent.py`): CPU/RAM every 60 s (3 strikes
+  over 90 % / 95 %), watched games every 10 s (`WATCHED_GAMES`; hung via
+  `IsHungAppWindow`, crash = gone + WER dialog / event 1000 / hung first).
+  Events set System to error (alarm) and enter history as `watchdog_event`;
+  the prompter speaks a fixed line and a plain "yes" to the restart offer
+  runs `restart_crashed_game` (approval-gated relaunch of the remembered exe).
+- **Diagnostics** (`modules/diagnostics.py`, installed first in `main.py`):
+  catches uncaught exceptions (any thread), logging errors (incl. asyncio),
+  red console lines, log_hub warn/error and browser errors
+  (`/api/debug/client_error`), groups repeats, matches each against
+  `FIX_RULES` for a plain fix, and runs health checks. Dashboard →
+  Diagnostics shows both (`/api/debug/diagnostics`, host only).
+
+### Themes, hybrid routing, knowledge drops
+
+- **Themes** (`web/themes/<id>/`: `theme.json`, `style.css`, `background.js`,
+  `assets/`; schema in `web/themes/README.md`). `web/theme-engine.js` sets the
+  palette as `--lt-*`, swaps the stylesheet, runs the background canvas (max 30
+  fps, paused while hidden, one frame for reduced motion) and the optional
+  sparkle cursor, and fires `lumi-theme` so the Pipeline room relights.
+  `scripts/sync_themes.py` copies themes, the engine and `pipeline.js` into
+  `island/src/`. The chosen theme lives in `data/ui_theme.json`
+  (`modules/theme_store.py`); islands follow it unless "Sync with Desktop" is off.
+- **Hybrid routing** (`modules/hybrid_mode.py`, `HYBRID_MODE`,
+  `CLOUD_ESCALATION_MODEL`). Off: every tier runs on Ollama and Claude Code is not
+  offered. On: opus-tier prompts (chat and agent turns) use the cloud model if its
+  provider has a key. The "100% Local Privacy" badge shows only when every
+  configured model is local and escalation is off.
+- **Knowledge drops** (`modules/knowledge.py`): `POST /api/knowledge/upload`
+  (web) or `knowledge_upload_begin/chunk/end` over the island socket (works for
+  remote islands too) save into `data/library/` and index at once; Lumi announces
+  what she learned.
+- **Sync** (`modules/ui_sync.py`): `theme_update`, `hybrid_mode_update`,
+  `knowledge_ingest_start/finish` go to every web tab (socket.io) and island.
+
+### Avatar (VTube Studio digital twin)
+
+`modules/vtubeStudio.py` owns the VTS socket; `modules/vts_motion.py`
+decides what the face does (pure, unit-tested). Each frame (up to 60 FPS,
+one batched `InjectParameterDataRequest`) combines:
+
+- **Agent pose** from the tracker snapshot (`pose_from_snapshot`): an
+  approval anywhere -> she looks straight at the camera; a fresh error ->
+  shocked (and the model's `exp_dizzy_eyes` expression if it has one);
+  Main thinking -> pondering, eyes up; an agent executing -> focused (slight
+  frown, narrowed eyes); a search, page read or command -> eyes dart as if
+  reading. Minecraft doesn't drive this face. Poses always show through
+  parameters; matching model expressions are switched on with
+  `ExpressionActivationRequest` after a 0.4 s debounce, and only what Lumi
+  switched on is switched off.
+- **Lip-sync** from `tts.py`: per 1024-sample chunk, loudness -> MouthOpen
+  and the vowel (LPC formants -> A/E/I/O/U) -> MouthSmile/MouthForm (E/I wide,
+  O/U round). After speech the mouth settles over 200 ms.
+- **Emotion** as a continuous state (`EmotionState`, VAD + face channels):
+  ramps in over 300 ms, holds while she speaks the sentence, decays over 5 s.
+  Arousal livens blinking and head motion; dominance lifts the chin.
+- **Organic motion**: sine + Perlin head sway with micro-movements, gaze
+  modes, micro- and double-blinks, breathing that exhales through long
+  sentences and inhales in pauses (custom input `LumiBreath`; map it to
+  ParamBreath in VTS once).
+- **Idle context**: 00:00-05:00 and idle 5 min -> sleepy, slower breath,
+  a yawn every few minutes.
+
+Safety: only parameters in the model's `InputParameterListRequest` are sent;
+nothing is sent unless the session is `ready`; a dropped socket reconnects
+with backoff and re-applies the model's expressions.
+
+
 ### Tool dispatch
 
 ```
@@ -398,7 +482,9 @@ Format recovery chain (in order):
    5. Bracket-positional: [tool "val" true]
     │
     ▼
-Confirmation gate (write_file, run_command, run_in_terminal)
+Confirmation gate (write_file, run_command, run_in_terminal, and SDK
+actions that need one) → HITL bridge if a client is connected, else the
+terminal. See [HITL approval bridge](#hitl-approval-bridge).
     │
     ▼
 _dispatch_tool_call(name, args)
@@ -515,6 +601,226 @@ primitives in scope. The whole feature is described in
 [minecraft.md](minecraft.md). The control API is unauthenticated; see
 [security.md](security.md#minecraft-bot-control-api).
 
+### Workspace hub
+
+`modules/workspace_hub.py` owns the Google (Calendar + Gmail) and KSU mail
+accounts, a cache, the agent tools, and a compressed snapshot.
+`modules/workspace_routes.py` adds the host-only `/api/workspace/*` routes
+(registered by one line in `socketIO.py`), and `web/workspace.js` is the
+Workspace view and the Settings → Connections tab.
+
+```
+web client ──► /api/workspace/* ──► WorkspaceHub ──► GoogleCalendar / GmailProvider  (Google APIs)
+ (Workspace,                          │  cache in memory + data/workspace/cache.json
+  Connections)                        │                ├► GraphMailProvider        (Microsoft Graph)
+Prompter ──► list_events, send_email… │                └► GmailProvider(label=KSU) (fallback)
+ (agent mode; send_email,             └► get_compressed_snapshot() ─ listeners ─► (Lumi Island, Home tab)
+  delete_event, create_event ask first through HITL)
+```
+
+- **No timers.** The cache is served instantly and refreshed on demand when
+  it is older than its TTL (events 5 min, mail 2 min), so an idle Lumi does
+  no network work.
+- **Untrusted text.** Mail and invites are cleaned (control and bidi
+  characters removed, look-alike provenance markers defused) and wrapped in
+  `[FROM EMAIL]` / `[FROM CALENDAR]` by `wrap_tool_result`. "Ask Lumi"
+  messages are not flagged `from_host`.
+- **Secrets.** Tokens live in `data/credentials/`, which is git-ignored and
+  refused by the file tools (`_safe_path`). The status endpoint never returns
+  them. See [workspace.md](workspace.md).
+
+### HITL approval bridge
+
+`modules/hitl_server.py` replaces the blocking terminal `input()` for tool
+approvals. It is an aiohttp WebSocket endpoint at `ws://127.0.0.1:5090/hitl`
+that starts at the top of `Prompter.run()`, so it shares the prompter's event
+loop and needs no thread of its own.
+
+```
+prompter._confirm(tool, args)
+    │
+    ▼
+hitl_server.request_approval(tool, preview, timeout=120)
+    │
+    ├─ no client connected ─────────────► terminal y/n (as before)
+    │
+    └─ client connected
+         creates an asyncio.Future, sends to every client:
+           {"type":"approval_request","id":<uuid>,"tool":..,"preview":..}
+         awaits it with a timeout
+              ▲
+   client ────┘ {"type":"approval_response","id":<uuid>,
+                 "decision":"approve"|"decline"}
+```
+
+- **First answer wins.** Any connected client can answer; later replies,
+  unknown ids and malformed frames are ignored.
+- **Timeout declines.** After 120 s the request auto-declines and clients get
+  `{"type":"approval_expired","id":..}` so they can clear the prompt.
+- **Disconnects fall back.** If the last client drops mid-request, the
+  request moves to the terminal instead of timing out silently. A client that
+  connects late is sent any requests still waiting.
+- **Zero idle cost.** No polling loop and no heartbeat. The loop wakes only
+  for socket I/O, a new request, or a request's timeout timer.
+- **Origin check.** Browsers send an `Origin` header on WebSocket upgrades,
+  and any web page could otherwise approve commands. The server accepts only
+  loopback origins (or none, for non-browser clients).
+
+### Lumi Island bridge
+
+The reference client is Lumi Island (`island/`, a Tauri app), started and
+stopped by `modules/island_manager.py` from **Settings → General**. Besides
+approvals it has four mini-apps (Home, Chat, Calendar, Pipeline). They ride on the same
+socket through `modules/island_bridge.py`, which registers handlers on the
+approval server (`register_handler`).
+
+```
+Lumi Island (Tauri) ──ws://127.0.0.1:5090/hitl──► hitl_server  ── approvals (Future per request)
+  hello {token} first                              │
+  get_home / get_weather / get_calendar /          └─► island_bridge ─► workspace_hub (calendar, snapshot)
+  get_chat / chat_send                                               ├► home_info (12/24 h, units, weather)
+  ◄── pushed: lumi_status, lumi_mode,                                └► signals.history (chat)
+      chat_message, chat_reset, snapshot, prefs,
+      agent_update                               agent_tracker ──callback──► broadcast agent_update
+```
+
+- **Handshake.** When Lumi launches the island, `IslandManager` makes a fresh
+  secret (`secrets.token_urlsafe`) for that launch, calls
+  `hitl_server.set_token()`, and puts it in the child's environment
+  (`LUMI_ISLAND_TOKEN`; the socket address goes in `LUMI_ISLAND_WS`). The first
+  frame on the socket must be `{"type":"hello","token":...}` or the socket is
+  closed with code 4401. An unauthenticated socket is never counted as a
+  client, so it can't receive an approval request, send chat, or read mail.
+  Without a token set (nothing launched by Lumi) the server behaves as before:
+  loopback + origin check only.
+- **Pushed, not polled.** `signals.history` is an observable list
+  (`signals._History`): every `append`/`extend` from any module or thread calls
+  `signals.on_history_change`, which the bridge turns into `chat_message`
+  pushes. Thinking/speaking flags are pushed as `lumi_status` through the same
+  kind of hook, Gaming Mode as `lumi_mode`, and a changed
+  `get_compressed_snapshot()` as `snapshot`.
+- **Chat.** `chat_send` appends a `from_host` user message exactly like typing
+  in the web client on this PC, so the prompter handles it the same way.
+  Messages a person wouldn't see in the web chat (`sdk_event`, hidden,
+  system) are not sent to the island.
+- **Calendar.** `get_calendar {start, end}` becomes
+  `WorkspaceHub.get_events_range()`: served from the 30-day cache when the
+  range sits inside it, otherwise fetched from Google (paginated, up to 400
+  days) and kept in memory for 5 minutes, at most 12 ranges.
+- **Display preferences and weather.** `modules/home_info.py` stores the
+  12/24-hour clock, °F/°C and the weather city in `data/display.json` (edited
+  under Settings → General → Display, `GET/PUT /api/settings/display`, host-only,
+  applied immediately). `get_home` carries them; a change pushes `prefs` to an
+  open island. `get_weather` returns an Open-Meteo reading, cached 15 minutes
+  and fetched only on request. Nothing is sent to Open-Meteo until a city is
+  set; then the city name once (to find coordinates) and the coordinates after.
+  If the service is down the last reading is returned marked `stale`.
+- **Approvals** still work exactly as described above; the island only adds
+  messages around them. Each `approval_request` now names its `agent`.
+
+### Model routing and the agent pipeline
+
+```
+user message ─► model_router.route_model() ─► "haiku" | "sonnet" | "opus"
+                  small-talk regex → haiku (no model call)
+                  Gaming Mode      → sonnet (no model call)
+                  else qwen2.5:3b via Ollama, 4 s timeout, 4 tokens
+                  any failure      → sonnet
+              ─► prompter: haiku → FAST_MODEL_NAME, sonnet/opus → MODEL_NAME
+                           ask_claude_code → claude -p --model <tier>
+```
+
+- **Tiers.** Lumi's chat is local, so a tier only chooses between her fast and
+  main local models (attachments always use the main one). The Claude names
+  are real for Claude Code runs, which use `--model haiku|sonnet|opus` on the
+  user's plan; if the plan lacks that model the run is retried once on Claude
+  Code's default and the answer says so. The tier is saved on the prompter
+  (`_route_tier`) for the rest of the turn.
+- **Tracker.** `modules/agent_tracker.py` holds `main`, `minecraft`,
+  `office` and `system`, each with `status` (idle, thinking, executing, waiting_approval,
+  error), `task`, `progress`, `model` (the tier) and `model_name` (what really
+  runs). `update()` is thread-safe, ignores no-op changes and calls its
+  callbacks outside the lock; the approval server's callback broadcasts
+  `{"type":"agent_update","agents":{...}}`. A new island gets a snapshot on
+  connect.
+- **Who updates what.**
+  - The prompter sets `main` to thinking for each reply or agent step (with
+    step progress), executing while one of its own tools runs (including the
+    meeting tools), error on a model
+    failure, and settles it to idle after the turn. An error stays on show
+    until the next turn.
+  - Claude Code sets `office` to executing, then idle or error.
+  - Calendar and email (workspace hub), and the Everyday Life tools for email,
+    finance and the desktop (`email_agent`, `finance_agent`,
+    `windows_agent`, registered in `agent_tools.EVERYDAY_*`), set `system` to
+    executing, then idle or error. Their approvals wait on the System card.
+  - The SDK server sets `minecraft` from the "Currently:" line the Minecraft
+    agent already sends with its context (idle words map to idle), and to
+    "Not running" when it disconnects. The bot itself is unchanged.
+  - `request_approval(..., agent=)` sets that agent to waiting_approval and
+    restores its previous state afterwards.
+
+### Remote islands (pairing)
+
+Lumi Island can run on a second device and connect over Tailscale.
+`modules/island_remote.py` holds the setting in `data/island_remote.json`
+(git-ignored), edited from **Settings → General → Remote island**
+(`GET/POST /api/island/remote`, host-only, CSRF).
+
+- **Off by default.** Turning it on adds a second `TCPSite` on the same
+  runner, bound to this PC's Tailscale IPv4 (100.64.0.0/10) only. Any other
+  address is refused, and it never binds `0.0.0.0`. Loopback stays as before.
+- **Pairing code.** 16 symbols from a 30-letter alphabet with no look-alikes
+  (about 78 bits), shown once. Only a salted SHA-256 hash is stored, compared
+  in constant time.
+- **Handshake.** Any non-loopback peer is refused (403) while remote is off.
+  Otherwise its first frame must be `{"type":"hello","pair":"<code>"}`;
+  the local launch token is not accepted remotely. A wrong code closes with
+  4401. Five wrong codes from one address in ten minutes return 429 for ten
+  minutes.
+- **Revocation.** **New code** and **Turn off** call `apply_remote()` on the
+  approval server's loop, which closes every remote socket with 4401 and moves
+  or stops the listener.
+- **Client side.** The gear panel saves host, port and code in the island's
+  `localStorage` on that device. After a 4401 it stops retrying until a new
+  code is saved, so it can't lock itself out.
+
+### Gaming Mode
+
+A runtime switch that trades response speed for free VRAM and CPU while a
+heavy game runs on the same machine. State lives in `constants.GAMING_MODE`
+and is saved to `data/gaming_mode.json`, which overrides the constant on the
+next boot. Read it as `constants.GAMING_MODE`; a `from constants import`
+copy would never see a toggle.
+
+```
+POST /api/gaming_mode  (or Settings → General)
+    │
+    ▼
+modules/gaming_mode.set_enabled()
+    ├─ constants.GAMING_MODE + data/gaming_mode.json
+    ├─ unload everything Ollama has loaded (keep_alive: 0)
+    └─ sdk.broadcast_gaming_mode()  ──► "gaming_mode" SDK message
+                                           │ (also sent on every connect)
+chat calls (prompter, heartbeat)           ▼
+  keep_alive = gaming_mode.keep_alive()   plugin/minecraft_bot.py
+  → 0 while on: unload after each reply   parks on an asyncio.Event: no
+                                          timer, no HTTP, bot stopped
+                                          until an order arrives
+```
+
+- **Chat models.** Every chat call asks Ollama for `keep_alive=0`, so a model
+  unloads right after its reply. Each reply then pays a reload (about 8 s for
+  the fast model), and in agent mode every tool step does.
+- **Minecraft agent.** With nothing ordered, its loop stops and `bot.js`
+  drops the pathfinder and any running skill. An order sent through
+  `game_manager.send_directive()` (Games page, talking to Lumi, or her
+  `dispatch_game_command` tool) wakes it, and it sleeps again once the order
+  is done. In-game chat orders do not wake it. The `bot.js` process itself
+  keeps running.
+- **Host-only.** `/api/gaming_mode` is not in the remote API allowlist, so it
+  can't be toggled over the tunnel.
+
 ### Web server (`modules/socketIO.py`)
 
 One aiohttp application with python-socketio attached, bound to
@@ -583,6 +889,65 @@ There is no push channel. `emit()` never blocks on a network
 call, which is why high-frequency loops (ambient sampling, heartbeat) use it
 instead of `print()`.
 
+## Two-machine setup
+
+Lumi can be split across two computers. The Desktop runs everything heavy,
+including the game you are playing. A second device, such as a Surface Pro,
+runs only Lumi Island, so you can answer permission prompts, chat and watch
+the Pipeline without alt-tabbing out of a full-screen game.
+
+```
+        Desktop (gaming PC)                          Surface Pro
+┌──────────────────────────────────┐          ┌──────────────────────┐
+│ python main.py                   │          │ Lumi Island          │
+│  Ollama, ChromaDB, TTS, STT      │          │  (island/, Tauri)    │
+│  prompter + tools                │          │                      │
+│  HITL server  127.0.0.1:5090     │          │  Approve / Decline   │
+│   + 100.x.x.x:5090 (opt-in)      │◄────────►│  chat, Pipeline      │
+│  Gaming Mode ON                  │ WebSocket│                      │
+│  the AAA game                    │ over     │  no models, no       │
+└──────────────────────────────────┘ Tailscale│  secrets, no tools   │
+                                              └──────────────────────┘
+```
+
+- **Desktop:** all inference, memory, tool execution and the HITL server.
+  Gaming Mode keeps Lumi's footprint small while the game runs.
+- **Surface Pro:** a thin client with no model, API key or file access. It
+  keeps only the Desktop's address and the pairing code, renders what the
+  Desktop pushes, and sends back decisions and chat.
+- **Tailscale:** both machines join the same tailnet, so the connection is
+  encrypted and reachable only by your own devices. Nothing is opened on your
+  router or the public internet. This is separate from the Cloudflare tunnel
+  used for the main web client.
+
+### Status
+
+Built. See [Remote islands (pairing)](#remote-islands-pairing) and the setup
+steps in [island/README.md](../island/README.md#use-on-another-device-your-surface).
+
+| Piece | State |
+|---|---|
+| Approval protocol (request, response, expiry, timeout, terminal fallback) | Done |
+| Island client (Lumi Island, `island/`) | Done; `npm run build:standalone` makes installers for the Surface |
+| Reaching the server from another machine | Done: an opt-in listener on the Tailscale address only |
+| Authentication on the WebSocket | Done: per-launch token locally, pairing code remotely |
+
+The design follows the three rules this section set out before it was built:
+the listener is reachable on the tailnet only (never `0.0.0.0`), a browser
+`Origin` other than loopback is still refused (the Tauri app sends its own
+`tauri.localhost` origin), and every remote socket must authenticate.
+
+### Failure behavior
+
+- **Surface unreachable when a prompt fires.** The request falls back to the
+  Desktop terminal. That prompt has no timeout, so a turn can sit waiting
+  while you are away from the keyboard. If you rely on the second machine,
+  keep it connected, or turn agent mode off while it isn't.
+- **Surface drops mid-prompt.** Same fallback, and the pending request moves
+  to the terminal immediately.
+- **No answer in 120 s.** The request declines, and the agent is told the
+  user declined.
+
 ## Key files (top level)
 
 | File | Role |
@@ -602,13 +967,21 @@ instead of `print()`.
 | `library_indexer.py` | Walks `data/library/`, indexes into `library_docs` |
 | `llm_providers.py` | Multi-provider LLM clients, `chat_sync()` |
 | `model_manager.py` | Ollama management + live `constants.py` patching |
+| `hitl_server.py` | WebSocket approval bridge on `:5090`; falls back to the terminal |
+| `gaming_mode.py` | Gaming Mode flag, persistence, model unload, SDK push |
 | `socketIO.py` | aiohttp HTTP routes + python-socketio + static serving, JSON error middleware, web-memory worker |
 | `emotional_state.py` | Traits, state variables, cognitive frames |
 | `self_model.py` | Pattern tracking, periodic reflection |
 | `heartbeat.py` | Autonomous initiation loop |
 | `ambient_perception.py` | Screen sampler + VLM descriptions |
 | `session_state.py` | Cross-session continuity |
-| `vtubeStudio.py` | VTube Studio control, expression state tracking |
+| `vtubeStudio.py` | VTube Studio session, model discovery, agent poses, expression state tracking |
+| `vts_motion.py` | Avatar motion engine: sway, gaze, blinks, breath, emotion, lip-sync visemes |
+| `watchdog_agent.py` | CPU/RAM and game crash/hang watchdog; restart_crashed_game |
+| `diagnostics.py` | Error capture from every source + health checks + fixes (Dashboard) |
+| `theme_store.py`, `ui_routes.py`, `ui_sync.py` | Shared UI theme + Cloud Escalation switch, routes, broadcasts |
+| `hybrid_mode.py` | Local-only vs cloud escalation for opus-tier prompts |
+| `knowledge.py` | Drag-and-drop knowledge: upload, index, announce |
 | `discordClient.py` | Discord voice — DAVE receive, Opus decode, VAD |
 | `log_hub.py` | Diagnostics stream + localhost dashboard |
 | `user_auth.py` | SQLite + argon2id auth, session management |
@@ -672,7 +1045,7 @@ stay clean, agent turns should be thorough.
 - [configuration.md](configuration.md) — where the paths and constants live
 - [models.md](models.md) — how the two model paths differ
 - [discord-voice.md](discord-voice.md) — the DAVE receive pipeline
-- [security.md](security.md) — what's protected and what isn't
+- [security.md](security.md) — what's protected and what isn't (it does not yet cover the HITL bridge)
 - [known-limitations.md](known-limitations.md) — what doesn't work yet
 - [../modules/README.md](../modules/README.md) — file-level map of the modules folder
 - [../sdk/README.md](../sdk/README.md) — the external SDK protocol

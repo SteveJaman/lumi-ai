@@ -131,6 +131,13 @@ def _save_allowlist(data: Dict[str, Any]) -> bool:
 
 # ─── Internal state ───────────────────────────────────────────────
 
+def _gaming_mode_message(wake: bool, enabled: Optional[bool] = None) -> Dict[str, Any]:
+    import constants
+    on = constants.GAMING_MODE if enabled is None else enabled
+    return {"command": ServerCommand.GAMING_MODE,
+            "data": {"enabled": bool(on), "wake": bool(wake)}}
+
+
 @dataclass
 class RegisteredAction:
     spec: ActionSpec
@@ -349,6 +356,7 @@ class SDKServer(Module):
                 Session(session_id=client_id, display_name="Lumi Voidwright"),
                 protocol_version=SDK_PROTOCOL_VERSION,
             ))
+            await ws.send_json(_gaming_mode_message(wake=False))
 
             if not client.approved:
                 hub_emit(
@@ -534,6 +542,7 @@ class SDKServer(Module):
             self._trigger_reaction(client, text)
             return
         client.context_text = text
+        self._track_minecraft(client, text)
         priority = payload.get("priority")
         if isinstance(priority, int):
             client.context_priority = priority
@@ -637,10 +646,38 @@ class SDKServer(Module):
             "actions/force is not yet implemented on this build"
         ))
 
+    # Words in the Minecraft agent's "Currently:" line that mean it isn't doing anything.
+    _MC_IDLE_WORDS = ("idle", "resting", "standing by", "waiting", "gaming mode", "asleep", "zzz",
+                      "taking a breather", "starting up", "autoplay is off")
+
+    def _track_minecraft(self, client: SDKClient, text: str = "", gone: bool = False) -> None:
+        """Feed the Pipeline view's Minecraft card from the status line the
+        agent already sends every 30 s ("Currently: ..."). No bot changes."""
+        if client.game_name != "MinecraftAgent":
+            return
+        try:
+            from modules import agent_tracker
+            from constants import GAME_AGENT_MODEL
+            if gone:
+                agent_tracker.update("minecraft", "idle", task="Not running")
+                return
+            doing = ""
+            for line in str(text or "").splitlines():
+                if line.startswith("Currently:"):
+                    doing = line[len("Currently:"):].strip()
+            low = doing.lower()
+            if not doing or any(w in low for w in self._MC_IDLE_WORDS):
+                agent_tracker.update("minecraft", "idle", task=doing or "In the game", model_name=GAME_AGENT_MODEL)
+            else:
+                agent_tracker.update("minecraft", "executing", task=doing, progress=50, model_name=GAME_AGENT_MODEL)
+        except Exception:
+            pass
+
     def _cleanup_client(self, client_id: str):
         client = self.clients.pop(client_id, None)
         if client is None:
             return
+        self._track_minecraft(client, gone=True)
         for fut in client.pending_invocations.values():
             if not fut.done():
                 fut.set_result({"success": False, "error": "client disconnected"})
@@ -759,6 +796,27 @@ class SDKServer(Module):
         except asyncio.TimeoutError:
             client.pending_invocations.pop(inv_id, None)
             return {"success": False, "error": "action timed out"}
+
+    def broadcast_gaming_mode(self, enabled: bool, wake: bool = False) -> None:
+        """Thread-safe: push Gaming Mode (and an optional wake) to every
+        client. Game agents sleep on it instead of polling."""
+        if not self.clients or self._loop is None:
+            return
+        payload = _gaming_mode_message(wake=wake, enabled=enabled)
+
+        async def _send_all():
+            for c in list(self.clients.values()):
+                if c.ws.closed:
+                    continue
+                try:
+                    await c.ws.send_json(payload)
+                except Exception:
+                    pass
+
+        try:
+            asyncio.run_coroutine_threadsafe(_send_all(), self._loop)
+        except Exception:
+            pass
 
     def broadcast_lumi_message(self, content: str, role: str = "assistant"):
         if not self.clients:

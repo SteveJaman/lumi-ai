@@ -75,6 +75,19 @@ realtimesst_*.log
 # ChromaDB database, self-model, session continuity,
 # emotional state, user database, SDK token.
 data/memories/
+
+# OAuth client + tokens (Google, Microsoft) and the cached mailbox/calendar.
+# Never commit these.
+data/credentials/
+
+# Small per-machine settings written by the web client (display.json holds
+# the city you typed for the weather).
+data/display.json
+data/gaming_mode.json
+data/island.json
+# Remote island pairing (a salted hash of the code, and the Tailscale address).
+data/island_remote.json
+data/workspace/
 !data/memories/readme.md
 !data/memories/.gitkeep
 
@@ -140,3 +153,7 @@ config/*.yaml.bak
 # --- Directory structure listings ---
 Lumi_tree.txt
 results/
+# --- Third-party source checkouts (re-clone; see scripts/build_pixel_office.py) ---
+third_party/pixel-agents/
+hybrid_mode.json
+ui_theme.json

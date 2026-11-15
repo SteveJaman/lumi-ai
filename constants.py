@@ -24,8 +24,13 @@ LLM_ENDPOINT = "http://127.0.0.1:11434"  # not "localhost": on Windows that trie
 # 3.1 8B tracks persona facts better than Gemma and has broader world
 # knowledge than Qwen3 at the same size. If you swap this, keep it in the
 # 7B-8B range and verify it reads the QUICK REFERENCE block correctly.
-MODEL_NAME = "qwen3:8b"
+MODEL_NAME = "dolphin3:8b"
 FAST_MODEL_NAME = "dolphin3:8b"
+# AGENT_MODEL_NAME runs agent-mode turns. It MUST support tool calling (and
+# ideally thinking): dolphin3 supports neither, so Ollama answers 400 Bad
+# Request if it is asked to run tools. Check with:
+#   ollama show <model>     -> "Capabilities: completion, tools, thinking"
+AGENT_MODEL_NAME = "qwen3:8b"
 VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached this turn
 # GAME_AGENT_MODEL picks goals for background game agents (plugin/
 # minecraft_bot.py) so they never queue behind or evict the chat models.
@@ -50,6 +55,30 @@ FAST_MODEL_ENABLED = True
 FAST_MODEL_NUM_CTX = 8192
 MAIN_NUM_CTX = 8192
 FAST_MODEL_KEEP_ALIVE = "30m"  # it fits in VRAM next to GAME_AGENT_MODEL; a reload costs ~8 s
+
+# Gaming Mode: free VRAM/CPU while a heavy game runs. Chat models load
+# with keep_alive=0 (unloaded right after each reply, so every reply pays
+# a reload), and the Minecraft agent sleeps until it gets an order through
+# the API. Toggled at runtime by POST /api/gaming_mode or the Settings
+# page (modules/gaming_mode.py); the last setting is kept in
+# data/gaming_mode.json and wins over this default on boot.
+GAMING_MODE = False
+
+# Claude Code as a tool for Lumi (modules/claude_code.py): in agent mode she can hand a
+# coding task to your installed Claude Code CLI, which runs on your own Claude login
+# (your plan, not API billing). Every call needs your approval. Set False to remove it.
+CLAUDE_CODE_ENABLED = True
+
+# Hybrid AI routing (modules/hybrid_mode.py). False = 100% local: every tier runs on
+# Ollama (haiku -> FAST_MODEL_NAME, sonnet/opus -> MODEL_NAME / AGENT_MODEL_NAME) and
+# Claude Code is not offered. True = "Cloud Escalation": opus-tier (hard) prompts go to
+# CLOUD_ESCALATION_MODEL, and Claude Code may be used. The switch in the web app
+# (Settings) and the island's Home tab flips it at runtime; the last choice is kept in
+# data/hybrid_mode.json and wins over this default on boot. The cloud model needs its
+# provider's API key (Settings -> Models -> Providers); without one, Lumi stays local.
+HYBRID_MODE = False
+CLOUD_ESCALATION_MODEL = "anthropic:claude-opus-5-5"
+
 AUDIO_OUTPUT_MODE = "both"
 OUTPUT_DEVICE_INDEX = [24, 20]
 

@@ -139,6 +139,7 @@ _REMOTE_API_ALLOW = frozenset({
     ("POST", "/api/chat/upload"),
     ("POST", "/api/voice_message"),
     ("GET",  "/api/models"),          # list only; feeds the Ollama dot
+    ("GET",  "/api/ui/state"),        # theme + "100% local" badge (read-only)
 })
 
 _HOST_ONLY_MSG = "Only available on the host machine."
@@ -591,6 +592,46 @@ class SocketIOServer:
 
         self._register_http_routes()
         self._register_socket_events()
+        self._install_pipeline_bridge()
+        from modules import ui_sync
+        ui_sync.set_web_broadcaster(self._emit_all_threadsafe)
+
+    # ==================================================================
+    # Pipeline page bridge: agent states + approvals for the web app
+    # ==================================================================
+    def _install_pipeline_bridge(self):
+        """Tabs that open the Pipeline page join the "pipeline" room (host
+        only). They get agent_update pushes and approval requests, and
+        their Approve/Decline answers go to the approval server. Only these
+        tabs count as approvers: with none open, approvals fall back to the
+        island or the terminal as before."""
+        from modules import agent_tracker, hitl_server
+        self._pipeline_sids = set()
+        agent_tracker.register(lambda snap: self._emit_pipeline_threadsafe("agent_update", {"agents": snap}))
+        hitl_server.add_approver(
+            lambda payload: self._emit_pipeline_threadsafe(payload.get("type", "approval_request"), payload),
+            lambda: len(self._pipeline_sids),
+        )
+
+    def _emit_all_threadsafe(self, event, payload):
+        """theme_update, hybrid_mode_update, knowledge_ingest_* to every tab."""
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self.sio.emit(event, payload)))
+        except RuntimeError:
+            pass
+
+    def _emit_pipeline_threadsafe(self, event, payload):
+        loop = self._loop
+        if loop is None or not self._pipeline_sids:
+            return
+        try:
+            loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(self.sio.emit(event, payload, room="pipeline")))
+        except RuntimeError:
+            pass
 
     async def _run_mem(self, fn, *args, **kwargs):
         """Run a blocking memory/library call on the memory worker."""
@@ -640,6 +681,21 @@ class SocketIOServer:
         r.add_post("/api/chat/upload",  self._handle_chat_upload)
         r.add_post("/api/tts/interrupt", self._handle_tts_interrupt)
         r.add_post("/api/agent/toggle", self._handle_agent_toggle)
+        r.add_get("/api/gaming_mode",   self._handle_gaming_mode_get)
+        r.add_post("/api/gaming_mode",  self._handle_gaming_mode_toggle)
+        r.add_get("/api/island",        self._handle_island_get)
+        r.add_post("/api/island",       self._handle_island_set)
+        from modules import workspace_routes
+        workspace_routes.register(r, self)      # /api/workspace/* (host-only)
+        from modules import home_info
+        home_info.register(r, self)             # /api/settings/display (host-only)
+        from modules import island_remote
+        island_remote.register(r, self)         # /api/island/remote (host-only)
+        from modules import diagnostics
+        diagnostics.register(r, self)           # /api/debug/* (Dashboard → Diagnostics)
+        from modules import ui_routes, knowledge
+        ui_routes.register(r, self)             # /api/ui/* (theme, hybrid switch)
+        knowledge.register(r, self)             # /api/knowledge/upload (drag and drop)
 
         # Background game agents (modules/game_manager.py). Host-only:
         # neither route is in _REMOTE_API_ALLOW.
@@ -1430,6 +1486,78 @@ class SocketIOServer:
         return web.json_response({
             "enabled": self.prompter.agent_mode_enabled,
         })
+
+    async def _handle_gaming_mode_get(self, request):
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        from modules import gaming_mode
+        return web.json_response({"enabled": gaming_mode.is_enabled()})
+
+    async def _handle_gaming_mode_toggle(self, request):
+        """POST /api/gaming_mode. Body {"enabled": bool} sets it; an
+        empty body toggles it. Host-only (not in _REMOTE_API_ALLOW)."""
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+
+        from modules import gaming_mode
+        enabled = body.get("enabled")
+        if enabled is None:
+            enabled = not gaming_mode.is_enabled()
+        elif not isinstance(enabled, bool):
+            return _json_error(400, "'enabled' must be true or false.")
+        # Unloading models talks to Ollama; keep it off the event loop.
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(
+            None, gaming_mode.set_enabled, enabled, self.signals)
+        return web.json_response(data)
+
+    async def _handle_island_get(self, request):
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        island = getattr(self.signals, "island_manager", None)
+        if island is None:
+            return _json_error(503, "Island manager not available.")
+        return web.json_response(island.status())
+
+    async def _handle_island_set(self, request):
+        """POST /api/island {"enabled": bool}: start or stop Lumi Island.
+        Host-only (not in _REMOTE_API_ALLOW)."""
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            return _json_error(400, "'enabled' must be true or false.")
+        island = getattr(self.signals, "island_manager", None)
+        if island is None:
+            return _json_error(503, "Island manager not available.")
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, island.set_enabled, enabled)
+        except RuntimeError as e:
+            return _json_error(409, str(e))
+        return web.json_response(data)
 
     # ------------------------------------------------------------------
     # Game agents
@@ -2993,8 +3121,6 @@ class SocketIOServer:
             origin = environ.get("HTTP_ORIGIN")
             cookie_header = environ.get("HTTP_COOKIE", "")
             has_cookie_header = bool(cookie_header)
-            print(f"\033[90mSOCKETIO: connect attempt sid={sid} "
-                  f"origin={origin!r} cookie_header={has_cookie_header}\033[0m")
 
             if origin and not _origin_allowed(origin):
                 print(f"\033[91mSOCKETIO:   rejected — bad origin "
@@ -3013,8 +3139,9 @@ class SocketIOServer:
 
             req = environ.get("aiohttp.request")
             is_local = self._is_local(req) if req is not None else False
-            print(f"\033[92mSOCKETIO:   accepted as {user['username']}"
-                  f"{'' if is_local else ' (remote)'}\033[0m")
+            # Connections are routine (every tab, every reload): Dashboard log, not the terminal.
+            from modules.log_hub import emit as hub_emit
+            hub_emit(signals, "web", f"{user['username']} connected{'' if is_local else ' (remote)'}")
             await sio.save_session(sid, {"user": user, "is_local": is_local})
 
             await sio.emit("history", signals.history, to=sid)
@@ -3048,9 +3175,48 @@ class SocketIOServer:
             }, to=sid)
 
         @sio.event
+        async def pipeline_join(sid, data=None):
+            sess = await sio.get_session(sid)
+            if not sess or not sess.get("user") or not sess.get("is_local"):
+                return
+            from modules import agent_tracker, hitl_server
+            r = sio.enter_room(sid, "pipeline")
+            if asyncio.iscoroutine(r):
+                await r
+            self._pipeline_sids.add(sid)
+            await sio.emit("agent_update", {"agents": agent_tracker.snapshot()}, to=sid)
+            for payload in hitl_server.pending_payloads():
+                await sio.emit("approval_request", payload, to=sid)
+
+        @sio.event
+        async def pipeline_leave(sid, data=None):
+            if sid in self._pipeline_sids:
+                self._pipeline_sids.discard(sid)
+                r = sio.leave_room(sid, "pipeline")
+                if asyncio.iscoroutine(r):
+                    await r
+                from modules import hitl_server
+                hitl_server.approvers_changed_threadsafe()
+
+        @sio.event
+        async def approval_response(sid, data):
+            if sid not in self._pipeline_sids or not isinstance(data, dict):
+                return
+            decision = data.get("decision")
+            if decision in ("approve", "decline") and data.get("id"):
+                from modules import hitl_server
+                hitl_server.resolve_threadsafe(str(data["id"]), decision)
+
+        @sio.event
         def disconnect(sid):
             self._tts_clients.discard(sid)
-            print(f"\033[90mSOCKETIO: client {sid} disconnected\033[0m")
+            if sid in self._pipeline_sids:
+                self._pipeline_sids.discard(sid)
+                from modules import hitl_server
+                hitl_server.approvers_changed_threadsafe()
+            # Routine (tab closed, page reloaded): Dashboard log, not the terminal.
+            from modules.log_hub import emit as hub_emit
+            hub_emit(signals, "web", f"client {sid} disconnected")
 
         @sio.event
         async def web_send(sid, data):
