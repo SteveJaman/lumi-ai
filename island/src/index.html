@@ -20,6 +20,7 @@
       <div class="who">
         <span class="name">LUMI</span>
         <span id="status" class="status">Connecting…</span>
+        <span id="focus-chip" class="focus-chip" hidden></span>
       </div>
       <nav class="tabs" role="tablist" aria-label="Lumi apps">
         <button class="tab" data-app="home" role="tab" aria-label="Home" aria-selected="true">
@@ -47,6 +48,22 @@
 
       <!-- Home -->
       <section id="app-home" class="app" aria-label="Home">
+        <!-- Focus Mode: a user-started timer; pauses Lumi's proactive side while it runs -->
+        <div class="card focus-card" id="focus-card">
+          <div class="label">Focus</div>
+          <div id="focus-idle" class="focus-row">
+            <button class="fbtn" type="button" data-min="25">25 min</button>
+            <button class="fbtn" type="button" data-min="45">45 min</button>
+            <button class="fbtn" type="button" data-min="60">60 min</button>
+          </div>
+          <div id="focus-run" class="focus-row" hidden>
+            <span id="focus-time" class="focus-time">25:00</span>
+            <button id="focus-pause" class="fbtn" type="button">Pause</button>
+            <button id="focus-stop" class="fbtn" type="button">Stop</button>
+          </div>
+          <div id="focus-today" class="sub">0 blocks today.</div>
+          <p id="focus-result" class="focus-result" role="status" hidden></p>
+        </div>
         <div class="card brain-card">
           <div class="label">Lumi's brain <span id="privacy" class="privacy">…</span></div>
           <label class="brain-row"><span>Cloud Escalation<small id="hybrid-sub">Hard prompts may use a cloud model</small></span>
@@ -147,8 +164,25 @@
           <button id="set-cancel" class="btn btn-decline" type="button">Cancel</button>
           <button id="set-save" class="btn btn-approve" type="button">Save</button>
         </div>
+        <label class="field set-hotkey"><span>Quick Capture shortcut</span><input id="set-hotkey" placeholder="Alt+Space" autocomplete="off" spellcheck="false"></label>
+        <div id="hotkey-msg" class="set-msg" role="status"></div>
+        <div class="set-actions">
+          <button id="set-hotkey-save" class="btn btn-decline" type="button">Set shortcut</button>
+        </div>
       </section>
     </main>
+
+    <!-- Quick Capture: opened by the global hotkey; a link, text, or a file path -->
+    <section id="capture" class="qc" role="dialog" aria-label="Quick Capture" inert>
+      <form id="qc-form" class="qc-form" autocomplete="off">
+        <input id="qc-input" class="qc-input" maxlength="2000" placeholder="Capture for Lumi…" aria-label="Capture for Lumi" spellcheck="false">
+        <button id="qc-send" class="qc-send" type="submit">Send</button>
+      </form>
+      <p id="qc-hint" class="qc-hint" aria-live="polite">Paste a link, text, or a file path. Enter to send.</p>
+    </section>
+
+    <!-- A short notice (saved, offline, focus stopped) while the island is tucked away -->
+    <div id="notice" class="notice" role="status" aria-live="polite"></div>
 
     <!-- Approval: takes over until answered -->
     <section id="approval" class="ask" role="alertdialog" aria-labelledby="tool" inert>

@@ -12,7 +12,7 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(ROOT, "web", "pixel-office")
 ISLAND = os.path.join(ROOT, "island", "src", "pixel-office")
-AGENTS = ("main", "minecraft", "office", "system")
+AGENTS = ("main", "minecraft", "planner", "system")
 
 
 @pytest.fixture(scope="module")
@@ -70,6 +70,7 @@ def test_character_sheets_are_pixel_agents_shaped():
 
 def test_web_and_island_ship_the_same_files():
     for rel in ["floor.png", "atlas.png", "office.js", "bubble-permission.png", "bubble-waiting.png",
+                "lumi-sprites.js", "chars/custom/README.md",
                 *[f"chars/{a}{s}.png" for a in AGENTS for s in ("", "_blink")]]:
         assert filecmp.cmp(os.path.join(WEB, rel), os.path.join(ISLAND, rel), shallow=False), rel
     assert filecmp.cmp(os.path.join(ROOT, "web", "pipeline.js"), os.path.join(ROOT, "island", "src", "pipeline.js"),
@@ -80,3 +81,43 @@ def test_credits_ship_with_the_art():
     for d in (WEB, ISLAND):
         assert "MIT" in open(os.path.join(d, "LICENSE-pixel-agents.txt"), encoding="utf-8").read()
         assert "Pixel Agents" in open(os.path.join(d, "CREDITS.md"), encoding="utf-8").read()
+
+
+# ── Lumi's sprite manifest and the ambient layer ──────────────────
+
+def test_office_is_gone_and_planner_replaces_it(meta):
+    assert set(meta["agents"]) == set(AGENTS)
+    for d in (WEB, ISLAND):
+        assert not os.path.exists(os.path.join(d, "chars", "office.png"))
+
+
+def test_ambient_spots_are_walkable_and_reachable(meta):
+    walk = meta["walk"]
+    kinds = meta["spots"]
+    assert set(kinds) >= {"window", "coffee", "rack", "catbed"}
+    for kind, spots in kinds.items():
+        for s in spots:
+            assert walk[s["row"]][s["col"]] == "1", (kind, s)
+            for a in AGENTS:
+                rest = meta["agents"][a]["rest"]
+                assert reachable(walk, (rest["col"], rest["row"]), (s["col"], s["row"])), (a, kind)
+
+
+def test_the_manifest_names_every_pose_of_every_agent():
+    import re
+    src = open(os.path.join(WEB, "lumi-sprites.js"), encoding="utf-8").read()
+    agents = re.search(r"const AGENTS = \[(.*?)\]", src).group(1)
+    poses = re.search(r"const POSES = \[(.*?)\]", src).group(1)
+    assert re.findall(r"'(\w+)'", agents) == list(AGENTS)
+    pose_list = re.findall(r"'(\w+)'", poses)
+    assert {"idle", "walk", "sit", "type", "read", "stretch", "drink", "eat", "sleep"} <= set(pose_list)
+    readme = open(os.path.join(WEB, "chars", "custom", "README.md"), encoding="utf-8").read()
+    for a in AGENTS:                                   # the README lists every file a user can drop in
+        for pz in pose_list:
+            assert f"lumi-{a}-{pz}.png" in readme
+
+
+def test_no_vtube_references_in_the_pipeline():
+    import re
+    for rel in ("web/pipeline.js", "web/pixel-office/lumi-sprites.js"):
+        assert not re.search(r"vts|vtube", open(os.path.join(ROOT, rel), encoding="utf-8").read(), re.I)

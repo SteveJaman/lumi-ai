@@ -183,7 +183,7 @@ for the pipeline.
   peek and click to open four mini-apps: **Home** (time, day and weather, next event, today, unread),
   **Chat** (talk to her without leaving your game), **Calendar** (your
   Google Calendar as list, day, month or year) and **Pipeline** (live cards
-  for her Main, Minecraft, Office and System agents, with status, task, progress and
+  for her Main, Minecraft, Planner and System agents, with status, task, progress and
   model). Tool approvals take it over until you answer. It also installs on
   a second device such as a Surface and connects to your desktop over
   Tailscale with a one-time pairing code. See [island/README.md](island/README.md).

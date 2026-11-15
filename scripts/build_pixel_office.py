@@ -10,7 +10,10 @@ some furniture. On top of that, in Lumi's own design
   * four Lumi variants, one per agent: split silver/teal hair, white cat ears with
     pink insides, a floating halo, white jacket or shirt with a tie, black shorts,
     thigh-high socks, black boots with mint soles; each agent's colour as the
-    accent (tie, halo, hoodie)
+    accent (tie, halo). Main wears the sheet's jacket and twin tails; Minecraft a
+    backpack and a pickaxe over the shoulder; Planner (calendar, email, money) the
+    shirt, glasses and a lanyard badge; System the mint cat-ear hoodie (the sheet's
+    4th pose). The "ALLIUM" sleeve print doesn't fit in 16x32 pixels.
   * her cyberpunk room: dark navy floor with a neon grid and light pools, violet
     walls with neon trim, a night-city window, a "LUMI" neon sign, server racks,
     holo monitors, a neon rug lounge, her lilies (Allium triquetrum) and a cat bed
@@ -70,7 +73,7 @@ P = {
     "ink": hexrgb("0c0e18"), "navy": hexrgb("141a2c"), "navy2": hexrgb("1b2238"), "steel": hexrgb("2b3150"),
     "steel2": hexrgb("3a4268"), "white": hexrgb("f4f6fb"), "black": hexrgb("16161c"),
 }
-ACCENTS = {"main": "5cf2d2", "minecraft": "5bd16a", "office": "b48cff", "system": "ff5a7a"}
+ACCENTS = {"main": "5cf2d2", "minecraft": "5bd16a", "planner": "b48cff", "system": "ff5a7a"}
 
 
 # ─── colour maths (office/colorize.ts, characters/color.ts) ───────────
@@ -402,6 +405,47 @@ def lumify(base: Image.Image, layers: Dict[str, Image.Image], look: dict) -> Ima
                 if look.get("strap"):
                     for k in range(6):
                         put(px, ex1 + 1 - k, neck + k, P["steel"], cell)
+                if look.get("lanyard") and f not in (5, 6):
+                    # A cord from both sides of the collar down to a badge on the chest.
+                    for k in range(4):
+                        put(px, ex0 + k // 2, neck + k, accent, cell)
+                        put(px, ex1 - k // 2, neck + k, accent, cell)
+                    bx, by = tx - 1, neck + 4
+                    for dx in range(3):
+                        put(px, bx + dx, by, accent, cell)
+                        put(px, bx + dx, by + 1, P["white"], cell)
+                        put(px, bx + dx, by + 2, P["white"], cell)
+                    put(px, bx + 1, by + 2, shade(accent, 0.6), cell)
+            # 5b) Minecraft's kit: a backpack and a pickaxe over her shoulder.
+            top_l = layers.get("top")
+            tb = bbox(top_l, (f, r)) if top_l else None
+            if tb and look.get("backpack"):
+                tx0, ty0, tx1, _ = tb
+                brown, brown_d, flap = hexrgb("8a5a34"), hexrgb("5a3a20"), shade(accent, 0.8)
+                if r == 1:                                    # back view: the whole pack
+                    for y in range(ty0 + 1, ty0 + 8):
+                        for x in range(tx0 + 2, tx1 - 1):
+                            edge = x in (tx0 + 2, tx1 - 2) or y == ty0 + 7
+                            put(px, x, y, brown_d if edge else (flap if y <= ty0 + 2 else brown), cell)
+                elif r == 0:                                  # front: the shoulder straps
+                    for k in range(5):
+                        put(px, tx0 + 1, ty0 + k, brown_d, cell)
+                        put(px, tx1 - 1, ty0 + k, brown_d, cell)
+                else:                                         # side: the pack behind her
+                    for y in range(ty0 + 1, ty0 + 7):
+                        for x in (tx0 - 1, tx0):
+                            put(px, x, y, brown_d if y in (ty0 + 1, ty0 + 6) else brown, cell)
+            if tb and look.get("pickaxe") and r in (0, 2):
+                # Hanging from her hand at her side: the head at hand height, the handle down.
+                tx0, ty0, tx1, _ = tb
+                handle, iron, iron_d = hexrgb("9a6a3c"), hexrgb("c8d0e0"), hexrgb("5d6578")
+                hx = min(tx1, cell[2] - 1)
+                for k in range(6):
+                    put(px, hx, ty0 + 5 + k, handle, cell)
+                for dx, col in ((-1, iron_d), (0, iron), (1, iron_d)):
+                    put(px, hx + dx, ty0 + 4, col, cell)
+                put(px, hx - 1, ty0 + 5, iron_d, cell)
+                put(px, hx + 1, ty0 + 5, iron_d, cell)
             # 6) Thigh-high socks over the legs, mint soles on the boots.
             body_l, pants_l, shoes_l = layers.get("body"), layers.get("pants"), layers.get("shoes")
             if body_l and pants_l and shoes_l:
@@ -434,29 +478,31 @@ LUMIS = {
                          "colors": {"top": C(220, 8, 82, 30), "jacket": C(225, 10, 78, 35), "pants": C(232, 12, -72, -10),
                                     "shoes": C(230, 10, -70, 10), "eyes": C(172, 60, 5, 10)}},
              "look": {"accent": "5cf2d2", "halo": "8fd8cf", "tails": ("right", "left")}},
-    # Office (Claude Code): the shirt-and-suspenders look, glasses on, violet tie and halo.
-    "office": {"profile": {"body": "bust", "eyeShape": "lashes", "eyeRows": "both", "under": "basic", "utop": "basic",
+    # Planner (calendar, email, inbox, meetings, money): the shirt look, glasses on, a
+    # lanyard badge instead of the tie, violet halo.
+    "planner": {"profile": {"body": "bust", "eyeShape": "lashes", "eyeRows": "both", "under": "basic", "utop": "basic",
                            "hair": "mop", "top": "long_sleeved_shirt", "pants": "shorts", "shoes": "boots",
                            "shades": "glasses",
                            "colors": {"top": C(220, 8, 84, 30), "pants": C(232, 12, -72, -10),
                                       "shoes": C(230, 10, -70, 10), "eyes": C(172, 60, 5, 10),
                                       "shades": C(265, 40, -55, 0)}},
-               "look": {"accent": "b48cff", "halo": "c9b4ff", "suspenders": True}},
-    # Minecraft: the cat-ear hoodie look, hood up, in green.
+               "look": {"accent": "b48cff", "halo": "c9b4ff", "tie": False, "lanyard": True}},
+    # Minecraft: ready to go out, a backpack and a pickaxe over her shoulder, green tie and halo.
     "minecraft": {"profile": {"body": "bust", "eyeShape": "lashes", "eyeRows": "both", "under": "basic", "utop": "basic",
                               "hair": "bob", "top": "long_sleeved_shirt", "jacket": "bomber", "pants": "shorts",
                               "shoes": "boots", "props": False,
                               "colors": {"top": C(220, 8, 82, 30), "jacket": C(135, 45, 2, 10), "pants": C(232, 12, -72, -10),
                                          "shoes": C(230, 10, -70, 10), "eyes": C(172, 60, 5, 10)}},
-                  "look": {"accent": "5bd16a", "halo": "a6f0b5", "tie": True,
-                           "hood": [hexrgb("2f7a45"), hexrgb("4fae63"), hexrgb("7fd68e"), hexrgb("b8f0c2")]}},
-    # System: the side-ponytail look with the bag strap, rose tie and halo.
+                  "look": {"accent": "5bd16a", "halo": "a6f0b5", "tie": True, "tails": ("left",),
+                           "backpack": True, "pickaxe": True}},
+    # System: the sheet's 4th pose, the mint cat-ear hoodie with the hood up; rose tie and halo.
     "system": {"profile": {"body": "bust", "eyeShape": "lashes", "eyeRows": "both", "under": "basic", "utop": "basic",
                            "hair": "side_swept", "top": "long_sleeved_shirt", "jacket": "bomber", "pants": "shorts",
                            "shoes": "boots", "props": False,
                            "colors": {"top": C(220, 8, 82, 30), "jacket": C(225, 10, 74, 35), "pants": C(232, 12, -72, -10),
                                       "shoes": C(230, 10, -70, 10), "eyes": C(172, 60, 5, 10)}},
-               "look": {"accent": "ff5a7a", "halo": "ffb3c4", "tails": ("right",), "strap": True}},
+               "look": {"accent": "ff5a7a", "halo": "ffb3c4", "tie": True,
+                        "hood": [P["teal_d"], P["teal_m"], P["teal_l"], P["teal_h"]]}},
 }
 
 
@@ -705,10 +751,17 @@ CUSTOM = [
     ("lily", 1, 9, 1, 2, 1, False, False), ("lily", 5, 9, 1, 2, 1, False, False), ("lily", 14, 8, 1, 2, 1, False, False),
     ("catbed", 2, 10, 1, 1, 0, False, False),
 ]
+# Idle spots (all on walkable tiles; tests/test_pixel_office.py checks that).
+AMBIENT_SPOTS = {
+    "window": [{"col": 3, "row": 2, "face": "up"}, {"col": 6, "row": 2, "face": "up"}],
+    "coffee": [{"col": 16, "row": 9, "face": "down"}],
+    "rack":   [{"col": 17, "row": 4, "face": "up"}],
+    "catbed": [{"col": 3, "row": 10, "face": "left"}],
+}
 # Where each agent works and rests: (col, row, facing, sits?, monitor names that light up)
 STATIONS = {
     "main":      {"work": (8, 5, "up", True), "rest": (8, 5, "up", True), "screens": ["mon@8,3", "mon2@9,3"]},
-    "office":    {"work": (13, 5, "up", True), "rest": (8, 9, "right", True), "screens": ["mon@13,3"]},
+    "planner":   {"work": (13, 5, "up", True), "rest": (8, 9, "right", True), "screens": ["mon@13,3"]},
     "minecraft": {"work": (3, 5, "up", True), "rest": (9, 7, "down", True), "screens": ["mon_mc@3,3"]},
     "system":    {"work": (17, 4, "up", False), "rest": (11, 9, "left", True), "screens": []},
 }
@@ -915,10 +968,16 @@ def main():
         "frame": {"w": FRAME_W, "h": FRAME_H, "walk": [0, 1, 2, 1], "type": [3, 4], "read": [5, 6], "seated": 7,
                   "rows": {"down": 0, "up": 1, "right": 2, "left": 2}},
         "timing": {"walk_px_s": 48, "walk_frame_s": 0.15, "type_frame_s": 0.3, "sit_offset": 6},
+        # Where idle Lumis go on their own (pipeline.js's ambient layer): the night-city
+        # window, the coffee counter (the mug on it), the server racks, the cat bed.
+        "spots": AMBIENT_SPOTS,
     }
     chars = {(a, b): build_lumi(a, b) for a in LUMIS for b in (False, True)}
     for out in OUTS:
         os.makedirs(os.path.join(out, "chars"), exist_ok=True)
+        for stale in ("office.png", "office_blink.png"):          # Office became Planner
+            if os.path.exists(os.path.join(out, "chars", stale)):
+                os.remove(os.path.join(out, "chars", stale))
         room["floor"].save(os.path.join(out, "floor.png"))
         room["atlas"].save(os.path.join(out, "atlas.png"))
         for name in ("permission", "waiting"):

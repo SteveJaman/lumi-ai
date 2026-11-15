@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from modules.everyday_common import EverydayError, ToolContext, ask_llm, clip, one_line, parse_json
 
-AGENT = "system"
+AGENT = "planner"
 
 TASKS = {
     "triage_inbox": "Triaging your inbox",

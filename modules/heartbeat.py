@@ -290,6 +290,9 @@ class Heartbeat(Module):
     def _should_consider_acting(self):
         """Cheap gating before we even call the model. Returns
         (True, reason) or (False, reason)."""
+        # Focus Mode on the island (heartbeat_set_paused; expires on its own).
+        if time.time() < float(getattr(self.signals, "heartbeat_paused_until", 0) or 0):
+            return False, "paused (focus)"
         if self._is_busy():
             return False, "prompter busy"
 
