@@ -153,3 +153,5 @@ config/*.yaml.bak
 # --- Directory structure listings ---
 Lumi_tree.txt
 results/
+# --- Third-party source checkouts (re-clone; see scripts/build_pixel_office.py) ---
+third_party/pixel-agents/

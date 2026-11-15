@@ -3446,3 +3446,5 @@ select.routing-input { font-family: var(--font-sans); }
   .ws-event-details { padding-left: var(--s-4); }
   .ws-inbox-bar { flex-direction: column; align-items: flex-start; }
 }
+
+.lumi-pl-error { position: absolute; inset: auto 8px 8px 8px; padding: 6px 8px; border-radius: 6px; font: 11px ui-monospace, Consolas, monospace; color: #ffb3c4; background: rgba(14, 18, 30, 0.85); pointer-events: auto; }

@@ -369,3 +369,5 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--teal); o
 @keyframes flash-red    { 0% { border-color: #FF6B8A; box-shadow: 0 0 20px rgba(255, 107, 138, 0.55); }
                           100% { border-color: rgba(255, 107, 138, 0.25); box-shadow: none; } }
 @keyframes bar-run      { from { background-position: 0 0; } to { background-position: 22px 0; } }
+
+.lumi-pl-error { position: absolute; inset: auto 8px 8px 8px; padding: 6px 8px; border-radius: 6px; font: 11px ui-monospace, Consolas, monospace; color: #ffb3c4; background: rgba(14, 18, 30, 0.85); pointer-events: auto; }

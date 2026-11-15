@@ -5240,6 +5240,7 @@ function mountPixelPipeline() {
   let approvals = [];
   const sock = io({ transports: ['websocket', 'polling'], withCredentials: true });
   const pl = window.LumiPipeline.mount($('#pl-stage'), {
+    base: '/web/pixel-office/',
     onDecision: (id, decision) => {
       approvals = approvals.filter((a) => a.id !== id);
       sock.emit('approval_response', { id, decision });

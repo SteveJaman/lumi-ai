@@ -1,298 +1,290 @@
 /*
- * Lumi Pipeline: a live pixel-art office for Lumi's agents.
+ * Lumi Pipeline: her agents at work in her cyberpunk room.
  *
- * Shared by the web app (web/pipeline.js) and Lumi Island
- * (island/src/pipeline.js). The two files are identical; edit one and copy
- * it over the other.
+ * Shared by the web app (web/pipeline.js) and Lumi Island (island/src/pipeline.js);
+ * the two files are identical, edit one and copy it over the other. The art lives in
+ * pixel-office/ next to this file and is baked by scripts/build_pixel_office.py:
+ * Pixel Agents' character poses, tiles and some furniture (MIT,
+ * github.com/pixel-agents-hq/pixel-agents), redrawn as four Lumis after her character
+ * sheet, in a room of her own.
  *
- * Usage:
- *   const pl = LumiPipeline.mount(wrapperEl, { onDecision: (id, 'approve'|'decline') => {} });
- *   pl.update(agents);         // the agent_update payload: {main: {status, visual_state, ...}, ...}
- *   pl.setApprovals(list);     // [{id, tool, agent, preview}] waiting for the user
+ *   const pl = LumiPipeline.mount(wrapperEl, {
+ *     base: '/web/pixel-office/',                 // where the baked art is
+ *     onDecision: (id, 'approve' | 'decline') => {},
+ *   });
+ *   pl.update(agents);      // agent_update payload: {main: {status, visual_state, task, progress}, ...}
+ *   pl.setApprovals(list);  // [{id, tool, agent, preview}]
  *   pl.destroy();
  *
- * Rendering: everything is drawn with fillRect into a 192x108 off-screen
- * buffer (one unit = one art pixel), then scaled up in a single drawImage
- * with smoothing off. Names and the approval overlay are drawn at native
- * resolution so text stays sharp. The loop runs at up to 30 fps only while
- * something moves or animates, drops to 2 fps when everyone is idle, and
- * stops when the page is hidden or the canvas is off-screen.
+ * How it plays (after Pixel Agents' office engine): a busy agent walks (BFS over the
+ * room's walk grid, 48 px/s) to its work station and types, or reads while it searches
+ * or reads pages; an idle one walks to its resting seat and sits. Its monitors switch on
+ * while it works. An approval puts the permission bubble over its head and Approve /
+ * Decline buttons above it; a finished task shows the green check for 2 s; an error
+ * flashes it red. The room is drawn at 1x into a 320x208 buffer and scaled up crisp;
+ * names and buttons are drawn at native resolution. 30 fps while anyone walks or works,
+ * about 8 fps otherwise (the server LEDs), nothing while hidden.
  */
 (function () {
   'use strict';
 
-  const W = 192, H = 108;
   const ORDER = ['main', 'minecraft', 'office', 'system'];
-  const LOOK = {
-    main:      { name: 'Main',      shirt: '#4aa3ff', dark: '#2a6cb5', hair: '#3b2a22' },
-    minecraft: { name: 'Minecraft', shirt: '#5bd16a', dark: '#2f8a3c', hair: '#6b4a2a' },
-    office:    { name: 'Office',    shirt: '#b48cff', dark: '#7553c4', hair: '#1f1d2b' },
-    system:    { name: 'System',    shirt: '#ff5a6a', dark: '#b8303d', hair: '#e9e1cf' },
-  };
-  // Feet positions. station: where it works; idle: where it rests;
-  // front: where it walks to wave at you when it needs an approval.
-  const SPOTS = {
-    main:      { station: [86, 63, 1], idle: [86, 63, 1], front: [54, 100] },
-    minecraft: { station: [32, 50],    idle: [24, 78],    front: [84, 100] },
-    office:    { station: [128, 52],   idle: [119, 84, 1], front: [114, 100] },
-    system:    { station: [165, 58],   idle: [150, 86],   front: [144, 100] },
-  };
-  const ANIMATED = new Set(['typing', 'swinging', 'reading', 'blinking', 'waving', 'alarm']);
-  const WALK_SPEED = 40;           // art pixels per second
-  const FAST_MS = 33, SLOW_MS = 500;
-  const SKIN = '#f2c9a0', PANTS = '#2a2f45', SHOE = '#151821', EYE = '#1a1a22';
+  const NAMES = { main: 'Main', minecraft: 'Minecraft', office: 'Office', system: 'System' };
+  const READING_RE = /web_search|browse|research|search_files|read_file|read_window|reading|searching|triag|recall|library/i;
+  const FAST_MS = 33, SLOW_MS = 120;
+  const BLINK_S = 0.15;
+  const DONE_BUBBLE_S = 2;
 
-  function derive(id, status) {
-    if (status === 'waiting_approval') return 'waving';
-    if (status === 'error') return 'alarm';
-    const busy = status === 'thinking' || status === 'executing';
-    return {
-      main: busy ? 'typing' : 'sitting', minecraft: busy ? 'swinging' : 'standing',
-      office: busy ? 'reading' : 'sitting', system: busy ? 'blinking' : 'standing',
-    }[id] || 'standing';
+  let assetsPromise = null;
+  function loadAssets(base) {
+    if (assetsPromise) return assetsPromise;
+    const img = (src) => new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error(`couldn't load ${src}`));
+      i.src = base + src;
+    });
+    const meta = window.LUMI_OFFICE ? Promise.resolve(window.LUMI_OFFICE) : new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = base + 'office.js';
+      s.onload = () => (window.LUMI_OFFICE ? resolve(window.LUMI_OFFICE) : reject(new Error('office.js is empty')));
+      s.onerror = () => reject(new Error(`couldn't load ${base}office.js`));
+      document.head.appendChild(s);
+    });
+    assetsPromise = Promise.all([
+      meta, img('floor.png'), img('atlas.png'), img('bubble-permission.png'), img('bubble-waiting.png'),
+      ...ORDER.flatMap((a) => [img(`chars/${a}.png`), img(`chars/${a}_blink.png`)]),
+    ]).then(([meta, floor, atlas, bubblePerm, bubbleDone, ...sheets]) => {
+      const chars = {};
+      ORDER.forEach((a, i) => { chars[a] = { open: sheets[i * 2], blink: sheets[i * 2 + 1] }; });
+      return { meta, floor, atlas, bubblePerm, bubbleDone, chars };
+    });
+    assetsPromise.catch(() => { assetsPromise = null; });
+    return assetsPromise;
   }
 
-  function spotFor(id, vs) {
-    const s = SPOTS[id];
-    if (vs === 'waving') return s.front;
-    if (vs === 'sitting' || vs === 'standing') return s.idle;
-    return s.station;
-  }
-
-  // ── static room (drawn once into its own buffer) ──────────────────
-  function drawRoom(c) {
-    const r = (x, y, w, h, col) => { c.fillStyle = col; c.fillRect(x, y, w, h); };
-    r(0, 0, W, 38, '#1a1f2e');                                  // back wall
-    for (let x = 0; x < W; x += 24) r(x, 0, 1, 38, '#1e2435');  // wall panels
-    r(0, 36, W, 2, '#2c3449');                                  // skirting
-    for (let y = 38; y < H; y += 8)                             // floor tiles
-      for (let x = 0; x < W; x += 8)
-        r(x, y, 8, 8, ((x + y) >> 3) % 2 ? '#222a3b' : '#252e41');
-    r(56, 76, 80, 22, '#2b2440'); r(58, 78, 76, 18, '#332a4d');  // rug
-
-    // Window (Minecraft's station): sky, sun, blocky hills.
-    r(10, 5, 44, 28, '#39445f');
-    r(12, 7, 40, 24, '#6fb6ff'); r(12, 7, 40, 8, '#8ec7ff');
-    r(42, 9, 6, 6, '#ffe27a');
-    const hills = [[12, 22, 8], [20, 19, 6], [26, 21, 10], [36, 18, 8], [44, 21, 8]];
-    for (const [x, y, w] of hills) { r(x, y, w, 31 - y, '#5bbf5b'); r(x, y + 2, w, 31 - y - 2, '#8b5a2b'); }
-    r(31, 7, 2, 24, '#39445f'); r(12, 18, 40, 2, '#39445f');     // panes
-    r(9, 33, 46, 2, '#4a5675');                                 // sill
-
-    // Desk (Main's station) with monitor and keyboard.
-    r(70, 56, 40, 4, '#7a5233'); r(70, 60, 40, 1, '#5a3b24');
-    r(72, 61, 3, 11, '#5a3b24'); r(105, 61, 3, 11, '#5a3b24');
-    r(73, 43, 16, 11, '#151821'); r(80, 54, 2, 2, '#151821');    // monitor
-    r(92, 54, 12, 2, '#3a4157');                                 // keyboard
-
-    // Bookshelf (Office's station).
-    r(114, 8, 28, 36, '#5a3d27');
-    const books = ['#e0675a', '#5aa0e0', '#e0c35a', '#7ad48a', '#c27ae0', '#e08f5a'];
-    for (let s = 0; s < 4; s++) {
-      const y = 10 + s * 8;
-      r(116, y + 6, 24, 2, '#3e2a1b');
-      for (let b = 0; b < 7; b++) r(117 + b * 3, y + (b % 3 === 0 ? 1 : 0), 2, 6 - (b % 3 === 0 ? 1 : 0), books[(b + s) % books.length]);
-    }
-    r(106, 80, 26, 6, '#5b3f7a'); r(106, 76, 26, 4, '#6b4b8a');  // couch
-    r(104, 76, 3, 10, '#4c3466'); r(131, 76, 3, 10, '#4c3466');
-
-    // Server rack (System's station).
-    r(155, 6, 24, 46, '#2b2f3a'); r(156, 7, 22, 44, '#20232c');
-    for (let i = 0; i < 8; i++) r(157, 9 + i * 5, 20, 4, '#2f3441');
-    // Plant and coffee corner.
-    r(176, 84, 8, 6, '#8b5a2b'); r(175, 76, 10, 8, '#3f9a52'); r(177, 72, 6, 5, '#4fb563');
-    r(4, 60, 10, 14, '#3a4157'); r(5, 61, 8, 4, '#c2c9da'); r(7, 66, 4, 3, '#6b4a2a');  // coffee machine
-  }
-
-  // ── characters ─────────────────────────────────────────────────────
-  function drawAgent(c, a, t) {
-    const L = LOOK[a.id];
-    const flash = a.vs === 'alarm' && Math.floor(t * 4) % 2 === 0;
-    const shirt = flash ? '#ff2d3d' : L.shirt, dark = flash ? '#a3121e' : L.dark;
-    const skin = flash ? '#ff9a9a' : SKIN;
-    const r = (x, y, w, h, col) => { c.fillStyle = col; c.fillRect(Math.round(x), Math.round(y), w, h); };
-    let x = a.x, y = a.y;
-    const seated = !a.walking && a.seated;
-    let bob = 0;
-    if (a.walking) bob = Math.floor(t * 8) % 2;
-    else if (a.vs === 'typing') bob = Math.floor(t * 6) % 2;
-    else if (a.vs === 'waving' || a.vs === 'alarm') bob = Math.floor(t * 3) % 2;
-    else bob = Math.floor(t / 1.6) % 2 === 0 ? 0 : 1;          // breathing
-    y -= bob;
-
-    r(x - 5, a.y - 1, 10, 2, 'rgba(0,0,0,0.25)');               // shadow
-    // legs
-    if (seated) {
-      r(x - 5, y - 4, 4, 3, PANTS); r(x + 1, y - 4, 4, 3, PANTS);
-      r(x - 6, y - 2, 3, 2, SHOE); r(x + 3, y - 2, 3, 2, SHOE);
-      y -= 1;
-    } else {
-      const step = a.walking ? (Math.floor(t * 8) % 2 ? 1 : -1) : 0;
-      r(x - 4, y - 5 + Math.max(0, step), 3, 5 - Math.max(0, step), PANTS);
-      r(x + 1, y - 5 + Math.max(0, -step), 3, 5 - Math.max(0, -step), PANTS);
-      r(x - 4, y - 1, 3, 1, SHOE); r(x + 1, y - 1, 3, 1, SHOE);
-    }
-    // body
-    r(x - 5, y - 11, 10, 6, shirt); r(x - 5, y - 6, 10, 1, dark);
-    // arms by state
-    const vs = a.walking ? 'walking' : a.vs;
-    if (vs === 'typing') { r(x - 7, y - 9, 3, 2, dark); r(x + 4, y - 9, 3, 2, dark); r(x - 7, y - 8, 2, 1, skin); r(x + 5, y - 8, 2, 1, skin); }
-    else if (vs === 'waving' || vs === 'alarm') {
-      r(x - 7, y - 11, 2, 5, dark);
-      const up = Math.floor(t * 4) % 2;
-      r(x + 5, y - 17 + up, 2, 6, dark); r(x + 5 + (up ? 1 : 0), y - 18 + up, 2, 2, skin);
-    } else if (vs === 'blinking') { r(x - 7, y - 11, 2, 5, dark); r(x + 5, y - 14, 2, 5, dark); r(x + 6, y - 15, 2, 2, skin); }
-    else if (vs === 'reading') {
-      r(x - 6, y - 10, 2, 3, dark); r(x + 4, y - 10, 2, 3, dark);
-      const flip = Math.floor(t) % 2;
-      r(x - 4, y - 11, 4, 5, flip ? '#f3efe4' : '#dcd6c6'); r(x, y - 11, 4, 5, flip ? '#dcd6c6' : '#f3efe4');
-      r(x - 3, y - 9, 2, 1, '#9a9488'); r(x + 1, y - 9, 2, 1, '#9a9488');
-    } else if (vs === 'swinging') {
-      r(x - 7, y - 11, 2, 5, dark);
-      const f = Math.floor(t * 6) % 3;                         // pickaxe: up, mid, down
-      const tip = [[x + 9, y - 18], [x + 12, y - 11], [x + 9, y - 4]][f];
-      const hx = x + 6, hy = y - 9;
-      for (let i = 0; i <= 4; i++) r(hx + (tip[0] - hx) * i / 4, hy + (tip[1] - hy) * i / 4, 1, 1, '#8b5a2b');
-      r(tip[0] - 2, tip[1] - 1, 4, 2, '#b8c2d1');
-      r(x + 5, y - 10, 2, 3, skin);
-    } else {
-      const swing = a.walking ? Math.floor(t * 8) % 2 : 0;
-      r(x - 7, y - 11 + swing, 2, 5, dark); r(x + 5, y - 11 + (1 - swing), 2, 5, dark);
-    }
-    // head
-    r(x - 4, y - 17, 8, 6, skin);
-    r(x - 4, y - 18, 8, 2, L.hair); r(x - 5, y - 17, 1, 3, L.hair); r(x + 4, y - 17, 1, 3, L.hair);
-    const blink = Math.floor((t + a.phase) % 4.2 * 10) === 0;
-    if (!blink) { r(x - 2, y - 14, 1, 1, EYE); r(x + 1, y - 14, 1, 1, EYE); }
-    if (vs === 'alarm') r(x - 1, y - 12, 2, 1, EYE);            // open mouth
-
-    // "!" above the head while it needs you (yellow) or is in trouble (red)
-    if ((vs === 'waving' && Math.floor(t * 2) % 2 === 0) || vs === 'alarm') {
-      const col = vs === 'alarm' ? (flash ? '#ff2d3d' : '#ffd2d2') : '#ffd23f';
-      r(x - 1, y - 27, 2, 5, col); r(x - 1, y - 21, 2, 2, col);
-    }
-    a.headY = y - 18;
-  }
-
-  function drawDynamic(c, agents, t) {
-    const r = (x, y, w, h, col) => { c.fillStyle = col; c.fillRect(x, y, w, h); };
-    const by = Object.fromEntries(agents.map((a) => [a.id, a]));
-    // Monitor: code scrolling while Main types.
-    const typing = by.main && by.main.vs === 'typing' && !by.main.walking;
-    r(74, 44, 14, 9, typing ? '#12405a' : '#0d1a24');
-    if (typing) {
-      const off = Math.floor(t * 6);
-      for (let i = 0; i < 4; i++) r(75, 45 + i * 2, 3 + ((i + off) * 5) % 9, 1, i % 2 ? '#5cf2d2' : '#9ad1ff');
-    } else if (Math.floor(t * 2) % 2) r(75, 51, 2, 1, '#5cf2d2');
-    // Rack LEDs: calm green, busy flicker, red alarm.
-    const sys = by.system ? by.system.vs : 'standing';
-    for (let row = 0; row < 8; row++) {
-      for (let col = 0; col < 3; col++) {
-        let on, color = '#3ddc84';
-        if (sys === 'alarm') { on = Math.floor(t * 4) % 2 === 0; color = '#ff3b4a'; }
-        else if (sys === 'blinking') { on = ((row * 7 + col * 13 + Math.floor(t * 12)) * 2654435761 >>> 0) % 3 !== 0; color = (row + col) % 3 ? '#3ddc84' : '#ffc23d'; }
-        else on = (row + col + Math.floor(t / 1.5)) % 5 === 0;
-        r(159 + col * 4, 10 + row * 5, 2, 2, on ? color : '#1b3326');
+  // ── pathfinding over the walk grid (4-way BFS, like Pixel Agents' tileMap.ts) ──
+  function bfs(walk, from, to) {
+    const rows = walk.length, cols = walk[0].length;
+    const ok = (c, r) => r >= 0 && r < rows && c >= 0 && c < cols && (walk[r][c] === '1' || (c === to.col && r === to.row));
+    const key = (c, r) => r * cols + c;
+    const prev = new Map([[key(from.col, from.row), null]]);
+    const q = [[from.col, from.row]];
+    while (q.length) {
+      const [c, r] = q.shift();
+      if (c === to.col && r === to.row) break;
+      for (const [dc, dr] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
+        const nc = c + dc, nr = r + dr, k = key(nc, nr);
+        if (!prev.has(k) && ok(nc, nr)) { prev.set(k, key(c, r)); q.push([nc, nr]); }
       }
     }
-    // Characters back to front; Main sits behind the desk.
-    const sorted = agents.slice().sort((a, b) => a.y - b.y);
-    for (const a of sorted) drawAgent(c, a, t);
-    if (by.main && by.main.seated && !by.main.walking && Math.abs(by.main.x - SPOTS.main.station[0]) < 1) {
-      r(70, 56, 40, 4, '#7a5233'); r(70, 60, 40, 1, '#5a3b24');   // desk edge in front of her legs
-      r(92, 54, 12, 2, '#3a4157');
+    const end = key(to.col, to.row);
+    if (!prev.has(end)) return [{ col: to.col, row: to.row }];     // unreachable: just go there
+    const path = [];
+    for (let k = end; k !== null && k !== key(from.col, from.row); k = prev.get(k)) {
+      path.push({ col: k % cols, row: Math.floor(k / cols) });
     }
+    return path.reverse();
   }
 
-  // ── component ─────────────────────────────────────────────────────
   function mount(wrapper, opts) {
     opts = opts || {};
+    const base = opts.base || 'pixel-office/';
     let canvas = wrapper.querySelector('canvas');
     if (!canvas) { canvas = document.createElement('canvas'); canvas.id = 'pipeline-canvas'; wrapper.appendChild(canvas); }
     canvas.classList.add('lumi-pl-canvas');
     let overlay = wrapper.querySelector('.lumi-pl-overlay');
     if (!overlay) { overlay = document.createElement('div'); overlay.className = 'lumi-pl-overlay'; wrapper.appendChild(overlay); }
     const ctx = canvas.getContext('2d');
-    const buf = document.createElement('canvas'); buf.width = W; buf.height = H;
-    const bctx = buf.getContext('2d');
-    const room = document.createElement('canvas'); room.width = W; room.height = H;
-    drawRoom(room.getContext('2d'));
 
-    const agents = ORDER.map((id, i) => {
-      const [x, y, seated] = SPOTS[id].idle;
-      return { id, x, y, tx: x, ty: y, seated: !!seated, vs: derive(id, 'idle'), status: 'idle', task: '', progress: 0,
-               walking: false, phase: i * 1.3, headY: y - 18, placed: false };
-    });
-    let approvals = [];
+    let A = null;                        // assets once loaded
+    let W = 320, H = 208, buf = null, bctx = null, tint = null, tctx = null;
     let scale = 1, cssScale = 1, raf = 0, timer = 0, last = 0, visible = true, destroyed = false;
+    let snapshot = {}, approvals = [];
     const t0 = performance.now();
+    const agents = {};
+    let flickerUntil = 0, nextFlicker = 4;
+
+    function makeAgent(id) {
+      const st = A.meta.agents[id];
+      const spot = st.rest;
+      return {
+        id, st, spot, target: spot, path: [],
+        col: spot.col, row: spot.row, x: spot.col * 16 + 8, y: spot.row * 16 + 8,
+        dir: spot.face, walking: false, frame: 0, frameT: 0,
+        status: 'idle', vs: 'sitting', task: '', progress: 0,
+        nextBlink: 1 + Math.random() * 4, blinkUntil: 0, doneUntil: 0, headY: 0,
+      };
+    }
 
     function resize() {
       const cw = wrapper.clientWidth || W * 2;
       const dpr = window.devicePixelRatio || 1;
-      scale = Math.max(1, Math.ceil((cw * dpr) / W));
+      scale = Math.max(1, Math.round((cw * dpr) / W));
       canvas.width = W * scale; canvas.height = H * scale;
       canvas.style.width = cw + 'px'; canvas.style.height = Math.round(cw * H / W) + 'px';
       cssScale = cw / W;
       kick();
     }
 
-    function step(dt) {
-      for (const a of agents) {
-        const dx = a.tx - a.x, dy = a.ty - a.y, d = Math.hypot(dx, dy);
-        if (d < 0.5) { a.x = a.tx; a.y = a.ty; a.walking = false; continue; }
-        const mv = Math.min(d, WALK_SPEED * dt);
-        a.x += dx / d * mv; a.y += dy / d * mv; a.walking = true;
-      }
+    // ── state ────────────────────────────────────────────────────
+    function busyOf(a) { return a.status !== 'idle'; }
+
+    function retarget(a) {
+      const want = busyOf(a) ? a.st.work : a.st.rest;
+      if (want === a.target) return;
+      a.target = want;
+      a.path = bfs(A.meta.walk, { col: a.col, row: a.row }, want);
+      a.walking = a.path.length > 0;
+      a.frame = 0; a.frameT = 0;
+      if (!a.walking) { a.spot = want; a.dir = want.face; }     // already there (Main rests at her desk)
     }
 
-    function render(t) {
-      bctx.drawImage(room, 0, 0);
-      drawDynamic(bctx, agents, t);
+    function step(dt, now) {
+      const speed = A.meta.timing.walk_px_s;
+      for (const id of ORDER) {
+        const a = agents[id];
+        if (a.walking) {
+          const next = a.path[0];
+          const tx = next.col * 16 + 8, ty = next.row * 16 + 8;
+          const dx = tx - a.x, dy = ty - a.y, d = Math.hypot(dx, dy);
+          if (Math.abs(dx) > Math.abs(dy)) a.dir = dx > 0 ? 'right' : 'left';
+          else if (d > 0) a.dir = dy > 0 ? 'down' : 'up';
+          const mv = speed * dt;
+          if (d <= mv) {
+            a.x = tx; a.y = ty; a.col = next.col; a.row = next.row; a.path.shift();
+            if (!a.path.length) { a.walking = false; a.dir = a.target.face; a.spot = a.target; }
+          } else { a.x += dx / d * mv; a.y += dy / d * mv; }
+          a.frameT += dt;
+          if (a.frameT >= A.meta.timing.walk_frame_s) { a.frameT = 0; a.frame = (a.frame + 1) % 4; }
+        } else {
+          a.frameT += dt;
+          if (a.frameT >= A.meta.timing.type_frame_s) { a.frameT = 0; a.frame = (a.frame + 1) % 2; }
+        }
+        if (now >= a.nextBlink) { a.blinkUntil = now + BLINK_S; a.nextBlink = now + 2.5 + Math.random() * 4; }
+      }
+      if (now >= nextFlicker) { flickerUntil = now + 0.12; nextFlicker = now + 5 + Math.random() * 8; }
+    }
+
+    function working(a) {
+      return !a.walking && busyOf(a) && a.spot === a.st.work && a.status !== 'waiting_approval' && a.status !== 'error';
+    }
+
+    function frameOf(a) {
+      const F = A.meta.frame;
+      if (a.walking) return F.walk[a.frame % 4];
+      if (working(a)) return (a.vs === 'reading' || READING_RE.test(a.task)) ? F.read[a.frame % 2] : F.type[a.frame % 2];
+      return a.spot.sit ? F.seated : F.walk[1];
+    }
+
+    function animating(now) {
+      return ORDER.some((id) => { const a = agents[id]; return a.walking || working(a) || a.status === 'error'; })
+        || approvals.length > 0 || ORDER.some((id) => agents[id].doneUntil > now);
+    }
+
+    // ── drawing ──────────────────────────────────────────────────
+    function drawAtlas(c, idx, x, y, flip) {
+      const [sx, sy, w, h] = A.meta.rects[idx];
+      if (!flip) { c.drawImage(A.atlas, sx, sy, w, h, x, y, w, h); return; }
+      c.save(); c.translate(x + w, y); c.scale(-1, 1); c.drawImage(A.atlas, sx, sy, w, h, 0, 0, w, h); c.restore();
+    }
+
+    function drawAgent(c, a, now) {
+      const F = A.meta.frame;
+      const f = frameOf(a);
+      const rowIdx = F.rows[a.dir] ?? 0;
+      const sheet = now < a.blinkUntil ? A.chars[a.id].blink : A.chars[a.id].open;
+      const sit = !a.walking && a.spot.sit ? A.meta.timing.sit_offset : 0;
+      const dx = Math.round(a.x - 8), dy = Math.round(a.y + sit - 32);
+      const flip = a.dir === 'left';
+      const alarm = a.status === 'error' && Math.floor(now * 4) % 2 === 0;
+      if (alarm) {                                    // flash red: tint the frame on a scratch canvas
+        tctx.clearRect(0, 0, 16, 32);
+        tctx.globalCompositeOperation = 'source-over';
+        tctx.drawImage(sheet, f * 16, rowIdx * 32, 16, 32, 0, 0, 16, 32);
+        tctx.globalCompositeOperation = 'source-atop';
+        tctx.fillStyle = 'rgba(255,45,70,0.55)';
+        tctx.fillRect(0, 0, 16, 32);
+      }
+      const src = alarm ? tint : sheet, sx = alarm ? 0 : f * 16, sy = alarm ? 0 : rowIdx * 32;
+      if (flip) { c.save(); c.translate(dx + 16, dy); c.scale(-1, 1); c.drawImage(src, sx, sy, 16, 32, 0, 0, 16, 32); c.restore(); }
+      else c.drawImage(src, sx, sy, 16, 32, dx, dy, 16, 32);
+      a.headY = dy;
+    }
+
+    function render(now) {
+      const M = A.meta;
+      bctx.clearRect(0, 0, W, H);
+      bctx.drawImage(A.floor, 0, 0);
+      const screensOn = new Set();
+      for (const id of ORDER) if (working(agents[id])) for (const i of agents[id].st.screens) screensOn.add(i);
+      const items = [];
+      M.drawables.forEach((d, i) => items.push({ z: d.z, d, i }));
+      for (const id of ORDER) items.push({ z: agents[id].y + 8.5, a: agents[id] });
+      items.sort((p, q) => p.z - q.z);
+      for (const it of items) {
+        if (it.a) { drawAgent(bctx, it.a, now); continue; }
+        const d = it.d;
+        let idx = d.a;
+        if (d.on && screensOn.has(it.i)) idx = d.on[Math.floor(now / 0.3) % d.on.length];
+        else if (d.flicker) idx = now < flickerUntil ? d.flicker[2] : d.flicker[0];
+        else if (d.frames && d.fps) idx = d.frames[Math.floor(now * d.fps) % d.frames.length];
+        drawAtlas(bctx, idx, d.x, d.y, d.flip);
+      }
+      // bubbles over everything (Pixel Agents' permission "..." and done check)
+      for (const id of ORDER) {
+        const a = agents[id];
+        const b = a.status === 'waiting_approval' ? A.bubblePerm : a.doneUntil > now ? A.bubbleDone : null;
+        if (!b) continue;
+        const bob = a.status === 'waiting_approval' ? Math.floor(now * 2) % 2 : 0;
+        bctx.globalAlpha = a.doneUntil > now && a.status !== 'waiting_approval' ? Math.min(1, (a.doneUntil - now) / 0.5) : 1;
+        bctx.drawImage(b, Math.round(a.x - b.width / 2), Math.round(a.headY - b.height + 3 - bob));
+        bctx.globalAlpha = 1;
+      }
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(buf, 0, 0, W * scale, H * scale);
-      // Names and progress bars at native resolution.
-      const fs = Math.max(9, Math.round(3.4 * scale));
-      ctx.font = `600 ${fs}px ui-monospace, Consolas, monospace`;
+      // names + progress at native resolution
+      const fs = Math.max(10, Math.round(3.6 * scale));
+      ctx.font = `700 ${fs}px ui-monospace, Consolas, monospace`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      for (const a of agents) {
-        const x = a.x * scale, y = (a.y + 1.5) * scale;
-        ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillText(LOOK[a.id].name, x + 1, y + 1);
-        ctx.fillStyle = LOOK[a.id].shirt; ctx.fillText(LOOK[a.id].name, x, y);
-        if ((a.status === 'executing' || a.status === 'thinking') && a.progress > 0) {
-          const bw = 14 * scale, bh = Math.max(2, scale * 0.8), by = y + fs + 2;
-          ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(x - bw / 2, by, bw, bh);
-          ctx.fillStyle = LOOK[a.id].shirt; ctx.fillRect(x - bw / 2, by, bw * Math.min(1, a.progress / 100), bh);
+      for (const id of ORDER) {
+        const a = agents[id];
+        const sit = !a.walking && a.spot.sit ? A.meta.timing.sit_offset : 0;
+        const x = a.x * scale, y = (a.y + sit + 1) * scale;
+        ctx.fillStyle = 'rgba(8,8,16,0.75)'; ctx.fillText(NAMES[id], x + 1, y + 1);
+        ctx.fillStyle = a.st.accent; ctx.fillText(NAMES[id], x, y);
+        if (busyOf(a) && a.progress > 0) {
+          const bw = 14 * scale, bh = Math.max(2, Math.round(scale * 0.7)), by = y + fs + 2;
+          ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.fillRect(x - bw / 2, by, bw, bh);
+          ctx.fillStyle = a.st.accent; ctx.fillRect(x - bw / 2, by, bw * Math.min(1, a.progress / 100), bh);
         }
       }
       placeOverlay();
     }
 
-    function animating() {
-      return agents.some((a) => a.walking || ANIMATED.has(a.vs));
-    }
-
-    function loop(now) {
+    function loop(nowMs) {
       raf = 0; timer = 0;
-      if (destroyed || !visible || document.hidden) return;
-      const dt = last ? Math.min(0.1, (now - last) / 1000) : 0;
+      if (destroyed || !visible || document.hidden || !A) return;
+      const now = (nowMs - t0) / 1000;
+      const dt = last ? Math.min(0.1, now - last) : 0;
       last = now;
-      step(dt);
-      render((now - t0) / 1000);
-      const wait = animating() ? FAST_MS : SLOW_MS;
+      step(dt, now);
+      render(now);
+      const wait = animating(now) ? FAST_MS : SLOW_MS;
       timer = setTimeout(() => { raf = requestAnimationFrame(loop); }, Math.max(0, wait - 16));
     }
 
     function kick() {
-      if (destroyed || raf || !visible || document.hidden) return;
+      if (destroyed || raf || !visible || document.hidden || !A) return;
       clearTimeout(timer); timer = 0;
       last = 0;
       raf = requestAnimationFrame(loop);
     }
 
-    // ── approval overlay ───────────────────────────────────────────
-    const cards = new Map();                         // agent id -> element
+    // ── approval overlay (HTML, over the waiting Lumi's head) ─────
+    const cards = new Map();
     function placeOverlay() {
+      if (!A) return;
       const byAgent = new Map();
       for (const ap of approvals) {
         const id = ORDER.includes(ap.agent) ? ap.agent : 'main';
@@ -317,11 +309,11 @@
         if (el.dataset.req !== first.id) {
           el.dataset.req = first.id;
           el.querySelector('.lumi-pl-tool').textContent =
-            `${LOOK[id].name} wants: ${first.tool}${list.length > 1 ? ` (+${list.length - 1})` : ''}`;
+            `${NAMES[id]} wants: ${first.tool}${list.length > 1 ? ` (+${list.length - 1})` : ''}`;
           el.title = (first.preview || '').slice(0, 600);
         }
-        const a = agents.find((g) => g.id === id);
-        const left = Math.round(a.x * cssScale) + 'px', top = Math.round((a.headY - 11) * cssScale) + 'px';
+        const a = agents[id];
+        const left = Math.round(a.x * cssScale) + 'px', top = Math.round((a.headY - 14) * cssScale) + 'px';
         if (el.style.left !== left) el.style.left = left;
         if (el.style.top !== top) el.style.top = top;
       }
@@ -333,26 +325,53 @@
       placeOverlay();
     }
 
-    // ── public API ─────────────────────────────────────────────────
-    function update(snapshot) {
-      for (const a of agents) {
-        const s = (snapshot || {})[a.id];
+    // ── public API ──────────────────────────────────────────────
+    function apply() {
+      if (!A) return;
+      const now = (performance.now() - t0) / 1000;
+      for (const id of ORDER) {
+        const a = agents[id];
+        const s = snapshot[id];
         if (!s) continue;
+        const was = a.status;
         a.status = s.status || 'idle';
-        a.vs = s.visual_state || derive(a.id, a.status);
+        a.vs = s.visual_state || '';
         a.task = s.task || '';
         a.progress = Number(s.progress) || 0;
-        const [tx, ty, seated] = spotFor(a.id, a.vs);
-        a.tx = tx; a.ty = ty; a.seated = !!seated;
-        if (!a.placed) { a.x = tx; a.y = ty; a.placed = true; }     // first data: no walk-in
+        if (was !== 'idle' && was !== 'error' && a.status === 'idle') a.doneUntil = now + DONE_BUBBLE_S;
+        retarget(a);
       }
       kick();
     }
-    function setApprovals(list) {
-      approvals = (list || []).filter((ap) => ap && ap.id);
-      placeOverlay();
-      kick();
-    }
+    function update(snap) { snapshot = snap || {}; apply(); }
+    function setApprovals(list) { approvals = (list || []).filter((ap) => ap && ap.id); placeOverlay(); kick(); }
+
+    loadAssets(base).then((assets) => {
+      if (destroyed) return;
+      A = assets;
+      W = A.meta.W; H = A.meta.H;
+      buf = document.createElement('canvas'); buf.width = W; buf.height = H;
+      bctx = buf.getContext('2d');
+      tint = document.createElement('canvas'); tint.width = 16; tint.height = 32;
+      tctx = tint.getContext('2d');
+      for (const id of ORDER) agents[id] = makeAgent(id);
+      for (const id of ORDER) {                     // first data: appear in place, no walk-in
+        const s = snapshot[id];
+        if (s && s.status && s.status !== 'idle') {
+          const a = agents[id]; const w = a.st.work;
+          Object.assign(a, { status: s.status, target: w, spot: w, col: w.col, row: w.row,
+                             x: w.col * 16 + 8, y: w.row * 16 + 8, dir: w.face });
+        }
+      }
+      resize();
+      apply();
+    }).catch((e) => {
+      const note = document.createElement('div');
+      note.className = 'lumi-pl-error';
+      note.textContent = `Pipeline art didn't load (${e.message}). Run scripts/build_pixel_office.py.`;
+      overlay.appendChild(note);
+      console.error('[pipeline]', e);
+    });
 
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null;
     if (ro) ro.observe(wrapper); else window.addEventListener('resize', resize);
@@ -362,7 +381,6 @@
     if (io) io.observe(canvas);
     const onVis = () => { if (!document.hidden) kick(); };
     document.addEventListener('visibilitychange', onVis);
-    resize();
 
     return {
       update, setApprovals,
@@ -374,9 +392,10 @@
         document.removeEventListener('visibilitychange', onVis);
         overlay.textContent = '';
       },
-      _agents: agents,                   // for tests
+      get _agents() { return agents; },              // for tests
+      get _ready() { return !!A; },
     };
   }
 
-  window.LumiPipeline = { mount, derive, spotFor, SPOTS, ORDER };
+  window.LumiPipeline = { mount, bfs, ORDER };
 })();
