@@ -106,7 +106,6 @@
       : conn === 'offline' && remote ? `Can't reach ${remote.host}` : STATUS_TEXT[s];
     updateTyping();
     syncVideo();
-    syncVts();
   }
 
   function syncVideo() {
@@ -114,37 +113,9 @@
     const want = state !== 'hidden' && effStatus() !== 'gaming' && !document.hidden;
     if (want) { const p = v.play(); if (p && p.catch) p.catch(() => {}); } else if (!v.paused) v.pause();
   }
-  document.addEventListener('visibilitychange', () => { syncVideo(); syncVts(); });
+  document.addEventListener('visibilitychange', () => { syncVideo(); });
 
-  // ── Live avatar (modules/vts_stream.py) ────────────────────────
-  // Streams only while Home is open and visible (and not gaming): dropping
-  // the request is what lets Lumi stop capturing. An <img> can't send the
-  // token, so each start asks for a one-time ticket over the socket.
-  const BLANK = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
-  let vtsWant = false, vtsBusy = false, vtsRetry = null, wsUrl = DEFAULT_WS;
-  function syncVts() {
-    const want = conn === 'online' && state === 'open' && app === 'home'
-      && !document.hidden && effStatus() !== 'gaming';
-    if (want === vtsWant) return;
-    vtsWant = want;
-    clearTimeout(vtsRetry);
-    if (!want) { const img = $('vts-view'); img.src = BLANK; img.hidden = true; return; }
-    startVts();
-  }
-  async function startVts() {
-    if (vtsBusy || !vtsWant) return;
-    vtsBusy = true;
-    try {
-      const r = await req('vts_stream_ticket');
-      if (!vtsWant) return;
-      const u = new URL(wsUrl.replace(/^ws/, 'http'));
-      const img = $('vts-view');
-      img.src = `${u.protocol}//${u.host}${r.path}?t=${encodeURIComponent(r.ticket)}`;
-      img.hidden = false;
-    } catch (_) {
-      vtsRetry = setTimeout(startVts, 5000);
-    } finally { vtsBusy = false; }
-  }
+  let wsUrl = DEFAULT_WS;
 
   // ── Request / response over the socket ─────────────────────────
   let seq = 0;
@@ -268,7 +239,6 @@
     if (name === 'chat') { scrollMsgs(true); if (state === 'open') focusComposer(); }
     if (name === 'calendar') loadCalendar();
     if (name === 'pipeline') renderPipeline();
-    syncVts();
   }
   function openApp(name) { setApp(name); setState(queue.length ? 'approval' : 'open'); }
 
@@ -410,12 +380,6 @@
     island.classList.remove('dropping');
     const files = [...e.dataTransfer.files];
     if (files.length) { setApp('home'); feedFiles(files); }
-  });
-
-  $('vts-view').addEventListener('error', () => {
-    if (!vtsWant) return;
-    $('vts-view').hidden = true;
-    clearTimeout(vtsRetry); vtsRetry = setTimeout(startVts, 5000);
   });
 
   $('avatar').addEventListener('click', () => (state === 'open' ? collapse() : openApp(app)));
@@ -977,30 +941,25 @@
   let agents = {};
   let pixel = null;
 
-  function renderPipeline() {
-    if (!pixel && window.LumiPipeline && app === 'pipeline') {
-      pixel = window.LumiPipeline.mount($('pipe'), { onDecision: (id, decision) => respond(decision, id) });
-    }
-    const view = {};
-    for (const [id] of AGENTS) {
-      const a = agents[id] || { status: 'idle', task: '', progress: 0 };
-      const req = queue.find((r) => r.agent === id);
-      view[id] = req ? { ...a, status: 'waiting_approval', visual_state: 'waving' } : a;
-    }
-    if (pixel) { pixel.update(view); pixel.setApprovals(queue); }
-    const list = $('pipe-tasks');
-    if (list) {
-      list.textContent = '';
-      for (const [id, name] of AGENTS) {
-        const a = view[id];
-        const li = el('li', `pt s-${STATUS_LABEL[a.status] ? a.status : 'idle'}`);
-        li.append(el('span', 'pt-name', name), el('span', 'pt-status', STATUS_LABEL[a.status] || 'Idle'),
-                  el('span', 'pt-task', a.task || a.model_name || ''));
-        list.append(li);
-      }
-    }
-    const open = queue.length;
-    $('pipe-note').textContent = conn !== 'online' ? 'Not connected' : open ? `${open} waiting for you` : '';
+  function renderPipeline(main) {
+    main.innerHTML = `
+      <div class="page">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Pipeline</div>
+            <div class="page-sub">Lumi's agents at work. She reacts to what they're doing.</div>
+          </div>
+        </div>
+        <div class="page-scroll">
+          <div class="pl-web">
+            <div class="pl-web-head"><span class="label">Agents</span><span class="pl-note" id="pl-note"></span></div>
+            <div id="pl-stage" class="pipe-stage" aria-label="Lumi's agents at work"><canvas id="pipeline-canvas"></canvas></div>
+            <ul id="pl-tasks" class="pipe-tasks" aria-live="polite"></ul>
+          </div>
+        </div>
+      </div>
+    `;
+    mountPixelPipeline();
   }
 
   // ── Connection settings (the gear) ─────────────────────────────
