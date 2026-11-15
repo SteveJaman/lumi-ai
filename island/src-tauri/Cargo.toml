@@ -9,6 +9,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# First-party Tauri plugin: the Quick Capture hotkey (Alt+Space by default).
+tauri-plugin-global-shortcut = "2"
 
 [profile.release]
 # Small and lean: this runs all day next to games.

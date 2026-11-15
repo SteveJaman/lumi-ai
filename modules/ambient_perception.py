@@ -314,6 +314,12 @@ class AmbientPerception(Module):
                 age_str = f"{int(age / 60)}m ago"
             return f"Screen ({age_str}): {window} — {self.last_description}"
 
+    def paused(self):
+        """Focus Mode on the island pauses sampling (heartbeat_set_paused in
+        modules/island_bridge.py; it expires on its own). Nothing else
+        gated the sampler before, Gaming Mode included."""
+        return time.time() < float(getattr(self.signals, "perception_paused_until", 0) or 0)
+
     def get_recent_history(self, limit=3):
         """Last N descriptions, most recent last."""
         with self._lock:
@@ -343,6 +349,8 @@ class AmbientPerception(Module):
             await asyncio.sleep(self.sample_interval)
             if self.signals.terminate:
                 break
+            if self.paused():
+                continue
             try:
                 await loop.run_in_executor(None, self._tick)
             except Exception as e:

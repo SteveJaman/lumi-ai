@@ -2,7 +2,7 @@
 Shared UI state for the web app and the islands: theme and hybrid (cloud
 escalation) switch.
 
-    web     GET  /api/ui/state          {theme, themes, hybrid}  (also for remote sessions)
+    web     GET  /api/ui/state          {theme, themes, hybrid, mood}  (also for remote sessions)
             PUT  /api/ui/theme          {"theme": "sakura"}      (host only, CSRF)
             PUT  /api/ui/hybrid         {"enabled": true}        (host only, CSRF)
     island  ui_state / theme_set / hybrid_set over its WebSocket
@@ -15,7 +15,12 @@ from __future__ import annotations
 
 import asyncio
 
-from modules import hybrid_mode, theme_store
+from modules import hybrid_mode, mood_sync, theme_store
+
+
+def _state() -> dict:
+    """theme_store.state() plus Lumi's current mood (mood_sync), for a UI that just connected."""
+    return {**theme_store.state(), "mood": mood_sync.current()}
 
 
 def register(router, server) -> None:
@@ -25,7 +30,7 @@ def register(router, server) -> None:
     async def get_state(request):
         if not server._current_user(request):
             return _json_error(401, "Not logged in.")
-        return web.json_response(await asyncio.get_running_loop().run_in_executor(None, theme_store.state))
+        return web.json_response(await asyncio.get_running_loop().run_in_executor(None, _state))
 
     async def body_of(request):
         if not server._origin_ok(request) or not server._current_user(request):
@@ -68,7 +73,7 @@ def install_island_handlers(server=None) -> None:
     send = server.send if server else hitl_server.send
 
     async def ui_state(ws, data):
-        st = await asyncio.get_running_loop().run_in_executor(None, theme_store.state)
+        st = await asyncio.get_running_loop().run_in_executor(None, _state)
         await send(ws, {"type": "ui_state", "id": data.get("id"), **st})
 
     async def theme_set(ws, data):

@@ -3,7 +3,8 @@
      - the theme engine (web/theme-engine.js) and the Appearance picker
      - the Cloud Escalation switch and the "100% Local Privacy" badge
      - a sync socket: theme_update, hybrid_mode_update, knowledge_ingest_*
-       from any device (the island included) apply here live
+       from any device (the island included) apply here live, and Lumi's
+       mood (mood_update) for the Pipeline, on every page
      - drag and drop: drop files anywhere to teach Lumi ("Feed me data!")
      - toasts
    -------------------------------------------------------------- */
@@ -83,6 +84,13 @@ function mountPrivacyPill() {
   pills.appendChild(el);
 }
 
+// Lumi's mood from the backend (modules/mood_sync.py): kept on window so a Pipeline
+// mounted later starts with it, and announced to the one already on screen.
+function applyMood(m) {
+  window.lumiMood = m || null;
+  window.dispatchEvent(new CustomEvent('lumi-mood', { detail: window.lumiMood }));
+}
+
 const ingests = new Map();
 function onIngestStart(e) {
   if (e.source === 'web' && ingests.has(`web:${e.file}`)) return;   // our own upload has its toast
@@ -117,6 +125,7 @@ function connectSync() {
   sock.on('hybrid_mode_update', applyHybrid);
   sock.on('knowledge_ingest_start', onIngestStart);
   sock.on('knowledge_ingest_finish', onIngestFinish);
+  sock.on('mood_update', (d) => applyMood(d && d.mood));
   sock.on('connect', refreshState);           // missed broadcasts while away: re-read
 }
 
@@ -126,6 +135,7 @@ async function refreshState() {
     ui = { ...ui, ...s };
     if (s.theme && window.LumiThemes && window.LumiThemes.current() !== s.theme) window.LumiThemes.apply(s.theme);
     applyHybrid(s.hybrid);
+    if ('mood' in s) applyMood(s.mood);
   } catch (_) { /* signed out or offline: keep the last look */ }
 }
 

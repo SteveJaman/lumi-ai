@@ -557,6 +557,9 @@ class EmotionalStateModule(Module):
         hub_emit(self.signals, "emotional", f"frames loaded — {frames_summary}")
 
         last_persist = time.time()
+        # Every open UI hears the mood live (the Pipeline's Lumis pace by it).
+        from modules import mood_sync
+        asyncio.create_task(mood_sync.run(self.signals))
 
         while not self.signals.terminate:
             await asyncio.sleep(self.decay_interval)

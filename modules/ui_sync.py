@@ -6,6 +6,7 @@ the approval server's WebSocket) that shared state changed:
     hybrid_mode_update      hybrid_mode.status()
     knowledge_ingest_start  {"id", "file", "size", "source"}
     knowledge_ingest_finish {"id", "file", "ok", "chunks", "error", "source"}
+    mood_update             {"mood": {...}}  Lumi's emotional state (modules/mood_sync.py)
 
 broadcast() is thread-safe and never raises: a UI that isn't running just misses it,
 and reads the current state when it connects (GET /api/ui/state, island "ui_state").

@@ -10,7 +10,12 @@ some furniture. On top of that, in Lumi's own design
   * four Lumi variants, one per agent: split silver/teal hair, white cat ears with
     pink insides, a floating halo, white jacket or shirt with a tie, black shorts,
     thigh-high socks, black boots with mint soles; each agent's colour as the
-    accent (tie, halo, hoodie)
+    accent (tie, halo). Main wears the sheet's jacket and twin tails; Minecraft a
+    backpack and a pickaxe; Office the shirt, glasses and a lanyard badge; System
+    the mint cat-ear hoodie (the sheet's 4th pose). Painted at 16x32, then scaled to
+    48x96 and repainted in detail by scripts/lumi_hd.py (eyes, ears, halo, the
+    "ALLIUM" print, ribbons) with her activity poses: stretch, coffee, a rice ball,
+    asleep at her desk.
   * her cyberpunk room: dark navy floor with a neon grid and light pools, violet
     walls with neon trim, a night-city window, a "LUMI" neon sign, server racks,
     holo monitors, a neon rug lounge, her lilies (Allium triquetrum) and a cat bed
@@ -20,8 +25,9 @@ Outputs (written to web/pixel-office/ and island/src/pixel-office/):
     atlas.png      every wall piece and furniture sprite, animation frames included
     office.js      window.LUMI_OFFICE = { drawables, walk grid, seats, agent stations,
                    animation timing } (a script, not JSON: the island's CSP blocks fetch)
-    chars/<agent>.png, <agent>_blink.png   128x96 sheets: 8 frames (walk1-3, type1-2,
-                   read1-2, seated) x 3 rows (down, up, right; left = mirrored right)
+    chars/<agent>.png, <agent>_blink.png   768x288 sheets: 16 frames of 48x96 (walk1-3,
+                   type1-2, read1-2, seated, stretch1-2, coffee1-2, rice ball1-2,
+                   asleep1-2) x 3 rows (down, up, right; left = mirrored right)
     bubble-permission.png, bubble-waiting.png, LICENSE-pixel-agents.txt, CREDITS.md
 
 Nothing from the clone is executed: the bits of its renderer that turn data into
@@ -42,6 +48,9 @@ import sys
 from typing import Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lumi_hd  # noqa: E402  (scripts/lumi_hd.py: the 48x96 repaint)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PA = os.path.join(ROOT, "third_party", "pixel-agents")
@@ -402,6 +411,47 @@ def lumify(base: Image.Image, layers: Dict[str, Image.Image], look: dict) -> Ima
                 if look.get("strap"):
                     for k in range(6):
                         put(px, ex1 + 1 - k, neck + k, P["steel"], cell)
+                if look.get("lanyard") and f not in (5, 6):
+                    # A cord from both sides of the collar down to a badge on the chest.
+                    for k in range(4):
+                        put(px, ex0 + k // 2, neck + k, accent, cell)
+                        put(px, ex1 - k // 2, neck + k, accent, cell)
+                    bx, by = tx - 1, neck + 4
+                    for dx in range(3):
+                        put(px, bx + dx, by, accent, cell)
+                        put(px, bx + dx, by + 1, P["white"], cell)
+                        put(px, bx + dx, by + 2, P["white"], cell)
+                    put(px, bx + 1, by + 2, shade(accent, 0.6), cell)
+            # 5b) Minecraft's kit: a backpack and a pickaxe over her shoulder.
+            top_l = layers.get("top")
+            tb = bbox(top_l, (f, r)) if top_l else None
+            if tb and look.get("backpack"):
+                tx0, ty0, tx1, _ = tb
+                brown, brown_d, flap = hexrgb("8a5a34"), hexrgb("5a3a20"), shade(accent, 0.8)
+                if r == 1:                                    # back view: the whole pack
+                    for y in range(ty0 + 1, ty0 + 8):
+                        for x in range(tx0 + 2, tx1 - 1):
+                            edge = x in (tx0 + 2, tx1 - 2) or y == ty0 + 7
+                            put(px, x, y, brown_d if edge else (flap if y <= ty0 + 2 else brown), cell)
+                elif r == 0:                                  # front: the shoulder straps
+                    for k in range(5):
+                        put(px, tx0 + 1, ty0 + k, brown_d, cell)
+                        put(px, tx1 - 1, ty0 + k, brown_d, cell)
+                else:                                         # side: the pack behind her
+                    for y in range(ty0 + 1, ty0 + 7):
+                        for x in (tx0 - 1, tx0):
+                            put(px, x, y, brown_d if y in (ty0 + 1, ty0 + 6) else brown, cell)
+            if tb and look.get("pickaxe") and r in (0, 2):
+                # Hanging from her hand at her side: the head at hand height, the handle down.
+                tx0, ty0, tx1, _ = tb
+                handle, iron, iron_d = hexrgb("9a6a3c"), hexrgb("c8d0e0"), hexrgb("5d6578")
+                hx = min(tx1, cell[2] - 1)
+                for k in range(6):
+                    put(px, hx, ty0 + 5 + k, handle, cell)
+                for dx, col in ((-1, iron_d), (0, iron), (1, iron_d)):
+                    put(px, hx + dx, ty0 + 4, col, cell)
+                put(px, hx - 1, ty0 + 5, iron_d, cell)
+                put(px, hx + 1, ty0 + 5, iron_d, cell)
             # 6) Thigh-high socks over the legs, mint soles on the boots.
             body_l, pants_l, shoes_l = layers.get("body"), layers.get("pants"), layers.get("shoes")
             if body_l and pants_l and shoes_l:
@@ -434,36 +484,43 @@ LUMIS = {
                          "colors": {"top": C(220, 8, 82, 30), "jacket": C(225, 10, 78, 35), "pants": C(232, 12, -72, -10),
                                     "shoes": C(230, 10, -70, 10), "eyes": C(172, 60, 5, 10)}},
              "look": {"accent": "5cf2d2", "halo": "8fd8cf", "tails": ("right", "left")}},
-    # Office (Claude Code): the shirt-and-suspenders look, glasses on, violet tie and halo.
+    # Office (Claude Code): the shirt look, glasses on, a lanyard badge instead of the
+    # tie, violet halo.
     "office": {"profile": {"body": "bust", "eyeShape": "lashes", "eyeRows": "both", "under": "basic", "utop": "basic",
                            "hair": "mop", "top": "long_sleeved_shirt", "pants": "shorts", "shoes": "boots",
                            "shades": "glasses",
                            "colors": {"top": C(220, 8, 84, 30), "pants": C(232, 12, -72, -10),
                                       "shoes": C(230, 10, -70, 10), "eyes": C(172, 60, 5, 10),
                                       "shades": C(265, 40, -55, 0)}},
-               "look": {"accent": "b48cff", "halo": "c9b4ff", "suspenders": True}},
-    # Minecraft: the cat-ear hoodie look, hood up, in green.
+               "look": {"accent": "b48cff", "halo": "c9b4ff", "tie": False, "lanyard": True, "glasses": True}},
+    # Minecraft: ready to go out, a backpack and a pickaxe over her shoulder, green tie and halo.
     "minecraft": {"profile": {"body": "bust", "eyeShape": "lashes", "eyeRows": "both", "under": "basic", "utop": "basic",
                               "hair": "bob", "top": "long_sleeved_shirt", "jacket": "bomber", "pants": "shorts",
                               "shoes": "boots", "props": False,
                               "colors": {"top": C(220, 8, 82, 30), "jacket": C(135, 45, 2, 10), "pants": C(232, 12, -72, -10),
                                          "shoes": C(230, 10, -70, 10), "eyes": C(172, 60, 5, 10)}},
-                  "look": {"accent": "5bd16a", "halo": "a6f0b5", "tie": True,
-                           "hood": [hexrgb("2f7a45"), hexrgb("4fae63"), hexrgb("7fd68e"), hexrgb("b8f0c2")]}},
-    # System: the side-ponytail look with the bag strap, rose tie and halo.
+                  "look": {"accent": "5bd16a", "halo": "a6f0b5", "tie": True, "tails": ("left",),
+                           "backpack": True, "pickaxe": True}},
+    # System: the sheet's 4th pose, the mint cat-ear hoodie with the hood up; rose tie and halo.
     "system": {"profile": {"body": "bust", "eyeShape": "lashes", "eyeRows": "both", "under": "basic", "utop": "basic",
                            "hair": "side_swept", "top": "long_sleeved_shirt", "jacket": "bomber", "pants": "shorts",
                            "shoes": "boots", "props": False,
                            "colors": {"top": C(220, 8, 82, 30), "jacket": C(225, 10, 74, 35), "pants": C(232, 12, -72, -10),
                                       "shoes": C(230, 10, -70, 10), "eyes": C(172, 60, 5, 10)}},
-               "look": {"accent": "ff5a7a", "halo": "ffb3c4", "tails": ("right",), "strap": True}},
+               "look": {"accent": "ff5a7a", "halo": "ffb3c4", "tie": True,
+                        "hood": [P["teal_d"], P["teal_m"], P["teal_l"], P["teal_h"]]}},
 }
 
 
 def build_lumi(agent: str, blink: bool) -> Image.Image:
+    """Her 48x96 sheet: painted at 16x32 over the Pixel Agents poses, then repainted
+    in detail at 3x with the activity poses added (scripts/lumi_hd.py)."""
     spec = LUMIS[agent]
     layers = build_layers(spec["profile"], blink)
-    return lumify(stack(layers), layers, spec["look"])
+    small = lumify(stack(layers), layers, spec["look"])
+    hood = spec["look"].get("hood")
+    ramps = [SILVER, TEAL] + ([hood] if hood else [])
+    return lumi_hd.hd_sheet(small, layers, spec["look"], ramps, hood, closed=blink)
 
 
 # ─── furniture catalog (core/src/assets/manifestUtils.ts) ─────────────
@@ -705,6 +762,13 @@ CUSTOM = [
     ("lily", 1, 9, 1, 2, 1, False, False), ("lily", 5, 9, 1, 2, 1, False, False), ("lily", 14, 8, 1, 2, 1, False, False),
     ("catbed", 2, 10, 1, 1, 0, False, False),
 ]
+# Idle spots (all on walkable tiles; tests/test_pixel_office.py checks that).
+AMBIENT_SPOTS = {
+    "window": [{"col": 3, "row": 2, "face": "up"}, {"col": 6, "row": 2, "face": "up"}],
+    "coffee": [{"col": 16, "row": 9, "face": "down"}],
+    "rack":   [{"col": 17, "row": 4, "face": "up"}],
+    "catbed": [{"col": 3, "row": 10, "face": "left"}],
+}
 # Where each agent works and rests: (col, row, facing, sits?, monitor names that light up)
 STATIONS = {
     "main":      {"work": (8, 5, "up", True), "rest": (8, 5, "up", True), "screens": ["mon@8,3", "mon2@9,3"]},
@@ -912,13 +976,22 @@ def main():
     meta = {
         "W": room["W"], "H": room["H"], "tile": TILE, "cols": COLS, "rows": ROWS,
         "rects": room["rects"], "drawables": room["drawables"], "walk": room["walk"], "agents": room["agents"],
+        # Characters are 48x96 (3x the 16 px room tiles' art, drawn at 1.5x the room's
+        # scale so she reads at a glance); the room itself is drawn at 2x.
+        "char": {"w": lumi_hd.FW, "h": lumi_hd.FH, "scale": 2, "poses": lumi_hd.POSES},
         "frame": {"w": FRAME_W, "h": FRAME_H, "walk": [0, 1, 2, 1], "type": [3, 4], "read": [5, 6], "seated": 7,
                   "rows": {"down": 0, "up": 1, "right": 2, "left": 2}},
         "timing": {"walk_px_s": 48, "walk_frame_s": 0.15, "type_frame_s": 0.3, "sit_offset": 6},
+        # Where idle Lumis go on their own (pipeline.js's ambient layer): the night-city
+        # window, the coffee counter (the mug on it), the server racks, the cat bed.
+        "spots": AMBIENT_SPOTS,
     }
     chars = {(a, b): build_lumi(a, b) for a in LUMIS for b in (False, True)}
     for out in OUTS:
         os.makedirs(os.path.join(out, "chars"), exist_ok=True)
+        for stale in ("planner.png", "planner_blink.png"):        # an earlier rename, undone
+            if os.path.exists(os.path.join(out, "chars", stale)):
+                os.remove(os.path.join(out, "chars", stale))
         room["floor"].save(os.path.join(out, "floor.png"))
         room["atlas"].save(os.path.join(out, "atlas.png"))
         for name in ("permission", "waiting"):

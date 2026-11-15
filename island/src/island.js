@@ -13,7 +13,8 @@
   const MORPH_MS = 360;
   const LEAVE_MS = 450;
   const BLUR_CLOSE_MS = 1500;
-  const SIZES = { hidden: [200, 8], peek: [330, 58], open: [480, 590], approval: [440, 310] };
+  const SIZES = { hidden: [200, 8], peek: [330, 58], open: [480, 590], approval: [440, 310],
+                  capture: [440, 96], flash: [330, 46] };   // Quick Capture bar; a notice line
   // The window keeps one width (the widest state) and only its height changes.
   // Tauri resizes and then re-centres a window in two separate steps; with the
   // width changing too, the island (centred in the window) jumped sideways for a
@@ -93,6 +94,7 @@
     state = next;
     island.className = `island ${next}${island.classList.contains('danger') ? ' danger' : ''}`;
     $('approval').inert = next !== 'approval';
+    $('capture').inert = next !== 'capture';
     if (!grows) setTimeout(() => { if (state === next) fit(WIN_W, h); }, MORPH_MS);
     syncVideo();
     syncClock();
@@ -183,6 +185,8 @@
         gaming = !!msg.gaming;
         render(); loadHome(); loadChat(); loadUiState();
         if (app === 'calendar') loadCalendar();
+        onFocusOnline();
+        flushCaptures();
         break;
       case 'theme_update':
         ui.theme = msg.theme || ui.theme; applyTheme();
@@ -190,11 +194,14 @@
       case 'hybrid_mode_update':
         ui.hybrid = msg; renderBrain();
         break;
+      case 'mood_update':                          // Lumi's mood, for the Pipeline's Lumis
+        applyMood(msg.mood);
+        break;
       case 'knowledge_ingest_start':
-        if (msg.source !== 'island') feed(`Lumi is reading ${msg.file}…`, 0.5);
+        if (msg.source !== 'island' && !focus.running) feed(`Lumi is reading ${msg.file}…`, 0.5);
         break;
       case 'knowledge_ingest_finish':
-        if (msg.source !== 'island') feed(msg.ok ? `Lumi learned ${msg.file} · ${msg.chunks} passages` : `Couldn't learn ${msg.file}: ${msg.error}`, 1, msg.ok ? 'ok' : 'error');
+        if (msg.source !== 'island' && !focus.running) feed(msg.ok ? `Lumi learned ${msg.file} · ${msg.chunks} passages` : `Couldn't learn ${msg.file}: ${msg.error}`, 1, msg.ok ? 'ok' : 'error');
         break;
       case 'lumi_status':
         if (STATUS_TEXT[msg.state]) { lumiState = msg.state; render(); }
@@ -204,6 +211,7 @@
         break;
       case 'lumi_mode':
         gaming = !!msg.gaming; render();
+        if (gaming && focus.running) endFocus('gaming');
         break;
       case 'snapshot':
         home.snapshot = msg.snapshot; renderHome();
@@ -264,6 +272,13 @@
                              initial: themeSync() ? null : store.get(LOCAL_KEY, null) });
   }
 
+  // Lumi's mood (modules/mood_sync.py): kept on window so the Pipeline tab starts with
+  // it when it mounts, and announced to it while it's on screen (pipeline.js listens).
+  function applyMood(m) {
+    window.lumiMood = m || null;
+    window.dispatchEvent(new CustomEvent('lumi-mood', { detail: window.lumiMood }));
+  }
+
   function wantedTheme() { return themeSync() ? ui.theme : store.get(LOCAL_KEY, ui.theme); }
   function applyTheme() {
     const id = wantedTheme();
@@ -296,6 +311,7 @@
       const s = await req('ui_state');
       ui = { theme: s.theme, themes: s.themes || [], hybrid: s.hybrid };
       applyTheme();
+      if ('mood' in s) applyMood(s.mood);
     } catch (_) { /* older Lumi without themes: keep the default */ }
   }
   $('theme-pick').addEventListener('change', async (e) => {
@@ -406,13 +422,18 @@
   // collapse button, or once you click back into your game.
   window.addEventListener('blur', () => {
     clearTimeout(blurTimer);
+    if (state === 'capture') { closeCapture(); return; }       // clicked into another app
     if (state !== 'open') return;
     blurTimer = setTimeout(() => {
       if (state === 'open' && !document.hasFocus() && !$('input').value.trim() && $('settings').hidden) collapse();
     }, BLUR_CLOSE_MS);
   });
   window.addEventListener('focus', () => clearTimeout(blurTimer));
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state === 'open') collapse(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (state === 'capture') closeCapture();
+    else if (state === 'open') collapse();
+  });
 
   // ── Home ───────────────────────────────────────────────────────
   async function loadHome() {
@@ -1018,6 +1039,295 @@
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('settings').hidden) { e.stopPropagation(); closeSettings(); } }, true);
   $('approve').addEventListener('click', () => respond('approve'));
   $('decline').addEventListener('click', () => respond('decline'));
+
+  // ── Notices ────────────────────────────────────────────────────
+  // A short line, gone after 4 s: in the capture bar's hint while it's open,
+  // floating over the app when the island is open, else the island briefly
+  // shows just this line. Approvals are never covered by one.
+  const NOTICE_MS = 4000;
+  let noticeTimer = null;
+  function notice(text, kind = 'ok') {
+    clearTimeout(noticeTimer);
+    if (state === 'capture') {
+      const h = $('qc-hint');
+      h.textContent = text; h.className = `qc-hint ${kind}`;
+      noticeTimer = setTimeout(() => { if (state === 'capture' && !$('qc-input').value.trim()) closeCapture(); }, NOTICE_MS);
+      return;
+    }
+    if (state === 'approval') return;
+    const n = $('notice');
+    n.textContent = text; n.className = `notice ${kind} on`;
+    if (state !== 'open') setState('flash');
+    noticeTimer = setTimeout(() => {
+      n.className = 'notice';
+      if (state === 'flash') setState(hovering ? 'peek' : 'hidden');
+    }, NOTICE_MS);
+  }
+
+  const tauriInvoke = () => window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+  const online = () => conn === 'online' && !!ws && ready;
+
+  // ── Quick Capture ──────────────────────────────────────────────
+  // The global hotkey (Rust: set_capture_shortcut) focuses the window and
+  // fires "quick-capture". A link goes to the library, an existing absolute
+  // file path is uploaded like a drag-and-drop, anything else is a memory.
+  // Offline, captures wait in localStorage and are sent on the next hello_ok.
+  // Captured text is never logged.
+  const PENDING_KEY = 'lumi-island-quick-capture-pending';
+  const HOTKEY_KEY = 'lumi-island-capture-hotkey';
+  const HINT = 'Paste a link, text, or a file path. Enter to send.';
+  let capPrev = null, flushing = false;
+
+  function openCapture() {
+    if (state === 'approval') return;                    // an approval waits for an answer first
+    if (state !== 'capture') {
+      capPrev = { state: state === 'flash' ? (hovering ? 'peek' : 'hidden') : state };
+      if (!$('settings').hidden) closeSettings();
+      clearTimeout(noticeTimer);
+      $('qc-input').value = '';
+      $('qc-hint').textContent = HINT; $('qc-hint').className = 'qc-hint';
+      setState('capture');
+    }
+    setTimeout(() => $('qc-input').focus(), 30);
+  }
+  function closeCapture() {
+    if (state !== 'capture') return;
+    clearTimeout(noticeTimer);
+    const prev = (capPrev && capPrev.state) || 'hidden';
+    capPrev = null;
+    setState(prev === 'open' ? 'open' : hovering || prev === 'peek' ? 'peek' : 'hidden');
+    // Back to the tab that was showing, not to whatever app is behind the island.
+    const tab = document.querySelector(`.tab[data-app="${app}"]`);
+    if (tab && state !== 'hidden') tab.focus({ preventScroll: true });
+  }
+
+  const URL_RE = /^https?:\/\/[^\s/$.?#][^\s]*$/i;
+  const PATH_RE = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/;
+  const unquote = (t) => t.replace(/^(["'])(.*)\1$/, '$2');
+  const baseName = (p) => p.split(/[\\/]/).filter(Boolean).pop() || p;
+
+  // {kind: 'link', url} | {kind: 'file', path, name, data} | {kind: 'text', text}
+  async function classify(raw) {
+    const t = raw.trim();
+    if (URL_RE.test(t)) {
+      try { const u = new URL(t); if (u.protocol === 'http:' || u.protocol === 'https:') return { kind: 'link', url: t }; } catch (_) {}
+    }
+    const path = unquote(t);
+    const invoke = tauriInvoke();
+    if (PATH_RE.test(path) && !/[\r\n]/.test(path) && invoke) {
+      try {
+        const data = await invoke('read_capture_file', { path });
+        return { kind: 'file', path, name: baseName(path), data };
+      } catch (e) {
+        const why = String((e && e.message) || e);
+        if (why !== 'missing') throw new Error(why);    // there is a file, Lumi just can't take it
+      }
+    }
+    return { kind: 'text', text: t };                  // includes paths to nothing
+  }
+
+  async function sendCapture(item) {
+    if (item.kind === 'file') {
+      await uploadOne(new File([item.data], item.name));
+      return `Added to library: ${item.name}`;
+    }
+    const r = item.kind === 'link'
+      ? await req('quick_capture', { kind: 'link', url: item.url }, 120000)
+      : await req('quick_capture', { kind: 'text', text: item.text }, 30000);
+    if (!r.ok) throw new Error(r.error || 'not saved');
+    return item.kind === 'link' ? `Added to library: ${r.name}` : 'Saved to memory';
+  }
+
+  function stashedCaptures() {
+    try { const v = JSON.parse(localStorage.getItem(PENDING_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch (_) { return []; }
+  }
+  function setStashedCaptures(list) {
+    try { if (list.length) localStorage.setItem(PENDING_KEY, JSON.stringify(list)); else localStorage.removeItem(PENDING_KEY); } catch (_) {}
+  }
+  // A file is stashed by its path and read again when it's sent.
+  const stashable = (item) => (item.kind === 'file' ? { kind: 'file', path: item.path }
+    : item.kind === 'link' ? { kind: 'link', url: item.url } : { kind: 'text', text: item.text });
+
+  async function submitCapture() {
+    const input = $('qc-input'), btn = $('qc-send');
+    const raw = input.value.trim();
+    if (!raw || btn.disabled) return;
+    btn.disabled = true;
+    try {
+      const item = await classify(raw);
+      if (!online()) {
+        setStashedCaptures([...stashedCaptures(), { ...stashable(item), at: Date.now() }]);
+        input.value = '';
+        notice('Lumi is offline — saved locally', 'warn');
+        return;
+      }
+      const text = await sendCapture(item);
+      input.value = '';
+      notice(text, 'ok');
+    } catch (e) {
+      notice(`Couldn't save: ${(e && e.message) || e}`, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // Sent in order, one combined notice. A capture that fails for good is
+  // dropped (and counted); one cut off by a disconnect waits for next time.
+  async function flushCaptures() {
+    if (flushing) return;
+    let list = stashedCaptures();
+    if (!list.length) return;
+    flushing = true;
+    let ok = 0, failed = 0;
+    try {
+      while (list.length && online()) {
+        const p = list[0];
+        try {
+          const item = p.kind === 'file' ? await classify(p.path) : p;
+          await sendCapture(item);
+          ok++;
+        } catch (e) {
+          if (!online() || /offline|timeout/.test(String(e && e.message))) break;
+          failed++;
+        }
+        list = list.slice(1);
+        setStashedCaptures(list);
+      }
+    } finally {
+      flushing = false;
+    }
+    if (ok || failed) {
+      const n = ok + failed;
+      notice(failed ? `Saved ${ok} of ${n} offline capture${n === 1 ? '' : 's'}; ${failed} couldn't be saved`
+                    : `Saved ${ok} capture${ok === 1 ? '' : 's'} from while Lumi was offline`, failed ? 'warn' : 'ok');
+    }
+  }
+
+  $('qc-form').addEventListener('submit', (e) => { e.preventDefault(); submitCapture(); });
+  $('qc-input').addEventListener('input', () => { clearTimeout(noticeTimer); });
+
+  // The hotkey: the saved one (or the default), re-registered on every start.
+  async function applyHotkey(accel) {
+    const invoke = tauriInvoke();
+    if (!invoke) return { ok: false, text: 'The shortcut only works in the island app.' };
+    try {
+      const got = await invoke('set_capture_shortcut', { accel });
+      const wanted = accel || 'Alt+Space';
+      return { ok: true, got, text: got === wanted ? `Quick Capture: ${got}` : `${wanted} is taken; using ${got}.` };
+    } catch (e) { return { ok: false, text: String((e && e.message) || e) }; }
+  }
+  $('set-hotkey-save').addEventListener('click', async () => {
+    const accel = $('set-hotkey').value.trim();
+    const r = await applyHotkey(accel);
+    if (r.ok) store.set(HOTKEY_KEY, accel);
+    $('hotkey-msg').textContent = r.text;
+    $('hotkey-msg').classList.toggle('bad', !r.ok);
+  });
+  $('gear').addEventListener('click', () => {
+    $('set-hotkey').value = store.get(HOTKEY_KEY, '');
+    $('hotkey-msg').textContent = ''; $('hotkey-msg').classList.remove('bad');
+  });
+  if (window.__TAURI__ && window.__TAURI__.event) window.__TAURI__.event.listen('quick-capture', openCapture);
+  applyHotkey(store.get(HOTKEY_KEY, ''));
+
+  // ── Focus Mode ─────────────────────────────────────────────────
+  // Started by the user only. While it runs (not while paused) Lumi's
+  // heartbeat and screen sampler are paused (heartbeat_set_paused, which
+  // expires on its own a few minutes after the block would end), and
+  // others' learning notices are held back. At the end: the day's count
+  // (localStorage, one key per day) and a one-line summary card.
+  const FOCUS_PREFIX = 'lumi-island-focus-';
+  const PAUSE_GRACE_MIN = 5;
+  let focus = { running: false, paused: false, minutes: 0, endsAt: 0, left: 0, activeMs: 0, since: 0, tick: null };
+
+  const focusKey = (d = new Date()) => FOCUS_PREFIX + ymd(d);
+  const focusCount = () => parseInt(store.get(focusKey(), '0'), 10) || 0;
+  function pruneFocusDays() {
+    const keep = new Set([...Array(14)].map((_, i) => focusKey(addDays(new Date(), -i))));
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k && /^lumi-island-focus-\d{4}-\d{2}-\d{2}$/.test(k) && !keep.has(k)) localStorage.removeItem(k);
+      }
+    } catch (_) {}
+  }
+  const mmss = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; };
+  const remaining = () => (focus.paused ? focus.left : focus.endsAt - Date.now());
+
+  function backendPause(paused, minutes) {
+    if (!online()) return;
+    req('heartbeat_set_paused', { paused, minutes: Math.min(180, Math.ceil(minutes || 0) + PAUSE_GRACE_MIN), perception: true })
+      .catch(() => {});
+  }
+  function onFocusOnline() {
+    if (gaming && focus.running) return endFocus('gaming');
+    if (focus.running && !focus.paused) backendPause(true, remaining() / 60000);
+  }
+
+  function renderFocus() {
+    const n = focusCount();
+    $('focus-today').textContent = `${n} block${n === 1 ? '' : 's'} today.`;
+    $('focus-idle').hidden = focus.running;
+    $('focus-run').hidden = !focus.running;
+    const chip = $('focus-chip');
+    chip.hidden = !focus.running;
+    if (!focus.running) return;
+    const left = mmss(remaining());
+    $('focus-time').textContent = left;
+    $('focus-pause').textContent = focus.paused ? 'Resume' : 'Pause';
+    chip.textContent = focus.paused ? `Focus paused · ${left}` : `Focus · ${left}`;
+    chip.classList.toggle('paused', focus.paused);
+  }
+
+  function startFocus(minutes) {
+    if (focus.running) return;
+    if (gaming) return notice("Focus can't start while Gaming Mode is on", 'warn');
+    const now = Date.now();
+    focus = { running: true, paused: false, minutes, endsAt: now + minutes * 60000, left: 0, activeMs: 0, since: now, tick: null };
+    $('focus-result').hidden = true;
+    backendPause(true, minutes);
+    focus.tick = setInterval(() => { if (remaining() <= 0) endFocus('done'); else renderFocus(); }, 1000);
+    renderFocus();
+  }
+  function pauseFocus() {
+    if (!focus.running) return;
+    const now = Date.now();
+    if (focus.paused) {                                   // resume
+      focus.paused = false; focus.endsAt = now + focus.left; focus.since = now;
+      backendPause(true, focus.left / 60000);
+    } else {                                              // a break: Lumi's proactive side comes back
+      focus.paused = true; focus.left = focus.endsAt - now; focus.activeMs += now - focus.since;
+      backendPause(false, 0);
+    }
+    renderFocus();
+  }
+  async function endFocus(reason) {
+    if (!focus.running) return;
+    clearInterval(focus.tick);
+    const now = Date.now();
+    if (!focus.paused) focus.activeMs += now - focus.since;
+    const activeMin = focus.activeMs / 60000;
+    focus = { ...focus, running: false, paused: false, tick: null };
+    backendPause(false, 0);
+    if (reason === 'done') store.set(focusKey(), String(focusCount() + 1));
+    renderFocus();
+    if (reason === 'gaming') notice('Focus stopped — Gaming Mode on.', 'warn');
+    const dur = activeMin >= 1 ? `${Math.round(activeMin)} min` : `${Math.max(1, Math.round(focus.activeMs / 1000))} s`;
+    const out = $('focus-result');
+    out.hidden = false;
+    out.textContent = `Focus block ${reason === 'done' ? 'complete' : 'stopped'} — ${dur}.`;
+    if (!online()) return;
+    try {
+      const r = await req('focus_summary', { minutes: activeMin }, 30000);
+      if (r.summary) out.textContent = `You were working on: ${r.summary.replace(/[.!?]*$/, '')}.`;
+    } catch (_) { /* keep the plain line */ }
+  }
+
+  document.querySelectorAll('#focus-idle .fbtn').forEach((b) => b.addEventListener('click', () => startFocus(+b.dataset.min)));
+  $('focus-pause').addEventListener('click', pauseFocus);
+  $('focus-stop').addEventListener('click', () => endFocus('stopped'));
+  pruneFocusDays();
+  renderFocus();
 
   // ── Go ─────────────────────────────────────────────────────────
   setApp('home');
