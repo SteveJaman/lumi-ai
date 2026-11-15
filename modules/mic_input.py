@@ -11,7 +11,14 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 import keyboard
 from RealtimeSTT import AudioToTextRecorder
+import constants
 from modules.log_hub import emit as hub_emit
+from modules.backchannel import Backchannel
+from modules.speculative import SpeculativeTurn
+
+# A partial transcript is "stable" (speculative turn) once it has
+# SPECULATIVE_MIN_WORDS words and the last re-decode changed at most this many.
+STABLE_MAX_WORD_DELTA = 1
 
 
 class MicInput(Module):
@@ -37,6 +44,55 @@ class MicInput(Module):
         # watches signals.terminate and calls recorder.shutdown() to unblock.
         self._watchdog_thread = None
 
+        # --- Backchannels and speculative turns ---
+        # Both ride this recorder's callbacks: no second mic stream.
+        self.backchannel = Backchannel(signals)
+        self.speculative = SpeculativeTurn(signals)
+        self._recording = False
+        self._last_partial = ""
+        self._stable_sent = ""
+
+    def _wants_partials(self):
+        return bool(getattr(constants, "BACKCHANNEL_ENABLED", True)
+                    or getattr(constants, "SPECULATIVE_TURN_ENABLED", False))
+
+    def _on_chunk(self, data):
+        """Every mic chunk (RealtimeSTT on_recorded_chunk). Runs in the
+        recorder's worker, so it stays cheap."""
+        if not self._recording or not self.is_listening:
+            return
+        try:
+            self.backchannel.on_chunk(data)
+        except Exception:
+            pass
+
+    def _on_recording_stop(self):
+        self._recording = False
+        self.backchannel.on_utterance_end()
+
+    def _on_partial(self, text):
+        """Stabilized realtime transcript: the backchannel's venting check,
+        and a stable_partial for the speculative turn."""
+        text = (text or "").strip()
+        self.backchannel.on_partial(text)
+        words = text.split()
+        prev = self._last_partial.split()
+        self._last_partial = text
+        if len(words) < getattr(constants, "SPECULATIVE_MIN_WORDS", 6):
+            return
+        common = sum(1 for a, b in zip(prev, words) if a.lower() == b.lower())
+        delta = max(len(prev), len(words)) - common
+        if delta <= STABLE_MAX_WORD_DELTA and text != self._stable_sent:
+            self._stable_sent = text
+            self._emit_stable_partial(text)
+
+    def _emit_stable_partial(self, text):
+        hub_emit(self.signals, "mic", f"stable_partial: {text[:80]}")
+        try:
+            self.speculative.on_stable_partial(text)
+        except Exception as e:
+            hub_emit(self.signals, "mic", f"speculative turn failed: {e}", level="warn")
+
     def toggle_mic(self):
         """Toggles the microphone listening state when '\\' is pressed (debounced)."""
         now = time.time()
@@ -56,7 +112,18 @@ class MicInput(Module):
         started talking, and cut Lumi off right then."""
         if not self.is_listening:
             return
-        if not getattr(self.signals, 'AI_speaking', False):
+        self._recording = True
+        self._last_partial = self._stable_sent = ""
+        channel = getattr(self, "backchannel", None)
+        if channel is not None:
+            channel.on_utterance_start()
+
+        speaking = getattr(self.signals, 'AI_speaking', False)
+        # Also while she's writing a reply (before any audio): the same
+        # interrupt cancels the generation (speech_epoch), drops speech queued
+        # from it, and records that she was cut off (interrupt_pending).
+        generating = getattr(self.signals, 'AI_thinking', False)
+        if not speaking and not generating:
             return  # she's not talking, nothing to interrupt
 
         now = time.time()
@@ -66,8 +133,12 @@ class MicInput(Module):
 
         tts = getattr(self.signals, 'tts_instance', None)
         if tts:
-            print("\n\033[93m[Mic Input] Interrupting — you started talking\033[0m")
-            tts.interrupt(source="mic")
+            if speaking:
+                print("\n\033[93m[Mic Input] Interrupting — you started talking\033[0m")
+                tts.interrupt(source="mic")
+            else:
+                tts.interrupt(source="mic, during generation")
+                print("\033[93m[Mic Input] barge-in during generation: cancelled\033[0m")
 
     def _shutdown_watchdog(self):
         """Watches signals.terminate and shuts down the recorder to unblock
@@ -105,7 +176,19 @@ class MicInput(Module):
                 # fires when the recorder starts *waiting* for speech, right
                 # after the last transcription, which cut her off late.)
                 on_recording_start=self._on_vad_start,
+                on_recording_stop=self._on_recording_stop,
+                # Backchannels watch the same audio (no second stream).
+                on_recorded_chunk=self._on_chunk,
+                # Partial transcripts (RealtimeSTT's rolling re-decode) for
+                # the venting check and the speculative turn.
+                **({"enable_realtime_transcription": True,
+                    "realtime_model_type": "tiny.en",
+                    "on_realtime_transcription_stabilized": self._on_partial}
+                   if self._wants_partials() else {}),
             )
+            self.backchannel.expect_partials = self._wants_partials()
+            if getattr(constants, "BACKCHANNEL_ENABLED", True):
+                self.backchannel.warm_up_async()
             # The terminal already announces mic status in the startup
             # banner (main.py). Route the detailed line to the hub so it
             # doesn't land between the "Anthony:" prompt and your input.
@@ -182,6 +265,10 @@ class MicInput(Module):
                             self.signals.add_message("assistant", "[sigh] Ok.")
                             continue
                         # --------------------------------
+
+                        # Speculative turn: accept or reject the run started
+                        # from the partial (no-op unless the flag is on).
+                        self.speculative.on_final(cleaned_text)
 
                         while getattr(self.signals, 'AI_thinking', False):
                             time.sleep(0.1)

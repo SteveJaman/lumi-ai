@@ -3168,3 +3168,8 @@ select.routing-input { font-family: var(--font-sans); }
 @media (prefers-reduced-motion: reduce) {
   .game-card.game-hurt { animation: none; outline: 2px solid var(--error); }
 }
+
+/* Backchannel cue (modules/backchannel.py -> backchannel_spoken) */
+.mood-chip.is-backchannel { animation: lumi-backchannel 0.6s ease-out; }
+@keyframes lumi-backchannel { 30% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 35%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .mood-chip.is-backchannel { animation: none; } }

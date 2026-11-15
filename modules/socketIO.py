@@ -588,6 +588,7 @@ class SocketIOServer:
         self._loop = None
         self.signals.broadcast_tts_audio = self._broadcast_tts_audio
         self.signals.broadcast_tts_stop = self._broadcast_tts_stop
+        self.signals.broadcast_event = self._broadcast_event   # any thread -> every socket client
 
         self._register_http_routes()
         self._register_socket_events()
@@ -2595,6 +2596,22 @@ class SocketIOServer:
     # ------------------------------------------------------------------
     # Voice in browser (Phase 10.19)
     # ------------------------------------------------------------------
+    def _broadcast_event(self, event, payload):
+        """Emit `event` to every connected socket.io client from any thread
+        (e.g. backchannel_spoken from the mic thread). Never raises."""
+        if self._loop is None or self._loop.is_closed():
+            return
+
+        async def _send():
+            try:
+                await self.sio.emit(event, payload)
+            except Exception:
+                pass
+        try:
+            asyncio.run_coroutine_threadsafe(_send(), self._loop)
+        except Exception:
+            pass
+
     def _broadcast_tts_stop(self):
         """Barge-in: tell browser tabs playing her voice to stop. Called
         from TTS.interrupt on any thread."""

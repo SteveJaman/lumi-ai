@@ -61,6 +61,24 @@ OUTPUT_DEVICE_INDEX = [24, 20]
 VOICE_ENGINE = "fish"
 LOCAL_VOICE = "af_heart"     # Kokoro voice for local_fast
 
+# Backchannels (modules/backchannel.py): short "mm-hm"s while you're still talking.
+# Cached clips (data/backchannels/<voice_id>/) play through TTS.play_audio at
+# BACKCHANNEL_VOLUME once you've talked for BACKCHANNEL_MIN_SPEECH_MS without a
+# pause, at most BACKCHANNEL_MAX_PER_UTTERANCE per utterance and never within
+# BACKCHANNEL_MIN_GAP_MS of the last one (or of her speaking).
+BACKCHANNEL_ENABLED = True
+BACKCHANNEL_MIN_SPEECH_MS = 900
+BACKCHANNEL_MIN_GAP_MS = 4000
+BACKCHANNEL_MAX_PER_UTTERANCE = 2
+BACKCHANNEL_VOLUME = 0.6
+
+# Speculative turn (modules/speculative.py), OFF by default: start her reply from
+# a stable partial transcript (at least SPECULATIVE_MIN_WORDS words) and keep it if
+# the final transcript is at least SPECULATIVE_MATCH_RATIO similar (difflib).
+SPECULATIVE_TURN_ENABLED = False
+SPECULATIVE_MIN_WORDS = 6
+SPECULATIVE_MATCH_RATIO = 0.8
+
 
 # =======================================================
 # Host State (Phase 10.1)

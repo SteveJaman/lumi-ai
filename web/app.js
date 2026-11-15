@@ -1564,6 +1564,19 @@ function ensureVoiceSocket() {
 
     // Barge-in (TTS.interrupt): stop her voice in this tab now.
     _voiceSocket.on('tts_stop', stopTtsAudio);
+
+    // Backchannel ("mm-hm" while you talk, modules/backchannel.py):
+    // {phrase, at}. Played on the host's speakers only; here it's a cue
+    // other UI can listen for, and a brief pulse on the mood chip.
+    _voiceSocket.on('backchannel_spoken', (payload) => {
+      window.dispatchEvent(new CustomEvent('lumi:backchannel', { detail: payload || {} }));
+      const chip = document.getElementById('mood-chip');
+      if (chip) {
+        chip.classList.remove('is-backchannel');
+        void chip.offsetWidth;
+        chip.classList.add('is-backchannel');
+      }
+    });
   } catch (e) {
     console.warn('voice socket failed', e);
   }

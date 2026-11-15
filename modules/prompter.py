@@ -45,6 +45,7 @@ GREEN = "\033[92m"
 YELLOW = "\033[93m"
 
 from modules.speech_filter import strip_slurs
+from modules import speculative
 
 SENTENCE_SPLIT_PATTERN = re.compile(r'(?<=[.!?;\n])\s+')
 
@@ -1358,6 +1359,7 @@ class Prompter:
         self.modules = modules if modules is not None else []
         self.mood_manager = MoodManager("default")
         self.signals.mood_manager = self.mood_manager
+        self.signals.prompter = self            # modules/speculative.py builds its request here
 
         self.agent_mode_enabled = False
 
@@ -1618,7 +1620,10 @@ class Prompter:
                 pass
         return reply
 
-    async def run_conversational(self, latest_user_text):
+    def conversational_request(self, latest_user_text, pending_user=None):
+        """The model, messages and options for a conversational turn.
+        pending_user: a message not in history yet (a speculative turn's
+        partial transcript), added as the last user message."""
         # Routing:
         #   - Any attachment → main model. The VLM already produced a
         #     text report for images at upload time; the main model
@@ -1627,7 +1632,7 @@ class Prompter:
         #   - Plain text turn → fast model if short and simple,
         #     otherwise main model.
         last_msg = self.signals.history[-1] if self.signals.history else {}
-        attachments = last_msg.get("attachments") or []
+        attachments = [] if pending_user is not None else (last_msg.get("attachments") or [])
         has_attachment = bool(attachments)
 
         if has_attachment:
@@ -1660,6 +1665,8 @@ class Prompter:
             if role == "assistant":
                 expanded["content"] = _clean_reply(expanded.get("content"))
             messages.append(expanded)
+        if pending_user is not None:
+            messages.append({"role": "user", "content": pending_user})
 
         # One or two sentences unless the turn asks for more (_LONG_ASK, or
         # her past). The model doesn't keep to that on its own, so a casual
@@ -1683,11 +1690,28 @@ class Prompter:
             options["num_ctx"] = FAST_MODEL_NUM_CTX
         else:
             options["num_ctx"] = MAIN_NUM_CTX
+        return {"model": model, "label": label, "think": think_flag, "keep_alive": keep_alive,
+                "messages": messages, "options": options, "reply_cap": reply_cap,
+                "max_sentences": None if long_ok else CASUAL_SENTENCES}
+
+    async def run_conversational(self, latest_user_text):
+        # A speculative turn (modules/speculative.py, off by default) that
+        # this message's final transcript accepted takes over the turn.
+        if speculative.enabled():
+            spec = getattr(self.signals, "speculative", None)
+            run = spec.claim(latest_user_text) if spec is not None else None
+            if run is not None:
+                return await self._finish_speculative(run, latest_user_text)
+
+        req = self.conversational_request(latest_user_text)
+        model, label, think_flag = req["model"], req["label"], req["think"]
+        keep_alive, messages, options = req["keep_alive"], req["messages"], req["options"]
+        reply_cap = req["reply_cap"]
 
         loop = asyncio.get_running_loop()
 
         print(f"{GRAY}Thinking (conversational, {label})...{RESET}")
-        stream = _SpokenStream(self, max_sentences=None if long_ok else CASUAL_SENTENCES)
+        stream = _SpokenStream(self, max_sentences=req["max_sentences"])
         try:
             resp: LLMResponse = await loop.run_in_executor(
                 None,
@@ -1725,6 +1749,47 @@ class Prompter:
             # The reply is what she said, up to the sentence limit.
             return _finish_reply(stream.spoken) or "..."
         return _finish_reply(resp.content, truncated) or "..."
+
+    async def _finish_speculative(self, run, final_text):
+        """An accepted speculative turn: keep what it wrote and continue from
+        there (assistant prefill) with the final transcript as the user's
+        message. If it had already finished, its reply is the reply."""
+        loop = asyncio.get_running_loop()
+        req = run.request
+        await loop.run_in_executor(None, run.stop)        # freeze it at the current token
+        prefix = run.text
+        print(f"{GRAY}Thinking (conversational, {req['label']}, speculative "
+              f"{'finished' if run.finished else f'{len(prefix)} chars in'})...{RESET}")
+        stream = _SpokenStream(self, max_sentences=req["max_sentences"])
+        if prefix:
+            stream.feed(prefix)
+        if run.finished or stream.stopped:
+            stream.finish(run.truncated)
+            self._live_stream = stream
+            return _finish_reply(stream.spoken if stream.stopped else prefix, run.truncated) or "..."
+        messages = [dict(m) for m in req["messages"]]
+        messages[-1] = {"role": "user", "content": final_text}
+        if prefix:
+            messages.append({"role": "assistant", "content": prefix})
+        try:
+            resp: LLMResponse = await loop.run_in_executor(
+                None,
+                lambda: chat_sync(req["model"], messages, think=req["think"], keep_alive=req["keep_alive"],
+                                  options=req["options"], on_text=stream.feed),
+            )
+        except Exception as e:
+            print(f"\n{GRAY}[System Error: Chat request failed - {e}]{RESET}")
+            stream.finish(truncated=True)
+            self._live_stream = stream
+            return _finish_reply(stream.text, truncated=True) or "..."
+        raw = resp.raw if isinstance(resp.raw, dict) else {}
+        truncated = (raw.get("done_reason") == "length"
+                     or (raw.get("eval_count") or 0) >= req["reply_cap"])
+        stream.finish(truncated)
+        self._live_stream = stream
+        if stream.stopped:
+            return _finish_reply(stream.spoken) or "..."
+        return _finish_reply(prefix + (resp.content or ""), truncated) or "..."
 
     async def _dispatch_game_command(self, order, game="minecraft"):
         """The dispatch_game_command tool: hand the order to the game agent

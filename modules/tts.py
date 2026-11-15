@@ -122,6 +122,31 @@ def _wav_duration(audio_bytes, text):
         return max(1.0, len(text or "") / 15.0)
 
 
+def _scale_wav(audio_bytes, volume):
+    """The same WAV at `volume` (0..1). 16-bit PCM only; anything else is
+    returned unchanged."""
+    try:
+        with wave.open(io.BytesIO(audio_bytes), 'rb') as wf:
+            params = wf.getparams()
+            frames = wf.readframes(wf.getnframes())
+        if params.sampwidth != 2:
+            return audio_bytes
+        if HAS_NUMPY:
+            pcm = np.frombuffer(frames, dtype="<i2").astype(np.float32) * float(volume)
+            frames = np.clip(pcm, -32768, 32767).astype("<i2").tobytes()
+        else:
+            samples = array.array('h')
+            samples.frombytes(frames)
+            frames = array.array('h', (max(-32768, min(32767, int(s * volume))) for s in samples)).tobytes()
+        out = io.BytesIO()
+        with wave.open(out, 'wb') as w:
+            w.setparams(params)
+            w.writeframes(frames)
+        return out.getvalue()
+    except Exception:
+        return audio_bytes
+
+
 class TTS:
     def __init__(self, signals, enabled=True, modules=None, audio_mode="both"):
         self.signals = signals
@@ -131,6 +156,7 @@ class TTS:
         self.is_playing = False
         self._current_sa_obj = None
         self._fetching = False
+        self.last_audio_end = 0.0
         # Barge-in: bumped by interrupt(). Audio fetched or queued under an
         # older value is dropped, and the prompter stops a reply whose turn
         # started under one (signals.speech_epoch).
@@ -341,28 +367,38 @@ class TTS:
     # ---------------------------------------------------------------
     # Playback
     # ---------------------------------------------------------------
-    def play_audio(self, message, audio_bytes):
-        """Physically plays the bytes and routes to Discord."""
-        self.signals.sio_queue.put(("current_message", message))
-        self.subtitles.show(message, _wav_duration(audio_bytes, message))
+    def play_audio(self, message, audio_bytes, volume=1.0, backchannel=False):
+        """Physically plays the bytes and routes to Discord.
 
-        try:
-            broadcast = getattr(self.signals, "broadcast_tts_audio", None)
-            if broadcast is not None:
-                broadcast(audio_bytes)
-        except Exception as e:
-            print(f"\033[90mTTS: browser broadcast failed — {e}\033[0m")
-        
-        # Discord Routing
-        if self.audio_mode in ["discord", "both"]:
-            for module in self.modules:
-                if module.__class__.__name__ == "DiscordClient":
-                    module.play_audio_in_voice(audio_bytes)
+        backchannel=True (modules/backchannel.py): a short "mm-hm" while the
+        user is talking. Local speakers only, at `volume`; no subtitles,
+        Discord or browser copy, and it doesn't count as her speaking
+        (AI_speaking / is_playing stay as they are), so barge-in's stop()
+        doesn't cut it and it doesn't arm barge-in."""
+        if volume != 1.0:
+            audio_bytes = _scale_wav(audio_bytes, volume)
+        if not backchannel:
+            self.signals.sio_queue.put(("current_message", message))
+            self.subtitles.show(message, _wav_duration(audio_bytes, message))
+
+            try:
+                broadcast = getattr(self.signals, "broadcast_tts_audio", None)
+                if broadcast is not None:
+                    broadcast(audio_bytes)
+            except Exception as e:
+                print(f"\033[90mTTS: browser broadcast failed — {e}\033[0m")
+
+            # Discord Routing
+            if self.audio_mode in ["discord", "both"]:
+                for module in self.modules:
+                    if module.__class__.__name__ == "DiscordClient":
+                        module.play_audio_in_voice(audio_bytes)
 
         # Local Playback
         if self.audio_mode in ["local", "both"]:
-            self.is_playing = True
-            self.audio_started()
+            if not backchannel:
+                self.is_playing = True
+                self.audio_started()
 
             try:
                 if HAS_PYAUDIO:
@@ -415,7 +451,7 @@ class TTS:
                             mouth_tick = 0
 
                             for i in range(0, len(all_data), bytes_per_chunk):
-                                if not self.is_playing:
+                                if not self.is_playing and not backchannel:
                                     break
                                 st.write(all_data[i:i + bytes_per_chunk])
 
@@ -442,6 +478,8 @@ class TTS:
 
                     p.terminate()
 
+                elif backchannel:
+                    sa.WaveObject.from_wave_file(io.BytesIO(audio_bytes)).play().wait_done()
                 else:
                     wave_obj = sa.WaveObject.from_wave_file(io.BytesIO(audio_bytes))
                     self._current_sa_obj = wave_obj.play()
@@ -454,9 +492,10 @@ class TTS:
             except Exception as e:
                 print(f"\033[91mTTS Playback Error: {e}\033[0m")
             finally:
-                self.is_playing = False
-                self.audio_ended()
-        else:
+                if not backchannel:
+                    self.is_playing = False
+                    self.audio_ended()
+        elif not backchannel:
             self.audio_ended()
 
     def interrupt(self, source="voice"):
@@ -530,6 +569,7 @@ class TTS:
         self.signals.AI_speaking = True
 
     def audio_ended(self):
+        self.last_audio_end = time.time()       # backchannels keep their distance from her speech
         self.signals.last_message_time = time.time()
         self.signals.AI_speaking = False
 
