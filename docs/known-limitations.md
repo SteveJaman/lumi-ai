@@ -20,10 +20,18 @@ architectural.
   session. This is an inherent property of the E2EE protocol and cannot
   be fixed at the application layer.
 
-* **Barge-in cuts mid-word:** Talking over Lumi stops her at once (the
-  local mic, Discord voice, or hold-to-talk in the web chat), including the
-  reply she was still writing. The audio stops where it is, so the last
-  word can be cut off. Typing in the chat doesn't interrupt her.
+* **Barge-in cuts mid-word:** Talking over Lumi stops her (the local mic,
+  Discord voice, or hold-to-talk in the web chat), including the reply she
+  was still writing. The audio stops where it is, so the last word can be
+  cut off. Typing in the chat doesn't interrupt her. With the local mic she
+  waits about half a second to hear real words first, so a "yeah" doesn't
+  stop her; Discord voice and hold-to-talk still stop her at once.
+
+* **Not true full duplex:** She can't speak and listen to new words at the
+  same time inside one model; the pipeline is still listen, think, speak,
+  with the overlaps handled by rules (modules/duplex.py). The echo guard is
+  suppression, not acoustic echo cancellation: with loud speakers, talking
+  quietly over her may not register. Headphones avoid it.
 
 * **State-dependent roster events:** `signals.voice_context` relies on
   Discord's gateway. If Discord's `on_voice_state_update` event lags

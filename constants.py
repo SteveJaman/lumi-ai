@@ -101,12 +101,38 @@ BACKCHANNEL_MIN_GAP_MS = 4000
 BACKCHANNEL_MAX_PER_UTTERANCE = 2
 BACKCHANNEL_VOLUME = 0.6
 
-# Speculative turn (modules/speculative.py), OFF by default: start her reply from
+# Speculative turn (modules/speculative.py): start her reply from
 # a stable partial transcript (at least SPECULATIVE_MIN_WORDS words) and keep it if
 # the final transcript is at least SPECULATIVE_MATCH_RATIO similar (difflib).
-SPECULATIVE_TURN_ENABLED = False
+SPECULATIVE_TURN_ENABLED = True
 SPECULATIVE_MIN_WORDS = 6
 SPECULATIVE_MATCH_RATIO = 0.8
+
+# Full-duplex-style voice (modules/duplex.py). All on the existing mic stream and
+# Fish Audio; no new model.
+# Smart end of turn: silence that ends your turn, from your partial transcript.
+# A finished sentence ends after FAST, one trailing off ("and...", "um") waits
+# SLOW. Off = the old fixed 2.2 s.
+SMART_TURN_ENABLED = True
+TURN_SILENCE_FAST = 0.6
+TURN_SILENCE_DEFAULT = 1.0
+TURN_SILENCE_SLOW = 1.8
+# Barge-in that ignores "yeah / mm-hm": talking over her stops her after
+# BARGE_IN_CONFIRM_MS of real words, at once on "wait"/"stop"/"hold on", and
+# always after BARGE_IN_FORCE_MS. 0 = the old instant barge-in.
+BARGE_IN_CONFIRM_MS = 500
+BARGE_IN_FORCE_MS = 1500
+# Echo guard for speakers: while she talks, only mic audio clearly louder than
+# her echo (learned ratio x ECHO_MARGIN) counts as you, and a transcript of her
+# own words is dropped. Harmless with headphones.
+ECHO_GUARD_ENABLED = True
+ECHO_MARGIN = 2.0
+# Streaming TTS: play Fish Audio as it arrives (~0.6 s to first sound instead of
+# waiting for the whole sentence). Not used while she's in Discord voice, which
+# needs whole clips, or with VOICE_ENGINE = "local_fast".
+TTS_STREAMING = True
+TTS_STREAM_SAMPLE_RATE = 44100
+TTS_PREBUFFER_MS = 250
 
 
 # =======================================================

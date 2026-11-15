@@ -271,14 +271,16 @@ def mic(monkeypatch, cache):
     return m
 
 
-def test_barge_in_during_generation_cancels_and_logs(mic, capsys):
+def test_instant_barge_in_during_generation_when_confirm_is_off(mic, capsys, monkeypatch):
+    monkeypatch.setattr(constants, "BARGE_IN_CONFIRM_MS", 0)
     mic.signals.AI_thinking = True
     mic._on_vad_start()
     assert mic.calls == ["mic, during generation"]
     assert "barge-in during generation: cancelled" in capsys.readouterr().out
 
 
-def test_barge_in_during_playback_unchanged(mic, capsys):
+def test_instant_barge_in_during_playback_when_confirm_is_off(mic, capsys, monkeypatch):
+    monkeypatch.setattr(constants, "BARGE_IN_CONFIRM_MS", 0)
     mic.signals.AI_speaking = True
     mic._on_vad_start()
     assert mic.calls == ["mic"]
@@ -311,10 +313,11 @@ def test_interrupt_during_generation_stops_the_stream_and_records_it():
     assert s.tts_queue.empty() and s.interrupt_pending is True
 
 
-def test_thresholds_unchanged(mic):
+def test_cooldown_and_recording_minimum_unchanged(mic):
     assert mic._interrupt_cooldown == 1.0
     src = open(os.path.join(ROOT, "modules", "mic_input.py"), encoding="utf-8").read()
-    assert "post_speech_silence_duration=2.2" in src and "min_length_of_recording=1.0" in src
+    assert "min_length_of_recording=1.0" in src
+    assert "if getattr(constants, \"SMART_TURN_ENABLED\", False) else 2.2" in src   # off = the old 2.2 s
 
 
 # ── stable partials (mic_input) ───────────────────────────────
@@ -363,9 +366,10 @@ def specturn(monkeypatch):
     return s
 
 
-def test_flag_is_off_by_default_and_then_nothing_runs():
-    assert constants.SPECULATIVE_TURN_ENABLED is False
+def test_flag_is_on_and_when_off_nothing_runs(monkeypatch):
+    assert constants.SPECULATIVE_TURN_ENABLED is True
     assert constants.SPECULATIVE_MIN_WORDS == 6 and constants.SPECULATIVE_MATCH_RATIO == 0.8
+    monkeypatch.setattr(constants, "SPECULATIVE_TURN_ENABLED", False)
     s = SimpleNamespace(prompter=FakePrompter(), AI_thinking=False, AI_speaking=False)
     t = spec.SpeculativeTurn(s, chat=lambda *a, **k: pytest.fail("no model call when off"))
     assert t.on_stable_partial("what should I cook for dinner tonight") is None

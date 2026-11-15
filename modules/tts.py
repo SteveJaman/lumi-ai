@@ -9,8 +9,12 @@ import threading
 import array  # fallback RMS computation when numpy is absent
 from dotenv import load_dotenv
 
+from collections import deque
+
+import constants
 from modules.subtitles import SubtitleWriter
 from modules.speech_filter import strip_slurs
+from modules.duplex import PlaybackLevel
 
 # Load environment variables from .env file
 load_dotenv()
@@ -147,6 +151,107 @@ def _scale_wav(audio_bytes, volume):
         return audio_bytes
 
 
+def _pcm_rms(data):
+    """RMS of 16-bit little-endian PCM bytes (0 for empty)."""
+    n = len(data) // 2
+    if n == 0:
+        return 0.0
+    if HAS_NUMPY:
+        x = np.frombuffer(data[:n * 2], dtype="<i2").astype(np.float32)
+        return float(np.sqrt(np.mean(x * x)))
+    s = array.array('h')
+    s.frombytes(data[:n * 2])
+    step = max(1, n // 256)
+    picked = s[::step]
+    return (sum(v * v for v in picked) / len(picked)) ** 0.5
+
+
+def _pcm_to_wav(pcm, rate, channels=1, width=2):
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(width)
+        w.setframerate(rate)
+        w.writeframes(bytes(pcm))
+    return buf.getvalue()
+
+
+class StreamingAudio:
+    """One sentence of Fish Audio PCM arriving over HTTP. The download thread
+    pump()s it into a buffer; the playback thread reads it as it grows."""
+
+    def __init__(self, response, rate, channels=1, width=2):
+        self._resp = response
+        self.rate, self.channels, self.width = rate, channels, width
+        self.buf = bytearray()
+        self.cond = threading.Condition()
+        self.done = False
+        self.cancelled = False
+        self.error = None
+        self.started = time.time()
+        self.first_byte_at = None
+
+    def pump(self):
+        try:
+            for piece in self._resp.iter_content(4096):
+                if self.cancelled:
+                    break
+                if piece:
+                    with self.cond:
+                        if self.first_byte_at is None:
+                            self.first_byte_at = time.time()
+                        self.buf.extend(piece)
+                        self.cond.notify_all()
+        except Exception as e:
+            self.error = e
+        finally:
+            with self.cond:
+                self.done = True
+                self.cond.notify_all()
+            try:
+                self._resp.close()
+            except Exception:
+                pass
+
+    def cancel(self):
+        self.cancelled = True
+        try:
+            self._resp.close()
+        except Exception:
+            pass
+        with self.cond:
+            self.done = True
+            self.cond.notify_all()
+
+    def wait_for(self, nbytes, timeout=5.0):
+        """Block until nbytes are buffered or the download ends."""
+        deadline = time.time() + timeout
+        with self.cond:
+            while len(self.buf) < nbytes and not self.done:
+                left = deadline - time.time()
+                if left <= 0:
+                    break
+                self.cond.wait(left)
+            return len(self.buf)
+
+    def read(self, pos, nbytes, timeout=2.0):
+        """Up to nbytes starting at pos (frame-aligned); b"" once it's all played."""
+        self.wait_for(pos + nbytes, timeout)
+        with self.cond:
+            end = min(len(self.buf), pos + nbytes)
+            frame = self.channels * self.width
+            end -= (end - pos) % frame
+            return bytes(self.buf[pos:end]) if end > pos else b""
+
+    def finished_at(self, pos):
+        with self.cond:
+            return self.done and pos >= len(self.buf) - (len(self.buf) % (self.channels * self.width))
+
+    def wav_bytes(self):
+        with self.cond:
+            return _pcm_to_wav(self.buf, self.rate, self.channels, self.width)
+
+
 class TTS:
     def __init__(self, signals, enabled=True, modules=None, audio_mode="both"):
         self.signals = signals
@@ -157,6 +262,13 @@ class TTS:
         self._current_sa_obj = None
         self._fetching = False
         self.last_audio_end = 0.0
+        # Full-duplex helpers (modules/duplex.py): how loud she is right now
+        # (echo guard) and what she said lately (her own words picked up by
+        # the mic aren't a user turn).
+        self.playback_level = PlaybackLevel()
+        self.recent_spoken = deque(maxlen=16)
+        self._streams = set()
+        self._streams_lock = threading.Lock()
         # Barge-in: bumped by interrupt(). Audio fetched or queued under an
         # older value is dropped, and the prompter stops a reply whose turn
         # started under one (signals.speech_epoch).
@@ -242,6 +354,71 @@ class TTS:
         except Exception as e:
             print(f"\033[91mTTS API Download Error: {e}\033[0m")
             return None
+
+    # ---------------------------------------------------------------
+    # Streaming (TTS_STREAMING): play Fish Audio while it downloads
+    # ---------------------------------------------------------------
+    def _can_stream(self):
+        """Stream only when it's local speakers alone: Discord voice needs
+        whole clips, and Kokoro (local_fast) isn't a stream."""
+        if not getattr(constants, "TTS_STREAMING", False) or not HAS_PYAUDIO:
+            return False
+        if VOICE_ENGINE == "local_fast" or not FISH_API_KEY:
+            return False
+        if self.audio_mode not in ("local", "both"):
+            return False
+        vc = getattr(self.signals, "voice_context", None)
+        if self.audio_mode == "both" and vc and vc.get("active"):
+            return False                    # she's in a Discord voice channel
+        return True
+
+    def _open_stream(self, message):
+        """Start a streamed Fish Audio request (raw 16-bit mono PCM), or None
+        if it can't start (then the caller fetches a whole clip instead)."""
+        clean_message = re.sub(r'\*.*?\*', '', message).strip()
+        if not clean_message:
+            return None
+        rate = int(getattr(constants, "TTS_STREAM_SAMPLE_RATE", 44100))
+        try:
+            response = requests.post(
+                "https://api.fish.audio/v1/tts",
+                headers={
+                    "Authorization": f"Bearer {FISH_API_KEY}",
+                    "Content-Type": "application/json",
+                    "model": "s2.1-pro-free",
+                },
+                json={
+                    "text": clean_message,
+                    "reference_id": self._reference_for(clean_message),
+                    "format": "pcm",
+                    "sample_rate": rate,
+                    "latency": "balanced",
+                    "prosody": {"speed": 1.0, "temperature": 0.7},
+                },
+                stream=True,
+                timeout=(10, 30),
+            )
+            response.raise_for_status()
+        except Exception as e:
+            print(f"\033[93mTTS: streaming request failed ({e}); fetching the whole clip\033[0m")
+            return None
+        stream = StreamingAudio(response, rate)
+        with self._streams_lock:
+            self._streams.add(stream)
+        return stream
+
+    def _remember_spoken(self, message):
+        """What she said, for the echo guard's transcript check."""
+        recent = getattr(self, "recent_spoken", None)
+        if recent is not None:
+            recent.append((time.time(), message))
+
+    def _note_level(self, chunk):
+        """Her output loudness for the echo guard (modules/duplex.py)."""
+        try:
+            self.playback_level.note(_pcm_rms(chunk))
+        except Exception:
+            pass
 
     def _fetch_local_fast(self, text):
         """WAV bytes from Kokoro, a local TTS model, or None. Not installed
@@ -355,6 +532,7 @@ class TTS:
         if volume != 1.0:
             audio_bytes = _scale_wav(audio_bytes, volume)
         if not backchannel:
+            self._remember_spoken(message)
             self.signals.sio_queue.put(("current_message", message))
             self.subtitles.show(message, _wav_duration(audio_bytes, message))
 
@@ -427,10 +605,14 @@ class TTS:
                             )
                             mouth_tick = 0
 
+                            notes_level = (not backchannel and channels_val == 1
+                                           and wf.getsampwidth() == 2 and dev_idx == mouth_driver_idx)
                             for i in range(0, len(all_data), bytes_per_chunk):
                                 if not self.is_playing and not backchannel:
                                     break
                                 st.write(all_data[i:i + bytes_per_chunk])
+                                if notes_level:
+                                    self._note_level(all_data[i:i + bytes_per_chunk])
 
                                 if is_mouth_driver and mouth_tick < len(envelope):
                                     try:
@@ -480,6 +662,96 @@ class TTS:
         elif not backchannel:
             self.audio_ended()
 
+    def play_stream(self, message, stream):
+        """Play a StreamingAudio while it downloads: the same devices, lip-sync
+        and echo-guard level as play_audio, starting after TTS_PREBUFFER_MS.
+        Browser tabs get the whole clip once it has downloaded (download
+        loop); this path isn't used while she's in Discord voice."""
+        self._remember_spoken(message)
+        self.signals.sio_queue.put(("current_message", message))
+        self.subtitles.show(message, max(1.0, len(message or "") / 15.0))
+
+        frame = stream.channels * stream.width
+        prebuffer = int(stream.rate * frame * getattr(constants, "TTS_PREBUFFER_MS", 250) / 1000)
+        stream.wait_for(prebuffer, timeout=10.0)
+        if stream.cancelled or (stream.done and not stream.buf):
+            if stream.error:
+                print(f"\033[91mTTS stream error: {stream.error}\033[0m")
+            return
+
+        self.is_playing = True
+        self.audio_started()
+        try:
+            p = pyaudio.PyAudio()
+            if OUTPUT_DEVICE_INDEX is None:
+                device_indices = [None]
+            elif isinstance(OUTPUT_DEVICE_INDEX, (list, tuple)):
+                device_indices = list(OUTPUT_DEVICE_INDEX)
+            else:
+                device_indices = [OUTPUT_DEVICE_INDEX]
+            mouth_driver_idx = device_indices[0]
+            bytes_per_chunk = 1024 * frame
+            vts = self._find_vts()
+
+            def device_worker(dev_idx):
+                try:
+                    kwargs = {} if dev_idx is None else {"output_device_index": dev_idx}
+                    st = p.open(format=p.get_format_from_width(stream.width), channels=stream.channels,
+                                rate=stream.rate, output=True, **kwargs)
+                    driver = dev_idx == mouth_driver_idx
+                    peak = 1.0
+                    pos = 0
+                    while self.is_playing and not stream.cancelled:
+                        chunk = stream.read(pos, bytes_per_chunk, timeout=2.0)
+                        if not chunk:
+                            if stream.finished_at(pos):
+                                break
+                            continue                     # the network is behind: wait for more
+                        pos += len(chunk)
+                        st.write(chunk)
+                        if driver:
+                            self._note_level(chunk)
+                            if vts is not None:
+                                peak = self._stream_mouth(vts, chunk, stream.rate, peak)
+                    st.stop_stream()
+                    st.close()
+                except Exception as e:
+                    print(f"\033[91mTTS PyAudio Device {dev_idx} Error: {e}\033[0m")
+
+            threads = [threading.Thread(target=device_worker, args=(d,)) for d in device_indices]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            p.terminate()
+        except Exception as e:
+            print(f"\033[91mTTS Playback Error: {e}\033[0m")
+        finally:
+            self.is_playing = False
+            self.audio_ended()
+
+    def _stream_mouth(self, vts, chunk, rate, peak):
+        """Lip-sync for one streamed chunk. The whole clip isn't known yet, so
+        loudness is scaled by a running peak instead of the clip's peak."""
+        try:
+            rms = _pcm_rms(chunk)
+            peak = max(peak * 0.995, rms, 1.0)
+            open_ = min(1.0, (rms / peak) ** 0.6)
+            form = 0.0
+            if HAS_NUMPY and rms > 0.18 * peak:
+                from modules.vts_motion import analyze_visemes
+                vis = analyze_visemes(np.frombuffer(chunk, dtype="<i2").astype(np.float32), rate, len(chunk) // 2)
+                if vis:
+                    form = vis[0][1]
+            shape = getattr(vts.API, "set_mouth_shape", None)
+            if shape is not None:
+                shape(open_, form)
+            else:
+                vts.API.set_mouth_open(open_)
+        except Exception:
+            pass
+        return peak
+
     def interrupt(self, source="voice"):
         """Barge-in: the user started talking, so she stops now. Playback
         stops and both queues are cleared (stop()), a Fish Audio request
@@ -527,7 +799,16 @@ class TTS:
                 self.signals.tts_queue.queue.clear()
 
         with self.audio_queue.mutex:
+            for item in self.audio_queue.queue:
+                if len(item) > 1 and isinstance(item[1], StreamingAudio):
+                    item[1].cancel()
             self.audio_queue.queue.clear()
+        lock = getattr(self, "_streams_lock", None)
+        if lock is not None:
+            with lock:
+                streams, self._streams = list(self._streams), set()
+            for s in streams:                   # downloads still running
+                s.cancel()
 
         if not HAS_PYAUDIO and self._current_sa_obj:
             try:
@@ -564,6 +845,41 @@ class TTS:
             except Exception:
                 pass
 
+    def _stream_sentence(self, message, epoch):
+        """Download loop: queue this sentence as a stream (playback starts as
+        soon as audio arrives) and download it to the end, so sentences stay
+        in order. False if streaming isn't possible; the caller then fetches
+        a whole clip."""
+        if not self._can_stream():
+            return False
+        stream = self._open_stream(message)
+        if stream is None:
+            return False
+        if epoch != self.signals.speech_epoch:
+            stream.cancel()
+            return True
+        self.audio_queue.put((message, stream, epoch))
+        try:
+            stream.pump()                      # returns when it's all here (or cancelled)
+        finally:
+            with self._streams_lock:
+                self._streams.discard(stream)
+        if stream.first_byte_at:
+            try:
+                from modules.log_hub import emit as hub_emit
+                hub_emit(self.signals, "tts", f"streamed: first audio after "
+                         f"{stream.first_byte_at - stream.started:.2f}s ({len(stream.buf)} bytes)")
+            except Exception:
+                pass
+        if not stream.cancelled and stream.buf and epoch == self.signals.speech_epoch:
+            try:
+                broadcast = getattr(self.signals, "broadcast_tts_audio", None)
+                if broadcast is not None:
+                    broadcast(stream.wav_bytes())     # browser tabs: the whole clip
+            except Exception as e:
+                print(f"\033[90mTTS: browser broadcast failed — {e}\033[0m")
+        return True
+
     def audio_playback_loop(self):
         """BACKGROUND WORKER 2: Continuously plays ready-to-go audio files."""
         while not getattr(self.signals, 'terminate', False):
@@ -572,7 +888,12 @@ class TTS:
                 message, audio_bytes = item[0], item[1]
                 epoch = item[2] if len(item) > 2 else self.signals.speech_epoch
                 stale = epoch != self.signals.speech_epoch      # from before a barge-in
-                if message and audio_bytes and not stale and not getattr(self.signals, 'terminate', False):
+                if isinstance(audio_bytes, StreamingAudio):
+                    if stale:
+                        audio_bytes.cancel()
+                    elif message and not getattr(self.signals, 'terminate', False):
+                        self.play_stream(message, audio_bytes)
+                elif message and audio_bytes and not stale and not getattr(self.signals, 'terminate', False):
                     self.play_audio(message, audio_bytes)
                 self.audio_queue.task_done()
             except queue.Empty:
@@ -601,7 +922,10 @@ class TTS:
                         epoch = self.signals.speech_epoch
                         self._fetching = True
                         try:
-                            audio_bytes = self.fetch_audio(message)
+                            if self._stream_sentence(message, epoch):
+                                audio_bytes = None          # already queued and playing
+                            else:
+                                audio_bytes = self.fetch_audio(message)
                         finally:
                             self._fetching = False
                         if audio_bytes and epoch == self.signals.speech_epoch:

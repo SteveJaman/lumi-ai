@@ -41,7 +41,9 @@ def _cfg(name, default):
 
 
 def enabled() -> bool:
-    return bool(_cfg("SPECULATIVE_TURN_ENABLED", False))
+    # Not in Gaming Mode: models unload after every call there, so a draft
+    # would load the chat model only for the real turn to load it again.
+    return bool(_cfg("SPECULATIVE_TURN_ENABLED", False)) and not _cfg("GAMING_MODE", False)
 
 
 def normalize(text: str) -> str:

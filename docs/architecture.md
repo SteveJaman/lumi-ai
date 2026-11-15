@@ -182,6 +182,26 @@ hidden system note then goes into history after what she got out, "The
 user interrupted you mid-sentence…", so her next reply answers the new
 input instead of finishing the old thought. Fish Audio stays the voice.
 
+With the local mic, barge-in waits a moment to hear *what* you said (see
+"Full-duplex-style voice" below): a "yeah" or "mm-hm" over her is a
+backchannel, not an interruption. `BARGE_IN_CONFIRM_MS = 0` brings back the
+instant stop described here.
+
+**Full-duplex-style voice.** The pipeline stays cascaded (RealtimeSTT, the
+LLM, Fish Audio); `modules/duplex.py` holds the turn-taking rules and
+`mic_input.py` / `tts.py` apply them on the existing mic stream and output
+path. There is no speech-to-speech model: native full-duplex models (Moshi,
+PersonaPlex) need more VRAM than the 11 GB card has next to her own models.
+
+| Piece | What it does | Switch |
+|---|---|---|
+| Smart end of turn | The silence that ends your turn comes from your partial transcript: 0.6 s after a finished sentence, 1.8 s after "and…", "um" or a comma, 1.0 s otherwise (was a fixed 2.2 s). Set live on the recorder's `post_speech_silence_duration`, which RealtimeSTT reads every loop | `SMART_TURN_ENABLED`, `TURN_SILENCE_*` |
+| Barge-in that knows a backchannel | Talking over her (or while she writes a reply) arms a barge-in. It fires after `BARGE_IN_CONFIRM_MS` of real words, at once on "wait", "stop", "hold on", "actually", and always after `BARGE_IN_FORCE_MS`. If all you said was a backchannel, she keeps going and it isn't sent as a message; a short real question ("what?") stops her when its transcript arrives | `BARGE_IN_CONFIRM_MS` (0 = instant), `BARGE_IN_FORCE_MS` |
+| Echo guard | For speakers: `tts.py` records her output level; while she plays, a mic chunk counts as your voice only if it's louder than her learned echo × `ECHO_MARGIN`. A transcript matching what she said in the last 30 s is dropped as her own echo. Echo suppression, not acoustic echo cancellation; with headphones it never triggers | `ECHO_GUARD_ENABLED`, `ECHO_MARGIN` |
+| Streaming TTS | Fish Audio is requested as raw PCM (`sample_rate` 44.1 kHz) and played as it downloads, after a 250 ms prebuffer: first sound ~0.7 s instead of ~3.9 s for a long sentence (measured). Lip-sync runs per chunk on a running peak. Browser tabs get the whole clip when it has downloaded. Not used in Discord voice (needs whole clips) or with Kokoro; a failed stream falls back to a whole clip | `TTS_STREAMING`, `TTS_PREBUFFER_MS` |
+| Speculative turn | On by default: a stable partial transcript starts her reply; the final transcript keeps it (≥ 0.8 similar, continuing via assistant prefill) or discards it. The draft builds its prompt with `gather_injections(consume=False)`, so counters and one-shot module injections are used once, by the real turn | `SPECULATIVE_TURN_ENABLED` |
+| Backchannels | Her "mm-hm"s while you talk (`modules/backchannel.py`) | `BACKCHANNEL_ENABLED` |
+
 Turns about her past (`_PAST_QUERY`: "backstory", "who are you", "the
 Choir", …) add her backstory and lore notes (`get_backstory_block()`) for
 that turn and the next two, so "go on" still has them.

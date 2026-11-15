@@ -98,6 +98,12 @@ for the pipeline.
 - **Persona and voice.** Personality, lore, and rules live in `lumi.yaml` and
   can be edited live from the web client. Speech uses Fish Audio with inline
   emotion tags. See [docs/configuration.md](docs/configuration.md).
+- **Full-duplex-style conversation.** She answers about 0.6 s after you finish
+  a sentence (and waits when you trail off), starts speaking ~0.7 s after the
+  reply begins (streamed Fish Audio), says "mm-hm" while you talk, keeps going
+  when you say "yeah" over her but stops for real words, ignores her own echo
+  through speakers, and can draft her reply before you finish. See
+  [docs/architecture.md](docs/architecture.md) (Full-duplex-style voice).
 - **Memory and inner state.** Timestamped, importance-scored long-term memory
   in ChromaDB, an emotional state with cognitive frames, a self-model of her
   own patterns, and an autonomous heartbeat that lets her speak unprompted.

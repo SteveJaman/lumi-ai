@@ -1700,7 +1700,8 @@ class Prompter:
         keep_alive = gaming_mode.keep_alive(FAST_MODEL_KEEP_ALIVE if use_fast else "30s")
     
     
-        context_injections = self.gather_injections(latest_user_text, agent_context=False)
+        context_injections = self.gather_injections(latest_user_text, agent_context=False,
+                                                    consume=pending_user is None)
         messages = [{"role": "system", "content": f"{get_chat_system_prompt()}\n\n{context_injections}"}]
 
         for msg in self.signals.history[-10:]:
@@ -1823,6 +1824,12 @@ class Prompter:
         loop = asyncio.get_running_loop()
         req = run.request
         self._note_route(req)
+        # The draft didn't use up this turn's context (counters, one-shot
+        # injections, emotional update); do that once now.
+        try:
+            self.gather_injections(final_text, agent_context=False)
+        except Exception:
+            pass
         await loop.run_in_executor(None, run.stop)        # freeze it at the current token
         prefix = run.text
         print(f"{GRAY}Thinking (conversational, {req['label']}, speculative "
@@ -1967,7 +1974,11 @@ class Prompter:
         except Exception:
             return False
 
-    def gather_injections(self, user_query="", agent_context=None):
+    def gather_injections(self, user_query="", agent_context=None, consume=True):
+        """The per-turn prompt context. consume=False (a speculative turn's
+        draft) builds the same text without using anything up: backstory and
+        session-continuity counters, one-shot module injections and the
+        emotional-state update are left for the real turn."""
         if agent_context is None:
             agent_context = self.agent_mode_enabled
 
@@ -2233,6 +2244,7 @@ class Prompter:
                 state_desc = self.signals.emotional_state.describe(
                     agent_mode=agent_context,
                     user_text=user_query,
+                    update=consume,
                 )
                 if state_desc:
                     injections.append(state_desc)
@@ -2325,21 +2337,27 @@ class Prompter:
                 except Exception:
                     pass
 
+        backstory_turns = getattr(self, "_backstory_turns", 0)
         if _PAST_QUERY.search(user_query or ""):
-            self._backstory_turns = BACKSTORY_TURNS
-        self._backstory_now = False
-        if getattr(self, "_backstory_turns", 0) > 0:
-            self._backstory_turns -= 1
+            backstory_turns = BACKSTORY_TURNS
+        backstory_now = False
+        if backstory_turns > 0:
+            backstory_turns -= 1
             block = get_backstory_block()
             if block:
                 injections.append(block)
-                self._backstory_now = True
+                backstory_now = True
+        if consume:
+            self._backstory_turns = backstory_turns
+        # A draft's long-reply decision reads this, so it's set either way.
+        self._backstory_now = backstory_now
 
         if self._turns_since_start < SESSION_CONTINUITY_TURNS:
             continuity = self.session_state.format_injection()
             if continuity:
                 injections.append(continuity)
-        self._turns_since_start += 1
+        if consume:
+            self._turns_since_start += 1
 
         for module in self.modules:
             if hasattr(module, 'get_prompt_injection') and getattr(module, 'enabled', True):
@@ -2347,7 +2365,8 @@ class Prompter:
                     inj = module.get_prompt_injection()
                     if inj and hasattr(inj, 'text') and inj.text.strip():
                         injections.append(inj.text)
-                        inj.text = ""
+                        if consume:
+                            inj.text = ""
                 except Exception:
                     pass
 
