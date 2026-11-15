@@ -127,7 +127,10 @@ html[data-lumi-theme="cyberpunk"][data-surface="island"] .bub {
 html[data-lumi-theme="cyberpunk"][data-surface="island"] .m.user .bub {
   box-shadow: inset -2px 0 0 var(--lt-secondary); border-color: rgba(255, 43, 214, 0.45);
 }
-html[data-lumi-theme="cyberpunk"][data-surface="island"] :is(.tab, .btn):hover { animation: lt-glitch 260ms steps(2, end) 1; }
+/* The glitch runs on what is inside a tab, never on the tab itself: its clip-path and
+   shake would move the button's hit area, so a click during the effect could miss. */
+html[data-lumi-theme="cyberpunk"][data-surface="island"] .tab:hover > * { animation: lt-glitch 260ms steps(2, end) 1; }
+html[data-lumi-theme="cyberpunk"][data-surface="island"] .btn:hover { text-shadow: -1px 0 var(--lt-secondary), 1px 0 var(--lt-primary); }
 html[data-lumi-theme="cyberpunk"][data-surface="island"] .pipe-stage {
   border-radius: 0; border-color: var(--lt-primary); clip-path: var(--lt-hud-sm);
 }

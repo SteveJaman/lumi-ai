@@ -705,6 +705,9 @@ class SocketIOServer:
         r.add_get("/api/game/status",   self._handle_game_status)
         r.add_get("/api/games",         self._handle_games_list)
         r.add_post("/api/game/toggle",  self._handle_game_toggle)
+        # Host-only (not in _REMOTE_API_ALLOW, and checked again in the handlers).
+        r.add_get("/api/game/agent_model",  self._handle_game_agent_model_get)
+        r.add_post("/api/game/agent_model", self._handle_game_agent_model_set)
         r.add_post("/api/games/{game}/directive", self._handle_game_directive)
         r.add_post("/api/games/{game}/action",    self._handle_game_hud_action)
         r.add_post("/api/games/{game}/server",    self._handle_game_server)
@@ -1633,6 +1636,58 @@ class SocketIOServer:
         from modules.log_hub import emit as hub_emit
         hub_emit(self.signals, "minecraft",
                  f"autoplay {'enabled' if enabled else 'disabled'} from the dashboard")
+        return web.json_response(data)
+
+    async def _handle_game_agent_model_get(self, request):
+        """GET /api/game/agent_model?game=minecraft -> {game, agent_model, available, options}."""
+        if self._is_remote(request):
+            return _json_error(403, _HOST_ONLY_MSG)
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        games = getattr(self.signals, "game_manager", None)
+        if games is None:
+            return _json_error(503, "Game manager not available.")
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, games.agent_model,
+                                              request.query.get("game", "minecraft"))
+        except ValueError as e:
+            return _json_error(400, str(e))
+        return web.json_response(data)
+
+    async def _handle_game_agent_model_set(self, request):
+        """POST /api/game/agent_model {game, agent_model}: save it and have a
+        running agent use it on its next decision. Posting the current choice
+        again is the Games page's Resume after a cloud error. 409 when a cloud
+        provider has no key (nothing changes)."""
+        if self._is_remote(request):
+            return _json_error(403, _HOST_ONLY_MSG)
+        if not self._origin_ok(request):
+            return _json_error(403, "Bad origin.")
+        if not self._current_user(request):
+            return _json_error(401, "Not logged in.")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        ok, err = self._require_csrf(request, body)
+        if not ok:
+            return _json_error(403, err)
+        games = getattr(self.signals, "game_manager", None)
+        if games is None:
+            return _json_error(503, "Game manager not available.")
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, games.set_agent_model,
+                                              str(body.get("game") or ""), str(body.get("agent_model") or ""))
+        except ValueError as e:
+            return _json_error(400, str(e))
+        except LookupError as e:
+            return _json_error(409, str(e))
+        except Exception as e:
+            return _json_error(500, f"Couldn't save the agent model: {e}")
         return web.json_response(data)
 
     async def _handle_game_directive(self, request):

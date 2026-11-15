@@ -171,6 +171,33 @@
     return p;
   }
 
+  // Resolves true when the stylesheet loaded, false when it failed or took
+  // over STYLE_TIMEOUT_MS. No style -> drop the href (an empty href would
+  // point the <link> at the page itself).
+  const STYLE_TIMEOUT_MS = 4000;
+  function loadStyle(href) {
+    return new Promise((resolve) => {
+      const link = S.link;
+      link.onload = link.onerror = null;
+      if (!href) { link.removeAttribute('href'); resolve(true); return; }
+      const done = (ok) => { clearTimeout(timer); link.onload = link.onerror = null; resolve(ok); };
+      const timer = setTimeout(() => done(false), STYLE_TIMEOUT_MS);
+      link.onload = () => done(true);
+      link.onerror = () => { console.warn(`[theme] ${href} failed to load`); done(false); };
+      link.href = href;
+    });
+  }
+
+  // <html data-theme-ready="<id>|fallback|none"> + a 'lumi-theme-ready' event,
+  // once the first theme's stylesheet has settled. The web app's wake-up screen
+  // waits for it (briefly) before showing the app. Never blocks first paint.
+  function markReady(value) {
+    const root = document.documentElement;
+    const first = !root.dataset.themeReady;
+    root.dataset.themeReady = value;
+    if (first) window.dispatchEvent(new CustomEvent('lumi-theme-ready', { detail: { value } }));
+  }
+
   function setPalette(palette) {
     const root = document.documentElement;
     for (const k of S.paletteKeys) root.style.removeProperty(`--lt-${k}`);
@@ -183,7 +210,8 @@
     let m;
     try { m = await manifestOf(id); } catch (e) {
       console.warn('[theme]', e.message);
-      if (id !== 'default') return apply('default');
+      if (id !== 'default') return apply('default');     // unknown or broken theme id: the default look
+      markReady('none');                                  // no theme at all: the app's own tokens
       return null;
     }
     const root = document.documentElement;
@@ -196,7 +224,8 @@
       S.link.id = 'lumi-theme-css';
       document.head.appendChild(S.link);
     }
-    S.link.href = m.style ? `${S.base}${id}/${m.style}` : '';
+    const styled = loadStyle(m.style ? `${S.base}${id}/${m.style}` : '');
+    styled.then((ok) => markReady(ok ? id : 'fallback'));
     if (m.background && m.background.script) await loadScript(id, m.background.script);
     S.current = id; S.manifest = m;
     startBackground(id, m);

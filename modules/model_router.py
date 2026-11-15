@@ -22,6 +22,7 @@ on your Claude plan. The Pipeline view shows both the tier and the real model.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -165,3 +166,109 @@ def max_tier(a: Optional[str], b: Optional[str]) -> str:
     a = a if a in rank else DEFAULT_TIER
     b = b if b in rank else DEFAULT_TIER
     return a if rank[a] >= rank[b] else b
+
+
+# ── game agents: a per-call model override ───────────────────────
+# A game agent (plugin/minecraft_bot.py) picks its goals with the local game
+# model unless the Games page chose a cloud provider for it. The choice is
+# saved per game in config/lumi.yaml:  games: {minecraft: {agent_model: claude}}
+AGENT_MODEL_CHOICES = ("local", "claude", "openai", "gemini")
+AGENT_MODEL_LABELS = {"local": "Local", "claude": "Claude", "openai": "OpenAI", "gemini": "Gemini"}
+# Choice -> llm_providers provider id (whose API key it needs).
+AGENT_PROVIDERS = {"claude": "anthropic", "openai": "openai", "gemini": "gemini"}
+
+
+class CloudKeyMissing(RuntimeError):
+    """The chosen cloud provider has no API key. The game loop pauses on it."""
+
+    def __init__(self, choice: str):
+        self.choice = choice
+        self.label = AGENT_MODEL_LABELS.get(choice, choice)
+        super().__init__(f"{self.label} key not set")
+
+
+def local_agent_model() -> str:
+    """The local model game agents use: MINECRAFT_AGENT_LOCAL_MODEL, else
+    GAME_AGENT_MODEL."""
+    return (getattr(constants, "MINECRAFT_AGENT_LOCAL_MODEL", None)
+            or getattr(constants, "GAME_AGENT_MODEL", "qwen2.5:3b"))
+
+
+def provider_has_key(choice: str) -> bool:
+    """Whether a cloud choice's provider has an API key in .env."""
+    provider = AGENT_PROVIDERS.get(choice)
+    if provider is None:
+        return False
+    from modules.llm_providers import _resolve_provider_config
+    cfg = _resolve_provider_config(provider) or {}
+    return bool(cfg.get("api_key"))
+
+
+def available_agent_models() -> list:
+    """"local", then every cloud choice whose provider has a key."""
+    out = ["local"]
+    for choice in AGENT_MODEL_CHOICES[1:]:
+        try:
+            if provider_has_key(choice):
+                out.append(choice)
+        except Exception:
+            pass
+    return out
+
+
+def agent_model_spec(*, model_override: Optional[str] = None, local_model: Optional[str] = None) -> str:
+    """The provider:model spec a game agent's next call runs on.
+    model_override None or "local" -> the local model (local_model, else
+    local_agent_model()); "claude" / "openai" / "gemini" -> that provider's
+    model from MINECRAFT_AGENT_CLOUD_MODELS. Raises CloudKeyMissing when that
+    provider has no key (never falls back to local), ValueError for an
+    unknown choice."""
+    if model_override in (None, "", "local"):
+        return local_model or local_agent_model()
+    if model_override not in AGENT_PROVIDERS:
+        raise ValueError(f"unknown agent model: {model_override}")
+    if not provider_has_key(model_override):
+        raise CloudKeyMissing(model_override)
+    return cloud_agent_model(model_override)
+
+
+def cloud_agent_model(choice: str) -> str:
+    models = getattr(constants, "MINECRAFT_AGENT_CLOUD_MODELS", {}) or {}
+    return models.get(choice) or {
+        "claude": "anthropic:claude-sonnet-5-5", "openai": "openai:gpt-5.5",
+        "gemini": "gemini:gemini-3.5-flash"}[choice]
+
+
+_choice_cache: Dict[str, object] = {"mtime": None, "data": {}}
+
+
+def agent_model_choice(game: str = "minecraft") -> str:
+    """The saved choice for a game (config/lumi.yaml games.<game>.agent_model),
+    else MINECRAFT_AGENT_MODEL. Re-read only when the file changes, so a game
+    loop can call it before every decision."""
+    default = getattr(constants, "MINECRAFT_AGENT_MODEL", "local") if game == "minecraft" else "local"
+    path = getattr(constants, "YAML_PATH", None)
+    try:
+        mtime = os.path.getmtime(path)
+    except (OSError, TypeError):
+        return default
+    if mtime != _choice_cache["mtime"]:
+        try:
+            import yaml
+            with open(path, encoding="utf-8") as f:
+                data = yaml.safe_load(f.read().replace("<host>", "host")) or {}
+        except Exception:
+            data = {}
+        _choice_cache.update(mtime=mtime, data=data if isinstance(data, dict) else {})
+    games = _choice_cache["data"].get("games") or {}
+    value = ((games.get(game) or {}) if isinstance(games, dict) else {}).get("agent_model")
+    return value if value in AGENT_MODEL_CHOICES else default
+
+
+def agent_model_info(choice: str, local_model: Optional[str] = None) -> Dict[str, str]:
+    """{choice, label, model} for the Games page: "Claude (claude-sonnet-5-5)"."""
+    spec = (local_model or local_agent_model()) if choice in (None, "", "local") else cloud_agent_model(choice)
+    model = spec.split(":", 1)[1] if spec.split(":", 1)[0] in ("ollama", "anthropic", "openai", "gemini",
+                                                                 "groq", "openrouter") else spec
+    return {"choice": choice or "local", "label": AGENT_MODEL_LABELS.get(choice or "local", choice),
+            "model": model}

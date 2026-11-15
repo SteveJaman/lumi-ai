@@ -473,8 +473,6 @@ input[type=range] { accent-color: var(--accent); }
 .auth-card { background: var(--panel); border: 1px solid var(--border-hi); border-radius: var(--r-xl); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55), 0 0 50px var(--glow-soft); }
 .auth-title, .setup-title { font-family: var(--font-display); letter-spacing: 0.2em; text-transform: uppercase; text-shadow: 0 0 22px var(--glow); }
 .auth-logo { border: 1px solid var(--accent); box-shadow: 0 0 22px var(--glow); border-radius: 14px; }
-.boot-loader { background: radial-gradient(600px 400px at 50% 40%, var(--bg-glow-top), transparent 70%), var(--bg); }
-.boot-title { font-family: var(--font-display); letter-spacing: 0.3em; text-transform: uppercase; }
 
 @media (prefers-reduced-motion: reduce) {
   .nav-item, .btn, .filter-chip, .ws-tab { transition: none; }

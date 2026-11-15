@@ -63,10 +63,20 @@ from plugin.base_game_agent import BaseGameAgent
 # Lumi's LLM layer, for goal picking. Optional: the agent plays without it.
 try:
     from modules.llm_providers import chat_sync, parse_model_spec
-    from constants import GAME_AGENT_MODEL as _GAME_MODEL, LLM_ENDPOINT as _OLLAMA
+    from constants import LLM_ENDPOINT as _OLLAMA
+    from modules import model_router
+    _GAME_MODEL = model_router.local_agent_model()
 except Exception:
-    chat_sync = parse_model_spec = None
+    chat_sync = parse_model_spec = model_router = None
     _GAME_MODEL, _OLLAMA = None, "http://127.0.0.1:11434"
+
+# Every action is checked before it reaches bot.js (pure Python, always on).
+from modules import minecraft_governor as governor
+from modules.minecraft_actions import render_actions_prompt
+try:
+    from constants import MINECRAFT_AGENT_CLOUD_TIMEOUT_S as _CLOUD_TIMEOUT_S
+except Exception:
+    _CLOUD_TIMEOUT_S = 45
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 DATA_ROOT      = os.path.join(_ROOT, "data")
@@ -74,6 +84,9 @@ MC_DIR         = os.path.join(DATA_ROOT, "minecraft")
 TELEMETRY_PATH = os.path.join(MC_DIR, "telemetry.json")
 EVENTS_PATH    = os.path.join(MC_DIR, "events.jsonl")
 AUTOPLAY_PATH  = os.path.join(MC_DIR, "autoplay.json")
+# Written by Lumi when the Games page changes the agent model or presses
+# Resume: {"seq": n}. A new seq clears a cloud-error pause.
+CONTROL_PATH   = os.path.join(MC_DIR, "agent_control.json")
 GAMING_MODE_PATH = os.path.join(DATA_ROOT, "gaming_mode.json")   # written by Lumi
 TOKEN_PATH     = os.path.join(DATA_ROOT, "memories", "sdk_token.txt")
 
@@ -937,6 +950,22 @@ OVERRIDE_SYSTEM = (
     '{"goal": "<one of the listed names, or none>", "reason": "<one short sentence>"}'
 )
 
+# Added to the system prompt only when a cloud model picks (agent_model != local).
+FRONTIER_DIRECTIVE = (
+    "You are playing Minecraft. Respond with exactly one action from the list, then a "
+    "one-line reason. Do not plan more than one step ahead. If an action is refused, "
+    "choose a different one. Use the JSON format above.")
+REFUSAL_MEMORY_S = 300     # a refusal stays in the picker's prompt this long (used once)
+REFUSED_REST_S = 60        # and the refused goal isn't offered again for this long
+
+
+class CloudModelError(RuntimeError):
+    """A cloud goal-picker call failed (timeout, 429, 5xx, no key): pause."""
+
+    def __init__(self, label: str, error: str):
+        self.label, self.error = label, error
+        super().__init__(f"{label}: {error}")
+
 
 # ─── Agent ────────────────────────────────────────────────────────────────────
 
@@ -992,6 +1021,17 @@ class MinecraftAgent(BaseGameAgent):
         self._autoplay_was = True
         self._defend_backoff_until = 0.0
         self._llm_ok = chat_sync is not None and GOAL_PICKER == "llm" and bool(GOAL_MODEL)
+        # Which model picks goals (Games page -> config/lumi.yaml), and a
+        # pause after a cloud error that only a Resume (or a model change) lifts.
+        self._model_choice = "local"
+        self._model_spec: Optional[str] = GOAL_MODEL
+        self._cloud_pause: Optional[Dict[str, Any]] = None
+        self._control_seq: Optional[int] = None
+        # The governor's view: blocks she placed, the latest status, and the
+        # last refusal (fed back to the picker once).
+        self._placed: List[Tuple[int, int, int, float]] = []
+        self._last_status: Dict[str, Any] = {}
+        self._refusal: Optional[Tuple[float, str, str]] = None     # (when, goal, reason)
         self._tel: Dict[str, Any] = {
             "bot_status": "unreachable",
             "lumi_sdk": "offline",
@@ -1009,6 +1049,9 @@ class MinecraftAgent(BaseGameAgent):
             "last_update": None,
             "skills_verified": 0,
             "errors": [],
+            "agent_model": None,       # {choice, label, model}
+            "cloud_pause": None,       # {provider, error, since}
+            "last_action": None,       # {name, admitted, reason, goal, time}
         }
 
     # ─── SDK setup ────────────────────────────────────────────────
@@ -1239,7 +1282,37 @@ class MinecraftAgent(BaseGameAgent):
             self._record("error", f"GET {path}: {e}")
             return None
 
-    async def _bot_action(self, action_name: str, args: Dict) -> Dict:
+    def _governor_state(self) -> Dict[str, Any]:
+        st = self._last_status or {}
+        owner = (st.get("owner") or {}).get("name")
+        return {"position": st.get("position") or self._tel.get("position"),
+                "inventory": _inv(st), "placed": self._placed,
+                "players": [owner] if owner else [], "food": _EDIBLE}
+
+    def _govern(self, action_name: str, args: Dict, intent: Optional[str]) -> Dict[str, Any]:
+        """Run the governor and show the verdict as "last action"."""
+        verdict = governor.check(action_name, args, self._governor_state(), intent=intent)
+        self._tel["last_action"] = {"name": action_name, "admitted": verdict["admit"],
+                                    "reason": verdict["reason"], "goal": intent,
+                                    "time": time.strftime("%H:%M:%S")}
+        if not verdict["admit"]:
+            self._record("governor", f"refused {action_name} ({intent or 'no goal'}): {verdict['reason']}")
+        return verdict
+
+    async def _bot_action(self, action_name: str, args: Dict, intent: Optional[str] = None) -> Dict:
+        """Send one action to bot.js, after the governor admits it. A refusal
+        comes back as a failed result, "action refused: <reason>"."""
+        intent = intent or self._tel.get("current_goal")
+        verdict = self._govern(action_name, args, intent)
+        if not verdict["admit"]:
+            self._flush_telemetry()
+            return {"success": False, "message": governor.REFUSED_PREFIX + verdict["reason"]}
+        result = await self._bot_action_raw(action_name, args)
+        if result.get("success"):
+            self._placed = governor.remember_placement(self._placed, action_name, args)
+        return result
+
+    async def _bot_action_raw(self, action_name: str, args: Dict) -> Dict:
         loop = asyncio.get_running_loop()
         try:
             def _post():
@@ -1282,6 +1355,14 @@ class MinecraftAgent(BaseGameAgent):
                     continue
                 if self._paused:
                     continue
+                self._check_control()
+                self._refresh_model_info()
+                if self._cloud_pause:
+                    # No retries: wait for Resume (or a model change) on the Games page.
+                    if self._tel["loop_state"] != "paused_cloud_error":
+                        self._tel["loop_state"] = "paused_cloud_error"
+                        self._flush_telemetry()
+                    continue
 
                 # 1. Assess — get bot status
                 status = await self._bot_get("/status")
@@ -1290,6 +1371,7 @@ class MinecraftAgent(BaseGameAgent):
                     self._tel["loop_state"] = "waiting for bot"
                     self._think("Waiting for the game to start...")
                     continue
+                self._last_status = status
 
                 self._tel.update({
                     "bot_status":  "ready" if status.get("ready") else "spawning",
@@ -1340,6 +1422,8 @@ class MinecraftAgent(BaseGameAgent):
 
                 # 3. Pick a goal
                 picked = await self._pick_goal(status)
+                if self._cloud_pause:
+                    continue
                 if picked is None:
                     self._think("Nothing I can do right now. Taking a breather.")
                     await asyncio.sleep(10)
@@ -1349,7 +1433,8 @@ class MinecraftAgent(BaseGameAgent):
                 self._tel.update({"current_goal": goal_name, "goal_description": desc,
                                   "goal_source": source})
                 self._think(desc + (f" — {reason}" if reason else ""))
-                self._record("curriculum", f"Goal: {desc} ({source}{': ' + reason if reason else ''})")
+                via = f" via {self._model_spec}" if source == "llm" else ""
+                self._record("curriculum", f"Goal: {desc} ({source}{via}{': ' + reason if reason else ''})")
                 await self._narrate(
                     f"I'm starting something new: {desc.lower()}."
                     + (f" Why: {reason}" if reason else ""))
@@ -1365,7 +1450,14 @@ class MinecraftAgent(BaseGameAgent):
                     self._tel["current_goal"] = None
                     continue
                 self._remember_goal(goal_name, ok)
+                refused = msg.startswith(governor.REFUSED_PREFIX)
+                if refused:
+                    # Tell the picker next time, and don't offer it again right away.
+                    self._refusal = (time.time(), goal_name, msg[len(governor.REFUSED_PREFIX):])
+                    self._cooldown_until[goal_name] = time.time() + REFUSED_REST_S
                 if source == "order":
+                    if refused and self._order:
+                        self._order["fails"] = FAIL_STREAK - 1   # a refusal won't change on retry
                     await self._order_result(goal_name, ok, msg)
 
                 # 5. Verify and record
@@ -1590,11 +1682,129 @@ class MinecraftAgent(BaseGameAgent):
         if not options:
             return None
 
-        if self._llm_ok:
-            picked = await self._llm_pick(status, options)
-            if picked:
-                return picked[0], "llm", picked[1]
+        if self._model_ready():
+            for _attempt in range(2):     # a refused pick gets one more try, told why
+                try:
+                    picked = await self._llm_pick(status, options)
+                except CloudModelError as e:
+                    self._pause_for_cloud(e)
+                    return None
+                if not picked:
+                    break
+                verdict = self._preview_goal(picked[0], status)
+                if verdict["admit"]:
+                    return picked[0], "llm", picked[1]
+                self._refusal = (time.time(), picked[0], verdict["reason"])
+                self._cooldown_until[picked[0]] = time.time() + REFUSED_REST_S
+                options = {k: v for k, v in options.items() if k != picked[0]}
+                if not options:
+                    return None
         return self._random_pick(status, options, progress), "random", ""
+
+    def _preview_goal(self, goal: str, status: Dict) -> Dict[str, Any]:
+        """The governor's verdict on the action a picked goal runs first,
+        before running it. Goals that run the agent's own built-in skill
+        code are admitted here; their actions are checked one by one."""
+        spec = FREE_GOALS.get(goal, {}).get("action")
+        if not spec:
+            return {"admit": True, "reason": ""}
+        name, args = spec
+        try:
+            args = args(status) if callable(args) else dict(args)
+        except Exception:
+            return {"admit": True, "reason": ""}
+        return self._govern(name, args, goal)
+
+    # ─── Which model picks ─────────────────────────────────────────
+
+    def _model_ready(self) -> bool:
+        """Whether a model picks goals this time: a cloud choice always
+        (it pauses on errors), the local model while it's working."""
+        if chat_sync is None or GOAL_PICKER != "llm":
+            return False
+        return self._model_choice != "local" or self._llm_ok
+
+    def _refresh_model_info(self) -> None:
+        """Read the Games page's choice (config/lumi.yaml, re-read only when
+        it changes) and show it. Logs the model id when it changes."""
+        if model_router is None:
+            return
+        try:
+            choice = model_router.agent_model_choice("minecraft")
+        except Exception:
+            choice = "local"
+        spec = GOAL_MODEL if choice == "local" else model_router.cloud_agent_model(choice)
+        if choice != self._model_choice or spec != self._model_spec:
+            self._record("model", f"goal picker model: {self._model_spec} → {spec} ({choice})")
+            self._model_choice, self._model_spec = choice, spec
+            self._cloud_pause = None             # a new model starts clean
+            self._tel["cloud_pause"] = None
+            if choice == "local":
+                self._reenable_llm()
+        self._tel["agent_model"] = model_router.agent_model_info(choice, GOAL_MODEL)
+
+    def _check_control(self) -> None:
+        """A new seq in agent_control.json (Resume, or a model change on the
+        Games page) lifts a cloud-error pause; the next decision tries once."""
+        try:
+            with open(CONTROL_PATH, encoding="utf-8") as f:
+                seq = json.load(f).get("seq")
+        except (OSError, ValueError, AttributeError):
+            return
+        if self._control_seq is None:
+            self._control_seq = seq          # what was there at startup isn't a resume
+            return
+        if seq != self._control_seq:
+            self._control_seq = seq
+            if self._cloud_pause:
+                self._record("agent", "resumed from the Games page — trying the cloud model once")
+                self._think("Resuming. Trying my game brain again.")
+            self._cloud_pause = None
+            self._tel["cloud_pause"] = None
+            self._tel["loop_state"] = "running"
+            if self._model_choice == "local":
+                self._reenable_llm()
+
+    def _pause_for_cloud(self, e: "CloudModelError") -> None:
+        self._cloud_pause = {"provider": e.label, "error": e.error[:300], "since": time.strftime("%H:%M:%S")}
+        self._tel["cloud_pause"] = self._cloud_pause
+        self._tel["loop_state"] = "paused_cloud_error"
+        self._record("error", f"Minecraft agent paused: {e.label} — {e.error[:200]}")
+        self._think(f"Minecraft agent paused: {e.error[:140]}" if "key not set" in e.error
+                    else f"Paused: {e.label} didn't answer ({e.error[:120]}). Press Resume on the Games page.")
+        self._flush_telemetry()
+
+    async def _ask_model(self, system: str, prompt: str, options: Dict[str, Any]) -> str:
+        """One goal-picker call on the chosen model. Local: as before (errors
+        raise as they always did). Cloud: the frontier directive is added, the
+        call is capped at MINECRAFT_AGENT_CLOUD_TIMEOUT_S, and any failure
+        raises CloudModelError so the loop pauses instead of retrying."""
+        loop = asyncio.get_running_loop()
+        if self._model_choice == "local":
+            resp = await loop.run_in_executor(None, lambda: chat_sync(
+                GOAL_MODEL, [{"role": "system", "content": system},
+                             {"role": "user", "content": prompt}],
+                think=False, keep_alive=GOAL_KEEP_ALIVE, options=options))
+            return (resp.content or "").strip()
+        label = model_router.AGENT_MODEL_LABELS.get(self._model_choice, self._model_choice)
+        try:
+            spec = model_router.agent_model_spec(model_override=self._model_choice)
+        except model_router.CloudKeyMissing as e:
+            raise CloudModelError(label, str(e))
+        self._model_spec = spec
+        print(f"[mc-agent] model call → {spec}")
+        messages = [{"role": "system", "content": system + "\n" + FRONTIER_DIRECTIVE},
+                    {"role": "user", "content": prompt}]
+        opts = {"temperature": options.get("temperature", 0.3), "num_predict": 200}
+        try:
+            resp = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: chat_sync(spec, messages, options=opts)),
+                timeout=_CLOUD_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            raise CloudModelError(label, f"timed out after {_CLOUD_TIMEOUT_S:g} s")
+        except Exception as e:
+            raise CloudModelError(label, str(e) or type(e).__name__)
+        return (resp.content or "").strip()
 
     # ─── Orders ────────────────────────────────────────────────────
 
@@ -1622,6 +1832,10 @@ class MinecraftAgent(BaseGameAgent):
         order = _parse_order(text)
         if order is None:
             order = await self._override_order(text, status)
+        if order is None and self._cloud_pause:
+            await self._bot_action("chat", {"message": "My game brain is paused right now, "
+                                                       f"so I can't work that out: {text[:60]}"})
+            return
         if order is None:
             await self._bot_action("chat", {"message": f"Sorry, I don't know how to do that: {text[:60]}"})
             self._record("warn", f"didn't understand the order: {text}")
@@ -1724,7 +1938,7 @@ class MinecraftAgent(BaseGameAgent):
     async def _override_order(self, text: str, status: Dict) -> Optional[Dict[str, Any]]:
         """Ask the game model which goal carries out an order the parser
         didn't recognize. None if there's no model or it isn't an order."""
-        if not self._llm_ok:
+        if not self._model_ready():
             return None
         options = {g: d["desc"] for g, d in FREE_GOALS.items()}
         options.update({t["goal"]: t["desc"] for t in CURRICULUM})
@@ -1735,13 +1949,11 @@ class MinecraftAgent(BaseGameAgent):
             "If the order is about something you already have, don't gather or craft it again.\n"
             "Goals:\n" + "\n".join(f"- {k}: {v}" for k, v in options.items()) + "\n- none: not an order"
         )
-        loop = asyncio.get_running_loop()
         try:
-            resp = await loop.run_in_executor(None, lambda: chat_sync(
-                GOAL_MODEL, [{"role": "system", "content": OVERRIDE_SYSTEM},
-                             {"role": "user", "content": prompt}],
-                think=False, keep_alive=GOAL_KEEP_ALIVE, options={"temperature": 0.2, "num_ctx": 2048}))
-            reply = (resp.content or "").strip()
+            reply = await self._ask_model(OVERRIDE_SYSTEM, prompt, {"temperature": 0.2, "num_ctx": 2048})
+        except CloudModelError as e:
+            self._pause_for_cloud(e)
+            return None
         except Exception as e:
             self._record("warn", f"order model failed: {e}")
             return None
@@ -1946,18 +2158,15 @@ class MinecraftAgent(BaseGameAgent):
                f"{', '.join(f'{k}×{v}' for k, v in self._wanted.items())}.\n" if self._wanted else "")
             + "Rules: Do not pick build_dirt_hut if it is Day. Do not pick chop_trees if "
             "you already have 10+ logs. Do not repeat a goal that just succeeded unless "
-            "nothing else makes sense.\n\n"
-            "Goals you can pick:\n"
-            + "\n".join(f"- {k}: {v}" for k, v in options.items())
+            "nothing else makes sense.\n"
+            + self._refusal_text()
+            + "\n"
+            + render_actions_prompt(_ordered(options), detail=self._model_choice != "local")
         )
-        messages = [{"role": "system", "content": PICKER_SYSTEM},
-                    {"role": "user", "content": prompt}]
-        loop = asyncio.get_running_loop()
         try:
-            resp = await loop.run_in_executor(None, lambda: chat_sync(
-                GOAL_MODEL, messages, think=False, keep_alive=GOAL_KEEP_ALIVE,
-                options={"temperature": 0.7, "num_ctx": 2048}))
-            text = (resp.content or "").strip()
+            text = await self._ask_model(PICKER_SYSTEM, prompt, {"temperature": 0.7, "num_ctx": 2048})
+        except CloudModelError:
+            raise
         except Exception as e:
             self._record("warn", f"goal picker LLM failed ({e}) — using random picks for 5 min")
             self._llm_ok = False
@@ -1976,6 +2185,15 @@ class MinecraftAgent(BaseGameAgent):
             self._record("warn", f"goal picker gave no valid goal: {text[:120]}")
             return None
         return goal, str(data.get("reason") or "").strip()[:160]
+
+    def _refusal_text(self) -> str:
+        """The last governor refusal, as an observation for the picker (once)."""
+        r, self._refusal = self._refusal, None
+        if not r or time.time() - r[0] > REFUSAL_MEMORY_S:
+            return ""
+        self._record("governor", f"told the picker: {r[1]} was refused ({r[2]})")
+        return (f"Observation: action refused: {r[2]} (goal {r[1]}). "
+                "Choose a different goal.\n")
 
     def _player_line(self, status: Dict) -> str:
         owner = status.get("owner")
@@ -2176,6 +2394,13 @@ def _inv(status: Dict) -> Dict[str, int]:
 
 def _all_goal_names() -> List[str]:
     return [t["goal"] for t in CURRICULUM] + list(FREE_GOALS) + list(TOOL_GOALS)
+
+
+def _ordered(options: Dict[str, str]) -> List[Tuple[str, str]]:
+    """The offered goals in one fixed order (the goal tables' order), so the
+    list the model sees doesn't shuffle between picks."""
+    rank = {g: i for i, g in enumerate(_all_goal_names())}
+    return sorted(options.items(), key=lambda kv: rank.get(kv[0], len(rank)))
 
 
 def _goal_desc(goal: str) -> str:

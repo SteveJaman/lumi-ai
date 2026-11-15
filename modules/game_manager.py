@@ -132,6 +132,46 @@ def read_telemetry() -> Dict[str, Any]:
     return _read_json(TELEMETRY_PATH)
 
 
+CONTROL_PATH = os.path.join(MC_DIR, "agent_control.json")   # read by the agent each tick
+_yaml_lock = threading.Lock()
+
+
+def write_agent_model(game: str, choice: str) -> None:
+    """Save games.<game>.agent_model in config/lumi.yaml through the persona
+    editor's round-trip writer (comments and key order kept)."""
+    from constants import YAML_PATH
+    from modules.persona_editor import load_parsed, dump_to_string, _to_backend
+    with _yaml_lock:
+        if not os.path.exists(YAML_PATH):
+            raise RuntimeError("config/lumi.yaml not found")
+        data = load_parsed(YAML_PATH)
+        if not isinstance(data, dict):
+            raise RuntimeError("config/lumi.yaml isn't a mapping")
+        games = data.get("games")
+        if not isinstance(games, dict):
+            data["games"] = games = _to_backend({})
+        entry = games.get(game)
+        if not isinstance(entry, dict):
+            games[game] = entry = _to_backend({})
+        entry["agent_model"] = choice
+        text = dump_to_string(data)
+        tmp = YAML_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, YAML_PATH)
+
+
+def bump_agent_control() -> int:
+    """Tell a running agent to drop a cloud-error pause and retry once."""
+    os.makedirs(MC_DIR, exist_ok=True)
+    seq = int(_read_json(CONTROL_PATH).get("seq") or 0) + 1
+    tmp = CONTROL_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"seq": seq, "at": time.time()}, f)
+    os.replace(tmp, CONTROL_PATH)
+    return seq
+
+
 def write_autoplay(game: str, enabled: bool) -> None:
     os.makedirs(MC_DIR, exist_ok=True)
     data = read_autoplay()
@@ -304,6 +344,10 @@ class GameManager:
             "mode": tel.get("mode") if live else None,
             "food": tel.get("food") if live else None,
             "position": tel.get("position") if live else None,
+            "agent_model": (tel.get("agent_model") if live and tel.get("agent_model")
+                            else _agent_model_info()),
+            "cloud_pause": tel.get("cloud_pause") if live else None,
+            "last_action": tel.get("last_action") if live else None,
             "viewer_port": self._viewer_port() if bot_up else None,
             "hud": _hud(bot_status),
             "server": _server_info(bot_status, bot_up),
@@ -345,6 +389,40 @@ class GameManager:
         from modules import gaming_mode
         gaming_mode.wake_game_agents(self.signals)
         return result
+
+    # ─── Agent model (Games page selector) ───────────────────────
+
+    def agent_model(self, game: str = "minecraft") -> Dict[str, Any]:
+        """{game, agent_model, available, options} for the selector."""
+        if game != "minecraft":
+            raise ValueError(f"unknown game: {game}" if game not in GAME_REGISTRY
+                             else f"{game} has no agent model to choose")
+        from modules import model_router as mr
+        choice = mr.agent_model_choice(game)
+        available = mr.available_agent_models()
+        return {"game": game, "agent_model": choice, "available": available,
+                "options": [mr.agent_model_info(c) for c in available]}
+
+    def set_agent_model(self, game: str, choice: str) -> Dict[str, Any]:
+        """Save the choice and make a running agent use it on its next
+        decision (it re-reads lumi.yaml; the control bump lifts a pause).
+        ValueError: bad game or choice. LookupError: no key for that provider."""
+        if game != "minecraft":
+            raise ValueError(f"unknown game: {game}" if game not in GAME_REGISTRY
+                             else f"{game} has no agent model to choose")
+        from modules import model_router as mr
+        if choice not in mr.AGENT_MODEL_CHOICES:
+            raise ValueError(f"agent_model must be one of {', '.join(mr.AGENT_MODEL_CHOICES)}")
+        if choice != "local" and not mr.provider_has_key(choice):
+            label = mr.AGENT_MODEL_LABELS[choice]
+            raise LookupError(f"{label} key not set. Add it under Settings → Models → Providers, "
+                              f"then choose {label} again.")
+        write_agent_model(game, choice)
+        bump_agent_control()
+        agent = self._children.get(f"{game}:agent")
+        info = mr.agent_model_info(choice)
+        hub_emit(self.signals, game, f"agent model set to {info['label']} ({info['model']}) from the Games page")
+        return dict(self.agent_model(game), restarted=bool(agent and agent.running))
 
     def hud_action(self, game: str, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Run one of the few bot.js actions the Games page may send
@@ -574,6 +652,16 @@ class GameManager:
         port = cfg.get("viewer_port")
         self._viewer_cache = (time.time(), port)
         return port
+
+
+def _agent_model_info() -> Optional[Dict[str, str]]:
+    """The saved choice, for the Games page while the agent isn't running."""
+    try:
+        from modules import model_router as mr
+        return mr.agent_model_info(mr.agent_model_choice("minecraft"),
+                                   os.environ.get("MC_GOAL_MODEL") or None)
+    except Exception:
+        return None
 
 
 def _hud(bot_status: Optional[Dict[str, Any]]) -> Dict[str, Any]:

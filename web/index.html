@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="/web/themes/engine.css">
 <script src="/web/theme-engine.js"></script>
 </head>
-<body>
+<body class="lumi-booting">
 
 <div id="app-shell" class="app">
 
@@ -66,24 +66,33 @@
 
   <main class="main" id="main-content"></main>
 
-  <!-- Bloom loader — overlays the main pane, dismissed when boot completes -->
-  <div id="boot-loader" class="boot-loader hidden" aria-live="polite">
-    <div class="boot-flower" aria-hidden="true">
-      <div class="petal" style="--i:0"></div>
-      <div class="petal" style="--i:1"></div>
-      <div class="petal" style="--i:2"></div>
-      <div class="petal" style="--i:3"></div>
-      <div class="petal" style="--i:4"></div>
-      <div class="petal" style="--i:5"></div>
-      <div class="petal" style="--i:6"></div>
-      <div class="petal" style="--i:7"></div>
-      <div class="boot-flower-center"></div>
-    </div>
-    <div class="boot-title" id="boot-title">waking up…</div>
-    <ul class="boot-steps" id="boot-steps"></ul>
-    <button class="boot-skip hidden" id="boot-skip" type="button">Skip →</button>
-  </div>
+</div>
 
+<!-- Wake-up screen. A direct child of <body> (never inside #app-shell, which
+     themes turn into a stacking context); styles: the .lumi-boot block in
+     style.css; logic: initBootLoader … finishBootLoader in app.js. Visible
+     from the first paint; body.lumi-booting hides the SPA under it. -->
+<div id="lumi-boot" class="lumi-boot" role="dialog" aria-modal="true"
+     aria-labelledby="lumi-boot-title" tabindex="-1">
+  <div class="lumi-boot__flower" aria-hidden="true">
+    <span class="lumi-boot__petal" style="--i:0"></span>
+    <span class="lumi-boot__petal" style="--i:1"></span>
+    <span class="lumi-boot__petal" style="--i:2"></span>
+    <span class="lumi-boot__petal" style="--i:3"></span>
+    <span class="lumi-boot__petal" style="--i:4"></span>
+    <span class="lumi-boot__petal" style="--i:5"></span>
+    <span class="lumi-boot__petal" style="--i:6"></span>
+    <span class="lumi-boot__petal" style="--i:7"></span>
+    <span class="lumi-boot__core"></span>
+  </div>
+  <h1 class="lumi-boot__title" id="lumi-boot-title">waking up…</h1>
+  <ul class="lumi-boot__steps" role="status" aria-live="polite" aria-label="Starting up"></ul>
+  <p class="lumi-boot__note" aria-live="polite" hidden></p>
+  <div class="lumi-boot__actions">
+    <button class="lumi-boot__btn lumi-boot__btn--primary lumi-boot__enter" type="button" hidden>Enter ✨</button>
+    <button class="lumi-boot__btn lumi-boot__retry" type="button" hidden>Retry</button>
+    <button class="lumi-boot__btn lumi-boot__skip" type="button" hidden>Skip →</button>
+  </div>
 </div>
 
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>

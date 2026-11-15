@@ -14,6 +14,11 @@
   const LEAVE_MS = 450;
   const BLUR_CLOSE_MS = 1500;
   const SIZES = { hidden: [200, 8], peek: [330, 58], open: [480, 590], approval: [440, 310] };
+  // The window keeps one width (the widest state) and only its height changes.
+  // Tauri resizes and then re-centres a window in two separate steps; with the
+  // width changing too, the island (centred in the window) jumped sideways for a
+  // frame on every hover. The width morph is all CSS inside this fixed window.
+  const WIN_W = Math.max(...Object.values(SIZES).map(([w]) => w));
   const STATUS_TEXT = {
     idle: 'Here with you', thinking: 'Thinking…', speaking: 'Speaking…',
     gaming: 'Gaming mode', offline: 'Offline', connecting: 'Connecting…',
@@ -81,15 +86,14 @@
 
   function setState(next) {
     if (next === state) return;
-    const [w, h] = SIZES[next];
-    const [cw, ch] = SIZES[state];
-    const grows = w >= cw && h >= ch;
-    if (grows) fit(w, h);                         // room first, then animate into it
-    else fit(Math.max(w, cw), Math.max(h, ch));
+    const h = SIZES[next][1];
+    const ch = SIZES[state][1];
+    const grows = h >= ch;
+    if (grows) fit(WIN_W, h);                     // room first, then animate into it
     state = next;
     island.className = `island ${next}${island.classList.contains('danger') ? ' danger' : ''}`;
     $('approval').inert = next !== 'approval';
-    if (!grows) setTimeout(() => { if (state === next) fit(w, h); }, MORPH_MS);
+    if (!grows) setTimeout(() => { if (state === next) fit(WIN_W, h); }, MORPH_MS);
     syncVideo();
     syncClock();
     if (next === 'open' && app === 'chat') focusComposer();
@@ -228,6 +232,9 @@
 
   // ── Header and tabs ────────────────────────────────────────────
   function setApp(name) {
+    // The gear's panel covers the apps: picking any tab (even the current one)
+    // closes it, so a tab always takes one click to show its app.
+    if (!$('settings').hidden) closeSettings();
     app = name;
     document.querySelectorAll('.tab').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.app === name)));
     document.querySelectorAll('.app').forEach((s) => s.classList.toggle('on', s.id === `app-${name}`));
@@ -976,9 +983,10 @@
     $('set-msg').textContent = remote ? `Connected to ${remote.host}` : 'Using Lumi on this PC.';
     $('set-msg').classList.remove('bad');
     $('settings').hidden = false;
+    $('gear').setAttribute('aria-expanded', 'true');
     $('set-host').focus();
   }
-  function closeSettings() { $('settings').hidden = true; }
+  function closeSettings() { $('settings').hidden = true; $('gear').setAttribute('aria-expanded', 'false'); }
   function reconnect() {
     clearTimeout(reconnectTimer); reconnectTimer = null; retry = 500;
     const old = ws; ws = null; ready = false;
@@ -1012,6 +1020,6 @@
   drawCal();
   renderHome();
   render();
-  fit(...SIZES.hidden);
+  fit(WIN_W, SIZES.hidden[1]);
   connect();
 })();

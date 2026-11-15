@@ -58,8 +58,8 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
 .island.approval { width: 440px; height: 310px; border-radius: 0 0 26px 26px; border-color: color-mix(in srgb, var(--pink) 55%, var(--line-hi)); }
 
 /* Parts fade per state */
-.hdr, .apps, .ask { opacity: 0; visibility: hidden; transition: opacity 150ms linear, visibility 0s linear 150ms; }
-.peek .hdr, .open .hdr, .open .apps, .approval .ask { opacity: 1; visibility: visible; transition: opacity 200ms linear 100ms, visibility 0s; }
+.hdr, .apps, .ask { opacity: 0; visibility: hidden; transition: opacity 150ms linear, visibility 0s linear 150ms, height var(--dur) var(--ease); }
+.peek .hdr, .open .hdr, .open .apps, .approval .ask { opacity: 1; visibility: visible; transition: opacity 200ms linear 100ms, visibility 0s, height var(--dur) var(--ease); }
 
 /* ── Header ──────────────────────────────────────────────────── */
 
@@ -245,7 +245,7 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--teal); o
 /* ── Gear + connection settings ──────────────────────────────── */
 
 .gear { display: none; width: 30px; height: 30px; flex: none; place-items: center; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--dim); cursor: pointer; }
-.gear:hover { color: var(--teal); border-color: var(--teal); }
+.gear:hover, .gear[aria-expanded="true"] { color: var(--teal); border-color: var(--teal); }
 .open .gear { display: grid; }
 
 .settings { position: absolute; inset: 0; z-index: 5; padding: 16px 18px; overflow-y: auto; background: rgba(5, 8, 18, 0.97); }

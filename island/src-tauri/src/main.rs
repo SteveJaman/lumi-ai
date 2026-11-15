@@ -49,7 +49,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![fit, island_token, island_ws_url])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("island") {
-                let _ = fit(window, 200.0, 8.0);
+                // The window keeps the island's widest size (island.js WIN_W) and
+                // only its height changes, so re-centring never shifts the island.
+                let _ = fit(window, 480.0, 8.0);
             }
             Ok(())
         })

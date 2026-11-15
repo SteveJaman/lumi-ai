@@ -38,6 +38,35 @@ VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached th
 # ~6 GB on an 11 GB card), and goal picking is a short JSON choice.
 GAME_AGENT_MODEL = "qwen2.5:3b"
 
+# Which model the Minecraft agent picks goals with: "local" (the default) or a
+# cloud provider: "claude", "openai", "gemini". The Games page changes it at
+# runtime and saves it in config/lumi.yaml (games: minecraft: agent_model:),
+# which wins over this default. A cloud choice needs that provider's API key
+# (Settings -> Models -> Providers); without one the agent pauses, it never
+# quietly falls back to local.
+MINECRAFT_AGENT_MODEL = "local"
+# The local model for it. None = GAME_AGENT_MODEL, as before (MC_GOAL_MODEL in
+# the environment still wins over both).
+MINECRAFT_AGENT_LOCAL_MODEL = None
+# The model each cloud choice runs (provider:model, as in llm_providers).
+MINECRAFT_AGENT_CLOUD_MODELS = {
+    "claude": "anthropic:claude-sonnet-5-5",
+    "openai": "openai:gpt-5.5",
+    "gemini": "gemini:gemini-3.5-flash",
+}
+# A cloud call that takes longer than this pauses the agent (no retry loop).
+MINECRAFT_AGENT_CLOUD_TIMEOUT_S = 45
+
+# Action governor (modules/minecraft_governor.py): checks every action the
+# Minecraft agent sends to bot.js. No model, no network.
+MINECRAFT_GOVERNOR_ENABLED = True
+MINECRAFT_GOVERNOR_BOX_XZ = 128          # target coordinates within ±128 blocks across...
+MINECRAFT_GOVERNOR_BOX_Y = 64            # ...and ±64 up or down of where she stands
+MINECRAFT_GOVERNOR_PLACED_TTL_S = 300    # never break a block she placed in the last 5 min
+# Players she may attack. Empty (the default): she never attacks a player.
+MINECRAFT_GOVERNOR_ATTACK_ALLOWLIST = ()
+MINECRAFT_GOVERNOR_BLOCK_CHAT_LINKS = True   # no URLs or email addresses in game chat
+
 # =======================================================
 # Local Timezone
 # =======================================================

@@ -198,11 +198,7 @@ async function checkAuth() {
     const t = document.documentElement.getAttribute('data-theme') || 'light';
     applyTheme(t);
 
-    initBootLoader();
-    await pollBootStatus();
-    if (!_bootState.ready) {
-      _bootState.pollTimer = setInterval(pollBootStatus, 700);
-    }
+    initBootLoader();                    // polls /api/status itself until finishBootLoader()
   } catch (e) {
     location.replace('/login');
   }
@@ -313,21 +309,47 @@ window.addEventListener('hashchange', () => {
 });
 
 /* --------------------------------------------------------------
-   Boot sequence — bloom loader
+   Boot sequence — the wake-up screen (.lumi-boot, index.html)
    --------------------------------------------------------------
    The server exposes /api/status.boot as a dict of subsystems:
      { memory, mic, tts, vts, self_model, discord }
    Each entry has { state, detail } where state is one of:
      "loading" | "ready" | "skipped" | "error"
-   boot.complete is true when every subsystem is in a terminal
-   state. If the server doesn't send a boot block at all, we
-   treat the app as already booted and skip the loader.
+   If the server doesn't send a boot block at all, we treat the
+   app as already booted and skip the loader.
+
+   The screen is in the page from the first paint and
+   body.lumi-booting hides the SPA under it. Rules:
+     - every BOOT_LABELS subsystem shows its real state; an error
+       shows its detail and "continuing without <name>"
+     - Skip appears after 3 s; after 20 s "Taking longer than
+       usual…" (Skip stays), so it never blocks the SPA
+     - /api/status failing BOOT_OFFLINE_AFTER times in a row shows
+       "Can't reach Lumi", the error and Retry; polling stops
+       until Retry (no endless spinner)
+     - the handoff waits (briefly) for the theme stylesheet, shows
+       the SPA under the loader, lets it paint, then fades out
    -------------------------------------------------------------- */
+document.documentElement.setAttribute('data-boot-js', '');   // theme-init.js watchdog: app.js is alive
+
+const BOOT_POLL_MS = 700;
+const BOOT_SKIP_AFTER_MS = 3000;
+const BOOT_SLOW_AFTER_MS = 20000;
+const BOOT_OFFLINE_AFTER = 3;          // consecutive /api/status failures
+const BOOT_THEME_WAIT_MS = 1500;
+const BOOT_POP_MS = 600;
+const BOOT_EXIT_MS = 450;
+
 const _bootState = {
   ready: false,
   pollTimer: null,
+  timers: [],
+  inFlight: false,
   skipShown: false,
   startedAt: 0,
+  failures: 0,
+  offline: false,
+  complete: false,
 };
 
 const BOOT_LABELS = {
@@ -387,27 +409,71 @@ const MOOD_EMOJI = {
 let _moodResetTimer = null;
 let _currentMood = null;
 
+const bootEl = (part) => document.querySelector(part ? `.lumi-boot__${part}` : '.lumi-boot');
+const bootStill = () => !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+const bootWait = (ms) => new Promise(r => setTimeout(r, ms));
+
 function initBootLoader() {
-  const loader = document.getElementById('boot-loader');
-  const stepsEl = document.getElementById('boot-steps');
-  const skipBtn = document.getElementById('boot-skip');
-
-  if (!loader || !stepsEl) return;
-
-  loader.classList.remove('hidden');
+  const root = bootEl();
+  const stepsEl = bootEl('steps');
+  if (!root || !stepsEl) {                     // no wake-up screen on this page: just show the app
+    _bootState.ready = true;
+    document.body.classList.remove('lumi-booting');
+    return;
+  }
   _bootState.startedAt = Date.now();
 
-  stepsEl.innerHTML = Object.entries(BOOT_LABELS).map(([key, label]) =>
-    `<li data-subsystem="${key}" data-state="loading">` +
-    `<span>${label}</span>` +
-    `<span class="state">…</span>` +
-    `</li>`
-  ).join('');
+  stepsEl.replaceChildren(...Object.entries(BOOT_LABELS).map(([key, label]) => {
+    const li = document.createElement('li');
+    li.className = 'lumi-boot__step';
+    li.dataset.subsystem = key;
+    li.dataset.state = 'loading';
+    li.innerHTML = '<span class="lumi-boot__dot" aria-hidden="true"></span>' +
+      '<span class="lumi-boot__label"></span><span class="lumi-boot__state">…</span>' +
+      '<span class="lumi-boot__detail" hidden></span>';
+    li.querySelector('.lumi-boot__label').textContent = label;
+    return li;
+  }));
 
-  if (skipBtn) {
-    skipBtn.classList.add('hidden');
-    skipBtn.addEventListener('click', () => finishBootLoader());
-  }
+  bootEl('skip').addEventListener('click', () => finishBootLoader());
+  bootEl('enter').addEventListener('click', () => finishBootLoader());
+  bootEl('retry').addEventListener('click', () => retryBoot());
+  bootEl('flower').addEventListener('click', () => { if (_bootState.complete) finishBootLoader(); });
+
+  _bootState.timers.push(setTimeout(showBootSkip, BOOT_SKIP_AFTER_MS));
+  _bootState.timers.push(setTimeout(() => {
+    if (_bootState.ready || _bootState.complete || _bootState.offline) return;
+    setBootNote('Taking longer than usual… You can skip ahead; anything not ready yet keeps starting in the background.');
+    showBootSkip();
+  }, BOOT_SLOW_AFTER_MS));
+
+  root.focus({ preventScroll: true });       // focus lives in the loader until the handoff
+  startBootPolling();
+}
+
+function startBootPolling() {
+  clearInterval(_bootState.pollTimer);
+  _bootState.pollTimer = setInterval(pollBootStatus, BOOT_POLL_MS);
+  pollBootStatus();
+}
+
+function showBootSkip() {
+  if (_bootState.ready || _bootState.complete) return;
+  _bootState.skipShown = true;
+  bootEl('skip').hidden = false;
+}
+
+function setBootNote(text, kind = '') {
+  const note = bootEl('note');
+  if (!note) return;
+  note.textContent = text || '';
+  note.dataset.kind = kind;
+  note.hidden = !text;
+}
+
+function setBootTitle(text) {
+  const t = bootEl('title');
+  if (t) t.textContent = text;
 }
 
 function updateBloomFromBoot(boot) {
@@ -417,18 +483,25 @@ function updateBloomFromBoot(boot) {
     return;
   }
 
-  const stepsEl = document.getElementById('boot-steps');
-  if (stepsEl) {
-    for (const [key] of Object.entries(BOOT_LABELS)) {
-      const li = stepsEl.querySelector(`[data-subsystem="${key}"]`);
-      if (!li) continue;
-      const s = boot[key] || { state: 'loading', detail: '' };
-      li.dataset.state = s.state;
-      const stateEl = li.querySelector('.state');
-      if (stateEl) {
-        stateEl.textContent = BOOT_STATE_LABEL[s.state] || s.state;
-        if (s.detail) stateEl.title = s.detail;
-      }
+  const stepsEl = bootEl('steps');
+  for (const [key, label] of Object.entries(BOOT_LABELS)) {
+    const li = stepsEl?.querySelector(`[data-subsystem="${key}"]`);
+    if (!li) continue;
+    const s = boot[key] || { state: 'loading', detail: '' };
+    if (li.dataset.state === s.state && li.dataset.detail === (s.detail || '')) continue;
+    li.dataset.state = s.state;
+    li.dataset.detail = s.detail || '';
+    li.querySelector('.lumi-boot__state').textContent = BOOT_STATE_LABEL[s.state] || s.state;
+    li.title = s.detail || '';
+    const detail = li.querySelector('.lumi-boot__detail');
+    if (s.state === 'error') {
+      // Say what failed and that Lumi carries on, instead of a bare red dot.
+      detail.textContent = `continuing without ${label}${s.detail ? `: ${s.detail}` : ''}`;
+      detail.hidden = false;
+      li.tabIndex = 0;
+    } else {
+      detail.hidden = true;
+      li.removeAttribute('tabindex');
     }
   }
 
@@ -437,71 +510,125 @@ function updateBloomFromBoot(boot) {
     const s = boot[k] || {};
     return s.state === 'ready' || s.state === 'skipped' || s.state === 'error';
   }).length;
-  const pct = done / keys.length;
+  bootEl()?.style.setProperty('--bloom', (done / keys.length).toFixed(3));
 
-  const flower = document.querySelector('.boot-flower');
-  if (flower) flower.style.setProperty('--bloom', pct.toFixed(3));
-
-  // Skip button after 3s of waiting
-  if (!_bootState.skipShown && Date.now() - _bootState.startedAt > 3000) {
-    _bootState.skipShown = true;
-    const skipBtn = document.getElementById('boot-skip');
-    if (skipBtn) skipBtn.classList.remove('hidden');
-  }
-
-  // If all tracked subsystems are done, let the user click to enter
-  if (done === keys.length && !_bootState.ready) {
-    const titleEl = document.getElementById('boot-title');
-    if (titleEl) {
-      titleEl.textContent = 'ready — click to enter ✨';
-      titleEl.style.cursor = 'pointer';
-      titleEl.onclick = () => finishBootLoader();
-    }
-    if (flower) {
-      flower.style.cursor = 'pointer';
-      flower.onclick = () => finishBootLoader();
-    }
+  // Everything settled: the user enters when they're ready.
+  if (done === keys.length && !_bootState.complete && !_bootState.ready) {
+    _bootState.complete = true;
+    clearInterval(_bootState.pollTimer);
+    _bootState.pollTimer = null;
+    const failed = keys.filter(k => boot[k]?.state === 'error').length;
+    bootEl().dataset.phase = 'ready';
+    setBootTitle(failed ? 'ready, with a few things missing' : 'ready');
+    setBootNote('');
+    bootEl('skip').hidden = true;
+    const enter = bootEl('enter');
+    enter.hidden = false;
+    enter.focus({ preventScroll: true });
   }
 }
 
 async function pollBootStatus() {
-  if (_bootState.ready) return;
-
+  if (_bootState.ready || _bootState.offline || _bootState.inFlight) return;
+  _bootState.inFlight = true;
+  let res;
   try {
-    const res = await api('/api/status');
-    state.status = res;
-
-    // Sidebar status pills update from the same payload
-    updateStatusPills(res.boot || null);
-
-    updateBloomFromBoot(res.boot || null);
-  } catch {
-    // Server might still be starting up — retry next tick.
+    res = await api('/api/status');
+  } catch (e) {
+    // A blip while the server is busy starting up is normal; several in a row is not.
+    _bootState.failures += 1;
+    if (_bootState.failures >= BOOT_OFFLINE_AFTER && !_bootState.ready) bootOffline(e);
+    return;
+  } finally {
+    _bootState.inFlight = false;
   }
+  _bootState.failures = 0;
+  if (_bootState.ready) return;
+  state.status = res;
+
+  // Sidebar status pills update from the same payload
+  updateStatusPills(res.boot || null);
+  updateBloomFromBoot(res.boot || null);
+}
+
+function bootOffline(err) {
+  _bootState.offline = true;
+  clearInterval(_bootState.pollTimer);
+  _bootState.pollTimer = null;
+  bootEl().dataset.phase = 'offline';
+  setBootTitle("Can't reach Lumi");
+  setBootNote(`/api/status failed: ${err?.message || 'no response'}. Is Lumi still running?`, 'error');
+  bootEl('retry').hidden = false;
+  showBootSkip();
+  bootEl('retry').focus({ preventScroll: true });
+}
+
+function retryBoot() {
+  _bootState.offline = false;
+  _bootState.failures = 0;
+  bootEl().dataset.phase = '';
+  bootEl('retry').hidden = true;
+  setBootTitle('waking up…');
+  setBootNote('');
+  bootEl().focus({ preventScroll: true });
+  startBootPolling();
+}
+
+// The theme engine sets data-theme-ready once its stylesheet has loaded
+// (or failed): wait for it, briefly, so the SPA doesn't appear unthemed.
+function themeSettled(maxMs) {
+  if (!window.LumiThemes || document.documentElement.dataset.themeReady) return Promise.resolve();
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, maxMs);
+    window.addEventListener('lumi-theme-ready', () => { clearTimeout(t); resolve(); }, { once: true });
+  });
+}
+
+// Two frames (the SPA has painted); a timer stands in when the tab is hidden.
+function nextPaint() {
+  return Promise.race([
+    new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))),
+    bootWait(120),
+  ]);
+}
+
+function focusSpa() {
+  const target = document.querySelector(
+    '#main-content textarea, #main-content input, #main-content button, .nav-item.active') ||
+    document.getElementById('main-content');
+  target?.focus?.({ preventScroll: true });
 }
 
 function finishBootLoader() {
   if (_bootState.ready) return;
   _bootState.ready = true;
 
-  if (_bootState.pollTimer) {
-    clearInterval(_bootState.pollTimer);
-    _bootState.pollTimer = null;
-  }
-
-  const flower = document.querySelector('.boot-flower');
-  if (flower) flower.classList.add('complete');
-
-  setTimeout(() => {
-    const loader = document.getElementById('boot-loader');
-    if (!loader) return;
-    loader.classList.add('exit');
-    setTimeout(() => loader.remove(), 700);
-  }, 1000);
+  clearInterval(_bootState.pollTimer);
+  _bootState.pollTimer = null;
+  _bootState.timers.forEach(clearTimeout);
+  _bootState.timers = [];
 
   // Populate pills right away so they aren't blank once the
   // loader finishes.
   updateStatusPills(state.status?.boot || null);
+  handOffFromBoot();
+}
+
+async function handOffFromBoot() {
+  const root = bootEl();
+  const still = bootStill();
+  if (root) {
+    root.dataset.phase = 'leaving';                       // the bloom pops
+    root.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  }
+  await Promise.all([themeSettled(BOOT_THEME_WAIT_MS), still ? null : bootWait(BOOT_POP_MS)]);
+  document.body.classList.remove('lumi-booting');        // the SPA, already rendered, under the loader
+  await nextPaint();
+  if (!root) { focusSpa(); return; }
+  root.classList.add('lumi-boot--exit');
+  if (!still) await bootWait(BOOT_EXIT_MS);
+  root.remove();
+  focusSpa();
 }
 
 function updateStatusPills(boot) {
@@ -1972,13 +2099,22 @@ function gameCardHtml() {
         <div class="card-title">Minecraft AI</div>
         <div class="game-sub" id="game-sub">Loading…</div>
       </div>
-      <label class="switch" title="Let Lumi's other half play Minecraft">
-        <input type="checkbox" id="game-toggle" aria-label="Minecraft AI">
-        <span class="switch-slider"></span>
-      </label>
+      <div class="game-model-row">
+        <label class="game-sub" for="game-model">Agent model</label>
+        <select class="select" id="game-model" title="Which model picks Minecraft goals">
+          <option value="local">Local</option>
+        </select>
+        <button class="btn btn-sm" type="button" id="game-model-resume" hidden>Resume</button>
+        <label class="switch" title="Let Lumi's other half play Minecraft">
+          <input type="checkbox" id="game-toggle" aria-label="Minecraft AI">
+          <span class="switch-slider"></span>
+        </label>
+      </div>
     </div>
+    <div class="game-hint error" id="game-model-msg" hidden></div>
     <div class="game-label">Current thought</div>
     <div class="game-thought" id="game-thought">—</div>
+    <div class="game-meta" id="game-last-action"></div>
     <div class="game-meta" id="game-meta"></div>
     <div class="game-meta" id="game-order"></div>
     <label class="game-label game-directive-label" for="game-directive-text">AI directive / nudge</label>
@@ -2046,6 +2182,11 @@ function startGamePolling() {
   const toggle = $('#game-toggle');
   if (!toggle) return;
   toggle.addEventListener('change', () => onGameToggle(toggle.checked));
+  const modelSel = $('#game-model');
+  modelSel.addEventListener('change', () => setGameAgentModel(modelSel.value));
+  modelSel.addEventListener('focus', loadGameAgentModels);
+  $('#game-model-resume').addEventListener('click', () => setGameAgentModel(modelSel.value, true));
+  loadGameAgentModels();
   $('#game-directive').addEventListener('submit', (e) => {
     e.preventDefault();
     sendGameDirective();
@@ -2195,6 +2336,71 @@ async function sendGameDirective() {
   }
 }
 
+/* Agent model selector: Local always, cloud providers only once their key
+   is set (GET /api/game/agent_model). A 409 (no key) leaves it unchanged. */
+let _gameModelChoice = 'local';
+let _gameModelBusy = false;
+
+async function loadGameAgentModels() {
+  const sel = $('#game-model');
+  if (!sel || _gameModelBusy) return;
+  let data;
+  try { data = await api('/api/game/agent_model?game=minecraft'); } catch { return; }
+  const opts = data.options || [{ choice: 'local', label: 'Local' }];
+  const print = opts.map(o => o.choice).join(',');
+  if (sel.dataset.print !== print) {
+    sel.dataset.print = print;
+    sel.innerHTML = '';
+    for (const o of opts) {
+      const opt = document.createElement('option');
+      opt.value = o.choice;
+      opt.textContent = o.label;
+      opt.title = o.model || '';
+      sel.appendChild(opt);
+    }
+  }
+  _gameModelChoice = data.agent_model || 'local';
+  if (!opts.some(o => o.choice === _gameModelChoice)) {
+    // Chosen before its key was removed: show it so the pause makes sense.
+    const opt = document.createElement('option');
+    opt.value = _gameModelChoice;
+    opt.textContent = `${_gameModelChoice} (no key)`;
+    sel.appendChild(opt);
+  }
+  if (document.activeElement !== sel) sel.value = _gameModelChoice;
+}
+
+async function setGameAgentModel(choice, resume = false) {
+  const sel = $('#game-model');
+  const msg = $('#game-model-msg');
+  const resumeBtn = $('#game-model-resume');
+  _gameModelBusy = true;
+  sel.disabled = true;
+  resumeBtn.disabled = true;
+  try {
+    const r = await api('/api/game/agent_model', {
+      method: 'POST', csrf: true, body: { game: 'minecraft', agent_model: choice },
+    });
+    _gameModelChoice = r.agent_model;
+    msg.hidden = true;
+    if (resume) resumeBtn.hidden = true;
+    refreshGameCard();
+  } catch (e) {
+    sel.value = _gameModelChoice;            // didn't switch
+    msg.hidden = false;
+    msg.textContent = e.message;
+  } finally {
+    sel.disabled = false;
+    resumeBtn.disabled = false;
+    _gameModelBusy = false;
+  }
+}
+
+function gameModelText(m) {
+  if (!m) return '';
+  return m.model ? `${m.label} (${m.model})` : m.label;
+}
+
 async function onGameToggle(enabled) {
   const toggle = $('#game-toggle');
   _gameBusy = true;
@@ -2221,19 +2427,31 @@ function renderGameCard(s) {
   const bot = s.bot || {};
   $('#game-toggle').checked = !!s.enabled;
 
+  const paused = agent.running && s.loop_state === 'paused_cloud_error';
+  const model = gameModelText(s.agent_model);
   let sub;
   if (agent.crashed) sub = 'Game agent crashed';
-  else if (agent.running) sub = !s.loop_state || s.loop_state === 'running'
-    ? 'Running' : `Running · ${s.loop_state}`;
+  else if (paused) {
+    const p = s.cloud_pause || {};
+    sub = /key not set/.test(p.error || '')
+      ? `Minecraft agent paused: ${p.error}`
+      : `Paused · ${p.provider || 'cloud model'} error: ${p.error || 'unknown'}`;
+  }
+  else if (agent.running) sub = (!s.loop_state || s.loop_state === 'running'
+    ? 'Running' : `Running · ${s.loop_state}`) + (model ? ` · ${model}` : '');
   else if (s.enabled) sub = 'Starting…';
-  else sub = 'Off';
+  else sub = model ? `Off · ${model}` : 'Off';
   const botState = bot.running ? 'bot.js started by Lumi'
     : s.bot_external ? 'bot.js already running'
     : bot.crashed ? 'bot.js crashed'
     : s.enabled ? 'bot.js not reachable' : '';
-  $('#game-sub').textContent = botState ? `${sub} · ${botState}` : sub;
+  $('#game-sub').textContent = botState && !paused ? `${sub} · ${botState}` : sub;
+  if (!_gameModelBusy) $('#game-model-resume').hidden = !paused;
 
   $('#game-thought').textContent = s.thought || (agent.running ? 'Thinking…' : '—');
+  const la = s.last_action;
+  $('#game-last-action').textContent = la
+    ? `last action: ${la.name} — ${la.admitted ? 'admitted' : `refused (${la.reason})`}` : '';
 
   const meta = [];
   if (s.goal) meta.push(`goal: ${s.goal}`);
