@@ -2286,8 +2286,6 @@ const MOOD_BARS = [
 let _lastGameHealth = null;
 
 function renderGameMood(mood) {
-  // The Pipeline's Lumis pace and nap by it too (pipeline.js listens for this).
-  window.dispatchEvent(new CustomEvent('lumi-mood', { detail: mood || null }));
   const box = $('#game-mood');
   if (!box) return;
   box.hidden = !mood;
@@ -5738,7 +5736,7 @@ function renderPipeline(main) {
 function mountPixelPipeline() {
   if (!window.LumiPipeline || typeof io === 'undefined') return;
   const STATUS = { idle: 'Idle', thinking: 'Thinking', executing: 'Executing', waiting_approval: 'Needs you', error: 'Error' };
-  const NAMES = { main: 'Main', minecraft: 'Minecraft', planner: 'Planner', system: 'System' };
+  const NAMES = { main: 'Main', minecraft: 'Minecraft', office: 'Office', system: 'System' };
   let agents = {};
   let approvals = [];
   const sock = lumiUi.socket();                 // shared: visiting this page never reconnects

@@ -194,6 +194,9 @@
       case 'hybrid_mode_update':
         ui.hybrid = msg; renderBrain();
         break;
+      case 'mood_update':                          // Lumi's mood, for the Pipeline's Lumis
+        applyMood(msg.mood);
+        break;
       case 'knowledge_ingest_start':
         if (msg.source !== 'island' && !focus.running) feed(`Lumi is reading ${msg.file}…`, 0.5);
         break;
@@ -221,7 +224,7 @@
       case 'approval_request':
         if (msg.id && !queue.some((r) => r.id === msg.id)) {   // re-sent on reconnect
           queue.push({ id: String(msg.id), tool: String(msg.tool || ''), preview: String(msg.preview || ''),
-                       agent: ['main', 'minecraft', 'planner', 'system'].includes(msg.agent) ? msg.agent : 'main' });
+                       agent: ['main', 'minecraft', 'office', 'system'].includes(msg.agent) ? msg.agent : 'main' });
           renderApproval();
         }
         break;
@@ -269,6 +272,13 @@
                              initial: themeSync() ? null : store.get(LOCAL_KEY, null) });
   }
 
+  // Lumi's mood (modules/mood_sync.py): kept on window so the Pipeline tab starts with
+  // it when it mounts, and announced to it while it's on screen (pipeline.js listens).
+  function applyMood(m) {
+    window.lumiMood = m || null;
+    window.dispatchEvent(new CustomEvent('lumi-mood', { detail: window.lumiMood }));
+  }
+
   function wantedTheme() { return themeSync() ? ui.theme : store.get(LOCAL_KEY, ui.theme); }
   function applyTheme() {
     const id = wantedTheme();
@@ -301,6 +311,7 @@
       const s = await req('ui_state');
       ui = { theme: s.theme, themes: s.themes || [], hybrid: s.hybrid };
       applyTheme();
+      if ('mood' in s) applyMood(s.mood);
     } catch (_) { /* older Lumi without themes: keep the default */ }
   }
   $('theme-pick').addEventListener('change', async (e) => {
@@ -950,7 +961,7 @@
   // agent that needs approval walks to the front, waves, and gets
   // Approve / Decline buttons above its head (same respond() as the
   // full-screen approval view). The list below keeps each agent's task.
-  const AGENTS = [['main', 'Main'], ['minecraft', 'Minecraft'], ['planner', 'Planner'], ['system', 'System']];
+  const AGENTS = [['main', 'Main'], ['minecraft', 'Minecraft'], ['office', 'Office'], ['system', 'System']];
   const STATUS_LABEL = { idle: 'Idle', thinking: 'Thinking', executing: 'Executing', waiting_approval: 'Needs you', error: 'Error' };
   let agents = {};
   let pixel = null;

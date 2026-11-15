@@ -1,13 +1,13 @@
 /*
- * Lumi Pipeline: her agents at work in her cyberpunk room.
+ * Lumi Pipeline: her agents at work in her cyberpunk room, Sims-style.
  *
  * Shared by the web app (web/pipeline.js) and Lumi Island (island/src/pipeline.js);
  * scripts/sync_themes.py copies this file (and pixel-office/lumi-sprites.js) over.
  * The art lives in pixel-office/ next to this file and is baked by
- * scripts/build_pixel_office.py: Pixel Agents' character poses, tiles and some
- * furniture (MIT, github.com/pixel-agents-hq/pixel-agents), redrawn as four Lumis
- * after her character sheet, in a room of her own. pixel-office/lumi-sprites.js maps
- * every pose to an optional hand-drawn PNG (see there for the format and fallbacks).
+ * scripts/build_pixel_office.py (+ scripts/lumi_hd.py): the room from Pixel Agents'
+ * tiles and furniture (MIT, github.com/pixel-agents-hq/pixel-agents), and four 48x96
+ * Lumis after her character sheet, with her activity poses. pixel-office/lumi-sprites.js
+ * maps every pose to an optional hand-drawn PNG (see there for the format and fallbacks).
  *
  *   const pl = LumiPipeline.mount(wrapperEl, {
  *     base: '/web/pixel-office/',                 // where the baked art is
@@ -15,60 +15,65 @@
  *   });
  *   pl.update(agents);      // agent_update payload: {main: {status, visual_state, task, progress, model, model_name}, ...}
  *   pl.setApprovals(list);  // [{id, tool, agent, preview}]
- *   pl.setMood(mood);       // {valence, arousal, frustration, boredom} or null; also the window 'lumi-mood' event
+ *   pl.setMood(mood);       // {valence, arousal, frustration, curiosity, boredom}; normally from
+ *                           // the backend's mood_update (window.lumiMood + the 'lumi-mood' event)
  *   pl.destroy();
  *
- * How it plays (after Pixel Agents' office engine): a busy agent walks (BFS over the
- * room's walk grid) to its work station and types, or reads while it searches or
- * reads pages; an idle one walks to its resting seat and sits. Its monitors switch on
- * while it works. An approval puts the permission bubble over its head and Approve /
- * Decline buttons above it; a finished task shows the green check for 2 s; an error
- * flashes it red.
+ * How it plays: a busy agent walks (BFS over the room's walk grid) to its station
+ * and types, or reads while it searches; an idle one goes back to its seat. Its
+ * monitors switch on while it works. An approval puts the permission bubble over its
+ * head and Approve / Decline buttons above it; a finished task shows the green check
+ * for 2 s; an error flashes it red.
  *
- * Ambient life: once an agent has been idle for IDLE_BEFORE_AMBIENT_S it does things on
- * its own (BEHAVIOR_WEIGHTS: wander, look around, stretch, coffee, desk work, the
- * window, the server rack), naps at night (22:00-06:00, after 2 min idle), has lunch
- * (12:00-14:00). Lumi's mood, when the page has it, changes the pace and the choices.
- * The backend's state always wins: a new task interrupts whatever she's doing. Ambient
- * time runs only while the canvas is drawn, so it stops while the page is hidden.
+ * Ambient life (the Sims part): idle for IDLE_BEFORE_AMBIENT_S, a Lumi does things on
+ * her own (BEHAVIOR_WEIGHTS): strolls across the room, looks around, stretches, gets
+ * coffee and drinks it at her seat, tidies her desk, looks out of the window, checks the
+ * server racks; naps slumped at her desk at night (22:00-06:00, after 2 min idle), has
+ * a rice ball at lunch (12:00-14:00). A thought bubble shows what she's having, and her
+ * halo glows like a plumbob: green when Lumi's mood is good, amber, red when she's
+ * frustrated. Mood also sets the pace and the choices. The backend always wins: a new
+ * task interrupts whatever she's doing. Ambient time only runs while the canvas is
+ * drawn, so it stops while the page is hidden.
  *
- * Click a Lumi for a card: status, task, model and tier, time in this state, her
- * last 5 changes (kept here, not on the server). Click elsewhere or Esc to close.
+ * Click a Lumi for a card: status, task, model and tier, time in this state, her last
+ * 5 changes (kept here, not on the server). Click elsewhere or Esc to close.
  *
- * The room is drawn at 1x into a 320x192 buffer and scaled up crisp; names, buttons
- * and the card are at native resolution. 30 fps while anyone walks or works, about
- * 8 fps otherwise, nothing while hidden.
+ * The 320x192 room is drawn at 2x into a 640x384 buffer; Lumis are 48x96 (a tile and
+ * a half wide, three tall, so she reads at a glance). Names, buttons and the card are
+ * at native resolution. 30 fps while anyone walks or works, about 8 fps otherwise,
+ * nothing while hidden.
  */
 (function () {
   'use strict';
 
-  const ORDER = ['main', 'minecraft', 'planner', 'system'];
-  const NAMES = { main: 'Main', minecraft: 'Minecraft', planner: 'Planner', system: 'System' };
+  const ORDER = ['main', 'minecraft', 'office', 'system'];
+  const NAMES = { main: 'Main', minecraft: 'Minecraft', office: 'Office', system: 'System' };
   const STATUS_LABEL = { idle: 'Idle', thinking: 'Thinking', executing: 'Executing', waiting_approval: 'Needs you', error: 'Error' };
   const READING_RE = /web_search|browse|research|search_files|read_file|read_window|reading|searching|triag|recall|library/i;
   const FAST_MS = 33, SLOW_MS = 120;
   const BLINK_S = 0.15;
   const DONE_BUBBLE_S = 2;
   const HISTORY = 5;
+  const RS = 2;                                 // room drawn at 2x
 
   // ── ambient behaviour ─────────────────────────────────────────
   const IDLE_BEFORE_AMBIENT_S = 8;
   const SLEEP_AFTER_IDLE_S = 120;              // at night
   const NIGHT = [22, 6], LUNCH = [12, 14];      // local hours [from, to)
-  const MAX_WALK_PX_S = 64;                     // mood can speed her up, never to a run
+  const MAX_WALK_PX_S = 64;                     // room px/s; mood can speed her up, never to a run
   // Relative odds of each idle behaviour, per agent (before mood). Sleep and lunch
   // aren't in here: they depend on the clock (see pickBehavior).
   const BEHAVIOR_WEIGHTS = {
-    main:      { deskwork: 5, look: 3, stretch: 2, drink: 2, wander: 1, window: 0.5, rack: 0 },
+    main:      { deskwork: 5, look: 3, stretch: 2, drink: 2, wander: 1.5, window: 0.5, rack: 0 },
     minecraft: { wander: 5, window: 4, look: 2, stretch: 1, drink: 1, deskwork: 0.5, rack: 0 },
-    planner:   { deskwork: 5, drink: 2, stretch: 2, look: 1, wander: 1, window: 0.5, rack: 0 },
-    system:    { rack: 5, look: 2, stretch: 1, drink: 1, wander: 0.5, deskwork: 0, window: 0 },
+    office:    { deskwork: 5, drink: 2, stretch: 2, look: 1, wander: 1, window: 0.5, rack: 0 },
+    system:    { rack: 5, look: 2, stretch: 1.5, drink: 1, wander: 0.5, deskwork: 0, window: 0 },
   };
   const LUNCH_WEIGHT = 6;                       // added once per lunch window per agent
   const AMBIENT_LABEL = {
-    wander: 'wandering', look: 'looking around', stretch: 'stretching', drink: 'having coffee',
+    wander: 'strolling around', look: 'looking around', stretch: 'stretching', drink: 'having coffee',
     deskwork: 'tidying up her desk', window: 'looking out the window', rack: 'watching the servers',
-    eat: 'having lunch', sleep: 'asleep',
+    eat: 'having a rice ball', sleep: 'asleep at her desk',
   };
 
   const rand = (a, b) => a + Math.random() * (b - a);
@@ -105,7 +110,7 @@
       const fake = ORDER.filter((a) => chars[a].placeholder);
       if (fake.length) console.warn(`[pipeline] no baked sheet for ${fake.join(', ')}: drawing placeholders. Run scripts/build_pixel_office.py.`);
       if (missing.length) {
-        console.warn(`[pipeline] ${missing.length} poses have no custom PNG in ${base}${sprites.CUSTOM_DIR} and use the baked sheet: `
+        console.info(`[pipeline] ${missing.length} poses use the baked sheet (drop PNGs in ${base}${sprites.CUSTOM_DIR} to replace them): `
           + missing.join(', '));
       }
       return { meta, sprites, floor, atlas, bubblePerm, bubbleDone, chars };
@@ -140,16 +145,23 @@
     return path.reverse();
   }
 
-  // Mood -> how she moves and what she picks. Neutral without a mood.
+  // Mood -> how she moves, what she picks, and her halo's colour. Neutral without a mood.
   function moodFactors(m) {
-    const arousal = m && Number.isFinite(+m.arousal) ? clamp(+m.arousal, 0, 1) : 0.5;
-    const frustration = m && Number.isFinite(+m.frustration) ? clamp(+m.frustration, 0, 1) : 0;
-    const boredom = m && Number.isFinite(+m.boredom) ? clamp(+m.boredom, 0, 1) : 0;
+    const num = (k, d) => (m && Number.isFinite(+m[k]) ? +m[k] : d);
+    const valence = clamp(num('valence', 0.2), -1, 1);
+    const arousal = clamp(num('arousal', 0.5), 0, 1);
+    const frustration = clamp(num('frustration', 0), 0, 1);
+    const boredom = clamp(num('boredom', 0), 0, 1);
+    const plumbob = !m ? null
+      : frustration > 0.55 || valence < -0.35 ? '#ff5a6e'
+      : frustration > 0.3 || valence < 0.05 ? '#ffc46b'
+      : '#5cf28a';
     return {
       speed: clamp(0.75 + 0.5 * arousal + 0.35 * frustration, 0.6, 1.4),   // pace
       restless: 1 + 2 * frustration,                                       // more pacing when frustrated
       curious: 1 + boredom,                                                // looks about when bored
       sleepy: arousal < 0.3 ? (0.3 - arousal) * 20 : 0,                    // naps by day when drained
+      plumbob,
     };
   }
 
@@ -164,7 +176,7 @@
     const ctx = canvas.getContext('2d');
 
     let A = null;                        // assets once loaded
-    let W = 320, H = 192, buf = null, bctx = null, tint = null, tctx = null;
+    let W = 640, H = 384, CW = 48, CH = 96, buf = null, bctx = null, tint = null, tctx = null;
     let scale = 1, cssScale = 1, raf = 0, timer = 0, last = 0, visible = true, destroyed = false;
     let snapshot = {}, approvals = [];
     let sim = 0;                         // ambient clock: only runs while drawn
@@ -186,6 +198,7 @@
     function setMood(m) { mood = m && typeof m === 'object' ? m : null; mf = moodFactors(mood); kick(); }
     const onMood = (e) => setMood(e.detail);
     window.addEventListener('lumi-mood', onMood);
+    if (window.lumiMood) setMood(window.lumiMood);     // the last mood_update this page heard
 
     function makeAgent(id) {
       const st = A.meta.agents[id];
@@ -196,16 +209,16 @@
         dir: spot.face, walking: false, frame: 0, frameT: 0,
         status: 'idle', vs: 'sitting', task: '', progress: 0, model: null, modelName: null,
         nextBlink: 1 + Math.random() * 4, blinkUntil: 0, doneUntil: 0, headY: 0,
-        idleSince: 0, beh: null, nextBeh: IDLE_BEFORE_AMBIENT_S, lunchDay: '',
+        idleSince: 0, beh: null, nextBeh: IDLE_BEFORE_AMBIENT_S + Math.random() * 6, lunchDay: '',
         since: Date.now(), history: [],
       };
     }
 
     function resize() {
-      const cw = wrapper.clientWidth || W * 2;
+      const cw = wrapper.clientWidth || W;
       const dpr = window.devicePixelRatio || 1;
-      scale = Math.max(1, Math.round((cw * dpr) / W));
-      canvas.width = W * scale; canvas.height = H * scale;
+      scale = Math.max(0.5, (cw * dpr) / W);
+      canvas.width = Math.round(W * scale); canvas.height = Math.round(H * scale);
       canvas.style.width = cw + 'px'; canvas.style.height = Math.round(cw * H / W) + 'px';
       cssScale = cw / W;
       kick();
@@ -274,17 +287,17 @@
       const list = spotsOf(kind).filter((s) => !taken.has(tileKey(s)));
       return list.length ? list[Math.floor(Math.random() * list.length)] : null;
     }
+    // Anywhere on the floor at least 4 tiles away, so a stroll crosses the room.
     function wanderTile(a) {
-      const walk = A.meta.walk, taken = othersBlocked(a), home = a.st.rest;
+      const walk = A.meta.walk, taken = othersBlocked(a);
       const options = [];
       for (let r = 0; r < walk.length; r++) for (let c = 0; c < walk[0].length; c++) {
         if (walk[r][c] !== '1' || taken.has(`${c},${r}`)) continue;
-        const d = Math.abs(c - home.col) + Math.abs(r - home.row);
-        if (d >= 2 && d <= 7) options.push({ col: c, row: r });
+        if (Math.abs(c - a.col) + Math.abs(r - a.row) >= 4) options.push({ col: c, row: r });
       }
       if (!options.length) return null;
       const t = options[Math.floor(Math.random() * options.length)];
-      return { col: t.col, row: t.row, face: ['down', 'left', 'right'][Math.floor(Math.random() * 3)], sit: false };
+      return { col: t.col, row: t.row, face: ['down', 'left', 'right', 'up'][Math.floor(Math.random() * 4)], sit: false };
     }
     const deskOf = (a) => (a.st.work.sit ? a.st.work : a.st.rest);
     const pause = (lo, hi) => rand(lo, hi) / mf.speed;
@@ -297,15 +310,15 @@
           const hops = 1 + Math.floor(Math.random() * (mf.restless > 2 ? 3 : 2));
           for (let i = 0; i < hops; i++) {
             const t = wanderTile(a);
-            if (t) steps.push({ go: t }, { pose: 'idle', dur: pause(1.5, 4) / mf.restless * 1.5 });
+            if (t) steps.push({ go: t }, { pose: 'idle', dur: pause(2, 5) / mf.restless * 1.5, look: Math.random() < 0.5 });
           }
           return steps.length ? [...steps, { go: rest }] : null;
         }
         case 'look':     return [{ pose: a.spot.sit ? 'sit' : 'idle', dur: pause(2.5, 4), look: true }];
-        case 'stretch':  return [{ pose: 'stretch', dur: 2.4 }];
+        case 'stretch':  return [{ pose: 'stretch', dur: 3.2 }];
         case 'drink': {
           const cup = freeSpot(a, 'coffee');
-          return cup ? [{ go: { ...cup, sit: false } }, { pose: 'idle', dur: 1.2 }, { go: rest }, { pose: 'drink', dur: pause(6, 10) }] : null;
+          return cup ? [{ go: { ...cup, sit: false } }, { pose: 'idle', dur: 1.5 }, { go: rest }, { pose: 'drink', dur: pause(7, 11) }] : null;
         }
         case 'deskwork': {
           const desk = deskOf(a);
@@ -358,12 +371,17 @@
       const s = b.steps[b.i];
       if (!s) { endBehavior(a); return; }
       if (s.go) goTo(a, s.go);
-      else { b.until = sim + s.dur; b.nextLook = sim + 0.8; b.looks = 0; a.frame = 0; }
+      else {
+        b.until = sim + s.dur; b.nextLook = sim + 0.8; b.looks = 0; a.frame = 0;
+        // Coffee and lunch face the room: she turns her chair round, so the mug shows.
+        if ((s.pose === 'drink' || s.pose === 'eat') && a.dir === 'up') a.dir = 'down';
+      }
     }
     function endBehavior(a) {
       a.beh = null;
       a.nextBeh = sim + rand(4, 10) / mf.speed;
       if (a.target !== a.st.rest && !busyOf(a)) goTo(a, a.st.rest);
+      else if (!a.walking) a.dir = a.spot.face || a.dir;
     }
     function cancelBehavior(a) { a.beh = null; }
 
@@ -404,7 +422,8 @@
       return a.spot.sit ? 'sit' : 'idle';
     }
     function poseInfo(a) { return A.chars[a.id].poses[poseName(a)]; }
-    const sitsNow = (a) => !a.walking && a.spot.sit && poseName(a) !== 'stretch';
+    const SEATED = new Set(['sit', 'type', 'read', 'drink', 'eat', 'sleep']);
+    const sitsNow = (a) => !a.walking && a.spot.sit && SEATED.has(poseName(a));
 
     function animating(now) {
       return ORDER.some((id) => { const a = agents[id]; return a.walking || working(a) || a.status === 'error'; })
@@ -414,8 +433,21 @@
     // ── drawing ──────────────────────────────────────────────────
     function drawAtlas(c, idx, x, y, flip) {
       const [sx, sy, w, h] = A.meta.rects[idx];
-      if (!flip) { c.drawImage(A.atlas, sx, sy, w, h, x, y, w, h); return; }
-      c.save(); c.translate(x + w, y); c.scale(-1, 1); c.drawImage(A.atlas, sx, sy, w, h, 0, 0, w, h); c.restore();
+      if (!flip) { c.drawImage(A.atlas, sx, sy, w, h, x * RS, y * RS, w * RS, h * RS); return; }
+      c.save(); c.translate((x + w) * RS, y * RS); c.scale(-1, 1);
+      c.drawImage(A.atlas, sx, sy, w, h, 0, 0, w * RS, h * RS); c.restore();
+    }
+
+    // Where her feet are, in buffer pixels.
+    const feet = (a) => [Math.round(a.x * RS), Math.round((a.y + (sitsNow(a) ? A.meta.timing.sit_offset : 0)) * RS)];
+
+    function drawShadow(c, a) {
+      const [fx, fy] = feet(a);
+      c.save();
+      c.globalAlpha = 0.35;
+      c.fillStyle = '#05060c';
+      c.beginPath(); c.ellipse(fx, fy - 2, 13, 4, 0, 0, Math.PI * 2); c.fill();
+      c.restore();
     }
 
     function drawAgent(c, a, now) {
@@ -424,70 +456,102 @@
       const pose = A.chars[a.id].poses[name];
       const col = pose.cols[a.frame % pose.cols.length];
       const rowIdx = F.rows[a.dir] ?? 0;
-      const sheet = pose.custom ? pose.img : (now < a.blinkUntil ? A.chars[a.id].blink : A.chars[a.id].open);
-      const sit = sitsNow(a) ? A.meta.timing.sit_offset : 0;
-      const slump = name === 'sleep' && !pose.custom ? 1 : 0;
-      let dx = Math.round(a.x - 8), dy = Math.round(a.y + sit + slump - 32);
-      // stretch without custom art: a slow rise on her toes (scale-y pulse from the feet)
-      const sy = name === 'stretch' && !pose.custom ? 1 + 0.09 * Math.max(0, Math.sin(sim * 2.6)) : 1;
-      const h = Math.round(32 * sy), top = dy + 32 - h;
+      const sheet = pose.custom ? pose.img : (now < a.blinkUntil && name !== 'sleep' ? A.chars[a.id].blink : A.chars[a.id].open);
+      const [fx, fy] = feet(a);
+      const dx = fx - CW / 2, top = fy - CH;
       const flip = a.dir === 'left';
+      if (!sitsNow(a)) drawShadow(c, a);
       const alarm = a.status === 'error' && Math.floor(now * 4) % 2 === 0;
       if (alarm) {                                    // flash red: tint the frame on a scratch canvas
-        tctx.clearRect(0, 0, 16, 32);
+        tctx.clearRect(0, 0, CW, CH);
         tctx.globalCompositeOperation = 'source-over';
-        tctx.drawImage(sheet, col * 16, rowIdx * 32, 16, 32, 0, 0, 16, 32);
+        tctx.drawImage(sheet, col * CW, rowIdx * CH, CW, CH, 0, 0, CW, CH);
         tctx.globalCompositeOperation = 'source-atop';
         tctx.fillStyle = 'rgba(255,45,70,0.55)';
-        tctx.fillRect(0, 0, 16, 32);
+        tctx.fillRect(0, 0, CW, CH);
       }
-      const src = alarm ? tint : sheet, sx = alarm ? 0 : col * 16, syy = alarm ? 0 : rowIdx * 32;
-      if (flip) { c.save(); c.translate(dx + 16, top); c.scale(-1, 1); c.drawImage(src, sx, syy, 16, 32, 0, 0, 16, h); c.restore(); }
-      else c.drawImage(src, sx, syy, 16, 32, dx, top, 16, h);
+      const src = alarm ? tint : sheet, sx = alarm ? 0 : col * CW, syy = alarm ? 0 : rowIdx * CH;
+      if (flip) { c.save(); c.translate(dx + CW, top); c.scale(-1, 1); c.drawImage(src, sx, syy, CW, CH, 0, 0, CW, CH); c.restore(); }
+      else c.drawImage(src, sx, syy, CW, CH, dx, top, CW, CH);
       a.headY = top;
-      // her halo glows a little (the sheet draws the ring; this is the light)
-      const glow = 0.18 + 0.12 * Math.sin(now * 2 + ORDER.indexOf(a.id));
+      drawHaloGlow(c, a, dx, top, now, name);
+    }
+
+    // Her halo lights up like a plumbob: her accent, or Lumi's mood colour when known.
+    function drawHaloGlow(c, a, dx, top, now, name) {
+      const hy = top + (name === 'sleep' ? 11 : 4);
+      const glow = 0.28 + 0.14 * Math.sin(now * 2.2 + ORDER.indexOf(a.id));
       c.save();
       c.globalCompositeOperation = 'lighter';
       c.globalAlpha = glow;
-      c.fillStyle = a.st.accent;
-      c.fillRect(dx + 4, top + 1, 8, 1); c.fillRect(dx + 5, top, 6, 1); c.fillRect(dx + 5, top + 2, 6, 1);
+      const g = c.createRadialGradient(dx + CW / 2, hy, 1, dx + CW / 2, hy, 14);
+      g.addColorStop(0, mf.plumbob || a.st.accent); g.addColorStop(1, 'rgba(0,0,0,0)');
+      c.fillStyle = g;
+      c.fillRect(dx + CW / 2 - 14, hy - 8, 28, 16);
       c.restore();
-      if (!pose.custom && pose.effect) drawEffect(c, a, pose.effect, dx, dy, now);
     }
 
-    // Small props over a baked frame for poses the sheet has no art for.
-    function drawEffect(c, a, kind, dx, dy, now) {
-      const px = (x, y, col) => { c.fillStyle = col; c.fillRect(x, y, 1, 1); };
-      const facingUp = a.dir === 'up';
-      const hx = a.dir === 'left' ? dx + 2 : dx + 12, hy = dy + 19;       // her hand, roughly
-      if (kind === 'mug' && !facingUp) {
-        const lift = Math.floor(now * 0.8) % 3 === 0 ? -2 : 0;             // a sip now and then
-        c.fillStyle = '#f4f6fb'; c.fillRect(hx - 1, hy + lift, 3, 3);
-        px(hx - 1, hy + lift, a.st.accent); px(hx, hy + lift, a.st.accent); px(hx + 1, hy + lift, a.st.accent);
-        px(a.dir === 'left' ? hx - 2 : hx + 2, hy + 1 + lift, '#d5d6e0');
-        const t = (now * 1.5) % 1;
-        c.globalAlpha = 1 - t; px(hx, hy - 2 + lift - Math.round(t * 3), '#c6f6f8'); c.globalAlpha = 1;
-      } else if (kind === 'food' && !facingUp) {
-        const bite = Math.floor(now * 2) % 2 ? -1 : 0;
-        c.fillStyle = '#f4f6fb'; c.fillRect(hx - 1, hy + 1 + bite, 3, 2); px(hx, hy + bite, '#f4f6fb');
-        c.fillStyle = '#16161c'; c.fillRect(hx - 1, hy + 2 + bite, 3, 1);
-      } else if (kind === 'zzz') {
+    // Over everything: the thought bubble, coffee steam, z z z.
+    function drawActivity(c, a, now) {
+      const name = poseName(a);
+      const [fx] = feet(a);
+      const top = a.headY;
+      if (name === 'sleep') {
+        c.save();
+        c.textAlign = 'center'; c.textBaseline = 'middle';
         for (let i = 0; i < 3; i++) {
-          const t = ((now * 0.35) + i / 3) % 1;
-          const zx = Math.round(a.x + 3 + t * 6 + i), zy = Math.round(dy + 2 - t * 12);
-          c.globalAlpha = Math.max(0, 1 - t) * 0.9;
-          c.fillStyle = '#e7eeff';
-          c.fillRect(zx, zy, 3, 1); px(zx + 1, zy + 1, '#e7eeff'); c.fillRect(zx, zy + 2, 3, 1);
+          const t = ((now * 0.3) + i / 3) % 1;
+          const zx = fx + 10 + t * 16 + Math.sin(t * 6 + i) * 3, zy = top + 14 - t * 34;
+          c.globalAlpha = Math.max(0, Math.sin(t * Math.PI)) * 0.95;
+          c.font = `700 ${10 + Math.round(t * 8)}px ui-monospace, Consolas, monospace`;
+          c.lineWidth = 3; c.strokeStyle = '#141a2c'; c.strokeText('z', zx, zy);
+          c.fillStyle = '#e7eeff'; c.fillText('z', zx, zy);
         }
-        c.globalAlpha = 1;
+        c.restore();
+        return;
       }
+      if (name !== 'drink' && name !== 'eat') return;
+      if (name === 'drink' && a.dir !== 'up') {              // steam off the mug
+        c.save();
+        for (let i = 0; i < 3; i++) {
+          const t = ((now * 0.6) + i / 3) % 1;
+          c.globalAlpha = Math.sin(t * Math.PI) * 0.7;
+          c.fillStyle = '#e7f6ff';
+          const sx = fx + (a.dir === 'left' ? 6 : -6) + Math.sin(t * 8 + i) * 2;
+          c.fillRect(Math.round(sx), Math.round(top + 46 - t * 16), 2, 2);
+        }
+        c.restore();
+      }
+      // A Sims-style thought bubble with what she's having.
+      const bx = fx + 18, by = top + 4, bob = Math.sin(now * 2) * 1.5;
+      c.save();
+      c.fillStyle = 'rgba(250,252,255,0.96)'; c.strokeStyle = '#141a2c'; c.lineWidth = 2;
+      c.beginPath(); c.arc(bx - 8, by + 22 + bob, 2, 0, Math.PI * 2); c.fill(); c.stroke();
+      c.beginPath(); c.arc(bx - 3, by + 16 + bob, 3, 0, Math.PI * 2); c.fill(); c.stroke();
+      c.beginPath(); c.ellipse(bx + 8, by + bob, 13, 10, 0, 0, Math.PI * 2); c.fill(); c.stroke();
+      const ix = bx + 2, iy = by - 5 + bob;
+      if (name === 'drink') {                                // a teal mug
+        c.fillStyle = '#141a2c'; c.fillRect(ix - 1, iy - 1, 11, 12);
+        c.fillStyle = '#4fb3a8'; c.fillRect(ix, iy, 9, 10);
+        c.fillStyle = '#f7f8fc'; c.fillRect(ix, iy + 4, 9, 2);
+        c.fillStyle = '#6a4630'; c.fillRect(ix + 1, iy, 7, 2);
+        c.fillStyle = '#141a2c'; c.fillRect(ix + 9, iy + 2, 3, 6);
+        c.fillStyle = '#4fb3a8'; c.fillRect(ix + 10, iy + 3, 1, 4);
+      } else {                                               // a rice ball
+        c.fillStyle = '#141a2c';
+        c.beginPath(); c.moveTo(ix + 5, iy - 2); c.lineTo(ix + 12, iy + 11); c.lineTo(ix - 2, iy + 11); c.closePath(); c.fill();
+        c.fillStyle = '#fbfbf6';
+        c.beginPath(); c.moveTo(ix + 5, iy); c.lineTo(ix + 10, iy + 10); c.lineTo(ix, iy + 10); c.closePath(); c.fill();
+        c.fillStyle = '#1b2a22'; c.fillRect(ix + 2, iy + 6, 6, 4);
+      }
+      c.restore();
     }
 
     function render(now) {
       const M = A.meta;
+      bctx.imageSmoothingEnabled = false;
       bctx.clearRect(0, 0, W, H);
-      bctx.drawImage(A.floor, 0, 0);
+      bctx.drawImage(A.floor, 0, 0, W, H);
       const screensOn = new Set();
       for (const id of ORDER) if (working(agents[id])) for (const i of agents[id].st.screens) screensOn.add(i);
       const items = [];
@@ -512,7 +576,7 @@
         bctx.fillStyle = light.tint;
         bctx.fillRect(0, 0, W, H);
         if (light.glow) {
-          const g = bctx.createRadialGradient(W / 2, 0, 8, W / 2, 0, W * 0.75);
+          const g = bctx.createRadialGradient(W / 2, 0, 16, W / 2, 0, W * 0.75);
           g.addColorStop(0, light.glow); g.addColorStop(1, 'rgba(0,0,0,0)');
           bctx.globalCompositeOperation = 'screen';
           bctx.globalAlpha = alpha * 0.9;
@@ -521,6 +585,7 @@
         }
         bctx.restore();
       }
+      for (const id of ORDER) drawActivity(bctx, agents[id], now);
       // bubbles over everything (Pixel Agents' permission "..." and done check)
       for (const id of ORDER) {
         const a = agents[id];
@@ -528,23 +593,26 @@
         if (!b) continue;
         const bob = a.status === 'waiting_approval' ? Math.floor(now * 2) % 2 : 0;
         bctx.globalAlpha = a.doneUntil > now && a.status !== 'waiting_approval' ? Math.min(1, (a.doneUntil - now) / 0.5) : 1;
-        bctx.drawImage(b, Math.round(a.x - b.width / 2), Math.round(a.headY - b.height + 3 - bob));
+        const [fx] = feet(a);
+        bctx.drawImage(b, Math.round(fx - b.width * RS / 2), Math.round(a.headY - b.height * RS + 6 - bob * RS),
+                       b.width * RS, b.height * RS);
         bctx.globalAlpha = 1;
       }
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(buf, 0, 0, W * scale, H * scale);
+      ctx.drawImage(buf, 0, 0, canvas.width, canvas.height);
       // names + progress at native resolution
-      const fs = Math.max(10, Math.round(3.6 * scale));
+      const k = canvas.width / W;
+      const fs = Math.max(10, Math.round(7 * k));
       ctx.font = `700 ${fs}px ui-monospace, Consolas, monospace`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       for (const id of ORDER) {
         const a = agents[id];
-        const sit = sitsNow(a) ? A.meta.timing.sit_offset : 0;
-        const x = a.x * scale, y = (a.y + sit + 1) * scale;
+        const [fx, fy] = feet(a);
+        const x = fx * k, y = (fy + 2) * k;
         ctx.fillStyle = 'rgba(8,8,16,0.75)'; ctx.fillText(NAMES[id], x + 1, y + 1);
         ctx.fillStyle = a.st.accent; ctx.fillText(NAMES[id], x, y);
         if (busyOf(a) && a.progress > 0) {
-          const bw = 14 * scale, bh = Math.max(2, Math.round(scale * 0.7)), by = y + fs + 2;
+          const bw = 28 * k, bh = Math.max(2, Math.round(k * 1.5)), by = y + fs + 2;
           ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.fillRect(x - bw / 2, by, bw, bh);
           ctx.fillStyle = a.st.accent; ctx.fillRect(x - bw / 2, by, bw * Math.min(1, a.progress / 100), bh);
         }
@@ -604,7 +672,8 @@
           el.title = (first.preview || '').slice(0, 600);
         }
         const a = agents[id];
-        const left = Math.round(a.x * cssScale) + 'px', top = Math.round((a.headY - 14) * cssScale) + 'px';
+        const [fx] = feet(a);
+        const left = Math.round(fx * cssScale) + 'px', top = Math.round((a.headY - 20) * cssScale) + 'px';
         if (el.style.left !== left) el.style.left = left;
         if (el.style.top !== top) el.style.top = top;
       }
@@ -625,7 +694,8 @@
       let best = null;
       for (const id of ORDER) {
         const a = agents[id];
-        if (bx >= a.x - 7 && bx <= a.x + 7 && by >= a.headY + 1 && by <= a.headY + 32 && (!best || a.y > best.y)) best = a;
+        const [fx, fy] = feet(a);
+        if (bx >= fx - 16 && bx <= fx + 16 && by >= a.headY + 6 && by <= fy && (!best || a.y > best.y)) best = a;
       }
       return best;
     }
@@ -653,6 +723,7 @@
       inspectEl.hidden = false;
       inspectEl.setAttribute('aria-label', `${NAMES[a.id]} agent`);
       fillInspect(true);
+      placeInspect();
     }
     function closeInspect() { inspected = null; if (inspectEl) inspectEl.hidden = true; }
     function fillInspect(force) {
@@ -687,9 +758,10 @@
       if (!inspected || !inspectEl) return;
       fillInspect(false);
       const a = agents[inspected];
+      const [fx] = feet(a);
       const w = inspectEl.offsetWidth || 220, ww = wrapper.clientWidth;
-      let left = Math.round(a.x * cssScale + 12 * cssScale);
-      if (left + w > ww - 4) left = Math.max(4, Math.round(a.x * cssScale - 12 * cssScale - w));
+      let left = Math.round((fx + 20) * cssScale);
+      if (left + w > ww - 4) left = Math.max(4, Math.round((fx - 20) * cssScale - w));
       const top = Math.max(4, Math.round(a.headY * cssScale));
       inspectEl.style.left = left + 'px';
       inspectEl.style.top = top + 'px';
@@ -733,7 +805,7 @@
         }
         if (was !== 'idle' && was !== 'error' && a.status === 'idle') a.doneUntil = now + DONE_BUBBLE_S;
         if (busyOf(a)) {
-          if (a.beh) cancelBehavior(a);                   // the backend always wins
+          if (a.beh) { cancelBehavior(a); if (!a.walking) a.dir = a.spot.face || a.dir; }   // the backend always wins
           retarget(a);
         } else if (was !== a.status) {
           a.idleSince = sim; a.nextBeh = sim + IDLE_BEFORE_AMBIENT_S;
@@ -752,10 +824,11 @@
     loadAssets(base).then((assets) => {
       if (destroyed) return;
       A = assets;
-      W = A.meta.W; H = A.meta.H;
+      W = A.meta.W * RS; H = A.meta.H * RS;
+      CW = (A.meta.char && A.meta.char.w) || 48; CH = (A.meta.char && A.meta.char.h) || 96;
       buf = document.createElement('canvas'); buf.width = W; buf.height = H;
       bctx = buf.getContext('2d');
-      tint = document.createElement('canvas'); tint.width = 16; tint.height = 32;
+      tint = document.createElement('canvas'); tint.width = CW; tint.height = CH;
       tctx = tint.getContext('2d');
       for (const id of ORDER) agents[id] = makeAgent(id);
       for (const id of ORDER) {                     // first data: appear in place, no walk-in
@@ -808,6 +881,7 @@
       _pick(id, idleFor) { return pickBehavior(agents[id], idleFor); },
       _pose(id) { return agents[id] ? poseName(agents[id]) : null; },
       get _mood() { return mf; },
+      get _size() { return { W, H, CW, CH }; },
     };
   }
 

@@ -11,9 +11,11 @@ some furniture. On top of that, in Lumi's own design
     pink insides, a floating halo, white jacket or shirt with a tie, black shorts,
     thigh-high socks, black boots with mint soles; each agent's colour as the
     accent (tie, halo). Main wears the sheet's jacket and twin tails; Minecraft a
-    backpack and a pickaxe over the shoulder; Planner (calendar, email, money) the
-    shirt, glasses and a lanyard badge; System the mint cat-ear hoodie (the sheet's
-    4th pose). The "ALLIUM" sleeve print doesn't fit in 16x32 pixels.
+    backpack and a pickaxe; Office the shirt, glasses and a lanyard badge; System
+    the mint cat-ear hoodie (the sheet's 4th pose). Painted at 16x32, then scaled to
+    48x96 and repainted in detail by scripts/lumi_hd.py (eyes, ears, halo, the
+    "ALLIUM" print, ribbons) with her activity poses: stretch, coffee, a rice ball,
+    asleep at her desk.
   * her cyberpunk room: dark navy floor with a neon grid and light pools, violet
     walls with neon trim, a night-city window, a "LUMI" neon sign, server racks,
     holo monitors, a neon rug lounge, her lilies (Allium triquetrum) and a cat bed
@@ -23,8 +25,9 @@ Outputs (written to web/pixel-office/ and island/src/pixel-office/):
     atlas.png      every wall piece and furniture sprite, animation frames included
     office.js      window.LUMI_OFFICE = { drawables, walk grid, seats, agent stations,
                    animation timing } (a script, not JSON: the island's CSP blocks fetch)
-    chars/<agent>.png, <agent>_blink.png   128x96 sheets: 8 frames (walk1-3, type1-2,
-                   read1-2, seated) x 3 rows (down, up, right; left = mirrored right)
+    chars/<agent>.png, <agent>_blink.png   768x288 sheets: 16 frames of 48x96 (walk1-3,
+                   type1-2, read1-2, seated, stretch1-2, coffee1-2, rice ball1-2,
+                   asleep1-2) x 3 rows (down, up, right; left = mirrored right)
     bubble-permission.png, bubble-waiting.png, LICENSE-pixel-agents.txt, CREDITS.md
 
 Nothing from the clone is executed: the bits of its renderer that turn data into
@@ -45,6 +48,9 @@ import sys
 from typing import Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lumi_hd  # noqa: E402  (scripts/lumi_hd.py: the 48x96 repaint)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PA = os.path.join(ROOT, "third_party", "pixel-agents")
@@ -73,7 +79,7 @@ P = {
     "ink": hexrgb("0c0e18"), "navy": hexrgb("141a2c"), "navy2": hexrgb("1b2238"), "steel": hexrgb("2b3150"),
     "steel2": hexrgb("3a4268"), "white": hexrgb("f4f6fb"), "black": hexrgb("16161c"),
 }
-ACCENTS = {"main": "5cf2d2", "minecraft": "5bd16a", "planner": "b48cff", "system": "ff5a7a"}
+ACCENTS = {"main": "5cf2d2", "minecraft": "5bd16a", "office": "b48cff", "system": "ff5a7a"}
 
 
 # ─── colour maths (office/colorize.ts, characters/color.ts) ───────────
@@ -478,15 +484,15 @@ LUMIS = {
                          "colors": {"top": C(220, 8, 82, 30), "jacket": C(225, 10, 78, 35), "pants": C(232, 12, -72, -10),
                                     "shoes": C(230, 10, -70, 10), "eyes": C(172, 60, 5, 10)}},
              "look": {"accent": "5cf2d2", "halo": "8fd8cf", "tails": ("right", "left")}},
-    # Planner (calendar, email, inbox, meetings, money): the shirt look, glasses on, a
-    # lanyard badge instead of the tie, violet halo.
-    "planner": {"profile": {"body": "bust", "eyeShape": "lashes", "eyeRows": "both", "under": "basic", "utop": "basic",
+    # Office (Claude Code): the shirt look, glasses on, a lanyard badge instead of the
+    # tie, violet halo.
+    "office": {"profile": {"body": "bust", "eyeShape": "lashes", "eyeRows": "both", "under": "basic", "utop": "basic",
                            "hair": "mop", "top": "long_sleeved_shirt", "pants": "shorts", "shoes": "boots",
                            "shades": "glasses",
                            "colors": {"top": C(220, 8, 84, 30), "pants": C(232, 12, -72, -10),
                                       "shoes": C(230, 10, -70, 10), "eyes": C(172, 60, 5, 10),
                                       "shades": C(265, 40, -55, 0)}},
-               "look": {"accent": "b48cff", "halo": "c9b4ff", "tie": False, "lanyard": True}},
+               "look": {"accent": "b48cff", "halo": "c9b4ff", "tie": False, "lanyard": True, "glasses": True}},
     # Minecraft: ready to go out, a backpack and a pickaxe over her shoulder, green tie and halo.
     "minecraft": {"profile": {"body": "bust", "eyeShape": "lashes", "eyeRows": "both", "under": "basic", "utop": "basic",
                               "hair": "bob", "top": "long_sleeved_shirt", "jacket": "bomber", "pants": "shorts",
@@ -507,9 +513,14 @@ LUMIS = {
 
 
 def build_lumi(agent: str, blink: bool) -> Image.Image:
+    """Her 48x96 sheet: painted at 16x32 over the Pixel Agents poses, then repainted
+    in detail at 3x with the activity poses added (scripts/lumi_hd.py)."""
     spec = LUMIS[agent]
     layers = build_layers(spec["profile"], blink)
-    return lumify(stack(layers), layers, spec["look"])
+    small = lumify(stack(layers), layers, spec["look"])
+    hood = spec["look"].get("hood")
+    ramps = [SILVER, TEAL] + ([hood] if hood else [])
+    return lumi_hd.hd_sheet(small, layers, spec["look"], ramps, hood, closed=blink)
 
 
 # ─── furniture catalog (core/src/assets/manifestUtils.ts) ─────────────
@@ -761,7 +772,7 @@ AMBIENT_SPOTS = {
 # Where each agent works and rests: (col, row, facing, sits?, monitor names that light up)
 STATIONS = {
     "main":      {"work": (8, 5, "up", True), "rest": (8, 5, "up", True), "screens": ["mon@8,3", "mon2@9,3"]},
-    "planner":   {"work": (13, 5, "up", True), "rest": (8, 9, "right", True), "screens": ["mon@13,3"]},
+    "office":    {"work": (13, 5, "up", True), "rest": (8, 9, "right", True), "screens": ["mon@13,3"]},
     "minecraft": {"work": (3, 5, "up", True), "rest": (9, 7, "down", True), "screens": ["mon_mc@3,3"]},
     "system":    {"work": (17, 4, "up", False), "rest": (11, 9, "left", True), "screens": []},
 }
@@ -965,6 +976,9 @@ def main():
     meta = {
         "W": room["W"], "H": room["H"], "tile": TILE, "cols": COLS, "rows": ROWS,
         "rects": room["rects"], "drawables": room["drawables"], "walk": room["walk"], "agents": room["agents"],
+        # Characters are 48x96 (3x the 16 px room tiles' art, drawn at 1.5x the room's
+        # scale so she reads at a glance); the room itself is drawn at 2x.
+        "char": {"w": lumi_hd.FW, "h": lumi_hd.FH, "scale": 2, "poses": lumi_hd.POSES},
         "frame": {"w": FRAME_W, "h": FRAME_H, "walk": [0, 1, 2, 1], "type": [3, 4], "read": [5, 6], "seated": 7,
                   "rows": {"down": 0, "up": 1, "right": 2, "left": 2}},
         "timing": {"walk_px_s": 48, "walk_frame_s": 0.15, "type_frame_s": 0.3, "sit_offset": 6},
@@ -975,7 +989,7 @@ def main():
     chars = {(a, b): build_lumi(a, b) for a in LUMIS for b in (False, True)}
     for out in OUTS:
         os.makedirs(os.path.join(out, "chars"), exist_ok=True)
-        for stale in ("office.png", "office_blink.png"):          # Office became Planner
+        for stale in ("planner.png", "planner_blink.png"):        # an earlier rename, undone
             if os.path.exists(os.path.join(out, "chars", stale)):
                 os.remove(os.path.join(out, "chars", stale))
         room["floor"].save(os.path.join(out, "floor.png"))
