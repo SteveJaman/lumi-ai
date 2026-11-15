@@ -1,0 +1,22 @@
+{
+  "id": "sakura",
+  "name": "Sakura",
+  "description": "Night-sky blossoms, manga panels, holographic speech bubbles, a sparkle cursor.",
+  "author": "Lumi",
+  "version": "1.0.0",
+  "dark": true,
+  "palette": {
+    "primary": "#FF7AC8", "secondary": "#B69CFF", "accent": "#8FE9D8", "glow": "#FFD1EA",
+    "bg": "#120A1C", "surface": "rgba(42, 20, 58, 0.55)", "text": "#FFF3FA", "muted": "#CDB2D6",
+    "danger": "#FF5C8A", "petal": "#FFB7DD", "petal2": "#FFE1F0", "moon": "#FFF4E0"
+  },
+  "fonts": {
+    "display": "\"Segoe UI Variable Display\", \"Yu Gothic UI\", \"Segoe UI\", system-ui, sans-serif",
+    "body": "\"Segoe UI Variable\", \"Yu Gothic UI\", \"Segoe UI\", system-ui, sans-serif",
+    "mono": "\"Cascadia Mono\", Consolas, monospace"
+  },
+  "style": "style.css",
+  "background": { "script": "background.js", "fps": 30, "maxDpr": 1.25, "options": { "petals": 46, "bokeh": 14 } },
+  "cursor": "sparkle",
+  "room": { "tint": "#FF7AC8", "alpha": 0.16, "blend": "soft-light", "glow": "#FFD1EA" }
+}

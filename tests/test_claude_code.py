@@ -221,8 +221,10 @@ def test_not_installed_gives_instructions(monkeypatch):
 models = []
 
 
-def make_prompter(approve, monkeypatch, ran):
+def make_prompter(approve, monkeypatch, ran, cloud=True):
     models.clear()
+    from modules import hybrid_mode
+    monkeypatch.setattr(hybrid_mode, "enabled", lambda: cloud)       # Claude Code needs Cloud Escalation
     p = Prompter.__new__(Prompter)
     p.signals = types.SimpleNamespace(workspace_hub=None, sdk=None)
     p.agent_mode_enabled = True
@@ -364,3 +366,10 @@ def test_the_tool_isnt_even_offered_while_agent_mode_is_off():
     from modules import prompter
     src = inspect.getsource(prompter.Prompter)
     assert "self.agent_mode_enabled and claude_code.available()" in src
+
+
+def test_claude_code_is_refused_in_100_percent_local_mode(monkeypatch):
+    ran = []
+    p, asked = make_prompter(True, monkeypatch, ran, cloud=False)
+    out = dispatch(p, {"task": "explain the reconnect loop"})
+    assert "Cloud Escalation is off" in out and ran == [] and asked == []

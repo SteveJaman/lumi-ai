@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Lumi Island</title>
   <link rel="stylesheet" href="island.css">
+  <link rel="stylesheet" href="themes/engine.css">
 </head>
 <body>
   <div id="island" class="island hidden" data-status="connecting">
@@ -46,6 +47,17 @@
 
       <!-- Home -->
       <section id="app-home" class="app" aria-label="Home">
+        <div class="card brain-card">
+          <div class="label">Lumi's brain <span id="privacy" class="privacy">…</span></div>
+          <label class="brain-row"><span>Cloud Escalation<small id="hybrid-sub">Hard prompts may use a cloud model</small></span>
+            <input id="hybrid" type="checkbox" class="brain-switch" disabled></label>
+          <div class="brain-row">
+            <span>Theme<small><label class="brain-sync"><input id="theme-sync" type="checkbox"> Sync with Desktop</label></small></span>
+            <select id="theme-pick" aria-label="Theme"></select>
+          </div>
+          <div id="feed" class="feed" hidden><div class="feed-text"></div><div class="feed-bar"><i></i></div></div>
+          <p class="note brain-hint">Drop files here to teach Lumi.</p>
+        </div>
         <div class="card vts-card">
           <div class="label">Lumi, live</div>
           <div class="vts-frame">
@@ -158,6 +170,7 @@
     </section>
 
   </div>
+  <script src="theme-engine.js"></script>
   <script src="pipeline.js"></script>
   <script src="island.js"></script>
 </body>

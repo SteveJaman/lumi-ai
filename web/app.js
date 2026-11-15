@@ -9,6 +9,7 @@
 import * as workspace from './workspace.js';
 import * as display from './display.js';
 import * as islandRemote from './island_remote.js';
+import * as lumiUi from './lumi-ui.js';
 
 const $  = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -191,6 +192,7 @@ async function checkAuth() {
     state.features = me.features || { stream: false };
 
     showShell();
+    lumiUi.initUi({ api, state });       // theme, Cloud Escalation badge, sync, drag and drop
 
     // Refresh theme button icon now that the sidebar exists
     const t = document.documentElement.getAttribute('data-theme') || 'light';
@@ -5663,6 +5665,8 @@ function renderGeneralTab(panel, data) {
     'write and changes take effect on the next turn — no restart required.';
   panel.appendChild(help);
 
+  panel.appendChild(lumiUi.buildAppearanceCard());
+  panel.appendChild(lumiUi.buildHybridCard());
   panel.appendChild(buildGamingModeField());
   panel.appendChild(buildIslandField());
   panel.appendChild(islandRemote.buildRemoteCard());

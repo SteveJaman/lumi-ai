@@ -54,7 +54,7 @@ from modules import gaming_mode
 from modules import workspace_hub
 from modules import island_bridge
 from modules import claude_code
-from modules import model_router, agent_tracker
+from modules import model_router, agent_tracker, hybrid_mode
 
 SENTENCE_SPLIT_PATTERN = re.compile(r'(?<=[.!?;\n])\s+')
 
@@ -1681,6 +1681,10 @@ class Prompter:
             model = FAST_MODEL_NAME if use_fast else MODEL_NAME
             label = "fast" if use_fast else "full"
             think_flag = not use_fast
+            # Hybrid mode: hard (opus) prompts may escalate to the cloud model.
+            escalated = hybrid_mode.model_for(tier, model)
+            if escalated != model:
+                model, label, think_flag = escalated, "cloud", None
         if has_attachment:
             self._route_tier = "sonnet"
         agent_tracker.update("main", "thinking", task="Generating response", progress=0,
@@ -2690,6 +2694,9 @@ class Prompter:
                         "Tell the user to turn it on if they want this.")
             if not claude_code.available():
                 return "Claude Code isn't available on this PC (or it's switched off in constants.py)."
+            if not hybrid_mode.claude_code_allowed():
+                return ("Claude Code runs in the cloud, and Cloud Escalation is off (Lumi is in 100% local mode). "
+                        "Tell the user they can turn it on in Settings or on the island's Home tab.")
             mode = "edit" if str(arguments.get("mode") or "") == "edit" else "read_only"
             task = str(arguments.get("task") or "").strip()
             print(f"\n{GRAY}[Lumi wants to use tool: {name} ({mode})]{RESET}")
@@ -2760,7 +2767,7 @@ class Prompter:
         """Returns True if this turn was a watchdog event, or the user's
         "yes" to a restart offer, and has been handled."""
         from modules import watchdog_agent
-        if entry.get("source") == "watchdog_event":
+        if entry.get("source") in ("watchdog_event", "announce_event"):
             say = entry.get("say") or "[worried] Something's wrong with your PC."
             self._watchdog_offer = (time.time(), say) if entry.get("offer_restart") else None
             print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {say}")
@@ -2835,7 +2842,8 @@ class Prompter:
         tier = await asyncio.get_running_loop().run_in_executor(
             None, model_router.route_model, latest_user_text)
         self._route_tier = tier
-        agent_tracker.update("main", "thinking", task="Planning", progress=0, model=tier, model_name=AGENT_MODEL_NAME)
+        agent_model = hybrid_mode.model_for(tier, AGENT_MODEL_NAME)    # cloud only for opus, with escalation on
+        agent_tracker.update("main", "thinking", task="Planning", progress=0, model=tier, model_name=agent_model)
         context_injections = self.gather_injections(latest_user_text, agent_context=True)
         messages = [{"role": "system", "content": f"{get_chat_system_prompt(agent=True)}\n\n{context_injections}"}]
 
@@ -2859,7 +2867,7 @@ class Prompter:
         if hub is not None and hub.any_connected():
             all_tools = all_tools + workspace_hub.TOOL_SCHEMAS
         all_tools = all_tools + everyday_tool_schemas(self._everyday_ctx())
-        if self.agent_mode_enabled and claude_code.available():      # never offered while agent mode is off
+        if self.agent_mode_enabled and claude_code.available() and hybrid_mode.claude_code_allowed():      # never offered while agent mode is off
             all_tools = all_tools + [claude_code.TOOL_SCHEMA]
         sdk = getattr(self.signals, "sdk", None)
         if sdk is not None:
@@ -2906,7 +2914,7 @@ class Prompter:
                 resp: LLMResponse = await loop.run_in_executor(
                     None,
                     lambda: chat_sync(
-                        AGENT_MODEL_NAME,          # needs tool calling; MODEL_NAME may be a chat-only model
+                        agent_model,               # AGENT_MODEL_NAME (tool calling), or the cloud model for opus
                         messages,
                         tools=all_tools,
                         think=True,
@@ -3239,6 +3247,9 @@ class Prompter:
         # resolve here without cross-thread hand-offs.
         await hitl_server.start(self.signals)
         island_bridge.install(self.signals)    # Lumi Island: chat, calendar, home
+        from modules import ui_routes, knowledge
+        ui_routes.install_island_handlers()     # theme + cloud escalation switch
+        knowledge.install_island_handlers(self.signals)    # drag-and-drop learning
         while not self.signals.terminate:
             if self.signals.new_message and not self.signals.AI_thinking and not self.signals.AI_speaking:
                 self.signals.AI_thinking = True

@@ -104,6 +104,15 @@
     const t0 = performance.now();
     const agents = {};
     let flickerUntil = 0, nextFlicker = 4;
+    let light = null;                    // theme lighting (theme.json "room"), see setLighting
+
+    function setLighting(room) {
+      light = room && room.tint ? room : null;
+      kick();
+    }
+    const onTheme = (e) => setLighting(e.detail && e.detail.manifest && e.detail.manifest.room);
+    window.addEventListener('lumi-theme', onTheme);
+    if (window.LumiThemes && window.LumiThemes.manifest()) setLighting(window.LumiThemes.manifest().room);
 
     function makeAgent(id) {
       const st = A.meta.agents[id];
@@ -230,6 +239,24 @@
         else if (d.flicker) idx = now < flickerUntil ? d.flicker[2] : d.flicker[0];
         else if (d.frames && d.fps) idx = d.frames[Math.floor(now * d.fps) % d.frames.length];
         drawAtlas(bctx, idx, d.x, d.y, d.flip);
+      }
+      // the theme's light over the room (Sakura washes it pink, Cyberpunk cyan)
+      if (light) {
+        const alpha = light.alpha ?? 0.15;
+        bctx.save();
+        bctx.globalCompositeOperation = light.blend || 'soft-light';
+        bctx.globalAlpha = alpha;
+        bctx.fillStyle = light.tint;
+        bctx.fillRect(0, 0, W, H);
+        if (light.glow) {
+          const g = bctx.createRadialGradient(W / 2, 0, 8, W / 2, 0, W * 0.75);
+          g.addColorStop(0, light.glow); g.addColorStop(1, 'rgba(0,0,0,0)');
+          bctx.globalCompositeOperation = 'screen';
+          bctx.globalAlpha = alpha * 0.9;
+          bctx.fillStyle = g;
+          bctx.fillRect(0, 0, W, H);
+        }
+        bctx.restore();
       }
       // bubbles over everything (Pixel Agents' permission "..." and done check)
       for (const id of ORDER) {
@@ -383,13 +410,14 @@
     document.addEventListener('visibilitychange', onVis);
 
     return {
-      update, setApprovals,
+      update, setApprovals, setLighting,
       destroy() {
         destroyed = true;
         cancelAnimationFrame(raf); clearTimeout(timer);
         if (ro) ro.disconnect(); else window.removeEventListener('resize', resize);
         if (io) io.disconnect();
         document.removeEventListener('visibilitychange', onVis);
+        window.removeEventListener('lumi-theme', onTheme);
         overlay.textContent = '';
       },
       get _agents() { return agents; },              // for tests

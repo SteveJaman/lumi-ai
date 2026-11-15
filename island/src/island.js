@@ -209,8 +209,20 @@
       case 'hello_ok':
         ready = true; retry = 500; lastClose = 0; conn = 'online';
         gaming = !!msg.gaming;
-        render(); loadHome(); loadChat();
+        render(); loadHome(); loadChat(); loadUiState();
         if (app === 'calendar') loadCalendar();
+        break;
+      case 'theme_update':
+        ui.theme = msg.theme || ui.theme; applyTheme();
+        break;
+      case 'hybrid_mode_update':
+        ui.hybrid = msg; renderBrain();
+        break;
+      case 'knowledge_ingest_start':
+        if (msg.source !== 'island') feed(`Lumi is reading ${msg.file}…`, 0.5);
+        break;
+      case 'knowledge_ingest_finish':
+        if (msg.source !== 'island') feed(msg.ok ? `Lumi learned ${msg.file} · ${msg.chunks} passages` : `Couldn't learn ${msg.file}: ${msg.error}`, 1, msg.ok ? 'ok' : 'error');
         break;
       case 'lumi_status':
         if (STATUS_TEXT[msg.state]) { lumiState = msg.state; render(); }
@@ -259,6 +271,146 @@
     syncVts();
   }
   function openApp(name) { setApp(name); setState(queue.length ? 'approval' : 'open'); }
+
+  // ── Lumi's brain: theme sync, Cloud Escalation, drag-and-drop learning ──
+  // Theme: follows the desktop ("Sync with Desktop", the default) or keeps its own
+  // choice; both live in this island's localStorage. Cloud Escalation and the
+  // privacy badge mirror the desktop (hybrid_mode_update). Files dropped on the
+  // island are sent in chunks over this socket (knowledge_upload_*), so a Surface
+  // paired over Tailscale teaches the desktop's Lumi just like the desktop does.
+  const SYNC_KEY = 'lumi-island-theme-sync', LOCAL_KEY = 'lumi-island-theme-local';
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (_) { return d; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (_) {} },
+  };
+  let ui = { theme: 'default', themes: [], hybrid: null };
+  const themeSync = () => store.get(SYNC_KEY, '1') === '1';
+  if (window.LumiThemes) {
+    window.LumiThemes.init({ base: 'themes/', surface: 'island', host: island,
+                             initial: themeSync() ? null : store.get(LOCAL_KEY, null) });
+  }
+
+  function wantedTheme() { return themeSync() ? ui.theme : store.get(LOCAL_KEY, ui.theme); }
+  function applyTheme() {
+    const id = wantedTheme();
+    if (window.LumiThemes && id && window.LumiThemes.current() !== id) window.LumiThemes.apply(id);
+    renderBrain();
+  }
+  function renderBrain() {
+    const pick = $('theme-pick');
+    if (pick && ui.themes.length && pick.options.length !== ui.themes.length) {
+      pick.textContent = '';
+      for (const t of ui.themes) { const o = el('option', null, t.name); o.value = t.id; pick.append(o); }
+    }
+    if (pick) pick.value = wantedTheme();
+    const sync = $('theme-sync');
+    if (sync) sync.checked = themeSync();
+    const h = ui.hybrid;
+    const sw = $('hybrid'), badge = $('privacy'), sub = $('hybrid-sub');
+    if (h && sw) {
+      sw.checked = !!h.enabled;
+      sw.disabled = !(ws && ready);
+      badge.textContent = h.badge;
+      badge.className = `privacy ${h.fully_local ? 'is-local' : 'is-cloud'}`;
+      sub.textContent = h.enabled
+        ? (h.cloud_problem ? `Not ready: ${h.cloud_problem}` : `Hard prompts go to ${h.cloud_model}`)
+        : 'Off: everything runs on your PC';
+    }
+  }
+  async function loadUiState() {
+    try {
+      const s = await req('ui_state');
+      ui = { theme: s.theme, themes: s.themes || [], hybrid: s.hybrid };
+      applyTheme();
+    } catch (_) { /* older Lumi without themes: keep the default */ }
+  }
+  $('theme-pick').addEventListener('change', async (e) => {
+    const id = e.target.value;
+    if (themeSync()) {
+      try { const s = await req('theme_set', { theme: id }); ui.theme = s.theme; } catch (_) {}
+    } else {
+      store.set(LOCAL_KEY, id);
+    }
+    applyTheme();
+  });
+  $('theme-sync').addEventListener('change', (e) => {
+    store.set(SYNC_KEY, e.target.checked ? '1' : '0');
+    if (!e.target.checked) store.set(LOCAL_KEY, window.LumiThemes ? window.LumiThemes.current() : ui.theme);
+    applyTheme();
+  });
+  $('hybrid').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    e.target.disabled = true;
+    try { const h = await req('hybrid_set', { enabled: on }); ui.hybrid = h; } catch (_) { e.target.checked = !on; }
+    renderBrain();
+  });
+
+  // Feed progress (this island's uploads and anyone else's ingests).
+  let feedTimer = null;
+  function feed(text, pct, kind) {
+    const f = $('feed');
+    if (!f) return;
+    clearTimeout(feedTimer);
+    f.hidden = false;
+    f.className = `feed${kind ? ' f-' + kind : ''}`;
+    f.querySelector('.feed-text').textContent = text;
+    f.querySelector('.feed-bar i').style.width = `${Math.round(Math.max(0, Math.min(1, pct)) * 100)}%`;
+    if (kind === 'ok' || kind === 'error') feedTimer = setTimeout(() => { f.hidden = true; }, 6000);
+  }
+
+  const CHUNK = 36 * 1024;                     // raw bytes per message: base64 stays under the 64 KB socket cap
+  function b64(buf) {
+    let s = '';
+    const bytes = new Uint8Array(buf);
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  async function uploadOne(file) {
+    const begin = await req('knowledge_upload_begin', { name: file.name, size: file.size });
+    if (!begin.ok) throw new Error(begin.error || 'refused');
+    for (let off = 0; off < file.size; off += CHUNK) {
+      const part = await file.slice(off, off + CHUNK).arrayBuffer();
+      const r = await req('knowledge_upload_chunk', { upload: begin.upload, data: b64(part) }, 30000);
+      if (!r.ok) throw new Error(r.error || 'upload failed');
+      feed(`Feeding Lumi ${file.name}…`, 0.85 * (off + part.byteLength) / file.size);
+    }
+    feed(`Lumi is reading ${file.name}…`, 0.92);
+    const done = await req('knowledge_upload_end', { upload: begin.upload }, 300000);
+    if (!done.ok) throw new Error(done.error || 'indexing failed');
+    return done.result;
+  }
+  async function feedFiles(files) {
+    if (!(ws && ready)) { feed('Not connected to Lumi', 0, 'error'); return; }
+    let learned = 0, chunks = 0;
+    const errors = [];
+    for (const f of files) {
+      try { const r = await uploadOne(f); learned++; chunks += r.chunks; } catch (e) { errors.push(`${f.name}: ${e.message}`); }
+    }
+    if (learned) feed(`Lumi learned ${learned} file${learned === 1 ? '' : 's'} · ${chunks} passages${errors.length ? ` (${errors.length} skipped)` : ''}`, 1, 'ok');
+    else feed(`Nothing learned: ${errors.join('; ')}`, 1, 'error');
+  }
+  let dragDepth = 0;
+  const hasFiles = (e) => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes('Files');
+  island.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e)) return;
+    dragDepth++;
+    island.classList.add('dropping');
+    if (state !== 'open') openApp('home');
+  });
+  island.addEventListener('dragleave', (e) => {
+    if (!hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) island.classList.remove('dropping');
+  });
+  island.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+  island.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    island.classList.remove('dropping');
+    const files = [...e.dataTransfer.files];
+    if (files.length) { setApp('home'); feedFiles(files); }
+  });
 
   $('vts-view').addEventListener('error', () => {
     if (!vtsWant) return;

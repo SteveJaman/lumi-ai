@@ -23,11 +23,12 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "resizable": false,
-        "focus": false
+        "focus": false,
+        "dragDropEnabled": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: http://127.0.0.1:5090 http://*:5090; media-src 'self'; style-src 'self'; script-src 'self'; connect-src ws: wss: ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; img-src 'self' data: http://127.0.0.1:5090 http://*:5090; media-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self' ws: wss: ipc: http://ipc.localhost"
     }
   },
   "bundle": {

@@ -68,6 +68,17 @@ GAMING_MODE = False
 # coding task to your installed Claude Code CLI, which runs on your own Claude login
 # (your plan, not API billing). Every call needs your approval. Set False to remove it.
 CLAUDE_CODE_ENABLED = True
+
+# Hybrid AI routing (modules/hybrid_mode.py). False = 100% local: every tier runs on
+# Ollama (haiku -> FAST_MODEL_NAME, sonnet/opus -> MODEL_NAME / AGENT_MODEL_NAME) and
+# Claude Code is not offered. True = "Cloud Escalation": opus-tier (hard) prompts go to
+# CLOUD_ESCALATION_MODEL, and Claude Code may be used. The switch in the web app
+# (Settings) and the island's Home tab flips it at runtime; the last choice is kept in
+# data/hybrid_mode.json and wins over this default on boot. The cloud model needs its
+# provider's API key (Settings -> Models -> Providers); without one, Lumi stays local.
+HYBRID_MODE = False
+CLOUD_ESCALATION_MODEL = "anthropic:claude-opus-5-5"
+
 AUDIO_OUTPUT_MODE = "both"
 OUTPUT_DEVICE_INDEX = [24, 20]
 

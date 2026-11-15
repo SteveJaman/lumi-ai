@@ -3448,3 +3448,49 @@ select.routing-input { font-family: var(--font-sans); }
 }
 
 .lumi-pl-error { position: absolute; inset: auto 8px 8px 8px; padding: 6px 8px; border-radius: 6px; font: 11px ui-monospace, Consolas, monospace; color: #ffb3c4; background: rgba(14, 18, 30, 0.85); pointer-events: auto; }
+
+/* ── Lumi UI extras (web/lumi-ui.js) ───────────────────────────── */
+.lumi-privacy { margin-top: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; padding: 3px 8px;
+                border-radius: 999px; border: 1px solid currentColor; display: inline-block; }
+.lumi-privacy.is-local, .lumi-privacy-inline.is-local { color: #3ddc84; }
+.lumi-privacy.is-cloud, .lumi-privacy-inline.is-cloud { color: #e8b43a; }
+.lumi-privacy-inline { margin-left: 8px; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
+                       border: 1px solid currentColor; vertical-align: middle; }
+.lumi-hybrid code { font-size: 11px; }
+.hybrid-problem { color: #e8b43a; }
+
+.theme-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin-top: 10px; }
+.theme-card { display: grid; gap: 6px; text-align: left; padding: 10px; border-radius: 10px; cursor: pointer;
+              border: 1px solid var(--border); background: var(--bg-inset); color: var(--text); }
+.theme-card.on { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent); }
+.theme-swatches { display: flex; gap: 4px; }
+.theme-swatches i { width: 22px; height: 22px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.15); }
+.theme-name { font-weight: 700; }
+.theme-desc { font-size: 12px; color: var(--text-mute); line-height: 1.35; }
+
+.lumi-toasts { position: fixed; right: 18px; bottom: 18px; z-index: 2147482000; display: grid; gap: 8px; width: min(380px, calc(100vw - 36px)); }
+.lumi-toast { padding: 10px 14px; border-radius: 10px; color: var(--text); background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+              border: 1px solid var(--border-hi); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+              box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); transition: opacity 0.3s, transform 0.3s; font-size: 13px; }
+.lumi-toast.out { opacity: 0; transform: translateY(8px); }
+.lumi-toast.t-ok { border-color: #3ddc84; } .lumi-toast.t-error { border-color: #ff5a6a; } .lumi-toast.t-warn { border-color: #e8b43a; }
+.lumi-toast-bar { margin-top: 8px; height: 4px; border-radius: 4px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+.lumi-toast-bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent-2, var(--accent))); transition: width 0.25s; }
+
+/* "Feed me data!" — anime drop zone */
+@keyframes lumi-drop-spin { to { transform: rotate(360deg); } }
+@keyframes lumi-drop-bounce { 0%, 100% { transform: translateY(0) rotate(-2deg); } 50% { transform: translateY(-8px) rotate(2deg); } }
+.lumi-drop { position: fixed; inset: 0; z-index: 2147481000; display: grid; place-items: center; pointer-events: none;
+             background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent) 22%, transparent), rgba(0, 0, 0, 0.62) 70%);
+             backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.lumi-drop[hidden] { display: none; }
+.lumi-drop-panel { position: relative; padding: 46px 64px; text-align: center; color: #fff;
+                   background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 40%, #1a0d2a), color-mix(in srgb, var(--accent-2, var(--accent)) 35%, #120a1c));
+                   clip-path: polygon(4% 0, 100% 6%, 96% 100%, 0 92%);
+                   animation: lumi-drop-bounce 1.2s ease-in-out infinite; }
+.lumi-drop-burst { position: absolute; inset: -60%; z-index: -1; opacity: 0.35;
+                   background: repeating-conic-gradient(from 0deg, rgba(255, 255, 255, 0.5) 0deg 6deg, transparent 6deg 18deg);
+                   animation: lumi-drop-spin 12s linear infinite; }
+.lumi-drop-title { font-size: 44px; font-weight: 900; letter-spacing: 0.04em; text-transform: uppercase; font-style: italic;
+                   text-shadow: 3px 3px 0 #000, 0 0 24px color-mix(in srgb, var(--accent) 80%, transparent); }
+.lumi-drop-sub { margin-top: 8px; font-size: 14px; opacity: 0.9; }

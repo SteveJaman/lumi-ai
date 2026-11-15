@@ -139,6 +139,7 @@ _REMOTE_API_ALLOW = frozenset({
     ("POST", "/api/chat/upload"),
     ("POST", "/api/voice_message"),
     ("GET",  "/api/models"),          # list only; feeds the Ollama dot
+    ("GET",  "/api/ui/state"),        # theme + "100% local" badge (read-only)
 })
 
 _HOST_ONLY_MSG = "Only available on the host machine."
@@ -592,6 +593,8 @@ class SocketIOServer:
         self._register_http_routes()
         self._register_socket_events()
         self._install_pipeline_bridge()
+        from modules import ui_sync
+        ui_sync.set_web_broadcaster(self._emit_all_threadsafe)
 
     # ==================================================================
     # Pipeline page bridge: agent states + approvals for the web app
@@ -609,6 +612,16 @@ class SocketIOServer:
             lambda payload: self._emit_pipeline_threadsafe(payload.get("type", "approval_request"), payload),
             lambda: len(self._pipeline_sids),
         )
+
+    def _emit_all_threadsafe(self, event, payload):
+        """theme_update, hybrid_mode_update, knowledge_ingest_* to every tab."""
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self.sio.emit(event, payload)))
+        except RuntimeError:
+            pass
 
     def _emit_pipeline_threadsafe(self, event, payload):
         loop = self._loop
@@ -680,6 +693,9 @@ class SocketIOServer:
         island_remote.register(r, self)         # /api/island/remote (host-only)
         from modules import diagnostics
         diagnostics.register(r, self)           # /api/debug/* (Dashboard → Diagnostics)
+        from modules import ui_routes, knowledge
+        ui_routes.register(r, self)             # /api/ui/* (theme, hybrid switch)
+        knowledge.register(r, self)             # /api/knowledge/upload (drag and drop)
         from modules import vts_stream
         # Live VTube Studio view (MJPEG) for the Pipeline page. Host-only:
         # not in _REMOTE_API_ALLOW, so tunnel visitors get 403.
