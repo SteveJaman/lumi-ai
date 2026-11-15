@@ -17,10 +17,15 @@ you don't have to switch to the web client:
 - **Calendar:** your Google Calendar as **List**, **Day**, **Month** or
   **Year**, with previous/next/today. Click a day to open it, a month name to
   zoom in.
-- **Pipeline:** what each of Lumi's agents is doing right now, as four cards
-  in a 2x2 grid: **Main** (Lumi herself, research and meetings), **Minecraft**
-  (her in-game half), **Office** (Claude Code work) and **System** (your
-  computer and accounts: email, calendar, finance and desktop control). Each card shows a status,
+- **Pipeline:** a live pixel-art office (`src/pipeline.js`, shared with the
+  web app's Pipeline page). **Main** (blue; Lumi herself, research and
+  meetings) types at the desk, **Minecraft** (green) swings at the window,
+  **Office** (purple; Claude Code) reads at the bookshelf, and **System** (red;
+  email, calendar, finance, desktop, watchdog) works the server rack. Agents
+  walk between their station and a resting spot as their state changes; one
+  that needs approval walks to the front, waves under a flashing "!", and gets
+  Approve / Decline buttons above its head. An alarm (e.g. a game crash) makes
+  it flash red. The list underneath shows each agent's task. Each card shows a status,
   the task, a progress bar, the model tier (HAIKU green, SONNET blue, OPUS
   purple) and the model that actually runs it, such as `qwen3:8b` or
   `Claude Code (opus)`. Thinking pulses blue, executing is green with a moving

@@ -25,6 +25,7 @@ from modules.socketIO import SocketIOServer
 from modules.heartbeat import Heartbeat
 from modules.emotional_state import EmotionalStateModule
 from modules.ambient_perception import AmbientPerception
+from modules.watchdog_agent import Watchdog
 from modules.log_hub import LogHub
 from modules.self_model import SelfModel
 from modules.obs_control import OBSControl
@@ -200,6 +201,8 @@ def main():
     selected_audio_mode = choose_audio_mode()
 
     signals = Signals()
+    from modules import diagnostics
+    diagnostics.install(signals)            # Dashboard → Diagnostics: catch errors from here on
 
     signals.log_hub = LogHub()
     signals.log_hub.start()
@@ -231,6 +234,7 @@ def main():
         AmbientPerception(signals, enabled=False),
         SelfModel(signals, enabled=True),
         SDKServer(signals, enabled=True),
+        Watchdog(signals, enabled=True),
     ]
     if STREAMING_ENABLED:
         modules.append(OBSControl(signals, enabled=True))

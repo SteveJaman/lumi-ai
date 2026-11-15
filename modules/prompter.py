@@ -2756,6 +2756,41 @@ class Prompter:
             None, execute_tool, name, arguments, self.signals
         )
 
+    async def _handle_watchdog_turn(self, entry, text):
+        """Returns True if this turn was a watchdog event, or the user's
+        "yes" to a restart offer, and has been handled."""
+        from modules import watchdog_agent
+        if entry.get("source") == "watchdog_event":
+            say = entry.get("say") or "[worried] Something's wrong with your PC."
+            self._watchdog_offer = (time.time(), say) if entry.get("offer_restart") else None
+            print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {say}")
+            self.signals.history.append({"role": "assistant", "content": say})
+            self._extract_and_apply_emotions(say)
+            self._push_to_tts(say)
+            return True
+        offer = getattr(self, "_watchdog_offer", None)
+        # Only a reply to the offer itself: it must still be her latest line.
+        last_said = next((m.get("content") for m in reversed(self.signals.history[:-1])
+                          if m.get("role") == "assistant"), None)
+        if offer and last_said != offer[1]:
+            offer = self._watchdog_offer = None
+        if offer and time.time() - offer[0] < watchdog_agent.OFFER_TTL_S and watchdog_agent.is_affirmative(text):
+            self._watchdog_offer = None
+            out = await self._run_everyday_tool("restart_crashed_game", {})
+            if out.startswith("Restarted"):
+                say = f"[happy] On it. {out}"
+            elif "declined" in out:
+                say = "[calm] Okay, I'll leave it closed."
+            else:
+                say = f"[sad] I couldn't restart it. {out.replace('Error: ', '')}"
+            print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {say}")
+            self.signals.history.append({"role": "assistant", "content": say})
+            self._push_to_tts(say)
+            return True
+        if offer and not watchdog_agent.is_affirmative(text):
+            self._watchdog_offer = None          # they moved on
+        return False
+
     def _everyday_ctx(self, agent="main"):
         """What an everyday tool may use: the workspace hub (via signals),
         the real browser for JS-heavy pages, and the HITL approval flow,
@@ -3224,6 +3259,12 @@ class Prompter:
                     # Game events pushed through the SDK are not the user
                     # speaking, so they skip the user-message bookkeeping.
                     is_sdk_event = self.signals.history[-1].get("source") == "sdk_event"
+
+                    # Watchdog (modules/watchdog_agent.py): speak its line now,
+                    # no model call, and remember a restart offer.
+                    if await self._handle_watchdog_turn(self.signals.history[-1], stripped):
+                        self.signals.AI_thinking = False
+                        continue
 
                     # A Minecraft order said or typed by the host goes to the
                     # game; this turn's prompt tells her it's being done.

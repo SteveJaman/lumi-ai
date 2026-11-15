@@ -104,3 +104,22 @@ def test_threads_can_update_at_once(t):
     for th in threads:
         th.join()
     assert all(a["status"] == "executing" for a in t.snapshot().values())
+
+
+def test_agents_report_station_and_visual_state(t):
+    snap = t.snapshot()
+    assert {a: s["station"] for a, s in snap.items()} == {
+        "main": "desk", "minecraft": "window", "office": "bookshelf", "system": "server_rack"}
+    assert snap["main"]["visual_state"] == "sitting"
+    t.update("main", "thinking")
+    t.update("minecraft", "executing")
+    t.update("system", "executing")
+    snap = t.snapshot()
+    assert (snap["main"]["visual_state"], snap["minecraft"]["visual_state"],
+            snap["system"]["visual_state"]) == ("typing", "swinging", "blinking")
+    t.update("system", "waiting_approval")
+    assert t.get("system")["visual_state"] == "waving"
+    t.update("system", "error", task="Game crashed")
+    assert t.get("system")["visual_state"] == "alarm"
+    t.update("system", "idle")
+    assert t.get("system")["visual_state"] == "standing"

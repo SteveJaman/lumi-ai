@@ -46,6 +46,13 @@
 
       <!-- Home -->
       <section id="app-home" class="app" aria-label="Home">
+        <div class="card vts-card">
+          <div class="label">Lumi, live</div>
+          <div class="vts-frame">
+            <img id="vts-view" class="vts-view" alt="Lumi's avatar in VTube Studio" hidden>
+            <span class="vts-wait">Looking for VTube Studio…</span>
+          </div>
+        </div>
         <div class="card now">
           <div class="now-time">
             <div class="clock"><span id="clock-t">--:--</span><span id="clock-ap" class="ap"></span></div>
@@ -112,7 +119,8 @@
           <span class="label">Agent pipeline</span>
           <span id="pipe-note" class="pipe-note"></span>
         </div>
-        <div id="pipe" class="pipe" aria-live="polite"></div>
+        <div id="pipe" class="pipe-stage" aria-label="Lumi's agents at work"><canvas id="pipeline-canvas"></canvas></div>
+        <ul id="pipe-tasks" class="pipe-tasks" aria-live="polite"></ul>
         <div class="legend">
           <span><i class="lg haiku"></i>Haiku · fast local</span>
           <span><i class="lg sonnet"></i>Sonnet · main local</span>
@@ -150,6 +158,7 @@
     </section>
 
   </div>
+  <script src="pipeline.js"></script>
   <script src="island.js"></script>
 </body>
 </html>

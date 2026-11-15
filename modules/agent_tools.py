@@ -356,8 +356,9 @@ CONFIRM_REQUIRED_TOOLS = {"write_file", "run_command", "run_in_terminal"}
 # approval themselves, once they know exactly what they'll do.
 # ===============================================================
 from modules import email_agent, finance_agent, meeting_agent, windows_agent  # noqa: E402
+from modules import watchdog_agent  # noqa: E402
 
-EVERYDAY_MODULES = (email_agent, finance_agent, meeting_agent, windows_agent)
+EVERYDAY_MODULES = (email_agent, finance_agent, meeting_agent, windows_agent, watchdog_agent)
 EVERYDAY_TOOL_MODULE = {
     s["function"]["name"]: m for m in EVERYDAY_MODULES for s in m.TOOL_SCHEMAS
 }

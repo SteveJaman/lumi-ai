@@ -385,6 +385,72 @@ The first canonical Fish Audio tag in each reply is also forwarded to
 VTube Studio as an expression trigger. The tag drives both voice and
 avatar.
 
+### Pixel Pipeline, Watchdog, Diagnostics
+
+- **Pixel Pipeline** (`web/pipeline.js` = `island/src/pipeline.js`, kept
+  identical): a 192x108 pixel office drawn with `fillRect` into an off-screen
+  buffer and scaled up crisp. `agent_tracker` adds `station` and
+  `visual_state` (typing, swinging, reading, blinking, waving, alarm,
+  sitting, standing) to every agent. Characters walk to their station or
+  resting spot when the state changes; approvals put an HTML Approve/Decline
+  card over the waving character. 30 fps only while something animates,
+  2 fps otherwise, stopped while hidden. The island gets updates on its HITL
+  socket; the web Pipeline page joins a socket.io room (`pipeline_join`, host
+  only) that receives `agent_update` and approval requests, and answers with
+  `approval_response` (`hitl_server.add_approver` / `resolve_threadsafe`).
+  Only tabs on that page count as approvers, so with none open approvals
+  still fall back to the island or the terminal.
+- **Watchdog** (`modules/watchdog_agent.py`): CPU/RAM every 60 s (3 strikes
+  over 90 % / 95 %), watched games every 10 s (`WATCHED_GAMES`; hung via
+  `IsHungAppWindow`, crash = gone + WER dialog / event 1000 / hung first).
+  Events set System to error (alarm) and enter history as `watchdog_event`;
+  the prompter speaks a fixed line and a plain "yes" to the restart offer
+  runs `restart_crashed_game` (approval-gated relaunch of the remembered exe).
+- **Diagnostics** (`modules/diagnostics.py`, installed first in `main.py`):
+  catches uncaught exceptions (any thread), logging errors (incl. asyncio),
+  red console lines, log_hub warn/error and browser errors
+  (`/api/debug/client_error`), groups repeats, matches each against
+  `FIX_RULES` for a plain fix, and runs health checks. Dashboard →
+  Diagnostics shows both (`/api/debug/diagnostics`, host only).
+
+### Avatar (VTube Studio digital twin)
+
+`modules/vtubeStudio.py` owns the VTS socket; `modules/vts_motion.py`
+decides what the face does (pure, unit-tested). Each frame (up to 60 FPS,
+one batched `InjectParameterDataRequest`) combines:
+
+- **Agent pose** from the tracker snapshot (`pose_from_snapshot`): an
+  approval anywhere -> she looks straight at the camera; a fresh error ->
+  shocked (and the model's `exp_dizzy_eyes` expression if it has one);
+  Main thinking -> pondering, eyes up; an agent executing -> focused (slight
+  frown, narrowed eyes); a search, page read or command -> eyes dart as if
+  reading. Minecraft doesn't drive this face. Poses always show through
+  parameters; matching model expressions are switched on with
+  `ExpressionActivationRequest` after a 0.4 s debounce, and only what Lumi
+  switched on is switched off.
+- **Lip-sync** from `tts.py`: per 1024-sample chunk, loudness -> MouthOpen
+  and the vowel (LPC formants -> A/E/I/O/U) -> MouthSmile/MouthForm (E/I wide,
+  O/U round). After speech the mouth settles over 200 ms.
+- **Emotion** as a continuous state (`EmotionState`, VAD + face channels):
+  ramps in over 300 ms, holds while she speaks the sentence, decays over 5 s.
+  Arousal livens blinking and head motion; dominance lifts the chin.
+- **Organic motion**: sine + Perlin head sway with micro-movements, gaze
+  modes, micro- and double-blinks, breathing that exhales through long
+  sentences and inhales in pauses (custom input `LumiBreath`; map it to
+  ParamBreath in VTS once).
+- **Idle context**: 00:00-05:00 and idle 5 min -> sleepy, slower breath,
+  a yawn every few minutes.
+
+Safety: only parameters in the model's `InputParameterListRequest` are sent;
+nothing is sent unless the session is `ready`; a dropped socket reconnects
+with backoff and re-applies the model's expressions.
+
+`modules/vts_stream.py` captures the VTS window (mss, 12 FPS, JPEG q70,
+max 640 px wide) as MJPEG for the web Pipeline page (`/api/vts/stream`,
+login, host-only) and the island's Home tab (`/vts/stream` on `:5090` with a
+one-time ticket from the island socket). Capture runs only while someone
+watches and stops 30 s after the last viewer leaves.
+
 ### Tool dispatch
 
 ```
@@ -892,7 +958,11 @@ the listener is reachable on the tailnet only (never `0.0.0.0`), a browser
 | `heartbeat.py` | Autonomous initiation loop |
 | `ambient_perception.py` | Screen sampler + VLM descriptions |
 | `session_state.py` | Cross-session continuity |
-| `vtubeStudio.py` | VTube Studio control, expression state tracking |
+| `vtubeStudio.py` | VTube Studio session, model discovery, agent poses, expression state tracking |
+| `vts_motion.py` | Avatar motion engine: sway, gaze, blinks, breath, emotion, lip-sync visemes |
+| `vts_stream.py` | MJPEG live view of the VTS window for the web app and island |
+| `watchdog_agent.py` | CPU/RAM and game crash/hang watchdog; restart_crashed_game |
+| `diagnostics.py` | Error capture from every source + health checks + fixes (Dashboard) |
 | `discordClient.py` | Discord voice — DAVE receive, Opus decode, VAD |
 | `log_hub.py` | Diagnostics stream + localhost dashboard |
 | `user_auth.py` | SQLite + argon2id auth, session management |

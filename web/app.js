@@ -100,10 +100,40 @@ async function api(path, { method = 'GET', body, csrf = false } = {}) {
     const msg = (data && data.error) || `HTTP ${res.status}`;
     const err = new Error(msg);
     err.status = res.status;
+    if (res.status >= 500 && !path.startsWith('/api/debug/')) {
+      setTimeout(() => reportClientError({ message: `${method} ${path} failed: ${msg}`, source: 'api' }), 0);
+    }
     throw err;
   }
   return data;
 }
+
+/* --------------------------------------------------------------
+   Browser errors -> Dashboard -> Diagnostics (modules/diagnostics.py).
+   Host only (the route isn't open to remote sessions); each distinct
+   message is sent at most once every 30 s.
+   -------------------------------------------------------------- */
+const _reported = new Map();
+let _reporting = false;
+function reportClientError(info) {
+  try {
+    if (!state.user || !state.isLocal || _reporting) return;
+    const msg = String(info.message || 'Unknown error').slice(0, 500);
+    const now = Date.now();
+    if (now - (_reported.get(msg) || 0) < 30000) return;
+    _reported.set(msg, now);
+    _reporting = true;
+    api('/api/debug/client_error', { method: 'POST', csrf: true, body: { ...info, message: msg, view: state.view } })
+      .catch(() => {}).finally(() => { _reporting = false; });
+  } catch (_) { _reporting = false; }
+}
+window.addEventListener('error', (e) => reportClientError({
+  message: e.message, source: e.filename, line: `${e.lineno}:${e.colno}`, stack: e.error && e.error.stack,
+}));
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason || {};
+  reportClientError({ message: `Unhandled promise: ${r.message || r}`, stack: r.stack });
+});
 
 display.init({ api });
 islandRemote.init({ api });
@@ -135,6 +165,7 @@ function fingerprint(value) {
 }
 
 const ICONS = {
+  pipeline:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/></svg>',
   chat:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
   dashboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>',
   persona:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>',
@@ -193,6 +224,7 @@ const NAV = [
   { id: 'chat',         label: 'Chat',         icon: 'chat',      group: 'Core' },
   { id: 'dashboard',    label: 'Dashboard',    icon: 'dashboard' },
   { id: 'workspace',    label: 'Workspace',    icon: 'workspace', hostOnly: true },
+  { id: 'pipeline',     label: 'Pipeline',     icon: 'pipeline',  hostOnly: true },
   { id: 'games',        label: 'Games',        icon: 'gamepad',  hostOnly: true, group: 'Systems' },
   { id: 'persona',      label: 'Persona',      icon: 'persona',  hostOnly: true },
   { id: 'memory',       label: 'Memory',       icon: 'memory',   hostOnly: true },
@@ -712,13 +744,17 @@ async function toggleAgentMode() {
 /* --------------------------------------------------------------
    View dispatcher
    -------------------------------------------------------------- */
+let _pageTeardown = null;     // set by pages that hold sockets/timers (Pipeline)
+
 function render() {
   const main = $('#main-content');
+  if (_pageTeardown) { try { _pageTeardown(); } catch (_) {} _pageTeardown = null; }
   main.innerHTML = '';
   switch (state.view) {
     case 'chat':         return renderChatView(main);
     case 'dashboard':    return renderDashboard(main);
     case 'workspace':    return workspace.renderWorkspace(main);
+    case 'pipeline':     return renderPipeline(main);
     case 'games':        return renderGames(main);
     case 'memory':       return renderMemory(main);
     case 'persona':      return renderPersona(main);
@@ -1715,6 +1751,118 @@ function stopMicRecording() {
 }
 
 /* ==============================================================
+   DASHBOARD -> DIAGNOSTICS
+   Health checks + every error Lumi caught (backend, console, browser),
+   each with a suggested fix. Data: GET /api/debug/diagnostics.
+   ============================================================== */
+const DIAG_ICON = { ok: '✓', warn: '!', error: '✕', info: 'i' };
+
+function mountDiagnostics() {
+  const host = $('#dash-diag');
+  if (!host) return;
+  if (!state.isLocal) {
+    host.innerHTML = '<div class="diag-head"><span class="diag-title">Diagnostics</span></div>'
+      + '<p class="diag-empty">Diagnostics are only available on the PC running Lumi.</p>';
+    return;
+  }
+  let data = null, showOk = false, timer = null;
+  const open = new Set();
+  async function load(refresh) {
+    try {
+      data = await api(`/api/debug/diagnostics${refresh ? '?refresh=1' : ''}`);
+    } catch (e) {
+      data = { error: e.message };
+    }
+    draw();
+  }
+  function ago(ts) {
+    const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+    return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`;
+  }
+  function checkRow(c) {
+    return `<li class="diag-row s-${c.status}">
+      <span class="diag-ico">${DIAG_ICON[c.status] || '·'}</span>
+      <div class="diag-body"><div><b>${escapeHtml(c.name)}</b> <span class="diag-detail">${escapeHtml(c.detail || '')}</span></div>
+      ${c.fix ? `<div class="diag-fix"><span>Fix:</span> ${escapeHtml(c.fix)}</div>` : ''}</div></li>`;
+  }
+  function errorRow(e) {
+    const key = `${e.source}|${e.first}`;
+    const fix = e.fix ? `<div class="diag-fix"><span>${escapeHtml(e.fix.title)}.</span> ${escapeHtml(e.fix.fix)}</div>`
+      : '<div class="diag-fix diag-nofix">No known fix yet. Expand for details, or copy the report.</div>';
+    return `<li class="diag-row s-${e.level === 'warn' ? 'warn' : 'error'}">
+      <span class="diag-ico">${e.level === 'warn' ? '!' : '✕'}</span>
+      <div class="diag-body">
+        <div class="diag-msg">${escapeHtml(e.message)}</div>
+        <div class="diag-meta">${escapeHtml(e.source)} · ${ago(e.last)}${e.count > 1 ? ` · ×${e.count}` : ''}</div>
+        ${fix}
+        ${e.detail ? `<button class="diag-more" data-act="detail" data-key="${escapeHtml(key)}">${open.has(key) ? 'Hide' : 'Show'} details</button>
+          ${open.has(key) ? `<pre class="diag-pre">${escapeHtml(e.detail)}</pre>` : ''}` : ''}
+      </div></li>`;
+  }
+  function draw() {
+    if (!host.isConnected) return;
+    if (!data || data.error) {
+      host.innerHTML = `<div class="diag-head"><span class="diag-title">Diagnostics</span></div>
+        <p class="diag-empty">${escapeHtml(data ? `Couldn't load diagnostics: ${data.error}` : 'Loading…')}</p>`;
+      return;
+    }
+    const s = data.summary;
+    const failing = data.checks.filter((c) => c.status !== 'ok');
+    const passing = data.checks.filter((c) => c.status === 'ok');
+    const headline = s.status === 'ok' ? 'Everything looks healthy'
+      : s.status === 'error' ? 'Something needs fixing' : 'A few things to look at';
+    host.innerHTML = `
+      <div class="diag-head">
+        <span class="diag-title">Diagnostics</span>
+        <span class="diag-pill s-${s.status}">${escapeHtml(headline)}</span>
+        <span class="grow"></span>
+        <button class="btn btn-sm" data-act="recheck">Re-check</button>
+        <button class="btn btn-sm" data-act="copy">Copy report</button>
+        <button class="btn btn-sm btn-ghost" data-act="clear">Clear errors</button>
+      </div>
+      <div class="diag-cols">
+        <div class="diag-col">
+          <div class="diag-sub">Health checks</div>
+          <ul class="diag-list">
+            ${failing.map(checkRow).join('') || '<li class="diag-row s-ok"><span class="diag-ico">✓</span><span>All checks pass.</span></li>'}
+            ${showOk ? passing.map(checkRow).join('') : ''}
+          </ul>
+          ${passing.length ? `<button class="diag-more" data-act="toggle-ok">${showOk ? 'Hide' : 'Show'} ${passing.length} passing</button>` : ''}
+        </div>
+        <div class="diag-col">
+          <div class="diag-sub">Errors caught <span class="diag-count">${s.errors_last_hour} in the last hour</span></div>
+          <ul class="diag-list">
+            ${data.errors.slice(0, 40).map(errorRow).join('') || '<li class="diag-empty">No errors caught.</li>'}
+          </ul>
+        </div>
+      </div>`;
+  }
+  host.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('[data-act]');
+    if (!b) return;
+    const act = b.dataset.act;
+    if (act === 'recheck') { b.disabled = true; await load(true); }
+    else if (act === 'toggle-ok') { showOk = !showOk; draw(); }
+    else if (act === 'detail') { const k = b.dataset.key; if (open.has(k)) open.delete(k); else open.add(k); draw(); }
+    else if (act === 'clear') {
+      try { await api('/api/debug/clear', { method: 'POST', csrf: true, body: {} }); } catch (_) { /* shown on reload */ }
+      await load(false);
+    } else if (act === 'copy') {
+      const text = JSON.stringify({ ...data, errors: data.errors.slice(0, 50) }, null, 2);
+      try { await navigator.clipboard.writeText(text); b.textContent = 'Copied'; } catch (_) { b.textContent = 'Copy failed'; }
+      setTimeout(() => { b.textContent = 'Copy report'; }, 1500);
+    }
+  });
+  load(false);
+  timer = setInterval(() => {
+    if (state.view !== 'dashboard') { clearInterval(timer); return; }
+    if (!document.hidden) load(false);
+  }, 10000);
+  const prev = _pageTeardown;
+  _pageTeardown = () => { clearInterval(timer); if (prev) prev(); };
+}
+
+/* ==============================================================
    DASHBOARD
    ============================================================== */
 async function renderDashboard(main) {
@@ -1728,6 +1876,7 @@ async function renderDashboard(main) {
         <button class="btn btn-sm" id="dash-refresh">Refresh</button>
       </div>
       <div class="page-scroll">
+        <section class="diag" id="dash-diag"></section>
         <div class="stat-grid" id="dash-stats"></div>
         <div class="event-stream">
           <div class="event-stream-header" id="dash-filters"></div>
@@ -1736,6 +1885,8 @@ async function renderDashboard(main) {
       </div>
     </div>
   `;
+
+  mountDiagnostics();
 
   // Events come through the web server so this works from any device.
   // Remote sessions can't read them (they can include window titles
@@ -5032,6 +5183,107 @@ function stopStreamPolling() {
   if (_streamState.pollTimer) clearInterval(_streamState.pollTimer);
   _streamState.pollTimer = null;
   _streamState.fp = null;
+}
+
+/* --------------------------------------------------------------
+   Pipeline: Lumi's avatar live from VTube Studio (MJPEG from
+   modules/vts_stream.py). Leaving the page removes the <img>, which
+   closes the stream; Lumi stops capturing 30 s after the last viewer.
+   -------------------------------------------------------------- */
+function renderPipeline(main) {
+  main.innerHTML = `
+    <div class="page">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Pipeline</div>
+          <div class="page-sub">Lumi's avatar, live from VTube Studio. She reacts to what her agents are doing.</div>
+        </div>
+      </div>
+      <div class="page-scroll">
+        <div class="pl-web">
+          <div class="pl-web-head"><span class="label">Agents</span><span class="pl-note" id="pl-note"></span></div>
+          <div id="pl-stage" class="pipe-stage" aria-label="Lumi's agents at work"><canvas id="pipeline-canvas"></canvas></div>
+          <ul id="pl-tasks" class="pipe-tasks" aria-live="polite"></ul>
+        </div>
+        <div class="vts-live">
+          <img id="vts-live-img" alt="Lumi's avatar in VTube Studio">
+          <div class="vts-live-wait" id="vts-live-wait">Connecting to VTube Studio…</div>
+        </div>
+      </div>
+    </div>
+  `;
+  mountPixelPipeline();
+  const img = $('#vts-live-img');
+  const wait = $('#vts-live-wait');
+  let retry = null;
+  const start = () => {
+    if (state.view !== 'pipeline' || !img.isConnected) return;
+    img.src = `/api/vts/stream?_=${Date.now()}`;
+  };
+  img.addEventListener('load', () => { wait.hidden = true; }, { once: true });
+  img.addEventListener('error', () => {
+    wait.hidden = false;
+    wait.textContent = 'Live view unavailable. Retrying…';
+    clearTimeout(retry);
+    retry = setTimeout(start, 5000);
+  });
+  start();
+}
+
+// Pixel office: agent_update + approvals over a socket that joins the
+// "pipeline" room (host only). Answers go back as approval_response.
+function mountPixelPipeline() {
+  if (!window.LumiPipeline || typeof io === 'undefined') return;
+  const STATUS = { idle: 'Idle', thinking: 'Thinking', executing: 'Executing', waiting_approval: 'Needs you', error: 'Error' };
+  const NAMES = { main: 'Main', minecraft: 'Minecraft', office: 'Office', system: 'System' };
+  let agents = {};
+  let approvals = [];
+  const sock = io({ transports: ['websocket', 'polling'], withCredentials: true });
+  const pl = window.LumiPipeline.mount($('#pl-stage'), {
+    onDecision: (id, decision) => {
+      approvals = approvals.filter((a) => a.id !== id);
+      sock.emit('approval_response', { id, decision });
+      draw();
+    },
+  });
+  function draw() {
+    const view = {};
+    for (const id of Object.keys(NAMES)) {
+      const a = agents[id] || { status: 'idle', task: '' };
+      view[id] = approvals.some((r) => r.agent === id) ? { ...a, status: 'waiting_approval', visual_state: 'waving' } : a;
+    }
+    pl.update(view);
+    pl.setApprovals(approvals);
+    const list = $('#pl-tasks');
+    if (list) {
+      list.innerHTML = '';
+      for (const [id, name] of Object.entries(NAMES)) {
+        const a = view[id];
+        const li = document.createElement('li');
+        li.className = `pt s-${STATUS[a.status] ? a.status : 'idle'}`;
+        for (const [cls, text] of [['pt-name', name], ['pt-status', STATUS[a.status] || 'Idle'], ['pt-task', a.task || a.model_name || '']]) {
+          const span = document.createElement('span'); span.className = cls; span.textContent = text; li.appendChild(span);
+        }
+        list.appendChild(li);
+      }
+    }
+    const note = $('#pl-note');
+    if (note) note.textContent = !sock.connected ? 'Not connected' : approvals.length ? `${approvals.length} waiting for you` : '';
+  }
+  sock.on('connect', () => { sock.emit('pipeline_join'); draw(); });
+  sock.on('disconnect', draw);
+  sock.on('agent_update', (d) => { agents = (d && d.agents) || agents; draw(); });
+  sock.on('approval_request', (p) => {
+    if (p && p.id && !approvals.some((a) => a.id === p.id)) {
+      approvals.push({ id: String(p.id), tool: String(p.tool || ''), preview: String(p.preview || ''), agent: p.agent || 'main' });
+      draw();
+    }
+  });
+  const drop = (p) => { approvals = approvals.filter((a) => a.id !== (p && p.id)); draw(); };
+  sock.on('approval_resolved', drop);
+  sock.on('approval_expired', drop);
+  draw();
+  _pageTeardown = () => { try { sock.emit('pipeline_leave'); } catch (_) {} sock.disconnect(); pl.destroy(); };
 }
 
 async function renderStream(main) {

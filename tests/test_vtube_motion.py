@@ -49,6 +49,10 @@ import time
 
 import pyvts
 
+# A hands-on harness for a live VTube Studio (run it as a script, see above),
+# not an automated test: its test_* functions take a live connection.
+__test__ = False
+
 
 # --------------------------------------------------------------------
 # Config

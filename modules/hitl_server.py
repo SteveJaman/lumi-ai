@@ -63,6 +63,10 @@ class HITLServer:
         self._remote_clients: Set[web.WebSocketResponse] = set()
         self._tracking = None          # our agent_tracker callback while running
         self._handlers: Dict[str, Callable[[web.WebSocketResponse, dict], Awaitable[None]]] = {}
+        # Other UIs that can answer approvals (the web app's Pipeline page,
+        # over socket.io): (send(payload), count() -> live viewers). Both
+        # are called from this loop and must be thread-safe.
+        self._approvers = []
         self.signals = None
 
     @property
@@ -72,6 +76,66 @@ class HITLServer:
     @property
     def has_client(self) -> bool:
         return bool(self._clients)
+
+    # ── external approvers (web app) ─────────────────────────────────
+
+    def add_approver(self, send: Callable[[dict], None], count: Callable[[], int]) -> None:
+        self._approvers.append((send, count))
+
+    def _web_viewers(self) -> int:
+        n = 0
+        for _, count in list(self._approvers):
+            try:
+                n += int(count())
+            except Exception:
+                pass
+        return n
+
+    def _any_approver(self) -> bool:
+        return bool(self._clients) or self._web_viewers() > 0
+
+    def _push_approvers(self, payload: dict) -> int:
+        sent = 0
+        if self._web_viewers() <= 0:
+            return 0
+        for send, _ in list(self._approvers):
+            try:
+                send(payload)
+                sent += 1
+            except Exception:
+                pass
+        return sent
+
+    def pending_payloads(self) -> list:
+        return [fut.hitl_payload for fut in list(self._pending.values())
+                if not fut.done() and getattr(fut, "hitl_payload", None)]
+
+    def resolve_threadsafe(self, req_id: str, decision: str) -> None:
+        """An answer from another thread (the web server)."""
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._handle_approval, {"id": req_id, "decision": decision})
+        except RuntimeError:
+            pass
+
+    def approvers_changed_threadsafe(self) -> None:
+        """A web viewer left: if nobody can answer now, hand open requests
+        back to the terminal instead of letting them time out."""
+        loop = self._loop
+        if loop is None:
+            return
+
+        def check():
+            if not self._any_approver():
+                for fut in self._pending.values():
+                    if not fut.done():
+                        fut.set_result(_NO_CLIENT)
+        try:
+            loop.call_soon_threadsafe(check)
+        except RuntimeError:
+            pass
 
     # ── lifecycle ────────────────────────────────────────────────────
 
@@ -86,6 +150,12 @@ class HITLServer:
             self._status = self._status_of(signals)
         app = web.Application()
         app.router.add_get(HITL_PATH, self._ws_handler)
+        # Live VTube Studio view for the island. An <img> can't send the
+        # token, so the island asks for a one-time ticket over this socket.
+        from modules import vts_stream
+        app.router.add_get("/vts/stream", vts_stream.hitl_handler)
+        self._handlers.setdefault("vts_stream_ticket",
+                                  lambda ws, data: vts_stream.hitl_ticket(self, ws, data))
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         try:
@@ -193,7 +263,7 @@ class HITLServer:
         finally:
             self._clients.discard(ws)
             self._remote_clients.discard(ws)
-            if not self._clients:
+            if not self._any_approver():
                 # Nobody left to answer: hand open requests back to the
                 # terminal instead of letting them silently time out.
                 for fut in self._pending.values():
@@ -349,7 +419,7 @@ class HITLServer:
             agent_tracker.update(agent, before["status"], task=before["task"], progress=before["progress"])
 
     async def _ask(self, tool_name: str, preview_text: str, timeout: float, agent: str) -> bool:
-        if not self._clients:
+        if not self._any_approver():
             return await self._terminal_confirm(tool_name, preview_text)
 
         loop = asyncio.get_running_loop()
@@ -368,6 +438,7 @@ class HITLServer:
         try:
             # Broadcast; the first answer from any client wins.
             sent = [await self._safe_send(ws, payload) for ws in list(self._clients)]
+            sent.append(self._push_approvers(payload) > 0)
             if not any(sent):
                 return await self._terminal_confirm(tool_name, preview_text)
 
@@ -383,7 +454,11 @@ class HITLServer:
                 return False
 
             if result is _NO_CLIENT:
+                await self._broadcast({"type": "approval_expired", "id": req_id})
                 return await self._terminal_confirm(tool_name, preview_text)
+            # Every other UI drops its copy of the card.
+            await self._broadcast({"type": "approval_resolved", "id": req_id,
+                                   "decision": "approve" if result else "decline"})
             print(f"{GRAY}[HITL] '{tool_name}' "
                   f"{'approved' if result else 'declined'}.{RESET}")
             return bool(result)
@@ -395,6 +470,8 @@ class HITLServer:
     async def _broadcast(self, payload: dict) -> None:
         for ws in list(self._clients):
             await self._safe_send(ws, payload)
+        if payload.get("type") in ("approval_expired", "approval_resolved"):
+            self._push_approvers(payload)
 
     async def _terminal_confirm(self, tool_name: str, preview_text: str) -> bool:
         # Serialize so two concurrent requests don't fight over stdin.
@@ -446,6 +523,24 @@ def register_handler(msg_type: str, fn) -> None:
 
 def broadcast_threadsafe(payload: dict) -> None:
     _server.broadcast_threadsafe(payload)
+
+
+# ── Helpers for the web app's Pipeline page (modules/socketIO.py) ────
+
+def add_approver(send, count) -> None:
+    _server.add_approver(send, count)
+
+
+def pending_payloads() -> list:
+    return _server.pending_payloads()
+
+
+def resolve_threadsafe(req_id: str, decision: str) -> None:
+    _server.resolve_threadsafe(req_id, decision)
+
+
+def approvers_changed_threadsafe() -> None:
+    _server.approvers_changed_threadsafe()
 
 
 async def send(ws, payload: dict) -> bool:

@@ -591,6 +591,34 @@ class SocketIOServer:
 
         self._register_http_routes()
         self._register_socket_events()
+        self._install_pipeline_bridge()
+
+    # ==================================================================
+    # Pipeline page bridge: agent states + approvals for the web app
+    # ==================================================================
+    def _install_pipeline_bridge(self):
+        """Tabs that open the Pipeline page join the "pipeline" room (host
+        only). They get agent_update pushes and approval requests, and
+        their Approve/Decline answers go to the approval server. Only these
+        tabs count as approvers: with none open, approvals fall back to the
+        island or the terminal as before."""
+        from modules import agent_tracker, hitl_server
+        self._pipeline_sids = set()
+        agent_tracker.register(lambda snap: self._emit_pipeline_threadsafe("agent_update", {"agents": snap}))
+        hitl_server.add_approver(
+            lambda payload: self._emit_pipeline_threadsafe(payload.get("type", "approval_request"), payload),
+            lambda: len(self._pipeline_sids),
+        )
+
+    def _emit_pipeline_threadsafe(self, event, payload):
+        loop = self._loop
+        if loop is None or not self._pipeline_sids:
+            return
+        try:
+            loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(self.sio.emit(event, payload, room="pipeline")))
+        except RuntimeError:
+            pass
 
     async def _run_mem(self, fn, *args, **kwargs):
         """Run a blocking memory/library call on the memory worker."""
@@ -650,6 +678,12 @@ class SocketIOServer:
         home_info.register(r, self)             # /api/settings/display (host-only)
         from modules import island_remote
         island_remote.register(r, self)         # /api/island/remote (host-only)
+        from modules import diagnostics
+        diagnostics.register(r, self)           # /api/debug/* (Dashboard → Diagnostics)
+        from modules import vts_stream
+        # Live VTube Studio view (MJPEG) for the Pipeline page. Host-only:
+        # not in _REMOTE_API_ALLOW, so tunnel visitors get 403.
+        r.add_get("/api/vts/stream", vts_stream.web_handler(self))
 
         # Background game agents (modules/game_manager.py). Host-only:
         # neither route is in _REMOTE_API_ALLOW.
@@ -3130,8 +3164,45 @@ class SocketIOServer:
             }, to=sid)
 
         @sio.event
+        async def pipeline_join(sid, data=None):
+            sess = await sio.get_session(sid)
+            if not sess or not sess.get("user") or not sess.get("is_local"):
+                return
+            from modules import agent_tracker, hitl_server
+            r = sio.enter_room(sid, "pipeline")
+            if asyncio.iscoroutine(r):
+                await r
+            self._pipeline_sids.add(sid)
+            await sio.emit("agent_update", {"agents": agent_tracker.snapshot()}, to=sid)
+            for payload in hitl_server.pending_payloads():
+                await sio.emit("approval_request", payload, to=sid)
+
+        @sio.event
+        async def pipeline_leave(sid, data=None):
+            if sid in self._pipeline_sids:
+                self._pipeline_sids.discard(sid)
+                r = sio.leave_room(sid, "pipeline")
+                if asyncio.iscoroutine(r):
+                    await r
+                from modules import hitl_server
+                hitl_server.approvers_changed_threadsafe()
+
+        @sio.event
+        async def approval_response(sid, data):
+            if sid not in self._pipeline_sids or not isinstance(data, dict):
+                return
+            decision = data.get("decision")
+            if decision in ("approve", "decline") and data.get("id"):
+                from modules import hitl_server
+                hitl_server.resolve_threadsafe(str(data["id"]), decision)
+
+        @sio.event
         def disconnect(sid):
             self._tts_clients.discard(sid)
+            if sid in self._pipeline_sids:
+                self._pipeline_sids.discard(sid)
+                from modules import hitl_server
+                hitl_server.approvers_changed_threadsafe()
             print(f"\033[90mSOCKETIO: client {sid} disconnected\033[0m")
 
         @sio.event

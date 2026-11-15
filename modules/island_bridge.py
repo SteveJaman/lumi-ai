@@ -34,7 +34,7 @@ MAX_MESSAGE_CHARS = 2000        # per message sent to the island
 DEFAULT_CHAT_LIMIT = 40
 MIN_SEND_GAP_S = 0.4
 
-_HIDDEN_SOURCES = ("sdk_event", "command")
+_HIDDEN_SOURCES = ("sdk_event", "command", "watchdog_event")
 
 
 def visible(msg) -> bool:

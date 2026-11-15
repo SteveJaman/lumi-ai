@@ -20,6 +20,13 @@ Each agent has:
     model_name  the model that actually runs it, e.g. "qwen3:8b" or
                 "Claude Code (opus)", so the tier label never misleads
 
+For the pixel-art Pipeline (web/pipeline.js, island/src/pipeline.js) each
+agent also reports where it works and how to draw it:
+    station       desk | window | bookshelf | server_rack (fixed per agent)
+    visual_state  derived from status, e.g. Main thinking -> typing,
+                  Minecraft executing -> swinging, System executing ->
+                  blinking, any waiting_approval -> waving, any error -> alarm
+
 update(...) is thread-safe and calls every registered callback with a fresh
 snapshot when something changed. The approval server registers one that pushes
 {"type": "agent_update", "agents": {...}} to the island.
@@ -37,6 +44,24 @@ STATUSES = ("idle", "thinking", "executing", "waiting_approval", "error")
 MODELS = ("haiku", "sonnet", "opus")
 MAX_TASK_CHARS = 140
 
+STATIONS = {"main": "desk", "minecraft": "window", "office": "bookshelf", "system": "server_rack"}
+
+# status -> visual_state, per agent (what the pixel character is doing).
+_VISUALS = {
+    "main":      {"idle": "sitting",  "thinking": "typing",   "executing": "typing"},
+    "minecraft": {"idle": "standing", "thinking": "swinging", "executing": "swinging"},
+    "office":    {"idle": "sitting",  "thinking": "reading",  "executing": "reading"},
+    "system":    {"idle": "standing", "thinking": "blinking", "executing": "blinking"},
+}
+
+
+def visual_state(agent_id: str, status: str) -> str:
+    if status == "waiting_approval":
+        return "waving"
+    if status == "error":
+        return "alarm"
+    return _VISUALS.get(agent_id, {}).get(status, "standing")
+
 
 class AgentTracker:
     def __init__(self) -> None:
@@ -44,6 +69,7 @@ class AgentTracker:
         self._callbacks: List[Callable[[dict], None]] = []
         self._agents: Dict[str, Dict[str, Any]] = {
             a: {"status": "idle", "task": "", "progress": 0, "model": None, "model_name": None,
+                "station": STATIONS[a], "visual_state": visual_state(a, "idle"),
                 "updated": time.time()}
             for a in AGENTS
         }
@@ -94,6 +120,7 @@ class AgentTracker:
                 new["model"] = model
             if model_name is not None:
                 new["model_name"] = str(model_name)[:60]
+            new["visual_state"] = visual_state(agent_id, status)
             if {k: v for k, v in new.items() if k != "updated"} == {k: v for k, v in cur.items() if k != "updated"}:
                 return False
             new["updated"] = time.time()

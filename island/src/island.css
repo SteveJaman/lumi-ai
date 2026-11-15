@@ -131,6 +131,11 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
 .unread .from { flex: none; max-width: 120px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .unread .subj { flex: 1; min-width: 0; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .unread .empty { color: var(--mute); }
+/* Live VTube Studio view (MJPEG from Lumi) */
+.vts-frame { position: relative; aspect-ratio: 16 / 9; border-radius: 4px; overflow: hidden;
+             background: radial-gradient(120% 90% at 50% 0%, rgba(92, 242, 210, 0.08), transparent 60%), #0b0d14; }
+.vts-view { position: relative; z-index: 1; display: block; width: 100%; height: 100%; object-fit: contain; }
+.vts-wait { position: absolute; inset: 0; display: grid; place-items: center; font: 11px var(--mono); color: var(--mute); }
 .note { margin: 4px 2px 0; color: var(--mute); font-size: 12px; line-height: 1.5; }
 
 /* ── Chat ────────────────────────────────────────────────────── */
@@ -261,7 +266,29 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--teal); o
 .set-actions { display: flex; gap: 8px; }
 .set-actions .btn { height: 36px; font-size: 11px; }
 
-/* ── Pipeline: the agents' office ────────────────────────────── */
+/* ── Pipeline: pixel office (pipeline.js) ─────────────────────── */
+
+.pipe-stage { position: relative; border-radius: 8px; overflow: hidden; border: 1px solid var(--line-hi);
+              background: #0b0d14; box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 8px 24px rgba(0,0,0,0.35); }
+.lumi-pl-canvas { display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+.lumi-pl-overlay { position: absolute; inset: 0; pointer-events: none; }
+.lumi-pl-ask { position: absolute; transform: translate(-50%, -100%); pointer-events: auto; padding: 6px 8px; border-radius: 6px;
+               background: rgba(14, 18, 30, 0.86); border: 1px solid rgba(255, 210, 63, 0.7); backdrop-filter: blur(6px);
+               box-shadow: 0 6px 18px rgba(0,0,0,0.45); white-space: nowrap; }
+.lumi-pl-tool { font: 10px var(--mono); color: #ffd23f; margin-bottom: 5px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.lumi-pl-btns { display: flex; gap: 6px; }
+.lumi-pl-btns button { font: 700 10px/1 var(--display); letter-spacing: 0.08em; padding: 5px 9px; border-radius: 4px; cursor: pointer;
+                       border: 1px solid var(--line-hi); background: rgba(255,255,255,0.06); color: var(--text); }
+.lumi-pl-btns .lumi-pl-yes { background: rgba(92, 242, 210, 0.18); border-color: rgba(92, 242, 210, 0.6); }
+.pipe-tasks { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.pipe-tasks .pt { display: grid; grid-template-columns: 74px 72px 1fr; gap: 6px; font-size: 11px; align-items: baseline; }
+.pt-name { font: 700 10px/1 var(--display); letter-spacing: 0.14em; text-transform: uppercase; }
+.pt-status { font: 10px var(--mono); color: var(--dim); }
+.pt-task { color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pt.s-waiting_approval .pt-status { color: #ffd23f; }
+.pt.s-error .pt-status { color: var(--pink); }
+
+/* ── Pipeline: legacy cards (unused) ──────────────────────────── */
 
 .pipe-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
 .pipe-head .label { margin: 0; }

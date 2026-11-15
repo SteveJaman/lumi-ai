@@ -106,6 +106,7 @@
       : conn === 'offline' && remote ? `Can't reach ${remote.host}` : STATUS_TEXT[s];
     updateTyping();
     syncVideo();
+    syncVts();
   }
 
   function syncVideo() {
@@ -113,7 +114,37 @@
     const want = state !== 'hidden' && effStatus() !== 'gaming' && !document.hidden;
     if (want) { const p = v.play(); if (p && p.catch) p.catch(() => {}); } else if (!v.paused) v.pause();
   }
-  document.addEventListener('visibilitychange', syncVideo);
+  document.addEventListener('visibilitychange', () => { syncVideo(); syncVts(); });
+
+  // ── Live avatar (modules/vts_stream.py) ────────────────────────
+  // Streams only while Home is open and visible (and not gaming): dropping
+  // the request is what lets Lumi stop capturing. An <img> can't send the
+  // token, so each start asks for a one-time ticket over the socket.
+  const BLANK = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
+  let vtsWant = false, vtsBusy = false, vtsRetry = null, wsUrl = DEFAULT_WS;
+  function syncVts() {
+    const want = conn === 'online' && state === 'open' && app === 'home'
+      && !document.hidden && effStatus() !== 'gaming';
+    if (want === vtsWant) return;
+    vtsWant = want;
+    clearTimeout(vtsRetry);
+    if (!want) { const img = $('vts-view'); img.src = BLANK; img.hidden = true; return; }
+    startVts();
+  }
+  async function startVts() {
+    if (vtsBusy || !vtsWant) return;
+    vtsBusy = true;
+    try {
+      const r = await req('vts_stream_ticket');
+      if (!vtsWant) return;
+      const u = new URL(wsUrl.replace(/^ws/, 'http'));
+      const img = $('vts-view');
+      img.src = `${u.protocol}//${u.host}${r.path}?t=${encodeURIComponent(r.ticket)}`;
+      img.hidden = false;
+    } catch (_) {
+      vtsRetry = setTimeout(startVts, 5000);
+    } finally { vtsBusy = false; }
+  }
 
   // ── Request / response over the socket ─────────────────────────
   let seq = 0;
@@ -137,6 +168,7 @@
     reconnectTimer = null;
     conn = 'connecting'; render();
     const [token, url] = await Promise.all([getToken(), getWsUrl()]);
+    wsUrl = url;
     let sock;
     try { sock = new WebSocket(url); } catch (_) { scheduleReconnect(); return; }
     ws = sock; ready = false;
@@ -204,6 +236,7 @@
           renderApproval();
         }
         break;
+      case 'approval_resolved':                    // answered from another screen (web app)
       case 'approval_expired': {
         const n = queue.length;
         queue = queue.filter((r) => r.id !== msg.id);
@@ -223,8 +256,15 @@
     if (name === 'chat') { scrollMsgs(true); if (state === 'open') focusComposer(); }
     if (name === 'calendar') loadCalendar();
     if (name === 'pipeline') renderPipeline();
+    syncVts();
   }
   function openApp(name) { setApp(name); setState(queue.length ? 'approval' : 'open'); }
+
+  $('vts-view').addEventListener('error', () => {
+    if (!vtsWant) return;
+    $('vts-view').hidden = true;
+    clearTimeout(vtsRetry); vtsRetry = setTimeout(startVts, 5000);
+  });
 
   $('avatar').addEventListener('click', () => (state === 'open' ? collapse() : openApp(app)));
   document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => openApp(b.dataset.app)));
@@ -775,56 +815,37 @@
     renderApproval();
   }
 
-  // ── Pipeline ───────────────────────────────────────────────────
+  // ── Pipeline (pixel office: pipeline.js) ───────────────────────
+  // The canvas shows each agent walking to its station and animating; an
+  // agent that needs approval walks to the front, waves, and gets
+  // Approve / Decline buttons above its head (same respond() as the
+  // full-screen approval view). The list below keeps each agent's task.
   const AGENTS = [['main', 'Main'], ['minecraft', 'Minecraft'], ['office', 'Office'], ['system', 'System']];
   const STATUS_LABEL = { idle: 'Idle', thinking: 'Thinking', executing: 'Executing', waiting_approval: 'Needs you', error: 'Error' };
   let agents = {};
-  const cards = {};
-
-  function card(id, name) {
-    const c = el('article', 'agent-card s-idle');
-    c.dataset.agent = id;
-    const head = el('header', 'ac-head');
-    const badge = el('span', 'badge');
-    head.append(el('span', 'ac-name', name), badge);
-    const stat = el('div', 'ac-status');
-    const task = el('div', 'ac-task');
-    const bar = el('div', 'bar');
-    const fill = el('i');
-    bar.append(fill);
-    const model = el('div', 'ac-model');
-    const ask = el('div', 'ac-ask');
-    const askTool = el('div', 'ac-tool');
-    const yes = el('button', 'btn btn-approve', 'Approve'); yes.type = 'button';
-    const no = el('button', 'btn btn-decline', 'Decline'); no.type = 'button';
-    yes.addEventListener('click', () => c.dataset.req && respond('approve', c.dataset.req));
-    no.addEventListener('click', () => c.dataset.req && respond('decline', c.dataset.req));
-    ask.append(askTool, no, yes);
-    c.append(head, stat, task, bar, model, ask);
-    return { c, badge, stat, task, fill, model, ask, askTool };
-  }
+  let pixel = null;
 
   function renderPipeline() {
-    const host = $('pipe');
-    if (!host.childElementCount) {
-      for (const [id, name] of AGENTS) { cards[id] = card(id, name); host.append(cards[id].c); }
+    if (!pixel && window.LumiPipeline && app === 'pipeline') {
+      pixel = window.LumiPipeline.mount($('pipe'), { onDecision: (id, decision) => respond(decision, id) });
     }
+    const view = {};
     for (const [id] of AGENTS) {
-      const a = agents[id] || { status: 'idle', task: '', progress: 0, model: null, model_name: null };
-      const k = cards[id];
+      const a = agents[id] || { status: 'idle', task: '', progress: 0 };
       const req = queue.find((r) => r.agent === id);
-      const status = req ? 'waiting_approval' : (STATUS_LABEL[a.status] ? a.status : 'idle');
-      k.c.className = `agent-card s-${status}${req ? ' expanded' : ''}`;
-      k.badge.className = `badge${a.model ? ' b-' + a.model : ''}`;
-      k.badge.textContent = a.model ? a.model.toUpperCase() : '—';
-      k.stat.textContent = STATUS_LABEL[status];
-      k.task.textContent = req ? `Wants to run ${req.tool}` : (a.task || (status === 'idle' ? 'Nothing to do' : ''));
-      const pct = status === 'idle' ? 0 : Math.max(0, Math.min(100, Number(a.progress) || 0));
-      k.fill.style.width = `${status === 'executing' && !pct ? 50 : pct}%`;
-      k.model.textContent = a.model_name || '';
-      k.c.dataset.req = req ? req.id : '';
-      k.askTool.textContent = req ? req.tool : '';
-      k.ask.hidden = !req;
+      view[id] = req ? { ...a, status: 'waiting_approval', visual_state: 'waving' } : a;
+    }
+    if (pixel) { pixel.update(view); pixel.setApprovals(queue); }
+    const list = $('pipe-tasks');
+    if (list) {
+      list.textContent = '';
+      for (const [id, name] of AGENTS) {
+        const a = view[id];
+        const li = el('li', `pt s-${STATUS_LABEL[a.status] ? a.status : 'idle'}`);
+        li.append(el('span', 'pt-name', name), el('span', 'pt-status', STATUS_LABEL[a.status] || 'Idle'),
+                  el('span', 'pt-task', a.task || a.model_name || ''));
+        list.append(li);
+      }
     }
     const open = queue.length;
     $('pipe-note').textContent = conn !== 'online' ? 'Not connected' : open ? `${open} waiting for you` : '';
