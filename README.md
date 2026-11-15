@@ -436,6 +436,10 @@ settings can be changed from the browser, including resets of chat history,
 session state, self-model, and memory under **Settings, then Advanced**. See
 [web/README.md](web/README.md) for the client's structure.
 
+Remote access is opt-in: Lumi starts no Cloudflare tunnel unless you set
+`AUTO_START_TUNNEL = True` in `constants.py` (see
+[docs/remote-access.md](docs/remote-access.md)).
+
 ### Minecraft (optional)
 
 ```powershell

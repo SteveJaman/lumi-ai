@@ -389,6 +389,10 @@
   $('avatar').addEventListener('click', () => (state === 'open' ? collapse() : openApp(app)));
   document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => openApp(b.dataset.app)));
   $('collapse').addEventListener('click', collapse);
+  // A click on the sliver or on the peek card (not one of its buttons) opens it.
+  island.addEventListener('click', (e) => {
+    if ((state === 'hidden' || state === 'peek') && !e.target.closest('button, input, select, textarea, a')) openApp(app);
+  });
 
   island.addEventListener('mouseenter', () => {
     hovering = true; clearTimeout(leaveTimer);

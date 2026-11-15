@@ -52,6 +52,11 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
   overflow: hidden;
   transition: width var(--dur) var(--ease), height var(--dur) var(--ease), border-radius var(--dur) var(--ease), border-color var(--dur) linear;
 }
+/* The window is always 480 wide (island.js WIN_W); only the island itself takes
+   the mouse. In hidden (the 200x8 sliver) and peek (the 330 card) the empty
+   window around it is click-dead; open fills the window. */
+html, body { pointer-events: none; }
+.island { pointer-events: auto; }
 .island.hidden   { width: 200px; height: 8px;   border-radius: 0 0 8px 8px; border-color: color-mix(in srgb, var(--teal) 45%, transparent); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--teal) 70%, transparent); }
 .island.peek     { width: 330px; height: 58px;  border-radius: 0 0 26px 26px; }
 .island.open     { width: 480px; height: 590px; border-radius: 0 0 24px 24px; border-color: color-mix(in srgb, var(--teal) 40%, var(--line-hi)); }
