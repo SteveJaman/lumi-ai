@@ -28,6 +28,66 @@ Rules (thresholds from constants MINECRAFT_GOVERNOR_*):
      (empty by default: she never attacks a player).
   5. A chat message with a URL or an email address is refused.
 Everything else is admitted.
+
+What the governor does NOT see
+------------------------------
+A goal that runs one of the agent's built-in skill scripts reaches the
+governor as ONE action (execute_skill). Moves, digs and placements inside the
+script are not checked one by one, so rules 1-2 apply to top-level actions
+only. Each script, by inspection of plugin/minecraft_bot.py (BUILTIN_SKILLS,
+TOOL_GOALS, FREE_GOALS "code") and the Voyager primitives it calls
+(plugin/voyager/voyager/control_primitives: mineBlock, craftItem and
+smeltItem search 32 blocks; killMob targets a mob within 48 and chases it
+until its timeout; placeItem places where told, and the scripts only ever
+tell it freeSpot(), within 2 blocks of the bot; exploreUntil walks 10-30
+blocks every 2 s in one direction until it finds something or time runs out):
+
+  BOUNDED (stays within ~32 blocks, places at or next to the bot, drops nothing)
+    craft_workbench       planks + table, crafted in place
+    craft_wood_pickaxe    ensureNear(crafting_table): table within 32 or placed at freeSpot
+    craft_stone_pickaxe   same
+    craft_furnace         same
+    craft_iron_pickaxe    same
+    craft_<mat>_<tool>    same (TOOL_GOALS: every axe, sword, shovel, hoe and pickaxe)
+    smelt_iron            furnace within 32 or placed at freeSpot
+    cook_meat             same
+    craft_torches         crafting only
+    build_dirt_hut        mineBlock("dirt") within 32; places a 3x3 shell at +-1 around the bot
+    wait_out_night        no movement
+
+  UNBOUNDED (exploreUntil: only the skill's time limit, 40-120 s, bounds the walk)
+    collect_wood          chopTrees -> exploreUntil 40 s
+    chop_trees            chopTrees -> exploreUntil 40 s
+    mine_stone            findOrExplore("stone") -> exploreUntil 60 s
+    gather_cobblestone    findOrExplore("stone") -> exploreUntil 60 s
+    mine_coal             findOrExplore("coal_ore") -> exploreUntil 60 s
+    mine_iron_ore         findOrExplore("iron_ore") -> exploreUntil 60 s, heading down
+    mine_diamond          findOrExplore("diamond_ore") -> exploreUntil 60 s, heading down
+    hunt_food             exploreUntil 60 s for animals, then killMob (chase)
+    explore               exploreUntil 45 s (the point of the goal)
+    get_bed               up to 6 x exploreUntil 60 s for sheep, then killMob
+
+  Every UNBOUNDED script runs wrapped by plugin/minecraft_bot.py _box_guard:
+  inside the script, it refuses to start when the bot is already outside
+  BOX_XZ / BOX_Y of its anchor (the owner's position, else where the bot
+  stands at the start) and stops the script when the bot leaves that box
+  mid-run (a position check once a second in bot.js, not a governor call).
+  The governor's rules and thresholds are unchanged. Which scripts get the
+  guard is decided by the same test as this table (a call to exploreUntil,
+  findOrExplore or chopTrees in the script's own code), and
+  tests/test_minecraft_governor.py checks the two agree. The "bounded" half
+  is an assertion by inspection: the scripts declare no radius of their own.
+
+  Goals that are plain bot.js actions (not scripts), for completeness:
+    build_house           7x7 at the bot (or its saved site within 64)    bounded
+    sort_inventory        nearest chest within 16, or one placed beside   bounded
+    use_bed (sleep/spawn) a bed within 32, or one placed beside           bounded
+    drop_item, give_item  in place / walks to the player                  rules 3, (exempt)
+    go_home, return_to_player, retrieve_items                             exempt (rule 1)
+    mine_branch_tunnel    bounded by its own arguments (to Y=depth, then a <=64-block
+                          tunnel, <=110 s a run, one block forward per block down), but
+                          at depth -54 (diamonds) that is ~118 below the surface, outside
+                          BOX_Y. Not guarded: a guard would end every diamond run.
 """
 
 from __future__ import annotations

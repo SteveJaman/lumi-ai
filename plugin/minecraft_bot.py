@@ -1592,6 +1592,10 @@ class MinecraftAgent(BaseGameAgent):
         code = _skill_code(goal, status)
         if not code:
             return False, f"No skill code for '{goal}'"
+        if _wanders(code):
+            # Explores until it finds something: bounded only by its time limit.
+            # The guard runs inside the script (see modules/minecraft_governor.py).
+            code = _box_guard(code, status)
         self._record("skill", f"Executing: {goal}")
         args = {"code": code, "description": goal}
         if goal in GOAL_TIMEOUT_S:
@@ -2427,6 +2431,61 @@ def _skill_code(goal: str, status: Dict) -> Optional[str]:
             return None      # an action goal, run as a plain bot.js action
         return _PRELUDE + (code(status) if callable(code) else code)
     return BUILTIN_SKILLS.get(goal)
+
+
+# Skills that call exploreUntil (directly, or through findOrExplore / chopTrees)
+# walk 10-30 blocks every 2 s until they find something or time out. Everything
+# else in a skill reaches at most 32 blocks (Voyager's own limits).
+_WANDERS_RE = re.compile(r"\b(?:exploreUntil|findOrExplore|chopTrees)\s*\(")
+
+
+def _skill_body(code: str) -> str:
+    """A skill's own code, without the shared prelude (which defines the
+    exploring helpers, so it would match every skill)."""
+    return code[len(_PRELUDE):] if code.startswith(_PRELUDE) else code
+
+
+def _wanders(code: str) -> bool:
+    return bool(_WANDERS_RE.search(_skill_body(code)))
+
+
+def _box_anchor(status: Dict) -> Tuple[Dict[str, float], str]:
+    """The box's centre: her player when she can see them (she plays near
+    them), else where she stands as the skill starts."""
+    op = (status.get("owner") or {}).get("position")
+    if op and all(k in op for k in ("x", "y", "z")):
+        return op, f"{(status.get('owner') or {}).get('name') or 'my player'}"
+    p = status.get("position") or {"x": 0, "y": 64, "z": 0}
+    return p, "where I started"
+
+
+def _box_guard(code: str, status: Dict) -> str:
+    """Wrap a wandering skill: refuse to start when she's already outside the
+    governor's box (MINECRAFT_GOVERNOR_BOX_XZ / _Y around _box_anchor), and
+    stop it if she leaves the box mid-run. The check is one position
+    comparison a second inside bot.js, not a governor call; a stop rejects the
+    skill and bot.js's runVoyager halts all movement."""
+    cfg = governor.Config.from_constants()
+    anchor, label = _box_anchor(status)
+    box = {"x": float(anchor["x"]), "y": float(anchor["y"]), "z": float(anchor["z"]),
+           "xz": cfg.box_xz, "dy": cfg.box_y}
+    where = json.dumps(f"±{cfg.box_xz:g} blocks across / ±{cfg.box_y:g} up-down of {label}")
+    return (
+        f"const __BOX = {json.dumps(box)};\n"
+        "const __out = () => { const p = bot.entity.position;\n"
+        "  return Math.max(Math.abs(p.x - __BOX.x), Math.abs(p.z - __BOX.z)) > __BOX.xz"
+        " || Math.abs(p.y - __BOX.y) > __BOX.dy; };\n"
+        f"if (__out()) throw new Error(\"bounding box: already outside \" + {where} + \", not starting\");\n"
+        "let __watch;\n"
+        "try {\n"
+        "  return await Promise.race([\n"
+        "    (async () => {\n" + code + "\n    })(),\n"
+        "    new Promise((_, reject) => { __watch = setInterval(() => {\n"
+        f"      if (__out()) reject(new Error(\"bounding box: left \" + {where} + \", stopped\"));\n"
+        "    }, 1000); }),\n"
+        "  ]);\n"
+        "} finally { clearInterval(__watch); }\n"
+    )
 
 
 def _goal_steps(goal: str, status: Dict) -> List[Step]:

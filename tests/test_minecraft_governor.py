@@ -321,3 +321,83 @@ def test_refused_pick_is_fed_back_and_replaced(agent, monkeypatch):
     assert (goal, source) == ("explore", "llm")
     assert "Observation: action refused:" in prompts[1] and "visit_far" not in prompts[1].split("Goals you can pick:")[1]
     assert a._tel["last_action"]["name"] == "move_to" and not a._tel["last_action"]["admitted"]
+
+
+# ─── skill scripts: bounded / unbounded, and the in-script box guard ──
+
+def _table():
+    doc = gov.__doc__
+    bounded = doc.split("BOUNDED (stays")[1].split("UNBOUNDED (")[0]
+    unbounded = doc.split("UNBOUNDED (exploreUntil")[1].split("Every UNBOUNDED")[0]
+    names = lambda block: {ln.split()[0] for ln in block.splitlines()[1:] if ln.strip()}
+    return names(bounded), names(unbounded)
+
+
+def _scripts(mb):
+    """Every goal that runs a built-in skill script, with its code."""
+    st = {"position": HERE, "owner": {"name": "Steve", "position": HERE}}
+    goals = set(mb.BUILTIN_SKILLS) | {g for g, d in mb.FREE_GOALS.items() if d.get("code")}
+    return {g: mb._skill_code(g, st) for g in goals}
+
+
+def test_every_skill_script_is_in_the_table_and_classified_the_same():
+    mb = pytest.importorskip("plugin.minecraft_bot")
+    bounded, unbounded = _table()
+    for goal, code in _scripts(mb).items():
+        name = "craft_<mat>_<tool>" if goal in mb.TOOL_GOALS else goal
+        assert name in bounded | unbounded, f"{goal} missing from the governor's table"
+        assert mb._wanders(code) == (name in unbounded), goal
+
+
+def test_bounded_scripts_use_only_bounded_primitives():
+    mb = pytest.importorskip("plugin.minecraft_bot")
+    risky = re.compile(r"exploreUntil|findOrExplore|chopTrees|pathfinder\.(goto|setGoal)|bot\.toss|killMob")
+    for goal, code in _scripts(mb).items():
+        if not mb._wanders(code):
+            assert not risky.search(mb._skill_body(code)), goal
+
+
+def test_unbounded_scripts_get_the_guard(monkeypatch):
+    mb = pytest.importorskip("plugin.minecraft_bot")
+    agent = mb.MinecraftAgent.__new__(mb.MinecraftAgent)
+    sent = []
+
+    async def fake_action(name, args, intent=None):
+        sent.append(args.get("code", ""))
+        return {"success": True, "message": "ok"}
+    agent._bot_action = fake_action
+    agent._record = lambda *a, **k: None
+    st = {"position": HERE, "owner": {"name": "Steve", "position": HERE}}
+    for goal, code in _scripts(mb).items():
+        sent.clear()
+        run(agent._execute_goal(goal, st))
+        assert ("const __BOX" in sent[0]) == mb._wanders(code), goal
+
+
+NODE = __import__("shutil").which("node")
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+@pytest.mark.parametrize("start,move_to,expect", [
+    ({"x": 100, "y": 64, "z": -50}, None, "done"),
+    ({"x": 300, "y": 64, "z": -50}, None, "already outside"),
+    ({"x": 100, "y": 64, "z": -50}, {"x": 240, "y": 64, "z": -50}, "left"),
+    ({"x": 100, "y": 64, "z": -50}, {"x": 100, "y": -10, "z": -50}, "left"),
+])
+def test_box_guard_runs_in_node(tmp_path, start, move_to, expect):
+    import subprocess
+    mb = pytest.importorskip("plugin.minecraft_bot")
+    body = 'await new Promise(r => setTimeout(r, 1800)); return "done";'
+    guarded = mb._box_guard(body, {"position": start, "owner": {"name": "Steve", "position": HERE}})
+    script = (
+        "const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;\n"
+        f"const bot = {{ entity: {{ position: {json.dumps(start)} }} }};\n"
+        + (f"setTimeout(() => {{ bot.entity.position = {json.dumps(move_to)}; }}, 300);\n" if move_to else "")
+        + f"new AsyncFunction('bot', {json.dumps(guarded)})(bot)"
+        ".then(v => { console.log('OK ' + v); process.exit(0); }, e => { console.log('ERR ' + e.message); process.exit(0); });\n")
+    path = tmp_path / "guard.js"
+    path.write_text(script, encoding="utf-8")
+    out = subprocess.run([NODE, str(path)], capture_output=True, text=True, timeout=20).stdout.strip()
+    assert expect in out, out
+    if expect != "done":
+        assert out.startswith("ERR bounding box:"), out
