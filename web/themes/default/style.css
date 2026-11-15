@@ -38,3 +38,22 @@ html[data-lumi-theme="default"][data-surface="island"] .island {
   backdrop-filter: blur(20px) saturate(1.2);
   -webkit-backdrop-filter: blur(20px) saturate(1.2);
 }
+
+/* Settings rows are boxed in this theme: give the text room, like the other themes. */
+html[data-lumi-theme="default"][data-surface="web"] .settings-field {
+  padding: 14px 18px 16px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg, 8px);
+}
+html[data-lumi-theme="default"][data-surface="web"] .settings-field .settings-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+html[data-lumi-theme="default"][data-surface="web"] .settings-field .settings-field-help {
+  font-size: 13px;
+  line-height: 1.55;
+}
+html[data-lumi-theme="default"][data-surface="web"] .settings-toggle { gap: 20px; }

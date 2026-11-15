@@ -3121,8 +3121,6 @@ class SocketIOServer:
             origin = environ.get("HTTP_ORIGIN")
             cookie_header = environ.get("HTTP_COOKIE", "")
             has_cookie_header = bool(cookie_header)
-            print(f"\033[90mSOCKETIO: connect attempt sid={sid} "
-                  f"origin={origin!r} cookie_header={has_cookie_header}\033[0m")
 
             if origin and not _origin_allowed(origin):
                 print(f"\033[91mSOCKETIO:   rejected — bad origin "
@@ -3141,8 +3139,9 @@ class SocketIOServer:
 
             req = environ.get("aiohttp.request")
             is_local = self._is_local(req) if req is not None else False
-            print(f"\033[92mSOCKETIO:   accepted as {user['username']}"
-                  f"{'' if is_local else ' (remote)'}\033[0m")
+            # Connections are routine (every tab, every reload): Dashboard log, not the terminal.
+            from modules.log_hub import emit as hub_emit
+            hub_emit(signals, "web", f"{user['username']} connected{'' if is_local else ' (remote)'}")
             await sio.save_session(sid, {"user": user, "is_local": is_local})
 
             await sio.emit("history", signals.history, to=sid)
@@ -3215,7 +3214,9 @@ class SocketIOServer:
                 self._pipeline_sids.discard(sid)
                 from modules import hitl_server
                 hitl_server.approvers_changed_threadsafe()
-            print(f"\033[90mSOCKETIO: client {sid} disconnected\033[0m")
+            # Routine (tab closed, page reloaded): Dashboard log, not the terminal.
+            from modules.log_hub import emit as hub_emit
+            hub_emit(signals, "web", f"client {sid} disconnected")
 
         @sio.event
         async def web_send(sid, data):

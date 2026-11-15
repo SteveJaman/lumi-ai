@@ -1609,10 +1609,9 @@ function ensureVoiceSocket() {
   }
 
   try {
-    _voiceSocket = io({
-      transports: ['websocket', 'polling'],
-      withCredentials: true,
-    });
+    _voiceSocket = lumiUi.socket();             // the page's shared socket
+    if (!_voiceSocket) return;
+    if (_voiceSocket.connected) _voiceSocket.emit('web_voice_optin', { enabled: _voiceEnabled });
 
     _voiceSocket.on('connect', () => {
       _voiceSocket.emit('web_voice_optin', { enabled: _voiceEnabled });
@@ -5219,7 +5218,8 @@ function mountPixelPipeline() {
   const NAMES = { main: 'Main', minecraft: 'Minecraft', office: 'Office', system: 'System' };
   let agents = {};
   let approvals = [];
-  const sock = io({ transports: ['websocket', 'polling'], withCredentials: true });
+  const sock = lumiUi.socket();                 // shared: visiting this page never reconnects
+  if (!sock) return;
   const pl = window.LumiPipeline.mount($('#pl-stage'), {
     base: '/web/pixel-office/',
     onDecision: (id, decision) => {
@@ -5252,20 +5252,25 @@ function mountPixelPipeline() {
     const note = $('#pl-note');
     if (note) note.textContent = !sock.connected ? 'Not connected' : approvals.length ? `${approvals.length} waiting for you` : '';
   }
-  sock.on('connect', () => { sock.emit('pipeline_join'); draw(); });
-  sock.on('disconnect', draw);
-  sock.on('agent_update', (d) => { agents = (d && d.agents) || agents; draw(); });
-  sock.on('approval_request', (p) => {
+  const onConnect = () => { sock.emit('pipeline_join'); draw(); };
+  const onAgents = (d) => { agents = (d && d.agents) || agents; draw(); };
+  const onRequest = (p) => {
     if (p && p.id && !approvals.some((a) => a.id === p.id)) {
       approvals.push({ id: String(p.id), tool: String(p.tool || ''), preview: String(p.preview || ''), agent: p.agent || 'main' });
       draw();
     }
-  });
+  };
   const drop = (p) => { approvals = approvals.filter((a) => a.id !== (p && p.id)); draw(); };
-  sock.on('approval_resolved', drop);
-  sock.on('approval_expired', drop);
+  const handlers = [['connect', onConnect], ['disconnect', draw], ['agent_update', onAgents],
+                    ['approval_request', onRequest], ['approval_resolved', drop], ['approval_expired', drop]];
+  for (const [ev, fn] of handlers) sock.on(ev, fn);
+  if (sock.connected) sock.emit('pipeline_join');       // rejoin (re-sends agents and open approvals)
   draw();
-  _pageTeardown = () => { try { sock.emit('pipeline_leave'); } catch (_) {} sock.disconnect(); pl.destroy(); };
+  _pageTeardown = () => {
+    try { sock.emit('pipeline_leave'); } catch (_) {}
+    for (const [ev, fn] of handlers) sock.off(ev, fn);  // keep the socket, drop this page's listeners
+    pl.destroy();
+  };
 }
 
 async function renderStream(main) {

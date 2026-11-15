@@ -96,9 +96,20 @@ function onIngestFinish(e) {
   else if (e.source !== 'web') toast(text, { kind: e.ok ? 'ok' : 'error' });
 }
 
+/* The page's ONE socket.io connection. Voice, the Pipeline page and the
+   sync events all share it, so moving between pages never reconnects
+   (each connect/disconnect is a line in Lumi's terminal). */
+export function socket() {
+  if (!sock && typeof io !== 'undefined') {
+    sock = io({ transports: ['websocket', 'polling'], withCredentials: true });
+  }
+  return sock;
+}
+
 function connectSync() {
-  if (sock || typeof io === 'undefined') return;
-  sock = io({ transports: ['websocket', 'polling'], withCredentials: true });
+  if (sock && sock._lumiSync) return;
+  if (!socket()) return;
+  sock._lumiSync = true;
   sock.on('theme_update', (d) => {
     if (d && d.theme && d.theme !== ui.theme) { ui.theme = d.theme; window.LumiThemes && window.LumiThemes.apply(d.theme); }
     document.querySelectorAll('.theme-card').forEach((c) => c.classList.toggle('on', c.dataset.theme === ui.theme));
