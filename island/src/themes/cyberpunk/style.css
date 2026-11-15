@@ -53,7 +53,7 @@ html[data-lumi-theme="cyberpunk"][data-surface="web"] .sidebar {
 html[data-lumi-theme="cyberpunk"][data-surface="web"] .main { background: transparent; }
 
 /* HUD panels: chamfered corners, corner brackets in neon. */
-html[data-lumi-theme="cyberpunk"][data-surface="web"] :is(.card, .diag, .integration-card, .stat-card, .stat, .settings-field, .vts-live, .pl-web .pipe-stage) {
+html[data-lumi-theme="cyberpunk"][data-surface="web"] :is(.card, .diag, .integration-card, .stat-card, .stat, .settings-field, .pl-web .pipe-stage) {
   background:
     linear-gradient(var(--lt-primary), var(--lt-primary)) left top / 34px 2px no-repeat,
     linear-gradient(var(--lt-primary), var(--lt-primary)) left top / 2px 34px no-repeat,
@@ -131,3 +131,6 @@ html[data-lumi-theme="cyberpunk"][data-surface="island"] :is(.tab, .btn):hover {
 html[data-lumi-theme="cyberpunk"][data-surface="island"] .pipe-stage {
   border-radius: 0; border-color: var(--lt-primary); clip-path: var(--lt-hud-sm);
 }
+
+/* Rows inside clipped panels need room so the cut corners never clip text. */
+html[data-lumi-theme="cyberpunk"][data-surface="web"] .settings-field { padding: 14px 24px 16px; }

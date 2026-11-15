@@ -1,22 +1,22 @@
 {
-  "id": "cyberpunk",
-  "name": "Cyberpunk",
-  "description": "Angular neon HUD, glitch hovers, flying cars over a rainy skyline.",
+  "id": "default",
+  "name": "Lumi",
+  "description": "Her teal-and-ice look, with drifting aurora, motes of light, halos and her lilies.",
   "author": "Lumi",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "dark": true,
   "palette": {
-    "primary": "#00F0FF", "secondary": "#FF2BD6", "accent": "#F6FF00", "glow": "#7CF9FF",
-    "bg": "#05060D", "surface": "rgba(6, 12, 24, 0.72)", "text": "#D9FBFF", "muted": "#6E8BA6",
-    "danger": "#FF3B5C", "rain": "#7CF9FF", "car": "#FF2BD6"
+    "primary": "#5CF2D2", "secondary": "#7FE3FF", "accent": "#FF71C4", "glow": "#B9F1FA",
+    "bg": "#060913", "surface": "#0B1122", "text": "#E7EEFF", "muted": "#9BAAD0", "danger": "#FF6B8A",
+    "mint": "#81D4C6", "ice": "#B9F1FA", "peach": "#F3D6CF", "lavender": "#D9D9DE", "lily": "#F7F8FC"
   },
   "fonts": {
-    "display": "\"Cascadia Mono\", \"Consolas\", ui-monospace, monospace",
-    "body": "\"Cascadia Mono\", \"Consolas\", ui-monospace, monospace",
+    "display": "\"Bahnschrift\", \"Segoe UI\", system-ui, sans-serif",
+    "body": "\"Segoe UI\", system-ui, sans-serif",
     "mono": "\"Cascadia Mono\", Consolas, monospace"
   },
   "style": "style.css",
-  "background": { "script": "background.js", "fps": 30, "maxDpr": 1.25, "options": { "cars": 9, "rain": 120 } },
+  "background": { "script": "background.js", "fps": 30, "maxDpr": 1.25, "options": { "motes": 60, "halos": 4, "lilies": 3 } },
   "cursor": null,
-  "room": { "tint": "#00F0FF", "alpha": 0.12, "blend": "overlay", "glow": "#FF2BD6" }
+  "room": { "tint": "#5CF2D2", "alpha": 0.08, "blend": "soft-light", "glow": "#B9F1FA" }
 }

@@ -696,10 +696,6 @@ class SocketIOServer:
         from modules import ui_routes, knowledge
         ui_routes.register(r, self)             # /api/ui/* (theme, hybrid switch)
         knowledge.register(r, self)             # /api/knowledge/upload (drag and drop)
-        from modules import vts_stream
-        # Live VTube Studio view (MJPEG) for the Pipeline page. Host-only:
-        # not in _REMOTE_API_ALLOW, so tunnel visitors get 403.
-        r.add_get("/api/vts/stream", vts_stream.web_handler(self))
 
         # Background game agents (modules/game_manager.py). Host-only:
         # neither route is in _REMOTE_API_ALLOW.

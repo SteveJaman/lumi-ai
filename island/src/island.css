@@ -131,11 +131,6 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
 .unread .from { flex: none; max-width: 120px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .unread .subj { flex: 1; min-width: 0; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .unread .empty { color: var(--mute); }
-/* Live VTube Studio view (MJPEG from Lumi) */
-.vts-frame { position: relative; aspect-ratio: 16 / 9; border-radius: 4px; overflow: hidden;
-             background: radial-gradient(120% 90% at 50% 0%, rgba(92, 242, 210, 0.08), transparent 60%), #0b0d14; }
-.vts-view { position: relative; z-index: 1; display: block; width: 100%; height: 100%; object-fit: contain; }
-.vts-wait { position: absolute; inset: 0; display: grid; place-items: center; font: 11px var(--mono); color: var(--mute); }
 .note { margin: 4px 2px 0; color: var(--mute); font-size: 12px; line-height: 1.5; }
 
 /* ── Chat ────────────────────────────────────────────────────── */

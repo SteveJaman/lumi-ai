@@ -398,7 +398,7 @@ def run_checks(signals=None) -> List[Dict[str, str]]:
                              else "Off.", "" if wd.enabled else "Set WATCHDOG_ENABLED = True in constants.py."))
 
     missing = [(mod, why) for mod, why in (
-        ("psutil", "the watchdog"), ("mss", "the VTS live view"), ("PIL", "images and the live view"),
+        ("psutil", "the watchdog"), ("mss", "screen capture"), ("PIL", "images"),
         ("ddgs", "web search"), ("playwright", "browse_url"), ("numpy", "lip-sync vowels"),
         ("pywinauto", "read_window_text / click_button")) if importlib.util.find_spec(mod) is None]
     if missing:

@@ -115,8 +115,6 @@
   }
   document.addEventListener('visibilitychange', () => { syncVideo(); });
 
-  let wsUrl = DEFAULT_WS;
-
   // ── Request / response over the socket ─────────────────────────
   let seq = 0;
   const pending = new Map();
@@ -139,7 +137,6 @@
     reconnectTimer = null;
     conn = 'connecting'; render();
     const [token, url] = await Promise.all([getToken(), getWsUrl()]);
-    wsUrl = url;
     let sock;
     try { sock = new WebSocket(url); } catch (_) { scheduleReconnect(); return; }
     ws = sock; ready = false;
@@ -941,25 +938,33 @@
   let agents = {};
   let pixel = null;
 
-  function renderPipeline(main) {
-    main.innerHTML = `
-      <div class="page">
-        <div class="page-header">
-          <div>
-            <div class="page-title">Pipeline</div>
-            <div class="page-sub">Lumi's agents at work. She reacts to what they're doing.</div>
-          </div>
-        </div>
-        <div class="page-scroll">
-          <div class="pl-web">
-            <div class="pl-web-head"><span class="label">Agents</span><span class="pl-note" id="pl-note"></span></div>
-            <div id="pl-stage" class="pipe-stage" aria-label="Lumi's agents at work"><canvas id="pipeline-canvas"></canvas></div>
-            <ul id="pl-tasks" class="pipe-tasks" aria-live="polite"></ul>
-          </div>
-        </div>
-      </div>
-    `;
-    mountPixelPipeline();
+  function renderPipeline() {
+    if (!pixel && window.LumiPipeline && app === 'pipeline') {
+      pixel = window.LumiPipeline.mount($('pipe'), {
+        base: 'pixel-office/',
+        onDecision: (id, decision) => respond(decision, id),
+      });
+    }
+    const view = {};
+    for (const [id] of AGENTS) {
+      const a = agents[id] || { status: 'idle', task: '', progress: 0 };
+      const req = queue.find((r) => r.agent === id);
+      view[id] = req ? { ...a, status: 'waiting_approval', visual_state: 'waving' } : a;
+    }
+    if (pixel) { pixel.update(view); pixel.setApprovals(queue); }
+    const list = $('pipe-tasks');
+    if (list) {
+      list.textContent = '';
+      for (const [id, name] of AGENTS) {
+        const a = view[id];
+        const li = el('li', `pt s-${STATUS_LABEL[a.status] ? a.status : 'idle'}`);
+        li.append(el('span', 'pt-name', name), el('span', 'pt-status', STATUS_LABEL[a.status] || 'Idle'),
+                  el('span', 'pt-task', a.task || a.model_name || ''));
+        list.append(li);
+      }
+    }
+    const open = queue.length;
+    $('pipe-note').textContent = conn !== 'online' ? 'Not connected' : open ? `${open} waiting for you` : '';
   }
 
   // ── Connection settings (the gear) ─────────────────────────────

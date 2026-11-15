@@ -413,6 +413,28 @@ avatar.
   `FIX_RULES` for a plain fix, and runs health checks. Dashboard →
   Diagnostics shows both (`/api/debug/diagnostics`, host only).
 
+### Themes, hybrid routing, knowledge drops
+
+- **Themes** (`web/themes/<id>/`: `theme.json`, `style.css`, `background.js`,
+  `assets/`; schema in `web/themes/README.md`). `web/theme-engine.js` sets the
+  palette as `--lt-*`, swaps the stylesheet, runs the background canvas (max 30
+  fps, paused while hidden, one frame for reduced motion) and the optional
+  sparkle cursor, and fires `lumi-theme` so the Pipeline room relights.
+  `scripts/sync_themes.py` copies themes, the engine and `pipeline.js` into
+  `island/src/`. The chosen theme lives in `data/ui_theme.json`
+  (`modules/theme_store.py`); islands follow it unless "Sync with Desktop" is off.
+- **Hybrid routing** (`modules/hybrid_mode.py`, `HYBRID_MODE`,
+  `CLOUD_ESCALATION_MODEL`). Off: every tier runs on Ollama and Claude Code is not
+  offered. On: opus-tier prompts (chat and agent turns) use the cloud model if its
+  provider has a key. The "100% Local Privacy" badge shows only when every
+  configured model is local and escalation is off.
+- **Knowledge drops** (`modules/knowledge.py`): `POST /api/knowledge/upload`
+  (web) or `knowledge_upload_begin/chunk/end` over the island socket (works for
+  remote islands too) save into `data/library/` and index at once; Lumi announces
+  what she learned.
+- **Sync** (`modules/ui_sync.py`): `theme_update`, `hybrid_mode_update`,
+  `knowledge_ingest_start/finish` go to every web tab (socket.io) and island.
+
 ### Avatar (VTube Studio digital twin)
 
 `modules/vtubeStudio.py` owns the VTS socket; `modules/vts_motion.py`
@@ -445,11 +467,6 @@ Safety: only parameters in the model's `InputParameterListRequest` are sent;
 nothing is sent unless the session is `ready`; a dropped socket reconnects
 with backoff and re-applies the model's expressions.
 
-`modules/vts_stream.py` captures the VTS window (mss, 12 FPS, JPEG q70,
-max 640 px wide) as MJPEG for the web Pipeline page (`/api/vts/stream`,
-login, host-only) and the island's Home tab (`/vts/stream` on `:5090` with a
-one-time ticket from the island socket). Capture runs only while someone
-watches and stops 30 s after the last viewer leaves.
 
 ### Tool dispatch
 
@@ -960,9 +977,11 @@ the listener is reachable on the tailnet only (never `0.0.0.0`), a browser
 | `session_state.py` | Cross-session continuity |
 | `vtubeStudio.py` | VTube Studio session, model discovery, agent poses, expression state tracking |
 | `vts_motion.py` | Avatar motion engine: sway, gaze, blinks, breath, emotion, lip-sync visemes |
-| `vts_stream.py` | MJPEG live view of the VTS window for the web app and island |
 | `watchdog_agent.py` | CPU/RAM and game crash/hang watchdog; restart_crashed_game |
 | `diagnostics.py` | Error capture from every source + health checks + fixes (Dashboard) |
+| `theme_store.py`, `ui_routes.py`, `ui_sync.py` | Shared UI theme + Cloud Escalation switch, routes, broadcasts |
+| `hybrid_mode.py` | Local-only vs cloud escalation for opus-tier prompts |
+| `knowledge.py` | Drag-and-drop knowledge: upload, index, announce |
 | `discordClient.py` | Discord voice — DAVE receive, Opus decode, VAD |
 | `log_hub.py` | Diagnostics stream + localhost dashboard |
 | `user_auth.py` | SQLite + argon2id auth, session management |

@@ -150,12 +150,6 @@ class HITLServer:
             self._status = self._status_of(signals)
         app = web.Application()
         app.router.add_get(HITL_PATH, self._ws_handler)
-        # Live VTube Studio view for the island. An <img> can't send the
-        # token, so the island asks for a one-time ticket over this socket.
-        from modules import vts_stream
-        app.router.add_get("/vts/stream", vts_stream.hitl_handler)
-        self._handlers.setdefault("vts_stream_ticket",
-                                  lambda ws, data: vts_stream.hitl_ticket(self, ws, data))
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         try:

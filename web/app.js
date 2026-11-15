@@ -5188,9 +5188,7 @@ function stopStreamPolling() {
 }
 
 /* --------------------------------------------------------------
-   Pipeline: Lumi's avatar live from VTube Studio (MJPEG from
-   modules/vts_stream.py). Leaving the page removes the <img>, which
-   closes the stream; Lumi stops capturing 30 s after the last viewer.
+   Pipeline: Lumi's agents at work in her pixel room (web/pipeline.js).
    -------------------------------------------------------------- */
 function renderPipeline(main) {
   main.innerHTML = `
@@ -5198,7 +5196,7 @@ function renderPipeline(main) {
       <div class="page-header">
         <div>
           <div class="page-title">Pipeline</div>
-          <div class="page-sub">Lumi's avatar, live from VTube Studio. She reacts to what her agents are doing.</div>
+          <div class="page-sub">Lumi's agents at work. Approve requests right on the agent that's asking.</div>
         </div>
       </div>
       <div class="page-scroll">
@@ -5207,29 +5205,10 @@ function renderPipeline(main) {
           <div id="pl-stage" class="pipe-stage" aria-label="Lumi's agents at work"><canvas id="pipeline-canvas"></canvas></div>
           <ul id="pl-tasks" class="pipe-tasks" aria-live="polite"></ul>
         </div>
-        <div class="vts-live">
-          <img id="vts-live-img" alt="Lumi's avatar in VTube Studio">
-          <div class="vts-live-wait" id="vts-live-wait">Connecting to VTube Studio…</div>
-        </div>
       </div>
     </div>
   `;
   mountPixelPipeline();
-  const img = $('#vts-live-img');
-  const wait = $('#vts-live-wait');
-  let retry = null;
-  const start = () => {
-    if (state.view !== 'pipeline' || !img.isConnected) return;
-    img.src = `/api/vts/stream?_=${Date.now()}`;
-  };
-  img.addEventListener('load', () => { wait.hidden = true; }, { once: true });
-  img.addEventListener('error', () => {
-    wait.hidden = false;
-    wait.textContent = 'Live view unavailable. Retrying…';
-    clearTimeout(retry);
-    retry = setTimeout(start, 5000);
-  });
-  start();
 }
 
 // Pixel office: agent_update + approvals over a socket that joins the

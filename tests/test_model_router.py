@@ -101,5 +101,8 @@ def test_a_tier_is_never_a_model_name():
     src = inspect.getsource(prompter.Prompter)
     assert "model = FAST_MODEL_NAME if use_fast else MODEL_NAME" in src
     flat = " ".join(src.split())
-    assert "chat_sync( AGENT_MODEL_NAME," in flat                # agent turns: always the tool-capable model
+    # Agent turns: the tool-capable local model, unless Cloud Escalation sends an
+    # opus-tier turn to the cloud model (modules/hybrid_mode.py).
+    assert "agent_model = hybrid_mode.model_for(tier, AGENT_MODEL_NAME)" in flat
+    assert "chat_sync( agent_model," in flat
     assert "tier" not in flat.split("chat_sync(")[1].split(")")[0]   # no tier variable reaches a chat call
