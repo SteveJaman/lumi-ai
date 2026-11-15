@@ -38,10 +38,17 @@
  * Click a Lumi for a card: status, task, model and tier, time in this state, her last
  * 5 changes (kept here, not on the server). Click elsewhere or Esc to close.
  *
- * The 320x192 room is drawn at 2x into a 640x384 buffer; Lumis are 48x96 (a tile and
- * a half wide, three tall, so she reads at a glance). Names, buttons and the card are
- * at native resolution. 30 fps while anyone walks or works, about 8 fps otherwise,
- * nothing while hidden.
+ * Scale: the 320x192 room is laid out at 2x (a 640x384 "buffer" space); Lumis are 48x96
+ * there (a tile and a half wide, three tall). Rendering is crisp and cached, after Pixel
+ * Agents' sprite cache: every sprite frame, atlas piece, the floor and the bubbles are
+ * scaled ONCE to the current zoom (nearest neighbour, imageSmoothingEnabled = false)
+ * into offscreen canvases, and each frame only copies them to whole device pixels. The
+ * cache is rebuilt when the zoom changes (a resize). The zoom snaps to a whole number of
+ * device pixels per art pixel when one is close. It never drops below MIN_CSS_SCALE:
+ * on a narrow canvas (the island) the view is cropped instead and a camera follows
+ * whoever is busy or selected (drag to pan). Names, buttons and the card are at native
+ * resolution. 30 fps while anyone walks or works, about 8 fps otherwise, nothing while
+ * hidden.
  */
 (function () {
   'use strict';
@@ -54,7 +61,9 @@
   const BLINK_S = 0.15;
   const DONE_BUBBLE_S = 2;
   const HISTORY = 5;
-  const RS = 2;                                 // room drawn at 2x
+  const RS = 2;                                 // room laid out at 2x
+  const MIN_CSS_SCALE = 0.95;                   // css px per art px: never smaller (the camera crops instead)
+  const SNAP = 0.18;                            // snap the zoom to a whole number of device px within this
 
   // ── ambient behaviour ─────────────────────────────────────────
   const IDLE_BEFORE_AMBIENT_S = 8;
@@ -176,8 +185,10 @@
     const ctx = canvas.getContext('2d');
 
     let A = null;                        // assets once loaded
-    let W = 640, H = 384, CW = 48, CH = 96, buf = null, bctx = null, tint = null, tctx = null;
-    let scale = 1, cssScale = 1, raf = 0, timer = 0, last = 0, visible = true, destroyed = false;
+    let W = 640, H = 384, CW = 48, CH = 96, tint = null, tctx = null;
+    let k = 1, cssScale = 1, viewW = 640, raf = 0, timer = 0, last = 0, visible = true, destroyed = false;
+    let camX = 0, camTarget = 0, dragFrom = null, manualUntil = 0;
+    const cache = new Map();             // "<key>" -> offscreen canvas pre-scaled at k
     let snapshot = {}, approvals = [];
     let sim = 0;                         // ambient clock: only runs while drawn
     let mood = null, mf = moodFactors(null);
@@ -214,14 +225,63 @@
       };
     }
 
+    // Zoom: device px per art (buffer) px. Fills the width when that's big enough; otherwise
+    // MIN_CSS_SCALE with a camera over part of the room. Snapped to a whole number when close.
     function resize() {
       const cw = wrapper.clientWidth || W;
       const dpr = window.devicePixelRatio || 1;
-      scale = Math.max(0.5, (cw * dpr) / W);
-      canvas.width = Math.round(W * scale); canvas.height = Math.round(H * scale);
-      canvas.style.width = cw + 'px'; canvas.style.height = Math.round(cw * H / W) + 'px';
-      cssScale = cw / W;
+      let css = Math.max(cw / W, MIN_CSS_SCALE);
+      let kk = css * dpr;
+      const whole = Math.round(kk);
+      if (whole >= 1 && Math.abs(kk - whole) <= SNAP) kk = whole;
+      css = kk / dpr;
+      viewW = Math.min(W, cw / css);
+      canvas.width = Math.round(cw * dpr); canvas.height = Math.round(H * kk);
+      canvas.style.width = cw + 'px'; canvas.style.height = Math.round(H * css) + 'px';
+      if (kk !== k) cache.clear();
+      k = kk; cssScale = css;
+      camX = Math.min(camX, W - viewW);
       kick();
+    }
+
+    // The sprite cache: an image region scaled once to the zoom, nearest neighbour.
+    function scaled(key, img, sx, sy, sw, sh, factor) {
+      const id = key;
+      let c = cache.get(id);
+      if (c) return c;
+      c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(sw * factor * k));
+      c.height = Math.max(1, Math.round(sh * factor * k));
+      const g = c.getContext('2d');
+      g.imageSmoothingEnabled = false;
+      g.drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
+      cache.set(id, c);
+      return c;
+    }
+    const X = (bx) => Math.round((bx - camX) * k);       // buffer -> device px
+    const Y = (by) => Math.round(by * k);
+    function blit(c, bx, by, flip) {
+      if (!flip) { ctx.drawImage(c, X(bx), Y(by)); return; }
+      ctx.save(); ctx.translate(X(bx) + c.width, Y(by)); ctx.scale(-1, 1); ctx.drawImage(c, 0, 0); ctx.restore();
+    }
+    // Vector extras (glow, bubbles, z z z) draw in buffer coordinates through this.
+    const inBuffer = () => ctx.setTransform(k, 0, 0, k, -camX * k, 0);
+    const inDevice = () => ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    // Camera: centred on the selected Lumi, else the busy ones, else everyone; drag to pan.
+    function aimCamera(dt) {
+      if (viewW >= W - 0.5) { camX = 0; return false; }
+      if (performance.now() >= manualUntil) {
+        const pick = inspected ? [agents[inspected]]
+          : ORDER.map((id) => agents[id]).filter((a) => busyOf(a));
+        const list = pick.length ? pick : ORDER.map((id) => agents[id]);
+        const fx = list.reduce((s, a) => s + a.x * RS, 0) / list.length;
+        camTarget = clamp(fx - viewW / 2, 0, W - viewW);
+      }
+      const before = camX;
+      camX += (camTarget - camX) * Math.min(1, dt * 3);
+      if (Math.abs(camTarget - camX) < 0.3) camX = camTarget;
+      return Math.abs(camX - before) > 0.05;
     }
 
     // ── moving ───────────────────────────────────────────────────
@@ -433,9 +493,7 @@
     // ── drawing ──────────────────────────────────────────────────
     function drawAtlas(c, idx, x, y, flip) {
       const [sx, sy, w, h] = A.meta.rects[idx];
-      if (!flip) { c.drawImage(A.atlas, sx, sy, w, h, x * RS, y * RS, w * RS, h * RS); return; }
-      c.save(); c.translate((x + w) * RS, y * RS); c.scale(-1, 1);
-      c.drawImage(A.atlas, sx, sy, w, h, 0, 0, w * RS, h * RS); c.restore();
+      blit(scaled(`atlas:${idx}`, A.atlas, sx, sy, w, h, RS), x * RS, y * RS, flip);
     }
 
     // Where her feet are, in buffer pixels.
@@ -444,6 +502,7 @@
     function drawShadow(c, a) {
       const [fx, fy] = feet(a);
       c.save();
+      inBuffer();
       c.globalAlpha = 0.35;
       c.fillStyle = '#05060c';
       c.beginPath(); c.ellipse(fx, fy - 2, 13, 4, 0, 0, Math.PI * 2); c.fill();
@@ -470,9 +529,12 @@
         tctx.fillStyle = 'rgba(255,45,70,0.55)';
         tctx.fillRect(0, 0, CW, CH);
       }
-      const src = alarm ? tint : sheet, sx = alarm ? 0 : col * CW, syy = alarm ? 0 : rowIdx * CH;
-      if (flip) { c.save(); c.translate(dx + CW, top); c.scale(-1, 1); c.drawImage(src, sx, syy, CW, CH, 0, 0, CW, CH); c.restore(); }
-      else c.drawImage(src, sx, syy, CW, CH, dx, top, CW, CH);
+      const which = pose.custom ? `custom:${name}` : (sheet === A.chars[a.id].blink ? 'blink' : 'open');
+      const frame = alarm
+        ? scaled(`alarm:${a.id}:${name}:${col}:${rowIdx}:${which}`, tint, 0, 0, CW, CH, 1)
+        : scaled(`${a.id}:${which}:${col}:${rowIdx}`, sheet, col * CW, rowIdx * CH, CW, CH, 1);
+      if (alarm) cache.delete(`alarm:${a.id}:${name}:${col}:${rowIdx}:${which}`);   // tint changes: don't keep
+      blit(frame, dx, top, flip);
       a.headY = top;
       drawHaloGlow(c, a, dx, top, now, name);
     }
@@ -482,6 +544,7 @@
       const hy = top + (name === 'sleep' ? 11 : 4);
       const glow = 0.28 + 0.14 * Math.sin(now * 2.2 + ORDER.indexOf(a.id));
       c.save();
+      inBuffer();
       c.globalCompositeOperation = 'lighter';
       c.globalAlpha = glow;
       const g = c.createRadialGradient(dx + CW / 2, hy, 1, dx + CW / 2, hy, 14);
@@ -498,6 +561,7 @@
       const top = a.headY;
       if (name === 'sleep') {
         c.save();
+        inBuffer();
         c.textAlign = 'center'; c.textBaseline = 'middle';
         for (let i = 0; i < 3; i++) {
           const t = ((now * 0.3) + i / 3) % 1;
@@ -513,6 +577,7 @@
       if (name !== 'drink' && name !== 'eat') return;
       if (name === 'drink' && a.dir !== 'up') {              // steam off the mug
         c.save();
+        inBuffer();
         for (let i = 0; i < 3; i++) {
           const t = ((now * 0.6) + i / 3) % 1;
           c.globalAlpha = Math.sin(t * Math.PI) * 0.7;
@@ -525,6 +590,7 @@
       // A Sims-style thought bubble with what she's having.
       const bx = fx + 18, by = top + 4, bob = Math.sin(now * 2) * 1.5;
       c.save();
+      inBuffer();
       c.fillStyle = 'rgba(250,252,255,0.96)'; c.strokeStyle = '#141a2c'; c.lineWidth = 2;
       c.beginPath(); c.arc(bx - 8, by + 22 + bob, 2, 0, Math.PI * 2); c.fill(); c.stroke();
       c.beginPath(); c.arc(bx - 3, by + 16 + bob, 3, 0, Math.PI * 2); c.fill(); c.stroke();
@@ -549,9 +615,11 @@
 
     function render(now) {
       const M = A.meta;
-      bctx.imageSmoothingEnabled = false;
-      bctx.clearRect(0, 0, W, H);
-      bctx.drawImage(A.floor, 0, 0, W, H);
+      const bctx = ctx;
+      inDevice();
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      blit(scaled('floor', A.floor, 0, 0, A.floor.width, A.floor.height, RS), 0, 0);
       const screensOn = new Set();
       for (const id of ORDER) if (working(agents[id])) for (const i of agents[id].st.screens) screensOn.add(i);
       const items = [];
@@ -571,6 +639,7 @@
       if (light) {
         const alpha = light.alpha ?? 0.15;
         bctx.save();
+        inBuffer();
         bctx.globalCompositeOperation = light.blend || 'soft-light';
         bctx.globalAlpha = alpha;
         bctx.fillStyle = light.tint;
@@ -594,21 +663,19 @@
         const bob = a.status === 'waiting_approval' ? Math.floor(now * 2) % 2 : 0;
         bctx.globalAlpha = a.doneUntil > now && a.status !== 'waiting_approval' ? Math.min(1, (a.doneUntil - now) / 0.5) : 1;
         const [fx] = feet(a);
-        bctx.drawImage(b, Math.round(fx - b.width * RS / 2), Math.round(a.headY - b.height * RS + 6 - bob * RS),
-                       b.width * RS, b.height * RS);
+        const bs = scaled(b === A.bubblePerm ? 'bubble:perm' : 'bubble:done', b, 0, 0, b.width, b.height, RS);
+        blit(bs, fx - b.width * RS / 2, a.headY - b.height * RS + 6 - bob * RS);
         bctx.globalAlpha = 1;
       }
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(buf, 0, 0, canvas.width, canvas.height);
+      inDevice();
       // names + progress at native resolution
-      const k = canvas.width / W;
       const fs = Math.max(10, Math.round(7 * k));
       ctx.font = `700 ${fs}px ui-monospace, Consolas, monospace`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       for (const id of ORDER) {
         const a = agents[id];
         const [fx, fy] = feet(a);
-        const x = fx * k, y = (fy + 2) * k;
+        const x = X(fx), y = Y(fy + 2);
         ctx.fillStyle = 'rgba(8,8,16,0.75)'; ctx.fillText(NAMES[id], x + 1, y + 1);
         ctx.fillStyle = a.st.accent; ctx.fillText(NAMES[id], x, y);
         if (busyOf(a) && a.progress > 0) {
@@ -628,8 +695,9 @@
       last = now;
       sim += dt;
       step(dt, now);
+      const panning = aimCamera(dt);
       render(now);
-      const wait = animating(now) ? FAST_MS : SLOW_MS;
+      const wait = animating(now) || panning || dragFrom ? FAST_MS : SLOW_MS;
       timer = setTimeout(() => { raf = requestAnimationFrame(loop); }, Math.max(0, wait - 16));
     }
 
@@ -673,7 +741,7 @@
         }
         const a = agents[id];
         const [fx] = feet(a);
-        const left = Math.round(fx * cssScale) + 'px', top = Math.round((a.headY - 20) * cssScale) + 'px';
+        const left = Math.round((fx - camX) * cssScale) + 'px', top = Math.round((a.headY - 20) * cssScale) + 'px';
         if (el.style.left !== left) el.style.left = left;
         if (el.style.top !== top) el.style.top = top;
       }
@@ -690,7 +758,7 @@
     function hitAgent(ev) {
       if (!A) return null;
       const r = canvas.getBoundingClientRect();
-      const bx = (ev.clientX - r.left) / (r.width / W), by = (ev.clientY - r.top) / (r.height / H);
+      const bx = (ev.clientX - r.left) / cssScale + camX, by = (ev.clientY - r.top) / cssScale;
       let best = null;
       for (const id of ORDER) {
         const a = agents[id];
@@ -760,8 +828,8 @@
       const a = agents[inspected];
       const [fx] = feet(a);
       const w = inspectEl.offsetWidth || 220, ww = wrapper.clientWidth;
-      let left = Math.round((fx + 20) * cssScale);
-      if (left + w > ww - 4) left = Math.max(4, Math.round((fx - 20) * cssScale - w));
+      let left = Math.round((fx - camX + 20) * cssScale);
+      if (left + w > ww - 4) left = Math.max(4, Math.round((fx - camX - 20) * cssScale - w));
       const top = Math.max(4, Math.round(a.headY * cssScale));
       inspectEl.style.left = left + 'px';
       inspectEl.style.top = top + 'px';
@@ -777,9 +845,23 @@
       closeInspect();
     };
     const onKey = (ev) => { if (ev.key === 'Escape' && inspected) { closeInspect(); ev.stopPropagation(); } };
-    const onHover = (ev) => { canvas.style.cursor = hitAgent(ev) ? 'pointer' : ''; };
-    canvas.addEventListener('click', onCanvasClick);
+    const onHover = (ev) => {
+      if (dragFrom) {
+        const moved = (ev.clientX - dragFrom.x) / cssScale;
+        if (Math.abs(moved) > 3) dragFrom.dragged = true;
+        camTarget = camX = clamp(dragFrom.cam - moved, 0, Math.max(0, W - viewW));
+        manualUntil = performance.now() + 10000;
+        kick();
+        return;
+      }
+      canvas.style.cursor = hitAgent(ev) ? 'pointer' : (viewW < W - 0.5 ? 'grab' : '');
+    };
+    const onDown = (ev) => { if (viewW < W - 0.5) dragFrom = { x: ev.clientX, cam: camX, dragged: false }; };
+    const onUp = () => { setTimeout(() => { dragFrom = null; }, 0); };
+    canvas.addEventListener('click', (ev) => { if (dragFrom && dragFrom.dragged) return; onCanvasClick(ev); });
     canvas.addEventListener('mousemove', onHover);
+    canvas.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointerup', onUp);
     document.addEventListener('pointerdown', onDocDown, true);
     document.addEventListener('keydown', onKey, true);
 
@@ -826,8 +908,6 @@
       A = assets;
       W = A.meta.W * RS; H = A.meta.H * RS;
       CW = (A.meta.char && A.meta.char.w) || 48; CH = (A.meta.char && A.meta.char.h) || 96;
-      buf = document.createElement('canvas'); buf.width = W; buf.height = H;
-      bctx = buf.getContext('2d');
       tint = document.createElement('canvas'); tint.width = CW; tint.height = CH;
       tctx = tint.getContext('2d');
       for (const id of ORDER) agents[id] = makeAgent(id);
@@ -868,8 +948,10 @@
         document.removeEventListener('visibilitychange', onVis);
         document.removeEventListener('pointerdown', onDocDown, true);
         document.removeEventListener('keydown', onKey, true);
-        canvas.removeEventListener('click', onCanvasClick);
         canvas.removeEventListener('mousemove', onHover);
+        canvas.removeEventListener('pointerdown', onDown);
+        window.removeEventListener('pointerup', onUp);
+        cache.clear();
         window.removeEventListener('lumi-theme', onTheme);
         window.removeEventListener('lumi-mood', onMood);
         overlay.textContent = '';
@@ -882,6 +964,7 @@
       _pose(id) { return agents[id] ? poseName(agents[id]) : null; },
       get _mood() { return mf; },
       get _size() { return { W, H, CW, CH }; },
+      get _view() { return { k, cssScale, viewW, camX, cached: cache.size }; },
     };
   }
 
