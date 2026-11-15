@@ -145,6 +145,11 @@ test_tone.wav
 config/lumi.yaml.bak
 config/*.yaml.bak
 
+# MCP servers: per-machine, and "env" can hold tokens. Lumi creates it
+# as {"servers": []} on first boot (modules/mcp_client.py).
+config/mcp_servers.json
+config/mcp_servers.json.tmp
+
 # Claude Code / AI assistant scratch.
 .claude/
 .cursor/

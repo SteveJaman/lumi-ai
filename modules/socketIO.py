@@ -697,6 +697,8 @@ class SocketIOServer:
         from modules import ui_routes, knowledge
         ui_routes.register(r, self)             # /api/ui/* (theme, hybrid switch)
         knowledge.register(r, self)             # /api/knowledge/upload (drag and drop)
+        from modules import mcp_routes
+        mcp_routes.register(r, self)            # /api/mcp/* (host-only): MCP servers on Integrations
 
         # Background game agents (modules/game_manager.py). Host-only:
         # neither route is in _REMOTE_API_ALLOW.

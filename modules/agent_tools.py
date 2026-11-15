@@ -48,6 +48,9 @@ PROTECTED_FILES = {
     "config/lumi.example.yaml",
     "config/blacklist.txt",
     "config/Modelfile-qwen3",
+    # MCP server list: each entry can launch a program, so the model
+    # must never be able to add one. Edit it on the Integrations page.
+    "config/mcp_servers.json",
 
     # VTS plugin auth token
     "data/vtubeStudio_token.txt",
@@ -178,6 +181,7 @@ PROVENANCE_MARKERS = {
     "recall_memory":   "FROM MEMORY",
     "search_library":  "FROM LIBRARY",
     "sdk__":           "FROM SDK",     # prefix match
+    "mcp__":           "FROM MCP",     # prefix match: external MCP servers
     # Workspace (modules/workspace_hub.py). Anyone can email you or invite
     # you to an event, so what they wrote is data, never instructions.
     "list_emails":     "FROM EMAIL",
@@ -210,6 +214,8 @@ def wrap_tool_result(tool_name, result_text):
         marker = PROVENANCE_MARKERS[tool_name]
     elif tool_name and tool_name.startswith("sdk__"):
         marker = PROVENANCE_MARKERS["sdk__"]
+    elif tool_name and tool_name.startswith("mcp__"):
+        marker = PROVENANCE_MARKERS["mcp__"]
 
     if not marker:
         return result_text

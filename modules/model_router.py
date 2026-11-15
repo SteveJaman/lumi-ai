@@ -133,3 +133,35 @@ TIER_INFO: Dict[str, Dict[str, str]] = {
 
 def claude_code_model(tier: Optional[str]) -> Optional[str]:
     return TIER_INFO.get(tier or "", {}).get("claude_code")
+
+
+# ── tools ────────────────────────────────────────────────────────
+# The prompt picks the tier before Lumi answers; a tool she then calls can
+# raise it for the rest of the turn (the Pipeline card, and Claude Code's
+# model if she delegates afterwards). MCP tools (mcp__<server>__<tool>,
+# modules/mcp_client.py) default to sonnet; ones that write, delete, send or
+# run something are opus.
+_HEAVY_TOOL_WORDS = frozenset(
+    "write edit create delete remove rm move rename send run exec execute update set put post patch "
+    "insert drop kill install uninstall upload push commit modify append replace save deploy publish "
+    "restart shutdown reset purge truncate pay buy order".split())
+
+
+def tool_tier(tool_name: str) -> str:
+    """The tier a tool call needs: "opus" for MCP tools that change, send or
+    run things, "sonnet" for other MCP tools and everything else."""
+    name = tool_name or ""
+    if not name.startswith("mcp__"):
+        return DEFAULT_TIER
+    tool = name.split("__", 2)[-1]
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", tool)
+    words = [w for w in re.split(r"[^a-z0-9]+", spaced.lower()) if w]
+    return "opus" if any(w in _HEAVY_TOOL_WORDS for w in words) else "sonnet"
+
+
+def max_tier(a: Optional[str], b: Optional[str]) -> str:
+    """The higher of two tiers (haiku < sonnet < opus); unknown counts as the default."""
+    rank = {t: i for i, t in enumerate(TIERS)}
+    a = a if a in rank else DEFAULT_TIER
+    b = b if b in rank else DEFAULT_TIER
+    return a if rank[a] >= rank[b] else b

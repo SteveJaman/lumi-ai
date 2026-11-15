@@ -36,6 +36,7 @@ from modules.island_manager import IslandManager
 from modules.workspace_hub import WorkspaceHub
 
 from sdk.server import SDKServer
+from modules.mcp_client import MCPRegistry
 
 try:
     from modules.tts import TTS
@@ -84,6 +85,12 @@ def stop_games():
             island.shutdown()     # the switch stays on; it returns next boot
         except Exception as e:
             print(f"\033[91mISLAND: shutdown failed: {e}\033[0m")
+    mcp = getattr(_global_signals, "mcp", None)
+    if mcp is not None:
+        try:
+            mcp.shutdown()        # close every MCP stdio subprocess and HTTP client
+        except Exception as e:
+            print(f"\033[91mMCP: shutdown failed: {e}\033[0m")
 
 
 def handle_exit(sig, frame):
@@ -170,6 +177,7 @@ def print_banner(audio_mode, tunnel_url):
     print(f"  Remote tier: http://127.0.0.1:{TUNNEL_PORT}/  (what tunnel visitors get)")
     print(f"  Diagnostics: http://127.0.0.1:5001/")
     print(f"  SDK:         ws://127.0.0.1:5056/ws")
+    print(f"  MCP servers: Integrations page (config/mcp_servers.json)")
     if tunnel_url:
         print(f"  Public URL:  \033[96m{tunnel_url}\033[0m")
     else:
@@ -234,6 +242,7 @@ def main():
         AmbientPerception(signals, enabled=False),
         SelfModel(signals, enabled=True),
         SDKServer(signals, enabled=True),
+        MCPRegistry(signals, enabled=True),     # MCP servers; connects in the background
         Watchdog(signals, enabled=True),
     ]
     if STREAMING_ENABLED:

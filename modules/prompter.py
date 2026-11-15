@@ -2619,6 +2619,9 @@ class Prompter:
                     return str(result.get("result", ""))
                 return str(result)
 
+        if name.startswith("mcp__"):
+            return await self._run_mcp_tool(name, arguments)
+
         if name == "web_search":
             print(f"\n{GRAY}[Lumi is using tool: web_search({arguments})]{RESET}")
             return await loop.run_in_executor(None, self.web_search, arguments.get("query", ""))
@@ -2865,6 +2868,31 @@ class Prompter:
             None, execute_tool, name, arguments, self.signals
         )
 
+    async def _run_mcp_tool(self, name, arguments):
+        """A tool from an external MCP server. Approved through the same
+        HITL gate as write_file / run_command, except clearly read-only
+        tools on a server the user marked read_only (mcp_client.resolve)."""
+        mcp = getattr(self.signals, "mcp", None)
+        if mcp is None:
+            return "Error: MCP isn't running."
+        target = mcp.resolve(name)
+        if target is None:
+            return (f"Error: {name} isn't available right now (its MCP server is "
+                    f"disconnected or switched off).")
+        server_id, tool, needs_approval = target
+        tier = model_router.tool_tier(name)
+        self._route_tier = model_router.max_tier(getattr(self, "_route_tier", None), tier)
+        agent_tracker.update("main", "executing", task=f"MCP {server_id}: {tool}", progress=50,
+                             model=self._route_tier)
+        if needs_approval:
+            print(f"\n{GRAY}[MCP] '{name}' wants to run{RESET}")
+            preview = {"server": server_id, "tool": tool,
+                       "arguments": arguments if isinstance(arguments, dict) else {}}
+            if not await self._confirm(name, preview):
+                return "The user declined to allow this action."
+        print(f"\n{GRAY}[Lumi is using MCP tool: {server_id}/{tool}({arguments})]{RESET}")
+        return await mcp.call_async(server_id, tool, arguments)
+
     async def _handle_watchdog_turn(self, entry, text):
         """Returns True if this turn was a watchdog event, or the user's
         "yes" to a restart offer, and has been handled."""
@@ -2982,6 +3010,16 @@ class Prompter:
                     print(f"{GRAY}[SDK] no actions registered{RESET}")
             except Exception as e:
                 print(f"{GRAY}[SDK schema fetch failed: {e}]{RESET}")
+        # MCP servers (modules/mcp_client.py): mcp__<server>__<tool>, beside sdk__.
+        mcp = getattr(self.signals, "mcp", None)
+        if mcp is not None:
+            try:
+                mcp_schemas = mcp.list_tools_for_registry()
+                if mcp_schemas:
+                    all_tools = all_tools + mcp_schemas
+                    print(f"{GRAY}[MCP] {len(mcp_schemas)} tool(s) available{RESET}")
+            except Exception as e:
+                print(f"{GRAY}[MCP schema fetch failed: {e}]{RESET}")
 
         loop = asyncio.get_running_loop()
 

@@ -4904,6 +4904,17 @@ async function renderIntegrations(main) {
         <button class="btn btn-sm" id="integrations-refresh">Refresh</button>
       </div>
       <div class="page-scroll">
+        <div class="page-header" style="padding-left:0;padding-right:0">
+          <div>
+            <div class="page-title" style="font-size:1.05em">MCP Servers</div>
+            <div class="page-sub">Tools from Model Context Protocol servers. Lumi asks before each one runs,
+              except read-only tools on servers marked read-only.</div>
+          </div>
+          <button class="btn btn-sm" id="mcp-add">Add MCP server</button>
+        </div>
+        <div class="integration-grid" id="mcp-grid">
+          <div class="integration-empty">Loading…</div>
+        </div>
         <div class="integration-grid" id="integrations-grid">
           <div class="integration-empty">Loading…</div>
         </div>
@@ -4911,8 +4922,287 @@ async function renderIntegrations(main) {
     </div>
   `;
 
-  $('#integrations-refresh').addEventListener('click', loadIntegrations);
-  await loadIntegrations();
+  $('#integrations-refresh').addEventListener('click', () => { loadIntegrations(); loadMcpServers(); });
+  $('#mcp-add').addEventListener('click', () => openMcpServerModal());
+  startMcpPolling();
+  await Promise.all([loadIntegrations(), loadMcpServers()]);
+}
+
+/* --------------------------------------------------------------
+   MCP servers (modules/mcp_client.py, routes in modules/mcp_routes.py).
+   Host only. The page polls while it is open, so a server that crashes
+   shows "errored" within one poll; it is never restarted by itself.
+   -------------------------------------------------------------- */
+const MCP_POLL_MS = 5000;
+const _mcpState = { servers: [], tools: [], open: new Set(), timer: null };
+
+function startMcpPolling() {
+  if (_mcpState.timer) clearInterval(_mcpState.timer);
+  _mcpState.timer = setInterval(() => {
+    if (!$('#mcp-grid')) { clearInterval(_mcpState.timer); _mcpState.timer = null; return; }
+    if (!document.hidden) loadMcpServers({ quiet: true });
+  }, MCP_POLL_MS);
+}
+
+async function loadMcpServers({ quiet = false } = {}) {
+  const grid = $('#mcp-grid');
+  if (!grid) return;
+  try {
+    const [s, t] = await Promise.all([api('/api/mcp/servers'), api('/api/mcp/tools')]);
+    _mcpState.servers = s.servers || [];
+    _mcpState.tools = t.tools || [];
+    renderMcpCards();
+  } catch (e) {
+    if (!quiet) grid.innerHTML = `<div class="integration-empty">Failed to load MCP servers: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderMcpCards() {
+  const grid = $('#mcp-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  if (!_mcpState.servers.length) {
+    grid.innerHTML = '<div class="integration-empty">No MCP servers yet. Use "Add MCP server".</div>';
+    return;
+  }
+  for (const srv of _mcpState.servers) grid.appendChild(buildMcpCard(srv));
+}
+
+// connected / errored / disabled, using the integration pill colours.
+const _MCP_STATE_CLASS = { connected: 'ok', connecting: 'warn', errored: 'err', disabled: 'off' };
+
+function buildMcpCard(srv) {
+  const card = document.createElement('div');
+  card.className = 'integration-card';
+
+  const header = document.createElement('div');
+  header.className = 'integration-header';
+  const emoji = document.createElement('div');
+  emoji.className = 'integration-emoji';
+  emoji.textContent = '🧩';
+  header.appendChild(emoji);
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'integration-title-wrap';
+  const name = document.createElement('div');
+  name.className = 'integration-name';
+  name.textContent = srv.id;
+  titleWrap.appendChild(name);
+  const status = document.createElement('span');
+  status.className = `integration-status state-${_MCP_STATE_CLASS[srv.state] || 'off'}`;
+  status.textContent = srv.state;
+  titleWrap.appendChild(status);
+  header.appendChild(titleWrap);
+  card.appendChild(header);
+
+  const desc = document.createElement('div');
+  desc.className = 'integration-desc';
+  const where = srv.transport === 'http' ? (srv.url || '') : [srv.command, ...(srv.args || [])].join(' ');
+  desc.textContent = `${srv.transport}${srv.read_only ? ' · read-only' : ''} · ${srv.tool_count} tool(s)` +
+    (srv.protocol ? ` · MCP ${srv.protocol}` : '') + (where ? `\n${where}` : '');
+  desc.style.whiteSpace = 'pre-line';
+  desc.style.wordBreak = 'break-all';
+  card.appendChild(desc);
+
+  if (srv.last_error) {
+    const err = document.createElement('div');
+    err.className = 'integration-message';
+    err.style.color = 'var(--error-text)';
+    err.textContent = srv.last_error;
+    card.appendChild(err);
+  }
+
+  const tools = _mcpState.tools.filter(t => t.server === srv.id);
+  if (tools.length) {
+    const det = document.createElement('details');
+    det.open = _mcpState.open.has(srv.id);
+    det.addEventListener('toggle', () => {
+      if (det.open) _mcpState.open.add(srv.id); else _mcpState.open.delete(srv.id);
+    });
+    const sum = document.createElement('summary');
+    sum.className = 'integration-message';
+    sum.style.cursor = 'pointer';
+    sum.textContent = `Available MCP tools (${tools.length})`;
+    det.appendChild(sum);
+    const list = document.createElement('ul');
+    list.className = 'integration-message';
+    list.style.margin = '6px 0 0';
+    list.style.paddingLeft = '18px';
+    for (const t of tools) {
+      const li = document.createElement('li');
+      li.textContent = t.name;
+      li.title = t.description || '';
+      list.appendChild(li);
+    }
+    det.appendChild(list);
+    card.appendChild(det);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'integration-actions';
+  const toggleBtn = document.createElement('button');
+  toggleBtn.className = 'btn btn-sm';
+  toggleBtn.textContent = srv.enabled ? 'Disable' : 'Enable';
+  toggleBtn.addEventListener('click', () =>
+    mcpAction(toggleBtn, `/api/mcp/servers/${encodeURIComponent(srv.id)}/toggle`,
+              { method: 'POST', body: { enabled: !srv.enabled } }, srv.enabled ? 'Disabling…' : 'Connecting…'));
+  actions.appendChild(toggleBtn);
+  if (srv.enabled) {
+    const reBtn = document.createElement('button');
+    reBtn.className = 'btn btn-sm';
+    reBtn.textContent = 'Reconnect';
+    reBtn.addEventListener('click', () =>
+      mcpAction(reBtn, `/api/mcp/servers/${encodeURIComponent(srv.id)}/reconnect`,
+                { method: 'POST', body: {} }, 'Connecting…'));
+    actions.appendChild(reBtn);
+  }
+  const editBtn = document.createElement('button');
+  editBtn.className = 'btn btn-sm';
+  editBtn.textContent = 'Edit';
+  editBtn.addEventListener('click', () => openMcpServerModal(srv));
+  actions.appendChild(editBtn);
+  const delBtn = document.createElement('button');
+  delBtn.className = 'btn btn-sm btn-danger';
+  delBtn.textContent = 'Remove';
+  delBtn.addEventListener('click', () => {
+    if (!confirm(`Remove the MCP server "${srv.id}"? Its tools go away at once.`)) return;
+    mcpAction(delBtn, `/api/mcp/servers/${encodeURIComponent(srv.id)}`, { method: 'DELETE' }, 'Removing…');
+  });
+  actions.appendChild(delBtn);
+  card.appendChild(actions);
+  return card;
+}
+
+async function mcpAction(btn, path, opts, busyText) {
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = busyText;
+  try {
+    await api(path, { ...opts, csrf: true });
+  } catch (e) {
+    alert('MCP: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+    loadMcpServers();
+  }
+}
+
+function openMcpServerModal(srv = null) {
+  const modal = openModal({ title: srv ? `MCP server: ${srv.id}` : 'Add MCP server' });
+  const { card } = modal;
+
+  const hint = document.createElement('div');
+  hint.className = 'provider-hint';
+  hint.style.marginBottom = '16px';
+  hint.textContent = 'Saved to config/mcp_servers.json. A stdio server is a program Lumi starts ' +
+    '(for example npx); only add ones you trust.';
+  card.appendChild(hint);
+
+  const field = (label, el) => {
+    const f = document.createElement('div');
+    f.className = 'field';
+    const l = document.createElement('label');
+    l.className = 'label';
+    l.textContent = label;
+    f.appendChild(l);
+    f.appendChild(el);
+    card.appendChild(f);
+    return f;
+  };
+  const input = (value, placeholder) => {
+    const i = document.createElement('input');
+    i.type = 'text';
+    i.className = 'input';
+    i.value = value || '';
+    i.placeholder = placeholder || '';
+    return i;
+  };
+
+  const idIn = input(srv?.id, 'filesystem');
+  if (srv) idIn.disabled = true;
+  field('ID', idIn);
+  const transportIn = document.createElement('select');
+  transportIn.className = 'input';
+  for (const t of ['stdio', 'http']) {
+    const o = document.createElement('option');
+    o.value = t;
+    o.textContent = t === 'stdio' ? 'stdio (a program Lumi starts)' : 'http (Streamable HTTP URL)';
+    transportIn.appendChild(o);
+  }
+  transportIn.value = srv?.transport || 'stdio';
+  field('Transport', transportIn);
+  const cmdIn = input(srv?.command, 'npx');
+  const cmdField = field('Command', cmdIn);
+  const argsIn = input((srv?.args || []).join(', '), '-y, @modelcontextprotocol/server-filesystem, C:/notes');
+  const argsField = field('Args (comma-separated)', argsIn);
+  const urlIn = input(srv?.url, 'http://127.0.0.1:8931/mcp');
+  const urlField = field('URL', urlIn);
+
+  const roRow = document.createElement('div');
+  roRow.className = 'integration-toggle-row';
+  const roLabel = document.createElement('span');
+  roLabel.textContent = 'Read-only server (list/get/read/search/query/fetch tools run without asking)';
+  roRow.appendChild(roLabel);
+  const sw = document.createElement('label');
+  sw.className = 'switch';
+  const roIn = document.createElement('input');
+  roIn.type = 'checkbox';
+  roIn.checked = !!srv?.read_only;
+  const slider = document.createElement('span');
+  slider.className = 'switch-slider';
+  sw.appendChild(roIn);
+  sw.appendChild(slider);
+  roRow.appendChild(sw);
+  card.appendChild(roRow);
+
+  const syncTransport = () => {
+    const http = transportIn.value === 'http';
+    cmdField.style.display = http ? 'none' : '';
+    argsField.style.display = http ? 'none' : '';
+    urlField.style.display = http ? '' : 'none';
+  };
+  transportIn.addEventListener('change', syncTransport);
+  syncTransport();
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', () => modal.close());
+  actions.appendChild(cancelBtn);
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn btn-primary';
+  saveBtn.textContent = srv ? 'Save & reconnect' : 'Add & connect';
+  saveBtn.addEventListener('click', async () => {
+    const body = {
+      id: idIn.value.trim(),
+      transport: transportIn.value,
+      enabled: srv ? !!srv.enabled : true,
+      read_only: roIn.checked,
+    };
+    if (body.transport === 'http') body.url = urlIn.value.trim();
+    else {
+      body.command = cmdIn.value.trim();
+      body.args = argsIn.value.split(',').map(a => a.trim()).filter(Boolean);
+    }
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Connecting…';
+    try {
+      const res = await api('/api/mcp/servers', { method: 'POST', body, csrf: true });
+      modal.close();
+      loadMcpServers();
+      const s = res.server || {};
+      if (s.state === 'errored') alert(`Saved, but "${s.id}" couldn't connect: ${s.last_error || 'unknown error'}`);
+    } catch (e) {
+      alert('Save failed: ' + e.message);
+      saveBtn.disabled = false;
+      saveBtn.textContent = srv ? 'Save & reconnect' : 'Add & connect';
+    }
+  });
+  actions.appendChild(saveBtn);
+  card.appendChild(actions);
+  (srv ? cmdIn : idIn).focus();
 }
 
 async function loadIntegrations() {

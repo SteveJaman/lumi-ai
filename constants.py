@@ -970,6 +970,23 @@ SDK_PORT = 5056
 SDK_VERSION = "0.10.14"
 
 # =======================================================
+# MCP client (modules/mcp_client.py)
+# -------------------------------------------------------
+# Lumi connects OUT to Model Context Protocol servers listed in
+# MCP_CONFIG_PATH (stdio subprocesses or HTTP endpoints) and offers
+# their tools to the model as mcp__<server>__<tool>, next to the
+# SDK's sdk__<action> tools. Every call goes through the same HITL
+# approval as write_file / run_command, except clearly read-only tools
+# on servers marked "read_only": true. Tools only: MCP resources,
+# prompts, sampling and elicitation are not supported yet.
+# Manage servers on the web app's Integrations page (host only).
+# =======================================================
+MCP_ENABLED = True
+MCP_CONFIG_PATH = "config/mcp_servers.json"   # relative to WORKSPACE_ROOT
+MCP_CONNECT_TIMEOUT_SEC = 10                  # a slower server is marked errored; Lumi doesn't wait
+MCP_CALL_TIMEOUT_SEC = 30
+
+# =======================================================
 # Network Binding Policy (Phase 9.7)
 # -------------------------------------------------------
 # Every local service (web client, log hub, SDK server)
