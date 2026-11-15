@@ -1,0 +1,18 @@
+/* Theme engine plumbing (web/theme-engine.js): where the animated background and
+   the sparkle cursor sit. Loaded by both the web app and the island, before any theme. */
+
+#lumi-bg, #lumi-cursor { display: block; pointer-events: none; }
+
+/* Web app: a fixed backdrop behind the whole shell. */
+[data-surface="web"] #lumi-bg { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 0; }
+[data-surface="web"] #app-shell { position: relative; z-index: 1; }
+
+/* Island: inside the island's own shape, under its content. */
+[data-surface="island"] .island { isolation: isolate; }
+[data-surface="island"] #lumi-bg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; border-radius: inherit; }
+
+#lumi-cursor { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 2147483000; }
+
+@media (prefers-reduced-motion: reduce) {
+  [data-lumi-theme] *, [data-lumi-theme] *::before, [data-lumi-theme] *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
+}

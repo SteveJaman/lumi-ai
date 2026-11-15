@@ -18,7 +18,7 @@ import base64
 import shutil
 import subprocess
 
-from constants import WORKSPACE_ROOT
+from constants import WORKSPACE_ROOT, DATA_ROOT
 
 # Skip these when walking the workspace. "data" and "assets" are skipped
 # because they hold runtime state (ChromaDB, browser profile, screenshots)
@@ -66,6 +66,8 @@ PROTECTED_PREFIXES = (
     "web/",
     "data/memories/",
     "data/API/",
+    "data/credentials/",    # OAuth tokens (Google, Microsoft)
+    "data/workspace/",      # cached mail and calendar
 )
 
 # Basenames of critical files that must never be shadowed. If a
@@ -176,6 +178,23 @@ PROVENANCE_MARKERS = {
     "recall_memory":   "FROM MEMORY",
     "search_library":  "FROM LIBRARY",
     "sdk__":           "FROM SDK",     # prefix match
+    # Workspace (modules/workspace_hub.py). Anyone can email you or invite
+    # you to an event, so what they wrote is data, never instructions.
+    "list_emails":     "FROM EMAIL",
+    "read_email":      "FROM EMAIL",
+    "list_events":     "FROM CALENDAR",
+    # Claude Code reads files and its answer can quote them: still data, not orders.
+    "ask_claude_code": "FROM CLAUDE CODE",
+    # Everyday Life tools (see EVERYDAY TOOLS below).
+    "triage_inbox":           "FROM EMAIL",
+    "auto_draft_reply":       "FROM EMAIL",
+    "find_free_time":         "FROM CALENDAR",
+    "research_product":       "FROM WEB",
+    "summarize_meeting":      "FROM MEETING",
+    "extract_action_items":   "FROM MEETING",
+    "draft_follow_up_email":  "FROM MEETING",
+    "get_active_window_info": "FROM WINDOW",
+    "read_window_text":       "FROM WINDOW",
 }
 
 
@@ -326,6 +345,62 @@ TOOL_SCHEMAS = [
 ]
 
 CONFIRM_REQUIRED_TOOLS = {"write_file", "run_command", "run_in_terminal"}
+
+# ===============================================================
+# EVERYDAY TOOLS
+# ---------------------------------------------------------------
+# Email & calendar, finance & shopping, meetings, and the desktop.
+# Each branch lives in its own module with the same interface
+# (see modules/everyday_common.py). Their irreversible / outward
+# actions join CONFIRM_REQUIRED_TOOLS; those tools ask for HITL
+# approval themselves, once they know exactly what they'll do.
+# ===============================================================
+from modules import email_agent, finance_agent, meeting_agent, windows_agent  # noqa: E402
+from modules import watchdog_agent  # noqa: E402
+
+EVERYDAY_MODULES = (email_agent, finance_agent, meeting_agent, windows_agent, watchdog_agent)
+EVERYDAY_TOOL_MODULE = {
+    s["function"]["name"]: m for m in EVERYDAY_MODULES for s in m.TOOL_SCHEMAS
+}
+EVERYDAY_TOOL_NAMES = frozenset(EVERYDAY_TOOL_MODULE)
+# Pipeline card per tool: "system" (OS, finance, email) or "main" (meetings).
+EVERYDAY_TOOL_AGENT = {n: m.AGENT for n, m in EVERYDAY_TOOL_MODULE.items()}
+EVERYDAY_CONFIRM_TOOLS = frozenset().union(*(m.CONFIRM_TOOLS for m in EVERYDAY_MODULES))
+CONFIRM_REQUIRED_TOOLS |= EVERYDAY_CONFIRM_TOOLS
+
+
+def everyday_tool_schemas(ctx):
+    """Schemas for the branches usable right now (e.g. email only when an
+    account is connected), so the model isn't offered dead tools."""
+    out = []
+    for m in EVERYDAY_MODULES:
+        try:
+            ok = m.available(ctx)
+        except Exception:
+            ok = False
+        if ok:
+            out += m.TOOL_SCHEMAS
+    return out
+
+
+def everyday_task(name):
+    """Short Pipeline-card text for a tool, e.g. 'Triaging your inbox'."""
+    m = EVERYDAY_TOOL_MODULE.get(name)
+    return getattr(m, "TASKS", {}).get(name, f"Running {name}") if m else f"Running {name}"
+
+
+async def execute_everyday_tool(name, arguments, ctx):
+    """Run one everyday tool. Never raises for ordinary failures; returns
+    text for the model (errors start with 'Error')."""
+    m = EVERYDAY_TOOL_MODULE.get(name)
+    if m is None:
+        return f"Unknown tool: {name}"
+    try:
+        return await m.run_tool(name, arguments if isinstance(arguments, dict) else {}, ctx)
+    except ToolError as e:
+        return f"Error: {e}"
+    except Exception as e:                        # a bug in one tool must not end the turn
+        return f"Error running {name}: {type(e).__name__}: {e}"
 
 # ===============================================================
 # VLM IMAGE ANALYSIS (frontier-model pattern)
@@ -492,6 +567,19 @@ class ToolError(Exception):
     pass
 
 
+# Never readable or writable through the file tools, whatever the prompt
+# says: OAuth tokens and the cached mailbox. (Protected-prefix rules only
+# stop writes; reading a token would let an injected instruction leak it.)
+_PRIVATE_DIRS = tuple(
+    os.path.normcase(os.path.realpath(os.path.join(DATA_ROOT, name)))
+    for name in ("credentials", "workspace")
+)
+_PRIVATE_COMMAND_RE = re.compile(
+    r"data[\\/]+(credentials|workspace)|google_token|google_client|microsoft_token",
+    re.IGNORECASE,
+)
+
+
 def _safe_path(relative_path):
     """Resolves a relative path against WORKSPACE_ROOT and refuses to
     leave it.
@@ -521,6 +609,12 @@ def _safe_path(relative_path):
             f"Refusing to access '{relative_path}' — it resolves to "
             f"a path outside the project workspace."
         )
+    for private in _PRIVATE_DIRS:
+        if t == private or t.startswith(private + os.sep):
+            raise ToolError(
+                f"Refusing to access '{relative_path}' — it holds account "
+                f"sign-ins or private mail and calendar data."
+            )
     return target
 
 
@@ -777,6 +871,12 @@ def run_command(command):
             f"If you need this specific binary, ask the user to run it "
             f"manually."
         )
+
+    # A speed bump, not a wall (python/powershell can reach anything):
+    # the y/n or HITL prompt shows the command, which is the real guard.
+    if _PRIVATE_COMMAND_RE.search(cmd):
+        return ("Error: that command touches account sign-ins or private mail "
+                "data, which Lumi isn't allowed to open.")
 
     # Phase 9.4 — metachar refusal. A pipe or chain lets the
     # allowlisted binary hand off to an arbitrary second command.

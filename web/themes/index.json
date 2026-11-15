@@ -1,0 +1,7 @@
+{
+  "themes": [
+    { "id": "default",   "name": "Lumi",      "description": "Her teal-and-ice look: drifting aurora, motes of light, halos and her lilies." },
+    { "id": "sakura",    "name": "Sakura",    "description": "Night-sky blossoms, manga panels, holographic bubbles, sparkle cursor." },
+    { "id": "cyberpunk", "name": "Cyberpunk", "description": "Angular neon HUD, glitch hovers, flying cars over a rainy skyline." }
+  ]
+}

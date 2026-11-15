@@ -410,6 +410,8 @@ def _stub_prompter(signals):
     pushed = []
     obj = SimpleNamespace(signals=signals, _push_to_tts=pushed.append, _live_stream=None)
     obj._finish_speculative = types.MethodType(pr.Prompter._finish_speculative, obj)
+    obj._note_route = lambda req: obj.routes.append(req.get("tier"))
+    obj.routes = []
     obj.pushed = pushed
     return obj
 
@@ -460,7 +462,7 @@ def test_run_conversational_takes_the_flag_path_only_when_on():
     import inspect
     from modules import prompter as pr
     src = inspect.getsource(pr.Prompter.run_conversational)
-    first = src.split("req = self.conversational_request(latest_user_text)")[0]
+    first = src.split("req = self.conversational_request(")[0]
     assert "if speculative.enabled():" in first and first.count("\n") < 12
 
 

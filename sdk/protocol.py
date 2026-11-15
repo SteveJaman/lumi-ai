@@ -53,6 +53,10 @@ class ServerCommand:
     PING             = "ping"
     ERROR            = "error"
     ACTIONS_REGISTERED = "actions/registered"
+    # {"enabled": bool, "wake": bool}: Lumi's Gaming Mode. Sent on connect
+    # and on every toggle; wake=True also when an order arrives for a
+    # sleeping game agent. Clients that don't care ignore it.
+    GAMING_MODE      = "gaming_mode"
 
 
 # ─── Priority levels for actions/force ────────────────────────────

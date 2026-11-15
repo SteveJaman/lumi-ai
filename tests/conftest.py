@@ -117,3 +117,14 @@ def live_lumi(make_server):
                 await runner.cleanup()
         asyncio.run(go())
     return run
+
+
+@pytest.fixture(autouse=True)
+def _isolated_island_remote(tmp_path, monkeypatch):
+    """Every test sees remote islands OFF, from a temp file: never the
+    pairing state in your real data/island_remote.json."""
+    from modules import island_remote
+    monkeypatch.setattr(island_remote, "STATE_PATH", str(tmp_path / "island_remote.json"))
+    island_remote._failures.clear()
+    yield
+    island_remote._failures.clear()

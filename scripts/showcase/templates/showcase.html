@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lumi Tunnel Showcase</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='showcase.css') }}">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>Lumi Tunnel Showcase</h1>
+      <p class="subtitle">No inbound ports. Live HTTP responses, polled every 2 seconds.</p>
+    </div>
+    <div id="banner" class="banner" data-tone="none" role="status">Waiting for first poll</div>
+  </header>
+
+  <main class="layout">
+    <section class="panel pipeline-panel" aria-labelledby="pipeline-title">
+      <h2 id="pipeline-title">Request path</h2>
+      <div class="pipeline">
+        <div class="hop" id="hop-user" data-state="none">
+          <span class="hop-name">USER</span>
+          <span class="dot"></span>
+          <span class="hop-state">...</span>
+          <span class="hop-latency">-</span>
+          <span class="hop-note">public request</span>
+        </div>
+        <div class="link" id="link-1" data-state="none"></div>
+        <div class="hop" id="hop-edge" data-state="none">
+          <span class="hop-name">EDGE</span>
+          <span class="dot"></span>
+          <span class="hop-state">...</span>
+          <span class="hop-latency">-</span>
+          <span class="hop-note">Cloudflare</span>
+        </div>
+        <div class="link" id="link-2" data-state="none"></div>
+        <div class="hop" id="hop-tunnel" data-state="none">
+          <span class="hop-name">TUNNEL</span>
+          <span class="dot"></span>
+          <span class="hop-state">...</span>
+          <span class="hop-latency">-</span>
+          <span class="hop-note">cloudflared, outbound only</span>
+        </div>
+        <div class="link" id="link-3" data-state="none"></div>
+        <div class="hop" id="hop-tun" data-state="none">
+          <span class="hop-name">:5080</span>
+          <span class="dot"></span>
+          <span class="hop-state">...</span>
+          <span class="hop-latency">-</span>
+          <span class="hop-note">remote tier</span>
+        </div>
+        <div class="link" id="link-4" data-state="none"></div>
+        <div class="hop" id="hop-full" data-state="none">
+          <span class="hop-name">ORIGIN</span>
+          <span class="dot"></span>
+          <span class="hop-state">...</span>
+          <span class="hop-latency">-</span>
+          <span class="hop-note">:5000 full access</span>
+        </div>
+      </div>
+      <div class="spans">
+        <span class="span span-public">Measured together: one poll of <code id="public-url">PUBLIC_URL</code></span>
+        <span class="span span-local">Measured directly on this machine</span>
+      </div>
+    </section>
+
+    <section class="panel diff-panel" aria-labelledby="diff-title">
+      <h2 id="diff-title">Response headers</h2>
+      <ul class="markers" id="markers"></ul>
+      <div class="diff">
+        <div class="diff-col">
+          <h3>PUBLIC (via edge) <span id="public-age" class="age"></span></h3>
+          <table class="headers"><tbody id="headers-public"></tbody></table>
+        </div>
+        <div class="diff-col">
+          <h3>LOCAL (direct) <span id="local-age" class="age"></span></h3>
+          <table class="headers"><tbody id="headers-local"></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel log-panel" aria-labelledby="log-title">
+      <h2 id="log-title">Live request log</h2>
+      <div class="log-scroll">
+        <table class="log">
+          <thead>
+            <tr><th>Time</th><th>Endpoint</th><th>Status</th><th class="num">ms</th><th>CF-Ray</th></tr>
+          </thead>
+          <tbody id="log-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="side">
+      <section class="panel" aria-labelledby="tunnel-title">
+        <h2 id="tunnel-title">Tunnel process</h2>
+        <p id="tunnel-line" class="tunnel-line" data-running="unknown">cloudflared: checking</p>
+        <p id="tunnel-connections" class="muted"></p>
+        <p id="tunnel-problem" class="problem" hidden></p>
+        <div class="actions">
+          <button id="kill" type="button" class="danger">Kill tunnel</button>
+          <button id="restart" type="button" disabled>Restart tunnel</button>
+        </div>
+        <p id="action-message" class="message" role="status"></p>
+      </section>
+
+      <section class="panel measurement" id="measurement" aria-labelledby="measure-title" hidden>
+        <h2 id="measure-title">Measurement</h2>
+        <div class="figures">
+          <div>
+            <span class="figure" id="m-outage">-</span>
+            <span class="figure-label" id="m-outage-label">Last outage</span>
+          </div>
+          <div>
+            <span class="figure" id="m-recovery">-</span>
+            <span class="figure-label">Last recovery</span>
+          </div>
+        </div>
+        <p class="muted">Kill to first failed request: <span id="m-unreachable">-</span></p>
+        <p class="healthy">Origin stayed healthy: <strong id="m-healthy" data-value="none">-</strong></p>
+        <p class="muted" id="m-clock"></p>
+      </section>
+    </div>
+  </main>
+
+  <script src="{{ url_for('static', filename='showcase.js') }}"></script>
+</body>
+</html>

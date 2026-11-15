@@ -3,6 +3,9 @@
 How to let someone open a link, sign in with credentials you gave them,
 and chat with Lumi from anywhere, while everything still runs on your PC.
 
+> For approving tool calls from a second device over Tailscale (the HITL
+> server and the Island PWA), see [remote-access-hitl.md](remote-access-hitl.md).
+
 ## Shape
 
 ```

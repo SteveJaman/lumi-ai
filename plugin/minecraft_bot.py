@@ -74,6 +74,7 @@ MC_DIR         = os.path.join(DATA_ROOT, "minecraft")
 TELEMETRY_PATH = os.path.join(MC_DIR, "telemetry.json")
 EVENTS_PATH    = os.path.join(MC_DIR, "events.jsonl")
 AUTOPLAY_PATH  = os.path.join(MC_DIR, "autoplay.json")
+GAMING_MODE_PATH = os.path.join(DATA_ROOT, "gaming_mode.json")   # written by Lumi
 TOKEN_PATH     = os.path.join(DATA_ROOT, "memories", "sdk_token.txt")
 
 BOT_API        = os.environ.get("BOT_API", "http://127.0.0.1:5057")
@@ -939,6 +940,16 @@ OVERRIDE_SYSTEM = (
 
 # ─── Agent ────────────────────────────────────────────────────────────────────
 
+def _read_gaming_mode() -> bool:
+    """Lumi's saved Gaming Mode, for a start while Lumi is offline. Once
+    connected, Lumi pushes the live value over the SDK socket."""
+    try:
+        with open(GAMING_MODE_PATH, encoding="utf-8") as f:
+            return bool(json.load(f).get("enabled", False))
+    except (OSError, ValueError):
+        return False
+
+
 class MinecraftAgent(BaseGameAgent):
     """Autonomous Minecraft agent (a BaseGameAgent with its own goal loop).
     Registers SDK actions so Lumi can observe and steer it, but the loop
@@ -952,6 +963,10 @@ class MinecraftAgent(BaseGameAgent):
         super().__init__(token_path=TOKEN_PATH, reconnect_delay=5.0)
         os.makedirs(MC_DIR, exist_ok=True)
         self._paused = False
+        # Gaming Mode: with nothing ordered, the loop parks on _wake (no
+        # timer, no HTTP) until Lumi pushes an order or turns it off.
+        self._gaming = _read_gaming_mode()
+        self._wake = asyncio.Event()
         self._override_goal: Optional[str] = None
         self._loop_task: Optional[asyncio.Task] = None
         self._recent_goals: List[Tuple[str, bool]] = []   # (goal, succeeded), newest last
@@ -1044,6 +1059,36 @@ class MinecraftAgent(BaseGameAgent):
         )
         self._tel["lumi_sdk"] = "connected"
         self._record("sdk", "Connected to Lumi SDK — status/control actions registered")
+
+    async def on_gaming_mode(self, enabled: bool, wake: bool) -> None:
+        """Pushed by Lumi on connect, on every toggle, and (wake=True) when
+        an order is sent through her API."""
+        changed = enabled != self._gaming
+        self._gaming = enabled
+        if changed:
+            self._record("agent", f"gaming mode {'on' if enabled else 'off'}")
+            if enabled and not self._has_work():
+                # Drop the pathfinder and any running skill right away
+                # instead of after it finishes. A task, so the SDK socket
+                # isn't held up by the HTTP call.
+                asyncio.create_task(self._bot_action("stop", {}))
+        if wake or not enabled:
+            self._wake.set()
+
+    def _has_work(self) -> bool:
+        """Something the player asked for that Gaming Mode lets run."""
+        return bool(self._order or self._override_goal or self._done_order)
+
+    async def _gaming_sleep(self) -> None:
+        if self._tel["loop_state"] != "gaming mode":
+            self._tel["loop_state"] = "gaming mode"
+            self._think("Gaming mode: resting until I get an order.")
+            self._flush_telemetry()
+            await self._bot_action("stop", {})
+        # Not cleared before waiting: a wake that lands between the check
+        # above and here must not be lost. A stale one costs one pass.
+        await self._wake.wait()
+        self._wake.clear()
 
     async def on_disconnect(self) -> None:
         self._tel["lumi_sdk"] = "offline"
@@ -1229,7 +1274,10 @@ class MinecraftAgent(BaseGameAgent):
 
         while True:
             try:
-                await asyncio.sleep(LOOP_INTERVAL)
+                if self._gaming and not self._has_work():
+                    await self._gaming_sleep()
+                else:
+                    await asyncio.sleep(LOOP_INTERVAL)
                 if not self._autoplay_allowed():
                     continue
                 if self._paused:

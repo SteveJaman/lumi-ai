@@ -53,9 +53,10 @@ def similarity(a: str, b: str) -> float:
 
 
 class SpeculativeRun:
-    def __init__(self, partial: str, request: Dict[str, Any]):
+    def __init__(self, partial: str, build):
         self.partial = partial
-        self.request = request
+        self._build = build            # () -> request dict; runs on the run's own thread
+        self.request: Optional[Dict[str, Any]] = None
         self.text = ""
         self.cancel = threading.Event()
         self.done = threading.Event()
@@ -74,8 +75,11 @@ class SpeculativeRun:
         return True
 
     def run(self, chat) -> None:
-        req = self.request
         try:
+            # Built here, not on the mic thread: it asks the model router, which blocks.
+            req = self.request = self._build()
+            if self.cancel.is_set():
+                return
             resp = chat(req["model"], req["messages"], think=req["think"], keep_alive=req["keep_alive"],
                         options=req["options"], on_text=self._collect)
             if not self.cancel.is_set():
@@ -127,12 +131,7 @@ class SpeculativeTurn:
             old, self.run = self.run, None
         if old is not None:
             old.cancel.set()
-        try:
-            request = prompter.conversational_request(text, pending_user=text)
-        except Exception as e:
-            hub_emit(self.signals, "voice", f"speculative turn couldn't start: {e}", level="warn")
-            return None
-        run = SpeculativeRun(text, request)
+        run = SpeculativeRun(text, lambda: prompter.conversational_request(text, pending_user=text))
         run.thread = threading.Thread(target=run.run, args=(self._chat_fn(),), daemon=True,
                                       name="SpeculativeTurn")
         with self._lock:
@@ -177,6 +176,9 @@ class SpeculativeTurn:
         if run is None:
             return None
         if run.final is not None and normalize(run.final) == normalize(final_text):
-            return run
+            if run.request is not None:           # not built yet (router still answering) or it failed:
+                return run                        # take the normal path instead
+            run.cancel.set()
+            return None
         run.cancel.set()
         return None

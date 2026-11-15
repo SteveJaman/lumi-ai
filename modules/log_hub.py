@@ -99,6 +99,12 @@ class LogHub:
         }
         with self._lock:
             self.events.append(event)
+        if level in ("warn", "warning", "error"):
+            try:                                   # Dashboard → Diagnostics
+                from modules import diagnostics
+                diagnostics.on_log_event(event["category"], level, event["message"])
+            except Exception:
+                pass
 
         try:
             with open(self.log_file, "a", encoding="utf-8") as f:

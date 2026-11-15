@@ -128,6 +128,10 @@ class LumiClient:
     async def setup(self) -> None:
         """Override to declare actions. Called after the handshake."""
 
+    async def on_gaming_mode(self, enabled: bool, wake: bool) -> None:
+        """Lumi's Gaming Mode changed (sent on connect too), or wake=True:
+        an order arrived for a sleeping agent. Override to react."""
+
     async def on_disconnect(self) -> None:
         """Override to react to socket drops."""
 
@@ -203,6 +207,11 @@ class LumiClient:
                     data.get("message") or "",
                     data.get("role") or "assistant",
                 )
+
+        elif cmd == ServerCommand.GAMING_MODE:
+            data = msg.get("data") or {}
+            await self.on_gaming_mode(bool(data.get("enabled")),
+                                      bool(data.get("wake")))
 
         elif cmd == ServerCommand.PING:
             await self._send({"command": ClientCommand.PONG})
