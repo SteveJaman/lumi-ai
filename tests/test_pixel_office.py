@@ -1,18 +1,23 @@
-"""Lumi's pixel office (scripts/build_pixel_office.py output + pipeline.js):
-the baked data is consistent and both front ends ship the same files."""
+"""Lumi's pixel office: the room data is consistent, her sprite sheets are in the
+4x3 walk layout pipeline.js expects (scripts/lumi_pixel_art.py, scripts/generate_sprites.py),
+and both front ends ship the same files."""
 
 import filecmp
 import json
 import os
 from collections import deque
 
+import sys
+
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(ROOT, "web", "pixel-office")
 ISLAND = os.path.join(ROOT, "island", "src", "pixel-office")
 AGENTS = ("main", "minecraft", "office", "system")
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+CW, CH = 40, 56
 
 
 @pytest.fixture(scope="module")
@@ -61,47 +66,86 @@ def test_drawables_and_screens_point_at_real_art(meta):
             assert "on" in meta["drawables"][i], a
 
 
-def test_character_sheets_are_48x96_lumis(meta):
-    assert meta["char"]["w"] == 48 and meta["char"]["h"] == 96
-    for a in AGENTS:
-        for suffix in ("", "_blink"):
-            im = Image.open(os.path.join(WEB, "chars", f"{a}{suffix}.png"))
-            assert im.size == (48 * 16, 96 * 3) and im.mode == "RGBA"
+def _cell(im, c, r):
+    return im.crop((c * CW, r * CH, c * CW + CW, r * CH + CH))
 
 
-def test_every_activity_frame_is_drawn():
-    """Stretch, coffee, rice ball and asleep are real frames, different from the poses
-    they start from (seated / standing), in every direction."""
+def test_sheets_are_4x3_walk_cycles_with_feet_on_the_bottom_row():
     for a in AGENTS:
-        im = Image.open(os.path.join(WEB, "chars", f"{a}.png")).convert("RGBA")
-        cell = lambda c, r: im.crop((c * 48, r * 96, c * 48 + 48, r * 96 + 96)).tobytes()
+        im = Image.open(os.path.join(WEB, "chars", f"{a}-sheet.png"))
+        assert im.mode == "RGBA" and im.size == (CW * 4, CH * 3), a
         for r in range(3):
-            assert cell(8, r) != cell(1, r), (a, "stretch", r)
-            for col in (14, 15):
-                assert cell(col, r) != cell(7, r), (a, "asleep", r)
-            if r != 1:                                   # props show unless she faces away
-                for col in (10, 11, 12, 13):
-                    assert cell(col, r) != cell(7, r), (a, col, r)
+            cells = [_cell(im, c, r) for c in range(4)]
+            for c, cell in enumerate(cells):
+                box = cell.getbbox()
+                assert box and box[3] == CH, (a, r, c, box)          # feet on the last row: no floating
+                assert 20 <= box[2] - box[0] <= CW, (a, r, c, box)   # about one 32px tile wide
+            assert cells[0].tobytes() != cells[1].tobytes() != cells[2].tobytes(), (a, r)   # she walks
 
 
-def test_the_mug_and_the_rice_ball_are_big_enough_to_see():
-    """At least ~60 pixels of teal mug / white rice ball differ from the seated frame."""
+def test_the_pixel_art_script_reproduces_the_shipped_sheets():
+    import lumi_pixel_art as art
+    art._check()
     for a in AGENTS:
-        im = Image.open(os.path.join(WEB, "chars", f"{a}.png")).convert("RGBA")
-        seat = im.crop((7 * 48, 0, 8 * 48, 96)).load()
-        for col in (10, 12):
-            f = im.crop((col * 48, 0, col * 48 + 48, 96)).load()
-            diff = sum(1 for y in range(96) for x in range(48) if f[x, y] != seat[x, y])
-            assert diff >= 60, (a, col, diff)
+        shipped = Image.open(os.path.join(WEB, "chars", f"{a}-sheet.png")).convert("RGBA")
+        assert art.sheet(a).tobytes() == shipped.tobytes(), a
+
+
+def test_each_agent_wears_a_different_outfit():
+    sheets = [Image.open(os.path.join(WEB, "chars", f"{a}-sheet.png")).tobytes() for a in AGENTS]
+    assert len(set(sheets)) == len(AGENTS)
+
+
+def test_the_slicer_keeps_her_white_jacket_and_finds_a_rough_grid():
+    import random
+    import generate_sprites as gs
+    random.seed(3)
+    im = Image.new("RGB", (1792, 1024), (251, 251, 249))
+    d = ImageDraw.Draw(im)
+    for r in range(3):
+        for c in range(4):
+            x, y = 160 + c * 420 + random.randint(-30, 30), 50 + r * 330 + random.randint(-15, 15)
+            d.ellipse((x + 40, y, x + 160, y + 20), outline=(0, 0, 0), fill=(80, 240, 240), width=4)   # halo, apart
+            d.rectangle((x + 50, y + 30, x + 150, y + 120), outline=(0, 0, 0), fill=(200, 205, 215), width=6)
+            d.rectangle((x + 40, y + 120, x + 160, y + 230), outline=(0, 0, 0), fill=(255, 255, 255), width=6)
+            d.rectangle((x + 55 + c * 5, y + 230, x + 90, y + 280), outline=(0, 0, 0), fill=(255, 255, 255), width=6)
+            d.rectangle((x + 110, y + 230, x + 145, y + 280), outline=(0, 0, 0), fill=(255, 255, 255), width=6)
+    sheet = gs.slice_sheet(im.convert("RGBA"))
+    assert sheet.size == (gs.CELL_W * 4, gs.CELL_H * 3)
+    for r in range(3):
+        for c in range(4):
+            cell = sheet.crop((c * gs.CELL_W, r * gs.CELL_H, (c + 1) * gs.CELL_W, (r + 1) * gs.CELL_H))
+            box = cell.getbbox()
+            assert box and box[3] == gs.CELL_H, (r, c, box)
+            px = list(cell.getdata())
+            white = sum(1 for p in px if p[3] and min(p[:3]) > 230)
+            assert white > 40, (r, c, white)                         # inside the outline: kept opaque
+            assert all(p[3] in (0, 255) for p in px)                 # crisp alpha
+
+
+def test_the_prompts_describe_her():
+    import generate_sprites as gs
+    p = gs.prompt_for("main")
+    for words in ("split silver and teal hair", "white cat ears", "cyan halo", "white jacket, mint tie",
+                  "3 rows (facing down, up, and right)", "4 columns", "Solid white background"):
+        assert words in p
 
 
 def test_web_and_island_ship_the_same_files():
     for rel in ["floor.png", "atlas.png", "office.js", "bubble-permission.png", "bubble-waiting.png",
-                "lumi-sprites.js", "chars/custom/README.md",
-                *[f"chars/{a}{s}.png" for a in AGENTS for s in ("", "_blink")]]:
+                "lumi-sprites.js", *[f"chars/{a}-sheet.png" for a in AGENTS]]:
         assert filecmp.cmp(os.path.join(WEB, rel), os.path.join(ISLAND, rel), shallow=False), rel
     assert filecmp.cmp(os.path.join(ROOT, "web", "pipeline.js"), os.path.join(ROOT, "island", "src", "pipeline.js"),
                        shallow=False)
+
+
+def test_the_old_procedural_art_is_gone():
+    assert not os.path.exists(os.path.join(ROOT, "scripts", "build_pixel_office.py"))
+    assert not os.path.exists(os.path.join(ROOT, "scripts", "lumi_hd.py"))
+    for d in (WEB, ISLAND):
+        for a in AGENTS:
+            assert not os.path.exists(os.path.join(d, "chars", f"{a}.png"))
+            assert not os.path.exists(os.path.join(d, "chars", f"{a}_blink.png"))
 
 
 def test_credits_ship_with_the_art():
@@ -130,18 +174,18 @@ def test_ambient_spots_are_walkable_and_reachable(meta):
                 assert reachable(walk, (rest["col"], rest["row"]), (s["col"], s["row"])), (a, kind)
 
 
-def test_the_manifest_names_every_pose_of_every_agent():
+def test_the_manifest_and_the_renderer_use_the_sheets():
     import re
     src = open(os.path.join(WEB, "lumi-sprites.js"), encoding="utf-8").read()
     agents = re.search(r"const AGENTS = \[(.*?)\]", src).group(1)
-    poses = re.search(r"const POSES = \[(.*?)\]", src).group(1)
+    poses = re.findall(r"'(\w+)'", re.search(r"const POSES = \[(.*?)\]", src).group(1))
     assert re.findall(r"'(\w+)'", agents) == list(AGENTS)
-    pose_list = re.findall(r"'(\w+)'", poses)
-    assert {"idle", "walk", "sit", "type", "read", "stretch", "drink", "eat", "sleep"} <= set(pose_list)
-    readme = open(os.path.join(WEB, "chars", "custom", "README.md"), encoding="utf-8").read()
-    for a in AGENTS:                                   # the README lists every file a user can drop in
-        for pz in pose_list:
-            assert f"lumi-{a}-{pz}.png" in readme
+    assert {"idle", "walk", "sit", "type", "read", "stretch", "drink", "eat", "sleep"} <= set(poses)
+    assert "walk: [0, 1, 2, 3]" in src and "down: 0, up: 1, right: 2, left: 2" in src
+    pl = open(os.path.join(ROOT, "web", "pipeline.js"), encoding="utf-8").read()
+    assert "chars/${a}-sheet.png" in pl
+    assert "ctx.imageSmoothingEnabled = false" in pl
+    assert "top = fy - CH + bob" in pl                                # bottom-centre anchor
 
 
 def test_no_vtube_references_in_the_pipeline():

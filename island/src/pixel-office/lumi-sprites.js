@@ -1,131 +1,88 @@
 /*
- * Lumi's sprite manifest for the Pipeline (web/pipeline.js, island/src/pipeline.js).
+ * Lumi's sprite sheets for the Pipeline (web/pipeline.js, island/src/pipeline.js).
  * Copied to island/src/pixel-office/ by scripts/sync_themes.py.
  *
- * Every pose of every agent has a name, e.g. "lumi-main-idle". Each name is an
- * OPTIONAL hand-drawn PNG at pixel-office/chars/custom/<name>.png:
+ * One sheet per agent, chars/<agent>-sheet.png, in the RPG Maker walk layout:
  *
- *     48 px wide frames, 96 px tall, any number of frames across (played in a loop),
- *     3 rows: facing down, up, right (left is the right row mirrored).
- *     Transparent background, her feet on the bottom row of pixels, like the baked sheets.
+ *     4 columns: the walk cycle (columns 1 and 3 are legs together; 1 is her stand)
+ *     3 rows:    facing down, up, right (left is the right row mirrored)
+ *     cells:     the sheet's width / 4 by height / 3, transparent, her feet on the
+ *                cell's bottom row (pipeline.js puts that point on her tile's centre)
  *
- * Drop one in and it's used on the next load, no code change. A pose without one
- * falls back, in order, to:
- *   1. the baked sheet chars/<agent>.png (scripts/build_pixel_office.py + lumi_hd.py:
- *      four 48x96 Lumis after her character sheet, with stretch, coffee, rice ball and
- *      asleep frames), using BAKED_FRAMES below;
- *   2. if that sheet is missing too, a placeholder drawn here on a canvas in her
- *      palette (silver/teal hair, cat ears, halo, white top, black shorts, socks).
- * pipeline.js adds the live extras on top (steam, z z z, the thought bubble).
+ * Written by scripts/lumi_pixel_art.py (hand-placed chibi pixel art, 40x56 cells) or
+ * scripts/generate_sprites.py (an image model, cut to the same layout). Replace a
+ * sheet with any PNG in that layout and it's used on the next load. Without one, a
+ * plain placeholder in her colours is drawn here so the Pipeline still runs.
+ *
+ * Her activities (typing, coffee, a nap) use the standing frame; pipeline.js adds the
+ * live extras on top (a typing bob, steam, z z z, the thought bubble).
  */
 (function () {
   'use strict';
 
   const AGENTS = ['main', 'minecraft', 'office', 'system'];
   const POSES = ['idle', 'walk', 'sit', 'type', 'read', 'stretch', 'drink', 'eat', 'sleep'];
-  const FW = 48, FH = 96;
-
-  // { main: { idle: 'lumi-main-idle', walk: 'lumi-main-walk', ... }, minecraft: {...}, ... }
-  const LUMI_FRAMES = {};
-  for (const a of AGENTS) {
-    LUMI_FRAMES[a] = {};
-    for (const p of POSES) LUMI_FRAMES[a][p] = `lumi-${a}-${p}`;
-  }
-
-  // Columns of the baked 768x288 sheet (16 frames of 48x96; scripts/lumi_hd.py).
-  const BAKED_FRAMES = {
-    idle: [1], walk: [0, 1, 2, 1], sit: [7], type: [3, 4], read: [5, 6],
-    stretch: [8, 8, 9, 9, 9, 8], drink: [10, 10, 10, 11, 11, 10], eat: [12, 12, 13, 12, 13, 12], sleep: [14, 15],
+  const COLS = 4, ROWS = 3;
+  const ROW = { down: 0, up: 1, right: 2, left: 2 };
+  const STAND = 1;
+  // Sheet columns per pose.
+  const FRAMES = {
+    idle: [STAND], walk: [0, 1, 2, 3], sit: [STAND], type: [STAND, STAND], read: [STAND],
+    stretch: [STAND], drink: [STAND], eat: [STAND], sleep: [STAND],
   };
   // Seconds per frame.
   const FRAME_S = { walk: 0.15, type: 0.3, read: 0.3, idle: 0.5, sit: 0.5, stretch: 0.45, drink: 0.55, eat: 0.5, sleep: 1.2 };
-  const CUSTOM_DIR = 'chars/custom/';
 
-  // Her character sheet's palette, and each agent's accent (tie, halo).
   const PALETTE = {
-    silver: '#dfe1ea', silverD: '#7d8196', teal: '#8fd8cf', tealD: '#2b6f6c', skin: '#fae6dd',
-    white: '#f4f6fb', lav: '#d5d6e0', black: '#16161c', pink: '#f4a7bd', mint: '#8fd8cf', eye: '#3fa79a',
+    silver: '#eef0f7', teal: '#5ec6b9', skin: '#fff0e8', white: '#f7f9fd', black: '#25252e',
+    eye: '#3fb7a9', outline: '#2a2336', pink: '#f6b8c9',
   };
   const ACCENT = { main: '#5cf2d2', minecraft: '#5bd16a', office: '#b48cff', system: '#ff5a7a' };
 
-  // A 768x288 sheet in the baked layout, drawn here: used only when the baked
-  // sheet itself is missing, so the Pipeline still runs. Drawn at 16x32 and scaled 3x.
+  const sheetFile = (agent) => `chars/${agent}-sheet.png`;
+
+  // A 4x3 sheet of 40x56 cells, only for when the real sheet is missing.
   function placeholderSheet(agent) {
-    const small = document.createElement('canvas');
-    small.width = 128; small.height = 96;
-    const g = small.getContext('2d');
+    const CW = 40, CH = 56;
+    const c = document.createElement('canvas');
+    c.width = CW * COLS; c.height = CH * ROWS;
+    const g = c.getContext('2d');
     const P = PALETTE, acc = ACCENT[agent] || P.teal;
     const rect = (x, y, w, h, col) => { g.fillStyle = col; g.fillRect(x, y, w, h); };
-    for (let row = 0; row < 3; row++) {
-      for (let f = 0; f < 8; f++) {
-        const x = f * 16, y = row * 32;
-        const seated = f === 7, step = f === 0 ? -1 : f === 2 ? 1 : 0;
-        const by = y + (seated ? 3 : 0);
-        rect(x + 5, y + 1, 6, 1, acc);                                  // halo
-        rect(x + 4, by + 3, 2, 2, P.white);                             // cat ears
-        rect(x + 10, by + 3, 2, 2, P.white);
-        if (row !== 1) { rect(x + 5, by + 4, 1, 1, P.pink); rect(x + 10, by + 4, 1, 1, P.pink); }
-        rect(x + 4, by + 5, 4, 8, row === 1 ? P.teal : P.silver);       // split hair
-        rect(x + 8, by + 5, 4, 8, row === 1 ? P.silver : P.teal);
-        if (row === 0) {                                                // face
-          rect(x + 5, by + 8, 6, 5, P.skin);
-          rect(x + 6, by + 10, 1, 1, P.eye); rect(x + 9, by + 10, 1, 1, P.eye);
-        } else if (row === 2) {
-          rect(x + 8, by + 8, 3, 5, P.skin); rect(x + 10, by + 10, 1, 1, P.eye);
+    for (let row = 0; row < ROWS; row++) {
+      for (let f = 0; f < COLS; f++) {
+        const x = f * CW, y = row * CH, lift = f === 0 ? 2 : 0, liftR = f === 2 ? 2 : 0;
+        rect(x + 14, y + 2, 12, 2, acc);                                   // halo
+        rect(x + 8, y + 7, 24, 22, P.outline);                             // head
+        rect(x + 9, y + 8, 11, 20, row === 1 ? P.teal : P.silver);
+        rect(x + 20, y + 8, 11, 20, row === 1 ? P.silver : P.teal);
+        if (row !== 1) {
+          rect(x + 12, y + 14, 16, 13, P.skin);
+          rect(x + 14, y + 18, 3, 4, P.eye); rect(x + 23, y + 18, 3, 4, P.eye);
         }
-        rect(x + 4, by + 13, 8, 7, P.white);                            // top
-        if (row === 0) rect(x + 7, by + 14, 2, 4, acc);                 // tie
-        rect(x + 4, by + 20, 8, 3, P.black);                            // shorts
-        if (!seated) {
-          rect(x + 5 + step, by + 23, 2, 6, P.white);                   // socks
-          rect(x + 9 - step, by + 23, 2, 6, P.white);
-          rect(x + 5 + step, by + 29, 2, 2, P.black); rect(x + 9 - step, by + 29, 2, 2, P.black);
-          rect(x + 5 + step, by + 31, 2, 1, P.mint); rect(x + 9 - step, by + 31, 2, 1, P.mint);
-        } else {
-          rect(x + 4, by + 23, 8, 3, P.white);
-        }
-        if (f >= 3 && f <= 6) rect(x + 3, by + 15, 10, 1, P.lav);       // arms forward: typing / reading
+        rect(x + 12, y + 29, 16, 9, P.white);                              // jacket
+        rect(x + 19, y + 29, 2, 6, acc);                                   // tie
+        rect(x + 14, y + 38, 12, 3, P.black);                              // shorts
+        rect(x + 14, y + 41 - lift, 4, 13, P.white);                       // legs
+        rect(x + 22, y + 41 - liftR, 4, 13, P.white);
+        rect(x + 13, y + 53 - lift, 6, 3, P.outline); rect(x + 21, y + 53 - liftR, 6, 3, P.outline);
       }
-    }
-    const c = document.createElement('canvas');
-    c.width = FW * 16; c.height = FH * 3;
-    const h = c.getContext('2d');
-    h.imageSmoothingEnabled = false;
-    // frames 8-15 (stretch, coffee, rice ball, asleep) reuse standing / seated
-    const src = [0, 1, 2, 3, 4, 5, 6, 7, 1, 1, 7, 7, 7, 7, 7, 7];
-    for (let row = 0; row < 3; row++) {
-      src.forEach((s, col) => h.drawImage(small, s * 16, row * 32, 16, 32, col * FW, row * FH, FW, FH));
     }
     return c;
   }
 
-  const loadImg = (src) => new Promise((resolve) => {
-    const i = new Image();
-    i.onload = () => resolve(i);
-    i.onerror = () => resolve(null);
-    i.src = src;
-  });
-
-  // { open, blink, poses: { idle: {img, cols, custom, frameS}, ... }, missing: [names] }
-  async function loadAgent(base, agent, baked) {
-    let open = baked && baked.open, blink = baked && baked.blink, placeholder = false;
-    if (!open || open.width < FW * 16) { open = blink = placeholderSheet(agent); placeholder = true; }
-    if (!blink || blink.width < FW * 16) blink = open;
-    const customs = await Promise.all(POSES.map((p) => loadImg(base + CUSTOM_DIR + LUMI_FRAMES[agent][p] + '.png')));
-    const poses = {}, missing = [];
-    POSES.forEach((p, i) => {
-      const img = customs[i];
-      if (img && img.width >= FW && img.height >= FH * 3) {
-        const n = Math.floor(img.width / FW);
-        poses[p] = { img, cols: [...Array(n).keys()], custom: true, frameS: FRAME_S[p] };
-      } else {
-        poses[p] = { img: null, cols: BAKED_FRAMES[p], custom: false, frameS: FRAME_S[p] };
-        missing.push(LUMI_FRAMES[agent][p]);
-      }
-    });
-    return { open, blink, poses, missing, placeholder };
+  // { sheet, cw, ch, poses: { idle: {cols, frameS}, ... }, placeholder }
+  function loadAgent(agent, img) {
+    const ok = img && img.width >= COLS && img.height >= ROWS;
+    const sheet = ok ? img : placeholderSheet(agent);
+    const poses = {};
+    for (const p of POSES) poses[p] = { cols: FRAMES[p], frameS: FRAME_S[p] };
+    return {
+      sheet, poses, placeholder: !ok,
+      cw: Math.floor(sheet.width / COLS), ch: Math.floor(sheet.height / ROWS),
+    };
   }
 
-  window.LumiSprites = { AGENTS, POSES, FW, FH, LUMI_FRAMES, BAKED_FRAMES, CUSTOM_DIR, PALETTE, ACCENT,
-                         placeholderSheet, loadAgent };
+  window.LumiSprites = { AGENTS, POSES, COLS, ROWS, ROW, STAND, FRAMES, FRAME_S, PALETTE, ACCENT,
+                         sheetFile, placeholderSheet, loadAgent };
 })();

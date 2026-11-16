@@ -4,9 +4,8 @@ Copy the shared front-end files from web/ into the island so both ship the same:
     web/themes/            -> island/src/themes/
     web/theme-engine.js    -> island/src/theme-engine.js
     web/pipeline.js        -> island/src/pipeline.js
-    web/pixel-office/lumi-sprites.js, chars/custom/  -> island/src/pixel-office/ (Lumi's sprite
-                           manifest and any hand-drawn pose PNGs; the rest of pixel-office/ is
-                           written to both by scripts/build_pixel_office.py)
+    web/pixel-office/lumi-sprites.js, chars/*-sheet.png  -> island/src/pixel-office/ (Lumi's
+                           sprite layout and her sheets; the room files are kept the same by hand)
 
 web/ is the source of truth. Run after editing a theme, the engine or the Pipeline:
     python scripts/sync_themes.py
@@ -29,9 +28,10 @@ def main():
         shutil.copyfile(os.path.join(WEB, f), os.path.join(ISLAND, f))
     office_src, office_dst = os.path.join(WEB, "pixel-office"), os.path.join(ISLAND, "pixel-office")
     shutil.copyfile(os.path.join(office_src, "lumi-sprites.js"), os.path.join(office_dst, "lumi-sprites.js"))
-    custom = os.path.join(office_src, "chars", "custom")
-    if os.path.isdir(custom):
-        shutil.copytree(custom, os.path.join(office_dst, "chars", "custom"), dirs_exist_ok=True)
+    os.makedirs(os.path.join(office_dst, "chars"), exist_ok=True)
+    for f in os.listdir(os.path.join(office_src, "chars")):
+        if f.endswith("-sheet.png"):
+            shutil.copyfile(os.path.join(office_src, "chars", f), os.path.join(office_dst, "chars", f))
     print("synced web/themes, theme-engine.js, pipeline.js and the sprite manifest into island/src")
 
 

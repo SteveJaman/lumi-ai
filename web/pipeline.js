@@ -3,11 +3,11 @@
  *
  * Shared by the web app (web/pipeline.js) and Lumi Island (island/src/pipeline.js);
  * scripts/sync_themes.py copies this file (and pixel-office/lumi-sprites.js) over.
- * The art lives in pixel-office/ next to this file and is baked by
- * scripts/build_pixel_office.py (+ scripts/lumi_hd.py): the room from Pixel Agents'
- * tiles and furniture (MIT, github.com/pixel-agents-hq/pixel-agents), and four 48x96
- * Lumis after her character sheet, with her activity poses. pixel-office/lumi-sprites.js
- * maps every pose to an optional hand-drawn PNG (see there for the format and fallbacks).
+ * The art lives in pixel-office/ next to this file: the room from Pixel Agents' tiles
+ * and furniture (MIT, github.com/pixel-agents-hq/pixel-agents), and one RPG-Maker-style
+ * walk sheet per Lumi, chars/<agent>-sheet.png (4 walk frames x down/up/right), from
+ * scripts/lumi_pixel_art.py or scripts/generate_sprites.py. pixel-office/lumi-sprites.js
+ * describes the layout. Her feet (the bottom-centre of the cell) stand on her tile's centre.
  *
  *   const pl = LumiPipeline.mount(wrapperEl, {
  *     base: '/web/pixel-office/',                 // where the baked art is
@@ -58,7 +58,6 @@
   const STATUS_LABEL = { idle: 'Idle', thinking: 'Thinking', executing: 'Executing', waiting_approval: 'Needs you', error: 'Error' };
   const READING_RE = /web_search|browse|research|search_files|read_file|read_window|reading|searching|triag|recall|library/i;
   const FAST_MS = 33, SLOW_MS = 120;
-  const BLINK_S = 0.15;
   const DONE_BUBBLE_S = 2;
   const HISTORY = 5;
   const RS = 2;                                 // room laid out at 2x
@@ -109,19 +108,12 @@
     assetsPromise = Promise.all([
       script('office.js', () => window.LUMI_OFFICE), script('lumi-sprites.js', () => window.LumiSprites),
       img('floor.png'), img('atlas.png'), img('bubble-permission.png'), img('bubble-waiting.png'),
-      ...ORDER.flatMap((a) => [optional(`chars/${a}.png`), optional(`chars/${a}_blink.png`)]),
-    ]).then(async ([meta, sprites, floor, atlas, bubblePerm, bubbleDone, ...sheets]) => {
+      ...ORDER.map((a) => optional(`chars/${a}-sheet.png`)),
+    ]).then(([meta, sprites, floor, atlas, bubblePerm, bubbleDone, ...sheets]) => {
       const chars = {};
-      const loaded = await Promise.all(ORDER.map((a, i) =>
-        sprites.loadAgent(base, a, { open: sheets[i * 2], blink: sheets[i * 2 + 1] })));
-      ORDER.forEach((a, i) => { chars[a] = loaded[i]; });
-      const missing = loaded.flatMap((c) => c.missing);
+      ORDER.forEach((a, i) => { chars[a] = sprites.loadAgent(a, sheets[i]); });
       const fake = ORDER.filter((a) => chars[a].placeholder);
-      if (fake.length) console.warn(`[pipeline] no baked sheet for ${fake.join(', ')}: drawing placeholders. Run scripts/build_pixel_office.py.`);
-      if (missing.length) {
-        console.info(`[pipeline] ${missing.length} poses use the baked sheet (drop PNGs in ${base}${sprites.CUSTOM_DIR} to replace them): `
-          + missing.join(', '));
-      }
+      if (fake.length) console.warn(`[pipeline] no sprite sheet for ${fake.join(', ')}: drawing placeholders. Run scripts/lumi_pixel_art.py.`);
       return { meta, sprites, floor, atlas, bubblePerm, bubbleDone, chars };
     });
     assetsPromise.catch(() => { assetsPromise = null; });
@@ -185,7 +177,8 @@
     const ctx = canvas.getContext('2d');
 
     let A = null;                        // assets once loaded
-    let W = 640, H = 384, CW = 48, CH = 96, tint = null, tctx = null;
+    let W = 640, H = 384, CW = 40, CH = 56, tint = null, tctx = null;
+    const SEAT_HIDE = 13;                         // rows of a 56px cell below her knees
     let k = 1, cssScale = 1, viewW = 640, raf = 0, timer = 0, last = 0, visible = true, destroyed = false;
     let camX = 0, camTarget = 0, dragFrom = null, manualUntil = 0;
     const cache = new Map();             // "<key>" -> offscreen canvas pre-scaled at k
@@ -219,7 +212,7 @@
         col: spot.col, row: spot.row, x: spot.col * 16 + 8, y: spot.row * 16 + 8,
         dir: spot.face, walking: false, frame: 0, frameT: 0,
         status: 'idle', vs: 'sitting', task: '', progress: 0, model: null, modelName: null,
-        nextBlink: 1 + Math.random() * 4, blinkUntil: 0, doneUntil: 0, headY: 0,
+        doneUntil: 0, headY: 0,
         idleSince: 0, beh: null, nextBeh: IDLE_BEFORE_AMBIENT_S + Math.random() * 6, lunchDay: '',
         since: Date.now(), history: [],
       };
@@ -333,7 +326,6 @@
           const ps = poseInfo(a);
           if (a.frameT >= (ps.frameS || A.meta.timing.type_frame_s)) { a.frameT = 0; a.frame = (a.frame + 1) % 64; }
         }
-        if (now >= a.nextBlink) { a.blinkUntil = now + BLINK_S; a.nextBlink = now + 2.5 + Math.random() * 4; }
         ambient(a, dt);
       }
       if (now >= nextFlicker) { flickerUntil = now + 0.12; nextFlicker = now + 5 + Math.random() * 8; }
@@ -510,30 +502,34 @@
     }
 
     function drawAgent(c, a, now) {
-      const F = A.meta.frame;
       const name = poseName(a);
-      const pose = A.chars[a.id].poses[name];
+      const ch = A.chars[a.id];
+      const pose = ch.poses[name];
       const col = pose.cols[a.frame % pose.cols.length];
-      const rowIdx = F.rows[a.dir] ?? 0;
-      const sheet = pose.custom ? pose.img : (now < a.blinkUntil && name !== 'sleep' ? A.chars[a.id].blink : A.chars[a.id].open);
+      const rowIdx = A.sprites.ROW[a.dir] ?? 0;
+      const sheet = ch.sheet;
       const [fx, fy] = feet(a);
-      const dx = fx - CW / 2, top = fy - CH;
+      // Anchor: the cell's bottom-centre (her feet) on (fx, fy). Typing bobs her a pixel.
+      const bob = (name === 'type' || name === 'read') && a.frame % 2 ? 1 : 0;
+      const dx = Math.round(fx - CW / 2), top = fy - CH + bob;
       const flip = a.dir === 'left';
       if (!sitsNow(a)) drawShadow(c, a);
+      // Seated facing the room (sofa, armchair): the seat hides her shins and boots.
+      const sh = sitsNow(a) && a.dir !== 'up' ? CH - SEAT_HIDE : CH;
       const alarm = a.status === 'error' && Math.floor(now * 4) % 2 === 0;
       if (alarm) {                                    // flash red: tint the frame on a scratch canvas
         tctx.clearRect(0, 0, CW, CH);
         tctx.globalCompositeOperation = 'source-over';
-        tctx.drawImage(sheet, col * CW, rowIdx * CH, CW, CH, 0, 0, CW, CH);
+        tctx.drawImage(sheet, col * CW, rowIdx * CH, CW, sh, 0, 0, CW, sh);
         tctx.globalCompositeOperation = 'source-atop';
         tctx.fillStyle = 'rgba(255,45,70,0.55)';
         tctx.fillRect(0, 0, CW, CH);
       }
-      const which = pose.custom ? `custom:${name}` : (sheet === A.chars[a.id].blink ? 'blink' : 'open');
+      const key = `${a.id}:${col}:${rowIdx}:${sh}`;
       const frame = alarm
-        ? scaled(`alarm:${a.id}:${name}:${col}:${rowIdx}:${which}`, tint, 0, 0, CW, CH, 1)
-        : scaled(`${a.id}:${which}:${col}:${rowIdx}`, sheet, col * CW, rowIdx * CH, CW, CH, 1);
-      if (alarm) cache.delete(`alarm:${a.id}:${name}:${col}:${rowIdx}:${which}`);   // tint changes: don't keep
+        ? scaled(`alarm:${key}`, tint, 0, 0, CW, sh, 1)
+        : scaled(key, sheet, col * CW, rowIdx * CH, CW, sh, 1);
+      if (alarm) cache.delete(`alarm:${key}`);        // tint changes: don't keep
       blit(frame, dx, top, flip);
       a.headY = top;
       drawHaloGlow(c, a, dx, top, now, name);
@@ -907,7 +903,7 @@
       if (destroyed) return;
       A = assets;
       W = A.meta.W * RS; H = A.meta.H * RS;
-      CW = (A.meta.char && A.meta.char.w) || 48; CH = (A.meta.char && A.meta.char.h) || 96;
+      CW = A.chars.main.cw; CH = A.chars.main.ch;
       tint = document.createElement('canvas'); tint.width = CW; tint.height = CH;
       tctx = tint.getContext('2d');
       for (const id of ORDER) agents[id] = makeAgent(id);
@@ -924,7 +920,7 @@
     }).catch((e) => {
       const note = document.createElement('div');
       note.className = 'lumi-pl-error';
-      note.textContent = `Pipeline art didn't load (${e.message}). Run scripts/build_pixel_office.py.`;
+      note.textContent = `Pipeline art didn't load (${e.message}). Is web/pixel-office/ complete?`;
       overlay.appendChild(note);
       console.error('[pipeline]', e);
     });
