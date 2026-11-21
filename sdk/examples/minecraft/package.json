@@ -1,7 +1,7 @@
 {
   "name": "lumi-minecraft-bot",
   "version": "0.1.0",
-  "description": "Lumi SDK \u00d7 Minecraft bridge \u2014 exposes mineflayer bot controls as Lumi SDK actions.",
+  "description": "Lumi SDK × Minecraft bridge — exposes mineflayer bot controls as Lumi SDK actions.",
   "main": "bot.js",
   "scripts": {
     "start": "node --max-old-space-size=4096 bot.js"
@@ -11,8 +11,9 @@
   },
   "dependencies": {
     "dotenv": "^16.4.5",
-    "minecraft-data": "^3.66.0",
-    "mineflayer": "^4.23.0",
+    "minecraft-data": "^3.119.0",
+    "minecraft-protocol": "^1.68.0",
+    "mineflayer": "^4.39.0",
     "mineflayer-collectblock": "^1.6.0",
     "mineflayer-pathfinder": "^2.4.5",
     "mineflayer-pvp": "^1.3.2",

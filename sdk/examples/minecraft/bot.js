@@ -2950,32 +2950,48 @@ function resolveItem(term) {
 
 const GIVE_REACH_MS = 60_000;
 
-async function handleGiveItem(a) {
+async function handleGiveItem(args) {
   if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
-  const term = String(a.item_name || "").trim();
-  if (!/^[a-z0-9_ ]{2,40}$/i.test(term)) return { success: false, message: "item_name must be an item like stone_pickaxe or diamond" };
-  const name = a.username ? String(a.username) : ownerName();
-  if (!name || !bot.players[name]) return { success: false, message: `${name || "No player"} isn't online` };
-  const item = resolveItem(term);
-  if (!item) return { success: false, message: `I don't have any ${term}` };
-  const have = countItem(item);
-  const n = Math.min(Math.max(parseInt(a.count ?? 1, 10) || 1, 1), have);
+  const itemName = args.item_name;
+  const count = Math.max(1, parseInt(args.count ?? 1, 10));
+  const targetName = args.username || ownerName();
+  
+  if (!targetName) return { success: false, message: "No player specified and no owner found" };
 
-  if (!bot.players[name].entity) return { success: false, message: `I can't see ${name} from here` };
-  // They may keep walking: chase with a dynamic goal until close enough.
-  const got = await approachPlayer(name, 3, GIVE_REACH_MS);
-  const ent = bot.players[name] && bot.players[name].entity;
-  if (!got.ok && !(ent && bot.entity.position.distanceTo(ent.position) <= 4)) {
-    return { success: false, message: `Couldn't get to ${name}: ${got.why}` };
+  // Find the item (supports loose names like 'pickaxe')
+  const items = bot.inventory.items();
+  let itemToGive = items.find(i => i.name === itemName);
+  if (!itemToGive && itemName === "pickaxe") {
+     const picks = items.filter(i => i.name.endsWith("_pickaxe")).sort((a, b) => b.count - a.count);
+     if (picks.length) itemToGive = picks[0];
   }
-  if (!ent) return { success: false, message: `I lost sight of ${name}` };
+  if (!itemToGive) return { success: false, message: `I don't have any ${itemName}` };
+
+  const target = bot.players[targetName]?.entity;
+  if (!target) return { success: false, message: `I can't see ${targetName}` };
+
+  // 1. Walk to them dynamically
   try {
-    // Items are thrown where the bot looks, so look at them first.
-    await bot.lookAt(ent.position.offset(0, 1.2, 0), true);
-    await bot.toss(mcData.itemsByName[item].id, null, n);
-    return { success: true, message: `Gave ${n} ${item} to ${name}` };
+    bot.pathfinder.setGoal(new goals.GoalFollow(target, 2), true);
+    const start = Date.now();
+    while (Date.now() - start < 15000) { // 15 second timeout
+      if (!bot.players[targetName]?.entity) return { success: false, message: `Lost sight of ${targetName}` };
+      if (bot.entity.position.distanceTo(bot.players[targetName].entity.position) <= 3) break;
+      await new Promise(r => setTimeout(r, 500));
+    }
   } catch (e) {
-    return { success: false, message: `Couldn't hand it over: ${e.message}` };
+    return { success: false, message: `Couldn't reach ${targetName}: ${e.message}` };
+  } finally {
+    bot.pathfinder.setGoal(null); // Stop moving once close
+  }
+
+  // 2. Toss the item
+  try {
+    const actualCount = Math.min(itemToGive.count, count);
+    await bot.toss(itemToGive.type, null, actualCount);
+    return { success: true, message: `Gave ${actualCount} ${itemToGive.name} to ${targetName}` };
+  } catch (e) {
+    return { success: false, message: `Failed to toss item: ${e.message}` };
   }
 }
 
