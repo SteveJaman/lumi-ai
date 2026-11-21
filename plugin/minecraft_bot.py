@@ -1668,5 +1668,5 @@ if __name__ == "__main__":
     import logging
     logging.basicConfig(level=logging.INFO)
     agent = MinecraftAgent()
-    try: asyncio.run(agent.start())
+    try: asyncio.run(agent.run())
     except KeyboardInterrupt: print("Stopped.")
