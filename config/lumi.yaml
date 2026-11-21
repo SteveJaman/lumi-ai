@@ -494,4 +494,4 @@ example_dialogue_duo: |-
   Lumi: [excited] I did! I want to help. What's it feel like when it works?
 games:
   minecraft:
-    agent_model: claude
+    agent_model: local
