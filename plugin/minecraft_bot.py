@@ -72,6 +72,7 @@ except Exception:
 
 # Every action is checked before it reaches bot.js (pure Python, always on).
 from modules import minecraft_governor as governor
+from modules import minecraft_social as social
 from modules.minecraft_actions import render_actions_prompt
 try:
     from constants import MINECRAFT_AGENT_CLOUD_TIMEOUT_S as _CLOUD_TIMEOUT_S
@@ -739,11 +740,12 @@ PICKER_SYSTEM = (
     'JSON only: {"goal": "<one of the listed names>", "reason": "<one short sentence>"}'
 )
 
-# Goal time limits (s), shorter than bot.js's 120 s default where a stuck
-# pathfinder is the usual failure, so the agent moves on sooner.
-GOAL_TIMEOUT_S = {"collect_wood": 60, "chop_trees": 60, "explore": 60,
-                  "build_dirt_hut": 90, "hunt_food": 75, "mine_stone": 90,
-                  "gather_cobblestone": 90}
+# Goal time limits (s). 120 s, bot.js's default: a slow local model or a
+# detour shouldn't fail a goal, and bot.js's stuck watchdog (jump, then
+# re-path after 5 s without progress) handles getting stuck.
+GOAL_TIMEOUT_S = {"collect_wood": 120, "chop_trees": 120, "explore": 120,
+                  "build_dirt_hut": 120, "hunt_food": 120, "mine_stone": 120,
+                  "gather_cobblestone": 120}
 # Getting stuck: after a goal fails twice with a path problem, look through
 # the live viewer and ask the vision model what's in the way (game_vision).
 STUCK_RE = re.compile(r"path|stuck|took to long|timed out|couldn'?t (reach|get to)|no .* found", re.I)
@@ -969,6 +971,55 @@ class CloudModelError(RuntimeError):
 
 # ─── Agent ────────────────────────────────────────────────────────────────────
 
+# ─── Her in-game answer to an order ────────────────────────────────
+ACK_TIMEOUT_S = 6.0
+ACK_MAX_WORDS = 9
+SOCIAL_POLL_S = 1.5
+# Her system prompt for chat lines is social.persona_prompt(): her name,
+# core traits and the trait levels from config/lumi.yaml.
+ACK_SYSTEM = social.persona_prompt()
+ACK_PROMPT = (
+    '{who} just asked you in Minecraft: "{order}". You are already doing it. '
+    "Reply with ONE short game-chat line, under 10 words, in your own voice "
+    "(like \"Right behind you!\" or \"Ugh, fine, I'll chop the tree.\"). If the job "
+    "is tedious and your patience is low, you may complain a little while agreeing. "
+    "Only the line: no quotes, no emoji, no name prefix.")
+_STOCK_OBSERVE = {
+    "mob": "Heads up, something's out there.",
+    "hurt": "Ow. I could use a break.",
+    "hungry": "I'm getting hungry.",
+    "night": "Night's here. Stay close.",
+}
+_STOCK_ACKS = {
+    "follow":  ["Right behind you!", "Lead the way!", "Coming, coming!"],
+    "come":    ["On my way!", "Coming over!", "Be right there!"],
+    "stay":    ["I'll wait right here.", "Staying put!", "Okay, I'll hang here."],
+    "resume":  ["Free time, yay!", "Okay, I'll do my own thing."],
+    "collect": ["Leave it to me!", "On it, back soon!", "Coming right up!"],
+    "tool":    ["One sec, crafting!", "Leave it to me!"],
+    "house":   ["A house? Ooh, on it!", "Time to build!"],
+}
+_ROBOTIC = re.compile(r"\b(executing|action|command|bot|ai|assistant)\b", re.I)
+
+
+def clean_ack(raw: str) -> Optional[str]:
+    """The model's reply as one short chat line, or None if it isn't one."""
+    line = next((l for l in str(raw or "").splitlines() if l.strip()), "")
+    line = re.sub(r"<[^>]+>", "", line)
+    line = re.sub(r"^\s*(?:lumi|lumibot)\s*[:>-]\s*", "", line, flags=re.I)
+    line = line.strip().strip("\"'`*").strip()
+    line = "".join(ch for ch in line if ch.isprintable() and ord(ch) < 0x2000)
+    words = line.split()
+    if not words or len(words) > ACK_MAX_WORDS or _ROBOTIC.search(line):
+        return None
+    line = " ".join(words)[:80]
+    return line if line[-1] in ".!?~" else line + "!"
+
+
+def stock_ack(kind: str) -> str:
+    return random.choice(_STOCK_ACKS.get(kind, ["On it!", "You got it!", "Okay, leave it to me!"]))
+
+
 def _read_gaming_mode() -> bool:
     """Lumi's saved Gaming Mode, for a start while Lumi is offline. Once
     connected, Lumi pushes the live value over the SDK socket."""
@@ -1001,6 +1052,16 @@ class MinecraftAgent(BaseGameAgent):
         self._recent_goals: List[Tuple[str, bool]] = []   # (goal, succeeded), newest last
         self._failures: Dict[str, int] = {}                # consecutive failures per goal
         self._cooldown_until: Dict[str, float] = {}        # goal -> time it may run again
+        # Social side (modules/minecraft_social.py): her persona from lumi.yaml,
+        # who she has met this session, and the banter / observation clocks.
+        self._persona = social.load_persona()
+        self._persona_text = social.persona_prompt(self._persona)
+        self._social = social.SocialMemory()
+        self._last_reply = 0.0
+        self._last_reply_to: Dict[str, float] = {}
+        self._last_observe = 0.0
+        self._observed: Dict[str, float] = {}
+        self._social_task: Optional[asyncio.Task] = None
         self._hut_this_night = False
         self._progress = 0
         self._wanted: Dict[str, int] = {}      # materials a failed house build asked for
@@ -1323,10 +1384,18 @@ class MinecraftAgent(BaseGameAgent):
                 )
                 with urllib.request.urlopen(req, timeout=ACTION_TIMEOUT) as r:
                     return json.loads(r.read())
-            return await loop.run_in_executor(None, _post)
-        except urllib.error.URLError as e:
-            self._record("error", f"bot offline during action '{action_name}': {e}")
-            return {"success": False, "message": "bot unreachable"}
+            result = await loop.run_in_executor(None, _post)
+            self._bot_offline_warned = False
+            return result
+        except (urllib.error.URLError, ConnectionError) as e:
+            if not isinstance(e, urllib.error.HTTPError):
+                # bot.js (or the Minecraft server) is down: one line until it's back.
+                if not getattr(self, "_bot_offline_warned", False):
+                    self._bot_offline_warned = True
+                    self._record("warn", "Minecraft bot is offline, cannot execute action")
+                return {"success": False, "error": "offline", "message": "Minecraft bot is offline"}
+            self._record("error", f"action '{action_name}': bot.js said {e.code}")
+            return {"success": False, "message": f"bot.js said {e.code}"}
         except Exception as e:
             self._record("error", f"action '{action_name}': {e}")
             return {"success": False, "message": str(e)}
@@ -1344,6 +1413,8 @@ class MinecraftAgent(BaseGameAgent):
                                      f"at random. Run: ollama pull {missing}")
         self._record("agent", "Skill loop started"
                      + (f" (goal picker: {GOAL_MODEL})" if self._llm_ok else " (goal picker: random)"))
+        if self._social_task is None or self._social_task.done():
+            self._social_task = asyncio.create_task(self._social_loop())
 
         while True:
             try:
@@ -1581,6 +1652,10 @@ class MinecraftAgent(BaseGameAgent):
                 return False, "Nothing to give"
             self._record("skill", f"Executing: give_item ({give})")
             r = await self._bot_action("give_item", give)
+            m = social.GIFT_RE.match(str(r.get("message") or "")) if r.get("success") else None
+            if m:
+                self._social.gift(m.group(3), m.group(2), int(m.group(1)))
+                self._record("social", f"gave {m.group(1)} {m.group(2)} to {m.group(3)}")
             return bool(r.get("success")), r.get("message", "")
         spec = FREE_GOALS.get(goal, {}).get("action")
         if spec:
@@ -1932,12 +2007,139 @@ class MinecraftAgent(BaseGameAgent):
             self._order.update(text=text, who=who, fails=0, until=time.time() + 20 * 60)
         self._tel["current_order"], self._tel["mode"] = self._order_text() or None, self._mode
         self._think(f"New order: {text}")
+        # Answer in game in her own words ("Right behind you!"), without
+        # holding up the order itself.
+        task = asyncio.create_task(self._ack_in_game(text, kind, who))
+        self._ack_tasks = getattr(self, "_ack_tasks", set())
+        self._ack_tasks.add(task)
+        task.add_done_callback(self._ack_tasks.discard)
         # Only a Games page order becomes a chat turn. One from in-game chat
-        # goes straight to the agent (bot.js already answered "Got it." in
-        # game), so Lumi's chat model isn't involved.
+        # is answered in game by _ack_in_game above, so Lumi's chat model
+        # isn't involved.
         if not talk and not in_game:
             await self._narrate(f"{heard}. {ack}.", major=True)
         await self._push_status(status, force=True)
+
+    async def _ack_in_game(self, text: str, kind: str, who: Optional[str]) -> None:
+        """Say a short, in-character line in the game chat for an order she
+        took: written by her game model (the same router choice as her goal
+        picker, local or cloud), else one of a few natural stock lines. Never
+        pauses the agent: a model failure here just uses a stock line."""
+        if who:
+            self._social.order(who)
+        status = self._last_status or {}
+        prompt = (social.nearby_players_block(status, self._social) + "\n"
+                  + ACK_PROMPT.format(who=who or "your player", order=text))
+        line = clean_ack(await self._say_line(prompt) or "")
+        await self._bot_action("chat", {"message": line or stock_ack(kind)})
+
+    async def _say_line(self, prompt: str) -> Optional[str]:
+        """One short line from her game model in her persona (the Games page
+        choice; if a cloud model fails, the local game model). None if no
+        model answered. Never pauses the agent."""
+        if not self._model_ready():
+            return None
+        opts = {"temperature": 0.9, "num_predict": 32}
+        if not self._cloud_pause:
+            try:
+                return await asyncio.wait_for(self._ask_model(self._persona_text, prompt, opts),
+                                              timeout=ACK_TIMEOUT_S)
+            except Exception as e:          # includes CloudModelError
+                err = getattr(e, "error", None) or str(e) or type(e).__name__
+                self._record("warn", f"chat line: {self._model_choice} model failed ({str(err)[:120]})")
+        if self._model_choice != "local" and chat_sync is not None and GOAL_MODEL:
+            loop = asyncio.get_running_loop()
+            try:
+                resp = await asyncio.wait_for(loop.run_in_executor(None, lambda: chat_sync(
+                    GOAL_MODEL, [{"role": "system", "content": self._persona_text},
+                                 {"role": "user", "content": prompt}],
+                    think=False, keep_alive=GOAL_KEEP_ALIVE, options=opts)), timeout=ACK_TIMEOUT_S)
+                return (resp.content or "").strip()
+            except Exception as e:
+                self._record("warn", f"chat line: local model failed too ({type(e).__name__})")
+        return None
+
+    # ─── Social: banter and observations ──────────────────────────
+
+    async def _social_loop(self) -> None:
+        """Alongside the skill loop: answer what players say in chat (bot.js
+        queues it, GET /chat?take=1), and every OBSERVE_EVERY_S, if she's idle
+        near players, maybe remark on her state (hungry, hurt, a mob)."""
+        while True:
+            try:
+                await asyncio.sleep(SOCIAL_POLL_S)
+                if not self._autoplay_allowed():
+                    continue
+                got = await self._bot_get("/chat?take=1")
+                msgs = (got or {}).get("chat") or []
+                status = None
+                if msgs or time.time() - self._last_observe >= social.OBSERVE_EVERY_S:
+                    status = await self._bot_get("/status")
+                if not status or not status.get("ready"):
+                    continue
+                near = [p["name"] for p in social.nearby(status)]
+                for name in self._social.seen(near):
+                    self._record("social", f"{name} is nearby")
+                for m in msgs[-5:]:
+                    await self._hear(m, status, near)
+                if time.time() - self._last_observe >= social.OBSERVE_EVERY_S:
+                    self._last_observe = time.time()
+                    await self._maybe_observe(status, near)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self._record("error", f"social loop: {e}")
+
+    async def _hear(self, msg: Dict, status: Dict, near: List[str]) -> None:
+        name, text = str(msg.get("from") or ""), str(msg.get("text") or "")
+        if not name or not text:
+            return
+        greeted = self._social.chat(name, text)
+        if greeted:
+            self._record("social", f"{name} said hi; remembering them this session")
+        now = time.time()
+        if not social.wants_reply(name, text, near=name in near, now=now,
+                                  last_reply=self._last_reply, last_reply_to=self._last_reply_to):
+            return
+        doing = self._order_text() or self._tel.get("goal_description") or "hanging around"
+        prompt = (social.nearby_players_block(status, self._social) + "\n"
+                  f"You're busy with: {doing}.\n"
+                  f'{name} just said in game chat: "{text}"\n'
+                  + ("They just said hi to you for the first time today.\n" if greeted else "")
+                  + "Reply in game chat with ONE short line, under 10 words, in your own voice. "
+                  "Only the line: no quotes, no emoji, no name prefix.")
+        line = social.clean_line(await self._say_line(prompt) or "")
+        if not line and greeted:
+            line = f"Hey {name}."
+        if not line:
+            return
+        self._last_reply = time.time()
+        self._last_reply_to[name] = self._last_reply
+        self._record("social", f"replied to {name}: {line}")
+        await self._bot_action("chat", {"message": line})
+
+    async def _maybe_observe(self, status: Dict, near: List[str]) -> None:
+        """Idle near players: say something about what she notices, now and then."""
+        if not near or status.get("busy") or status.get("sleeping") or self._order:
+            return
+        if self._gaming and not self._has_work():
+            return
+        seen = social.observe(status)
+        if not seen:
+            return
+        key, fact = seen
+        if time.time() - self._observed.get(key, 0) < social.OBSERVE_REPEAT_S:
+            return
+        self._observed[key] = time.time()
+        prompt = (social.nearby_players_block(status, self._social) + "\n"
+                  f"You notice: {fact}.\n"
+                  "Say it out loud in game chat to the players near you, ONE short line under "
+                  "10 words, in your own voice. Only the line.")
+        line = social.clean_line(await self._say_line(prompt) or "") or _STOCK_OBSERVE.get(key.split(":")[0])
+        if line:
+            self._record("social", f"remarked: {line}")
+            self._last_reply = time.time()
+            await self._bot_action("chat", {"message": line})
 
     async def _override_order(self, text: str, status: Dict) -> Optional[Dict[str, Any]]:
         """Ask the game model which goal carries out an order the parser
@@ -2155,6 +2357,7 @@ class MinecraftAgent(BaseGameAgent):
             f"Hostiles nearby: {threats}.\n"
             f"{_environment_text(status.get('environment'))}\n"
             f"{self._player_line(status)}"
+            + social.nearby_players_block(status, self._social) + "\n"
             + (f"What you can see right now (your eyes can be wrong): {self._last_look[1]}\n"
                if self._last_look and time.time() - self._last_look[0] < LOOK_MEMORY_S else "")
             + f"Recent goals (oldest first, with result): {self._recent_text(5)}.\n"
@@ -2168,7 +2371,8 @@ class MinecraftAgent(BaseGameAgent):
             + render_actions_prompt(_ordered(options), detail=self._model_choice != "local")
         )
         try:
-            text = await self._ask_model(PICKER_SYSTEM, prompt, {"temperature": 0.7, "num_ctx": 2048})
+            text = await self._ask_model(PICKER_SYSTEM + "\n" + self._picker_personality(), prompt,
+                                         {"temperature": 0.7, "num_ctx": 2048})
         except CloudModelError:
             raise
         except Exception as e:
@@ -2189,6 +2393,13 @@ class MinecraftAgent(BaseGameAgent):
             self._record("warn", f"goal picker gave no valid goal: {text[:120]}")
             return None
         return goal, str(data.get("reason") or "").strip()[:160]
+
+    def _picker_personality(self) -> str:
+        """Her traits from lumi.yaml, for the goal picker: she plays like herself."""
+        return ("You are " + self._persona["name"] + ". Let your personality shape the pick "
+                "(high chaos: sometimes the fun or unexpected option; low patience: avoid long "
+                "grinds when something else works; high empathy: stay useful to the players nearby):\n"
+                + "\n".join(social.trait_lines(self._persona["traits"])))
 
     def _refusal_text(self) -> str:
         """The last governor refusal, as an observation for the picker (once)."""

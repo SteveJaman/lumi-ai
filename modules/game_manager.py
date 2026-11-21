@@ -447,8 +447,16 @@ class GameManager:
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
             return json.loads(e.read() or b"{}") or {"success": False, "message": f"bot.js said {e.code}"}
-        except Exception:
-            raise RuntimeError("Minecraft AI isn't running (bot.js isn't answering on :5057).")
+        except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
+            return self._bot_offline(action)
+
+    def _bot_offline(self, action: str) -> Dict[str, Any]:
+        """bot.js (or its Minecraft server) is down: one warning line, and a
+        clean result instead of a raw socket error."""
+        msg = "Minecraft bot is offline, cannot execute action"
+        print(f"\033[93m[minecraft] {msg} ({action})\033[0m")
+        hub_emit(self.signals, "minecraft", f"{msg} ({action})", level="warn")
+        return {"success": False, "error": "offline", "message": msg}
 
     def set_server(self, game: str, host: str, port: Any) -> Dict[str, Any]:
         """Point the bot at another world. With bot.js running, it checks

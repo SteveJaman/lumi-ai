@@ -1263,7 +1263,12 @@ MINECRAFT_GAMER_NOTE = (
     "You have a dedicated game agent that controls your other half. When "
     "{host_name} gives you an in-game command (\"follow me\", \"get diamonds\"), "
     "it goes to that agent: in agent mode call dispatch_game_command with it; "
-    "otherwise it's passed on for you. Don't wait for the agent to finish, and "
+    "otherwise it's passed on for you. If the user talks to you about Minecraft "
+    "(e.g., 'follow me', 'stop', 'mine this'), use the Minecraft tool to send the "
+    "command directly to the bot. While your other half is in the middle of "
+    "something (the status block says what), mention it when it matters, the "
+    "way you'd mention being busy (\"I'm busy mining, tell them I'll be there "
+    "soon.\"). Don't wait for the agent to finish, and "
     "don't check on it. Answer in a line and carry on the conversation. In "
     "agent mode you can also call look_at_minecraft to actually see the game.\n"
     "A message that starts with [FROM SDK: Minecraft...] and contains "
@@ -1308,6 +1313,26 @@ GAME_OFFLINE_NOTE = (
     "pretend you're doing it.\n"
     "=== END MINECRAFT ORDER ==="
 )
+
+# A message about the game that the order rules (game_orders.py) didn't
+# take: it names the game, or starts with an order verb the game agent knows.
+_MC_TALK = re.compile(
+    r"\b(minecraft|mc|in[- ]game|in the game|the bot|your (?:other half|game|character))\b", re.I)
+_MC_VERB = re.compile(
+    r"^\s*(?:(?:hey|ok(?:ay)?)\s+)?(?:lumi[\s,:]+)?(?:(?:can|could|would) you\s+|please\s+)?"
+    r"(?:follow me|come here|come back|stop following|stay here|"
+    r"(?:mine|chop|dig|collect|gather)\s+(?:some\s+|me\s+|more\s+|\d+\s+)?"
+    r"(?:wood|logs?|trees?|stone|cobble\w*|dirt|sand|iron|coal|diamonds?|ores?|this|that|it)\b)", re.I)
+
+
+def mentions_minecraft(text):
+    """True if the message is about Minecraft ("in minecraft, follow me",
+    "can you mine some wood?") even without the "Lumi," wake word."""
+    t = str(text or "")
+    if len(t) > 300:
+        return False
+    return bool(_MC_TALK.search(t) or _MC_VERB.match(t))
+
 
 # Offered on agent turns while a Minecraft SDK client is connected. The
 # game agent (plugin/minecraft_bot.py) runs the order in the background, so
@@ -1963,6 +1988,18 @@ class Prompter:
                 f"Hunger: {fmt(st.get('food'))}/20, Position: {where}. " + ". ".join(extras) + ".\n"
                 "[END BODY STATUS]")
 
+    def _minecraft_enabled(self):
+        """True while the Minecraft game agent is switched on (Games page) and
+        running, or bot.js / the agent is connected to the SDK. Her Minecraft
+        tool and note are offered on every agent turn while this holds."""
+        games = getattr(self.signals, "game_manager", None)
+        try:
+            if games is not None and games.is_active("minecraft"):
+                return True
+        except Exception:
+            pass
+        return self._minecraft_connected()
+
     def _minecraft_connected(self):
         """True while bot.js or the game agent is connected and approved."""
         sdk = getattr(self.signals, "sdk", None)
@@ -2296,7 +2333,7 @@ class Prompter:
             try:
                 for text in sdk.get_context_injections():
                     injections.append(f"[FROM SDK]\n{text}\n[END FROM SDK]")
-                if self._minecraft_connected():
+                if self._minecraft_enabled():
                     injections.append(MINECRAFT_GAMER_NOTE.replace("{host_name}", HOST.name))
                 if getattr(self, "_game_order_note", None):
                     injections.append(self._game_order_note)
@@ -2992,7 +3029,9 @@ class Prompter:
 
         all_tools = TOOL_SCHEMAS + EXTRA_TOOL_SCHEMAS
         if self._minecraft_connected():
-            all_tools = all_tools + [MINECRAFT_TOOL_SCHEMA, GAME_COMMAND_TOOL_SCHEMA]
+            all_tools = all_tools + [MINECRAFT_TOOL_SCHEMA]
+        if self._minecraft_enabled():           # always, while the game agent is on
+            all_tools = all_tools + [GAME_COMMAND_TOOL_SCHEMA]
         hub = getattr(self.signals, "workspace_hub", None)
         if hub is not None and hub.any_connected():
             all_tools = all_tools + workspace_hub.TOOL_SCHEMAS
@@ -3871,6 +3910,13 @@ class Prompter:
                     # Normal turn (agent or conversational)
                     # ─────────────────────────────────────────────────
                     # SDK events are spoken reactions, never tool turns.
+                    if (not force_agent and not self.agent_mode_enabled and not is_sdk_event
+                            and not getattr(self, "_game_order_note", None)
+                            and self.signals.history[-1].get("from_host")
+                            and mentions_minecraft(latest_user_text) and self._minecraft_enabled()):
+                        # Talking about Minecraft while the game is on: this turn
+                        # gets dispatch_game_command, so the model can pass it on.
+                        force_agent = True
                     use_agent = (force_agent or self.agent_mode_enabled) and not is_sdk_event
 
                     if use_agent:

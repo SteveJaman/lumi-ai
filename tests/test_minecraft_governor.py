@@ -232,7 +232,10 @@ def test_local_model_prompt_is_unchanged_but_for_the_preamble(agent, monkeypatch
     assert picked[0] == "explore"
     spec, messages, kw = calls[0]
     assert spec == mb.GOAL_MODEL and kw["keep_alive"] == mb.GOAL_KEEP_ALIVE
-    assert messages[0]["content"] == mb.PICKER_SYSTEM            # no frontier directive
+    system = messages[0]["content"]
+    assert system.startswith(mb.PICKER_SYSTEM)                   # plus her traits from lumi.yaml
+    assert "sarcasm" in system and mb.FRONTIER_DIRECTIVE not in system   # no frontier directive
+    assert "[NEARBY PLAYERS]" in messages[1]["content"]
     assert "What you can do" in messages[1]["content"] and "Your body's actions" not in messages[1]["content"]
     assert len(calls) == 1                                       # one call, no second LLM
 

@@ -291,7 +291,11 @@ function createBot() {
     botReady   = true;
     lastHealth = bot.health ?? null;
     lastFood   = bot.food ?? null;
-    console.log("[mc] bot spawned and ready");
+    console.log(`[mc] bot spawned and ready (Minecraft ${bot.version}, mineflayer ${MINEFLAYER_VERSION})`);
+    if (/^1\.21\.5$/.test(bot.version)) {
+      console.warn("[mc] note: mineflayer's 1.21.5 support has known packet-parsing bugs " +
+                   "(PartialReadError); they're skipped and logged once a minute.");
+    }
     startViewer(bot);
     pushBotContext();
     // Health and hunger arrive in their own packet, often just after spawn.
@@ -402,13 +406,26 @@ function createBot() {
     if (username === bot.username) return;
     // "!lumi ...", "Lumi, ..." or "Lumi ..." from the owner is an order for
     // the game agent. Anything else is ordinary chat for Lumi's context.
-    const order = username === ownerName() ? stripWakeWord(message) : null;
+    let order = username === ownerName() ? stripWakeWord(message) : null;
+    // "Lumi, you're doing great" names her but isn't an order: it goes to the
+    // chat inbox so she can answer it, instead of interrupting what she's doing.
+    if (order && !ORDER_VERB_RE.test(order)) order = null;
     if (order !== null) {
       const r = setDirective(order, "chat", username);
-      bot.chat(r.success ? `Got it. ${r.directive.text}.` : "Lumi here. What should I do?");
+      if (!r.success) { bot.chat("Lumi here. What should I do?"); return; }
+      // The game agent answers in her own words when it takes the order
+      // (plugin/minecraft_bot.py, _ack_in_game). Only if nobody picks it up
+      // does bot.js say something, so the order isn't met with silence.
+      const mine = r.directive;
+      setTimeout(() => {
+        if (pendingDirective === mine && bot && bot.entity) {
+          bot.chat("I heard you, but my game brain isn't switched on right now.");
+        }
+      }, ORDER_ANSWER_WAIT_MS);
       return;
     }
     pushBotContext(`[chat] ${username}: ${message}`);
+    queueChat(username, message);
     // Only a short command or one that names the bot counts as a call, so
     // "I'll come back later" in conversation doesn't summon it.
     const addressed = /lumi/i.test(message) || message.trim().split(/\s+/).length <= 4;
@@ -418,7 +435,16 @@ function createBot() {
     }
   });
 
-  bot.on("error", (err) => console.error("[mc] error:", err.code || err.message || err));
+  bot.on("error", (err) => {
+    if (isProtocolReadError(err)) return notePartialRead(err);
+    console.error("[mc] error:", err.code || err.message || err);
+  });
+  bot.on("kicked", (reason) => {
+    let text = reason;
+    try { text = typeof reason === "string" ? reason : JSON.stringify(reason); } catch (_) {}
+    console.warn(`[mc] kicked from ${MC_HOST}:${MC_PORT}: ${String(text).slice(0, 200)} (reconnecting in 10 s)`);
+    _logEv("kicked", String(text).slice(0, 200));
+  });
 
   const thisBot = bot;
   bot.on("end", (reason) => {
@@ -568,6 +594,134 @@ function nearbyBlock(name, maxDistance = 32) {
   return Boolean(b && bot.findBlock({ matching: b.id, maxDistance }));
 }
 
+// ─── Chat inbox: what players say, for the agent to answer (banter) ─────────
+// plugin/minecraft_bot.py takes these with GET /chat?take=1 and decides
+// whether Lumi replies. Bounded, newest kept.
+const chatInbox = [];
+const CHAT_INBOX_MAX = 20;
+function queueChat(username, message) {
+  const text = cleanDirective(message);
+  if (!text || text.startsWith("/")) return;
+  chatInbox.push({ from: username, text, at: Date.now() / 1000 });
+  if (chatInbox.length > CHAT_INBOX_MAX) chatInbox.splice(0, chatInbox.length - CHAT_INBOX_MAX);
+}
+
+// Words an order starts with (after "Lumi,"), like modules/game_orders.py.
+const ORDER_VERB_RE = new RegExp("^(?:(?:can|could|would|will) you\\s+|please\\s+|pls\\s+|go\\s+)?" +
+  "(?:follow|come|stick|return|head|collect|get|grab|fetch|mine|dig|chop|gather|find|hunt|kill|" +
+  "fight|defend|smelt|cook|craft|make|explore|scout|give|hand|bring|toss|pass|drop|throw|build|" +
+  "construct|sort|organi[sz]e|tidy|put|set|sleep|go|stop|stay|wait|hold|halt|freeze|do|resume|" +
+  "carry|help|protect|guard|look|attack|eat|equip|use|place|light|plant|farm)\\b", "i");
+
+// Players within `radius` blocks, nearest first (for the agent's [NEARBY PLAYERS]).
+function nearbyPlayers(radius = 32) {
+  if (!bot || !bot.entity || !bot.players) return [];
+  const me = bot.entity.position;
+  return Object.values(bot.players)
+    .filter(p => p.username !== bot.username)
+    .map(p => ({ name: p.username,
+                 distance: p.entity ? +me.distanceTo(p.entity.position).toFixed(1) : null }))
+    .filter(p => p.distance !== null && p.distance <= radius)
+    .sort((a, b) => a.distance - b.distance);
+}
+
+// Stuck watchdog for anything that walks: if she's trying to move but hasn't
+// gone more than 1 block in STUCK_CHECK_MS, jump; the next time, re-path
+// (re-applying the movements recomputes the route without changing the goal,
+// so a pending goto() doesn't fail with "goal changed").
+const STUCK_CHECK_MS = 5000;
+function makeStuckWatch() { return { pos: null, at: Date.now(), tries: 0 }; }
+function checkStuck(w, label = "walking") {
+  if (!bot || !bot.entity || !bot.pathfinder) return false;
+  const walking = bot.pathfinder.isMoving() ||
+    ["forward", "back", "left", "right"].some(c => bot.getControlState(c));
+  const p = bot.entity.position;
+  if (!walking || bot.pathfinder.isMining() || bot.pathfinder.isBuilding()) {
+    w.pos = p.clone(); w.at = Date.now(); return false;
+  }
+  if (!w.pos || p.distanceTo(w.pos) > 1) { w.pos = p.clone(); w.at = Date.now(); w.tries = 0; return false; }
+  if (Date.now() - w.at < STUCK_CHECK_MS) return false;
+  w.tries++; w.at = Date.now();
+  if (w.tries % 2 === 1) {
+    console.log(`[stuck] ${label}: no progress in ${STUCK_CHECK_MS / 1000} s, jumping`);
+    bot.setControlState("jump", true);
+    setTimeout(() => { try { bot.setControlState("jump", false); } catch (_) {} }, 450);
+  } else {
+    console.log(`[stuck] ${label}: still stuck, re-pathing`);
+    try { bot.pathfinder.setMovements(bot.pathfinder.movements || survivalMovements()); } catch (_) {}
+  }
+  _logEv("stuck", `${label} (try ${w.tries})`);
+  return true;
+}
+
+// Walk to a player who may be moving: a dynamic GoalFollow, re-checked every
+// 250 ms, until within `range` blocks. A new "follow me" / "come here" order
+// on the way doesn't cancel it (she's going to them anyway); any other order
+// does. Resolves { ok, why }.
+async function approachPlayer(name, range, timeoutMs) {
+  const start = Date.now();
+  const watch = makeStuckWatch();
+  let seq = interruptSeq;
+  try {
+    for (;;) {
+      const ent = bot.players[name] && bot.players[name].entity;
+      if (!ent) return { ok: false, why: `I lost sight of ${name}` };
+      if (bot.entity.position.distanceTo(ent.position) <= range) return { ok: true };
+      if (interruptSeq !== seq) {
+        const next = String((pendingDirective && pendingDirective.text) || "").toLowerCase();
+        if (!/\b(follow|come|over here|get over here)\b/.test(next)) {
+          return { ok: false, why: `interrupted by a new order${next ? ": " + next : ""}` };
+        }
+        seq = interruptSeq;
+      }
+      if (Date.now() - start > timeoutMs) return { ok: false, why: `couldn't reach them in ${timeoutMs / 1000} s` };
+      const g = bot.pathfinder.goal;
+      if (!g || g.entity !== ent) bot.pathfinder.setGoal(new goals.GoalFollow(ent, Math.max(1, range - 1)), true);
+      checkStuck(watch, `going to ${name}`);
+      await sleep(250);
+    }
+  } finally {
+    stopAllActivity();
+  }
+}
+
+// mineflayer/protodef print a full stack for every packet they can't parse
+// (PartialReadError, usually a server version mineflayer doesn't fully
+// support). The packet is skipped and the bot carries on, so these become one
+// line a minute with a count instead of a wall of traceback.
+let MINEFLAYER_VERSION = "?";
+try { MINEFLAYER_VERSION = require("mineflayer/package.json").version; } catch (_) {}
+let partialReads = 0, partialReadLogged = 0;
+function isProtocolReadError(e) {
+  const t = e && (e.name || "") + " " + (e.message || e.stack || e);
+  return /PartialReadError|Deserialization error|Read error for/.test(String(t));
+}
+function notePartialRead(e) {
+  partialReads++;
+  if (Date.now() - partialReadLogged < 60_000) return;
+  partialReadLogged = Date.now();
+  const first = String((e && (e.message || e)) || "").split("\n")[0].slice(0, 160);
+  console.warn(`[mc] skipped ${partialReads} packet(s) the protocol library couldn't read ` +
+               `(PartialReadError: ${first}). Harmless; the bot keeps playing.`);
+  partialReads = 0;
+}
+for (const level of ["log", "error"]) {
+  const orig = console[level].bind(console);
+  console[level] = (...args) => {
+    const first = args[0];
+    const text = typeof first === "string" ? first : (first && first.stack) || "";
+    if (/^(?:PartialReadError|Error: PartialReadError)|^\s*PartialReadError:/.test(String(text))) {
+      return notePartialRead({ message: String(text) });
+    }
+    return orig(...args);
+  };
+}
+process.on("uncaughtException", (e) => {
+  if (isProtocolReadError(e)) return notePartialRead(e);
+  console.error("[mc] uncaught error:", (e && e.stack) || e);
+  process.exit(1);
+});
+
 // ─── Orders (directives) for the game agent ─────────────────────────────────
 // The owner gives orders in chat with a wake word, or the host from the web
 // UI's Games page (via POST /directive). bot.js only stores the latest one
@@ -577,6 +731,8 @@ function nearbyBlock(name, maxDistance = 32) {
 const WAKE_RE = /^\s*(?:!lumi\b[\s,:]*|lumi\s*[,:!]\s*|lumi\s+)(.*)$/i;
 const MAX_DIRECTIVE = 200;
 let pendingDirective = null;   // { text, source, from, at }
+// An in-game order nobody has taken after this long gets a "brain's off" line.
+const ORDER_ANSWER_WAIT_MS = 15000;
 let interruptSeq = 0;          // bumped by each order or emergency; running skills watch it
 let interruptReason = "a new order";
 
@@ -728,6 +884,8 @@ function buildStatusJson() {
     owner:     ownerInfo(),
     house:     house ? { origin: house.origin, material: house.material, complete: !!house.complete } : null,
     directive_pending: Boolean(pendingDirective),
+    players:   nearbyPlayers(32),
+    chat_pending: chatInbox.length,
     environment: environmentJson(),
     emergency: emergency ? emergency.kind : null,
     death:     deathJson(),
@@ -2790,6 +2948,8 @@ function resolveItem(term) {
   return names[0];
 }
 
+const GIVE_REACH_MS = 60_000;
+
 async function handleGiveItem(a) {
   if (!botReady) return { success: false, message: "bot is not connected to Minecraft" };
   const term = String(a.item_name || "").trim();
@@ -2801,20 +2961,14 @@ async function handleGiveItem(a) {
   const have = countItem(item);
   const n = Math.min(Math.max(parseInt(a.count ?? 1, 10) || 1, 1), have);
 
-  const ent = bot.players[name].entity;
-  if (!ent) return { success: false, message: `I can't see ${name} from here` };
-  try {
-    if (bot.entity.position.distanceTo(ent.position) > 3) {
-      await Promise.race([
-        bot.pathfinder.goto(new goals.GoalFollow(ent, 2)),
-        sleep(30_000).then(() => { throw new Error("couldn't reach them in 30 s"); }),
-      ]);
-    }
-  } catch (e) {
-    stopAllActivity();
-    if (bot.entity.position.distanceTo(ent.position) > 4) return { success: false, message: `Couldn't get to ${name}: ${e.message}` };
+  if (!bot.players[name].entity) return { success: false, message: `I can't see ${name} from here` };
+  // They may keep walking: chase with a dynamic goal until close enough.
+  const got = await approachPlayer(name, 3, GIVE_REACH_MS);
+  const ent = bot.players[name] && bot.players[name].entity;
+  if (!got.ok && !(ent && bot.entity.position.distanceTo(ent.position) <= 4)) {
+    return { success: false, message: `Couldn't get to ${name}: ${got.why}` };
   }
-  stopAllActivity();
+  if (!ent) return { success: false, message: `I lost sight of ${name}` };
   try {
     // Items are thrown where the bot looks, so look at them first.
     await bot.lookAt(ent.position.offset(0, 1.2, 0), true);
@@ -3059,6 +3213,8 @@ async function runVoyager(code, label, timeoutMs = SKILL_TIMEOUT_MS) {
 
   let timer, watch;
   const seq = interruptSeq;
+  const stuck = makeStuckWatch();
+  let ticks = 0;
   try {
     const fn = new AsyncFunction(
       "bot", "mcData", "Vec3", "Movements", "goals", ...GOAL_NAMES,
@@ -3073,6 +3229,7 @@ async function runVoyager(code, label, timeoutMs = SKILL_TIMEOUT_MS) {
       new Promise((_, reject) => {
         watch = setInterval(() => {
           if (interruptSeq !== seq) reject(new Error(`interrupted by ${interruptReason}`));
+          if (++ticks % 4 === 0) checkStuck(stuck, label);     // once a second
         }, 250);
       }),
     ]);
@@ -3257,6 +3414,14 @@ const _controlServer = http.createServer((req, res) => {
   } else if (req.method === "GET" && url === "/lan") {
     res.writeHead(200);
     res.end(JSON.stringify({ worlds: lanWorldsJson(), current: { host: MC_HOST, port: MC_PORT } }));
+
+  } else if (req.method === "GET" && url === "/chat") {
+    // ?take=1 hands over what players said since the last take (banter).
+    const take = /[?&]take=1\b/.test(req.url || "");
+    const msgs = chatInbox.slice();
+    if (take) chatInbox.length = 0;
+    res.writeHead(200);
+    res.end(JSON.stringify({ chat: msgs }));
 
   } else if (req.method === "GET" && url === "/directive") {
     // ?take=1 hands the order over and clears it (the game agent).

@@ -111,6 +111,26 @@ logging.getLogger("websockets.legacy.protocol").setLevel(logging.WARNING)
 
 _VTS_TOKEN_PATH = os.path.join(DATA_ROOT, "vtubeStudio_token.txt")
 
+VTS_CLOSED_MSG = "VTube Studio is closed. Avatar features disabled."
+
+
+def vts_refused(e):
+    """True when connecting failed because nothing listens on the VTS port:
+    VTube Studio closed or its API switched off (WinError 1225 / 10061,
+    ECONNREFUSED), however the websocket library wraps it."""
+    seen = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, ConnectionRefusedError):
+            return True
+        if isinstance(e, OSError) and (getattr(e, "winerror", None) in (1225, 10061)
+                                       or getattr(e, "errno", None) in (111, 10061)):
+            return True
+        if "refused" in str(e).lower():
+            return True
+        e = e.__cause__ or e.__context__
+    return False
+
 
 # ===============================================================
 # HOTKEY ALIASES
@@ -677,12 +697,21 @@ class VtubeStudio(Module):
         try:
             await self.vts.connect()
         except Exception as e:
-            print(f"\033[91mVTube Studio: connection failed — {e}\033[0m")
-            hub_emit(self.signals, "vts", f"connection failed: {e}", level="error")
             self.session = "disconnected"
             self.signals.vts_state = "error"
+            if vts_refused(e):
+                # VTS is closed or its API is off: say so once, no Windows error code.
+                self.signals.vts_detail = "VTube Studio is closed"
+                if not getattr(self, "_closed_logged", False):
+                    self._closed_logged = True
+                    print(f"\033[93m{VTS_CLOSED_MSG}\033[0m")
+                    hub_emit(self.signals, "vts", VTS_CLOSED_MSG, level="warn")
+                return False
+            print(f"\033[91mVTube Studio: connection failed — {e}\033[0m")
+            hub_emit(self.signals, "vts", f"connection failed: {e}", level="error")
             self.signals.vts_detail = str(e)[:60]
             return False
+        self._closed_logged = False
         try:
             await self.vts.request_authenticate_token()
             await self.vts.request_authenticate()
@@ -1552,7 +1581,8 @@ class VtubeStudio(Module):
             return
         print("\033[90mVTube Studio: connecting...\033[0m")
         if not await self._establish():
-            print("\033[91mVTube Studio: disabling module — connection failed\033[0m")
+            if not getattr(self, "_closed_logged", False):    # closed VTS already said so in one line
+                print("\033[91mVTube Studio: disabling module — connection failed\033[0m")
             self.enabled = False
             return
         print("\033[92mVTube Studio: connected and authenticated\033[0m")

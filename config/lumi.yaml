@@ -492,3 +492,6 @@ example_dialogue_duo: |-
   Lumi: [laughing] That is the dumbest thing I have ever heard.
   <host>: You said keep going!
   Lumi: [excited] I did! I want to help. What's it feel like when it works?
+games:
+  minecraft:
+    agent_model: claude
