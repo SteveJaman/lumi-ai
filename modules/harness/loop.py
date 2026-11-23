@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from modules.harness import config
 from modules.harness.context import Compactor, ToolOutputStore, rules_message
 from modules.harness.hooks import HookRegistry
+from modules.harness.subagents import SPAWN_SUBAGENT_SCHEMA
 from modules.harness.tasks import (
     TaskStore, TASK_TOOL_SCHEMAS, TASK_TOOL_NAMES, TASK_MUTATING_TOOLS, execute_task_tool,
 )
@@ -96,7 +97,8 @@ class AgentHarness:
                  hooks=None, recover_fn=None, failure_fn=None, mutating_tools=(),
                  max_safety_steps=None, time_budget_s=None,
                  stagnation_cycles=config.DEFAULT_STAGNATION_CYCLES,
-                 tasks_dir=None, rules=None, num_ctx=None, clock=time.monotonic, on_step=None):
+                 tasks_dir=None, rules=None, num_ctx=None, clock=time.monotonic, on_step=None,
+                 subagents=None):
         self.chat_fn = chat_fn
         self.dispatch_fn = dispatch_fn
         self.store = store or TaskStore()
@@ -123,6 +125,18 @@ class AgentHarness:
             t for t in (tools or []) if t.get("function", {}).get("name") not in names]
         self.messages = []
         self.tool_call_count = 0
+        self.subagents = subagents
+        if subagents is not None:
+            # Subagents share the store, hooks and output truncation, never the history.
+            if subagents.store is None:
+                subagents.store = self.store
+            if subagents.hooks is None:
+                subagents.hooks = self.hooks
+            if subagents.output_store is None:
+                subagents.output_store = self.output_store
+            if not subagents.session_id:
+                subagents.session_id = self.session_id
+            self.add_native_tool(SPAWN_SUBAGENT_SCHEMA, subagents.tool, mutating=True)
 
     # ---- extension points ----
     def add_native_tool(self, schema, fn, mutating=False):

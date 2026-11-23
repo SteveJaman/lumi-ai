@@ -3038,6 +3038,8 @@ class Prompter:
         """Session agent mode: run modules/harness/ until a termination condition.
         Model, context window and thinking come from LUMI.md (## Model)."""
         from modules.harness.loop import AgentHarness
+        from modules.harness.subagents import SubagentRunner
+        from modules.harness.tasks import TASK_TOOL_SCHEMAS
 
         model = hybrid_mode.model_for(tier, harness_config.agent_model())
         think = harness_config.think()
@@ -3076,12 +3078,17 @@ class Prompter:
             agent_tracker.update("main", "thinking", task=f"Step {step}: {label}", progress=None,
                                  model=tier, model_name=model)
 
+        # Explore / Plan / Verify subagents: same model and tool dispatch (so the
+        # approval gate and hooks still apply), but each runs in a fresh history.
+        subagents = SubagentRunner(chat, dispatch, all_tools + TASK_TOOL_SCHEMAS, store=None,
+                                   failure_fn=_result_looks_like_failure)
         harness = AgentHarness(
             chat, dispatch, tools=all_tools,
             recover_fn=_recover_text_tool_calls,
             failure_fn=_result_looks_like_failure,
             mutating_tools=set(CONFIRM_REQUIRED_TOOLS) | {"spawn_subagent", "workflow_run"},
             on_step=on_step,
+            subagents=subagents,
         )
         self._harness = harness
         try:
