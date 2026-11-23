@@ -1,0 +1,25 @@
+{
+  "name": "explore_plan_verify",
+  "description": "Map the relevant files, break the goal into tasks, then check the result.",
+  "inputs": ["goal"],
+  "steps": [
+    {
+      "id": "explore",
+      "role": "Explore",
+      "prompt": "Find the files and code relevant to this goal and return a file map with short snippets.\nGoal: {{inputs.goal}}"
+    },
+    {
+      "id": "plan",
+      "role": "Plan",
+      "prompt": "Goal: {{inputs.goal}}\n\nRelevant files (from Explore):\n{{steps.explore}}\n\nAdd the tasks needed to reach the goal with task_add, then return the task DAG as JSON."
+    },
+    {
+      "id": "verify",
+      "role": "Verify",
+      "prompt": "Check whether this goal is already met. Goal: {{inputs.goal}}\nPlanned tasks: {{steps.plan}}",
+      "until": {"field": "pass", "equals": true},
+      "max_iterations": 2,
+      "stop_on_fail": false
+    }
+  ]
+}

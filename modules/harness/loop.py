@@ -27,7 +27,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from modules.harness import config
+from modules.harness import config, workflows
 from modules.harness.context import Compactor, ToolOutputStore, rules_message
 from modules.harness.hooks import HookRegistry
 from modules.harness.subagents import SPAWN_SUBAGENT_SCHEMA
@@ -98,7 +98,7 @@ class AgentHarness:
                  max_safety_steps=None, time_budget_s=None,
                  stagnation_cycles=config.DEFAULT_STAGNATION_CYCLES,
                  tasks_dir=None, rules=None, num_ctx=None, clock=time.monotonic, on_step=None,
-                 subagents=None):
+                 subagents=None, workflows_dir=None):
         self.chat_fn = chat_fn
         self.dispatch_fn = dispatch_fn
         self.store = store or TaskStore()
@@ -137,6 +137,12 @@ class AgentHarness:
             if not subagents.session_id:
                 subagents.session_id = self.session_id
             self.add_native_tool(SPAWN_SUBAGENT_SCHEMA, subagents.tool, mutating=True)
+            # Declarative workflows (data/workflows/*.json) are sequences of subagent calls.
+            self.workflows_dir = workflows_dir or config.WORKFLOWS_DIR
+            self.add_native_tool(
+                workflows.WORKFLOW_RUN_SCHEMA,
+                lambda args: workflows.tool(args, subagents.spawn, self.workflows_dir),
+                mutating=True)
 
     # ---- extension points ----
     def add_native_tool(self, schema, fn, mutating=False):
