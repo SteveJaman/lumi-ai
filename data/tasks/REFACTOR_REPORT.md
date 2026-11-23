@@ -59,6 +59,7 @@ The full suite was run on a clean checkout of every commit (a git worktree with 
 | 9 | `6860935` harness: subagents — recover text-form tool calls (bug found in the live run) | `modules/harness/subagents.py`, `modules/prompter.py`, `tests/test_harness_subagents.py` | 910 / 1 |
 | 10 | `2daa0b4` harness: workflow scripts — declarative multi-subagent orchestration | `modules/harness/workflows.py`, `modules/harness/loop.py`, `data/workflows/explore_plan_verify.json`, `tests/test_harness_workflows.py` | 914 / 1 |
 | 11 | `fc6704e` harness: acceptance tests and docs | `tests/test_harness_acceptance.py`, `tests/harness_child.py`, `CLAUDE.md`, `docs/architecture.md` | 923 / 1 |
+| 12 | (this commit) harness: refactor report | `data/tasks/REFACTOR_REPORT.md`, `scripts/harness_live_check.py` | docs/script only; acceptance re-run on `fc6704e`: 10/10 passed |
 
 The first worktree run of commit 2 showed 6 errors and 3 skips in the Minecraft tests. The
 cause was the worktree, not the code: it lacked the gitignored `data/memories/sdk_token.txt`
@@ -146,5 +147,3 @@ sandboxed in-memory tools (or real read-only file tools for Explore).
 6. Consider a model-written compaction summary (via a Plan-style subagent) once the model is
    reliable. The current summary is deterministic, which is safer for a 14B model but loses
    nuance.
-
-| 12 | (this commit) harness: refactor report | `data/tasks/REFACTOR_REPORT.md`, `scripts/harness_live_check.py` | docs/script only; acceptance re-run on `fc6704e`: 10/10 passed |
