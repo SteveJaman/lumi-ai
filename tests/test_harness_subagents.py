@@ -150,3 +150,17 @@ def test_prompter_offers_spawn_subagent_and_runs_explore(monkeypatch, tmp_path):
     assert asyncio.run(p.run_agent_turn("find the loop")) == "found it"
     assert "spawn_subagent" in tools_seen[0]
     assert (tmp_path / "tasks" / "subagents.log").exists()
+
+
+def test_subagent_recovers_text_form_tool_calls(tmp_path, store):
+    """Local models (qwen2.5-coder) write tool calls as JSON text; found in the live run."""
+    from modules.prompter import _recover_text_tool_calls
+    ran = []
+    r = Router(main=[], sub={"Explore": [LLMResponse(content='{"name": "search_files", "arguments": {"query": "stagnant"}}'),
+                                         LLMResponse(content="modules/harness/loop.py: termination reasons")]})
+    runner = SubagentRunner(r, lambda n, a: ran.append((n, a)) or "loop.py:12: stagnant",
+                            TOOL_SCHEMAS + TASK_TOOL_SCHEMAS, store, tasks_dir=str(tmp_path),
+                            recover_fn=_recover_text_tool_calls)
+    out = asyncio.run(runner.spawn("Explore", "where are termination reasons?"))
+    assert ran == [("search_files", {"query": "stagnant"})]
+    assert out == "modules/harness/loop.py: termination reasons"

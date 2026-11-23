@@ -3081,7 +3081,8 @@ class Prompter:
         # Explore / Plan / Verify subagents: same model and tool dispatch (so the
         # approval gate and hooks still apply), but each runs in a fresh history.
         subagents = SubagentRunner(chat, dispatch, all_tools + TASK_TOOL_SCHEMAS, store=None,
-                                   failure_fn=_result_looks_like_failure)
+                                   failure_fn=_result_looks_like_failure,
+                                   recover_fn=_recover_text_tool_calls)
         harness = AgentHarness(
             chat, dispatch, tools=all_tools,
             recover_fn=_recover_text_tool_calls,

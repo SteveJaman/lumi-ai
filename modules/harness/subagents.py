@@ -112,7 +112,8 @@ def _extract_json(text):
 
 class SubagentRunner:
     def __init__(self, chat_fn, dispatch_fn, tool_schemas, store, hooks=None, output_store=None,
-                 tasks_dir=None, session_id="", max_steps=MAX_SUBAGENT_STEPS, failure_fn=None):
+                 tasks_dir=None, session_id="", max_steps=MAX_SUBAGENT_STEPS, failure_fn=None,
+                 recover_fn=None):
         self.chat_fn = chat_fn
         self.dispatch_fn = dispatch_fn
         self.schemas = {s["function"]["name"]: s for s in tool_schemas}
@@ -123,6 +124,7 @@ class SubagentRunner:
         self.session_id = session_id
         self.max_steps = max_steps
         self.failure_fn = failure_fn or (lambda r: str(r).lstrip().lower().startswith(("error", "denied", "refused")))
+        self.recover_fn = recover_fn      # text-form tool calls -> tool-call dicts (local models)
         self.invocations = 0
 
     def _log(self, entry):
@@ -169,6 +171,13 @@ class SubagentRunner:
                 calls.append(tc.as_ollama() if hasattr(tc, "as_ollama") else tc)
             content = (getattr(resp, "content", "") or "").strip()
             tokens += len(content) // 4
+            if not calls and content and self.recover_fn:
+                try:
+                    recovered = self.recover_fn(content) or []
+                except Exception:
+                    recovered = []
+                if recovered:
+                    calls, content = recovered, ""
             if not calls:
                 if content or text_turns:
                     return content, tokens, messages
