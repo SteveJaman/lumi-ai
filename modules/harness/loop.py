@@ -12,7 +12,9 @@ Replaces the fixed 6-step loop. The loop runs until one of these, checked every 
     error          the model request itself failed
 
 The current task is read from the TaskStore every cycle and shown to the model in
-an ephemeral message that is never stored in history.
+an ephemeral message that is never stored in history. Every tool call passes the
+PreToolUse hooks first (a denial blocks it, even in YOLO mode); results run the
+PostToolUse / PostToolUseFailure hooks, whose messages reach the next model turn.
 """
 
 import asyncio
@@ -24,6 +26,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from modules.harness import config
+from modules.harness.hooks import HookRegistry
 from modules.harness.tasks import (
     TaskStore, TASK_TOOL_SCHEMAS, TASK_TOOL_NAMES, TASK_MUTATING_TOOLS, execute_task_tool,
 )
@@ -87,13 +90,14 @@ class AgentHarness:
     """
 
     def __init__(self, chat_fn, dispatch_fn, tools=None, store=None, session_id=None,
-                 recover_fn=None, failure_fn=None, mutating_tools=(),
+                 hooks=None, recover_fn=None, failure_fn=None, mutating_tools=(),
                  max_safety_steps=None, time_budget_s=None,
                  stagnation_cycles=config.DEFAULT_STAGNATION_CYCLES,
                  tasks_dir=None, rules=None, clock=time.monotonic, on_step=None):
         self.chat_fn = chat_fn
         self.dispatch_fn = dispatch_fn
         self.store = store or TaskStore()
+        self.hooks = hooks if hooks is not None else HookRegistry()
         self.session_id = session_id or time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         self.recover_fn = recover_fn
         self.failure_fn = failure_fn or default_failure_check
@@ -247,16 +251,26 @@ class AgentHarness:
             self.messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
             mutated = False
             resolved = False
+            notices = []
             for call in tool_calls:
                 fn = call.get("function", {}) or {}
                 name = fn.get("name") or ""
                 args = _parse_args(fn.get("arguments"))
                 self.tool_call_count += 1
+                allowed, deny_reason = self.hooks.pre_tool_use(name, args, self.session_id)
+                if not allowed:
+                    self.messages.append(self._tool_message(
+                        name, f"Denied: {deny_reason} Do not resend this call."))
+                    continue
                 try:
                     result = await self._execute(name, args)
                 except Exception as e:
                     result = f"Error: {type(e).__name__}: {e}"
                 failed = self.failure_fn(result)
+                if failed:
+                    notices += self.hooks.post_tool_use_failure(name, args, str(result), self.session_id)
+                else:
+                    notices += self.hooks.post_tool_use(name, args, result, self.session_id)
                 self.messages.append(self._tool_message(name, result))
                 if name in self.mutating:
                     mutated = True
@@ -268,6 +282,9 @@ class AgentHarness:
                     else:
                         final_text = f"I couldn't finish that: {args.get('reason') or 'unknown error'}"
 
+            if notices:
+                self.messages.append({"role": "user", "content": "[Harness notice — not from the user]\n"
+                                      + "\n".join(notices)})
             cycles_since_mutation = 0 if mutated else cycles_since_mutation + 1
 
             # ---- (a) nothing left after a resolution ----

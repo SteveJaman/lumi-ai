@@ -934,6 +934,11 @@ def _request_needs_tool(user_query: str) -> bool:
     return False
 
 
+# Tools YOLO mode may run without a human prompt (still behind PreToolUse hooks).
+# Email, calendar, finance, desktop and Claude Code keep their own approval.
+_YOLO_TOOLS = frozenset({"write_file", "run_command", "run_in_terminal"})
+
+
 def _recover_text_tool_calls(content: str):
     """Tool calls the model wrote as text (JSON or bracket notation), as Ollama
     tool-call dicts; [] when there are none. Same recovery chain as the legacy loop."""
@@ -2915,9 +2920,14 @@ class Prompter:
         print(f"\n{GRAY}[Lumi wants to use tool: {name}({arguments})]{RESET}")
 
         if name in CONFIRM_REQUIRED_TOOLS:
-            allowed = await self._confirm(name, arguments)
-            if not allowed:
-                return "The user declined to allow this action."
+            if self._harness_yolo_active() and name in _YOLO_TOOLS:
+                # LUMI_AGENT_YOLO=1 inside a harness run: the harness's PreToolUse
+                # hooks (data/hooks/, e.g. block_rm_rf) already vetted this call.
+                print(f"{YELLOW}[YOLO] auto-approved {name} (PreToolUse hooks passed){RESET}")
+            else:
+                allowed = await self._confirm(name, arguments)
+                if not allowed:
+                    return "The user declined to allow this action."
 
         return await loop.run_in_executor(
             None, execute_tool, name, arguments, self.signals
@@ -3019,6 +3029,10 @@ class Prompter:
         else:
             agent_tracker.settle(agent)
         return out
+
+    def _harness_yolo_active(self):
+        """True only while a harness run is in progress and LUMI_AGENT_YOLO=1."""
+        return getattr(self, "_harness", None) is not None and harness_config.yolo_enabled()
 
     async def _run_harness_turn(self, latest_user_text, base_messages, all_tools, tier):
         """Session agent mode: run modules/harness/ until a termination condition.
