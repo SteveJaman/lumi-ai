@@ -13,9 +13,9 @@ what a Claude Code session needs to work on the repo cold. Read it fully before 
 - Models are served by local Ollama at `http://127.0.0.1:11434` (not `localhost`).
 - Run the suite (≈4 min):
   `C:/Users/anguy/anaconda3/envs/lumi/python.exe -m pytest tests -q -p no:cacheprovider -rfE`
-- Baseline (recorded in `data/tasks/baseline_tests.txt`): **829 passed, 1 failed**
-  before the harness; the harness adds its own `tests/test_harness_*.py` and
-  `tests/test_mode_shapes.py`.
+- Pre-harness baseline (recorded in `data/tasks/baseline_tests.txt`): **829 passed,
+  1 failed**. The harness added `tests/test_harness_*.py` and `tests/test_mode_shapes.py`.
+- Current count, after the harness merge: **923 passed, 1 failed**.
   The one known failure is `tests/test_agent_tools.py::test_safe_path_rejects_absolute_outside_root`
   (`/etc/passwd` doesn't raise on Windows). It is pre-existing; it does not block commits.
 
@@ -36,8 +36,11 @@ what a Claude Code session needs to work on the repo cold. Read it fully before 
 
 ## Operational rules (mandatory)
 
-1. **Branch discipline.** Never commit to `main`. Harness work lives on
-   `harness/autonomy-upgrade` (or a branch off it).
+1. **Branch discipline (tiered).** Changes to the agent harness (`modules/harness/`,
+   the harness paths in `modules/prompter.py`, `data/hooks/`, `data/workflows/`, `LUMI.md`)
+   go on a branch and are merged once the suite is green. Everything else (docs, fixes,
+   other modules) may be committed straight to `main`. Either way, run the full suite
+   before committing.
 2. **Test discipline.** After every commit, re-run the full suite. If any test that
    passes in `data/tasks/baseline_tests.txt` now fails, stop and report before doing
    anything else.
@@ -62,7 +65,8 @@ behavior below exists to counter one of those failure modes; none is optional.
 Routing: session agent mode (`!agent_on`) runs the harness
 (`Prompter._run_harness_turn`). One-shot agent turns (`!agent <task>`, a Minecraft
 mention while the game is on) keep the bounded legacy loop in `run_agent_turn`; that
-legacy path is the "plan mode" the shape regression test covers.
+legacy path is the "plan mode" the shape regression test covers. `!agent <task>` stays
+on the legacy bounded loop on purpose; do not route it through the harness.
 
 Switches (environment, read at call time):
 - `LUMI_HARNESS=0` — fall back to the legacy loop (kill switch; default is on).
@@ -131,6 +135,19 @@ Open tasks persist across runs: a new request is added as a task, but an
 - Roles: `Explore` (`read_file`, `search_files`, `list_dir`) → file map + snippets;
   `Plan` (`read_file`, `search_files`, `task_add`, `task_list`) → task DAG as JSON;
   `Verify` (`read_file`, read-only `run_command`) → `{"pass": bool, "evidence": str}`.
+- "Read-only `run_command`" (`command_is_read_only` in `subagents.py`):
+  - **No output redirection or substitution:** any `>`, `tee`, backtick or `$(` rejects the
+    whole command.
+  - **No mutating commands:** every segment of a compound command (split on `&&`, `||`,
+    `;`, `|`) must start with an allowlisted read-only command:
+    - git `status`, `diff`, `log`, `show`, `branch`, `rev-parse`, `ls-files`
+    - `pytest`, or `python -m` with `pytest`, `pyflakes`, `py_compile` or `compileall`
+    - `ls`, `dir`, `type`, `cat`, `head`, `tail`, `wc`, `find`, `findstr`, `grep`, `rg`,
+      `where`, `which`, `echo`
+    - pip `list`, `show`, `freeze`; `node --version`; npm `ls`, `test`
+    - `Get-ChildItem`, `Get-Content`, `Select-String`, `Test-Path`
+  - Anything else (installs, `git push`, deletes, running arbitrary scripts) is denied
+    before dispatch.
 - Every call is logged to `data/tasks/subagents.log` (role, prompt hash, duration, tokens).
 
 ### Change 6 — Workflow scripts (`modules/harness/workflows.py`)
