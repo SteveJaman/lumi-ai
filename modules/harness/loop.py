@@ -15,6 +15,8 @@ The current task is read from the TaskStore every cycle and shown to the model i
 an ephemeral message that is never stored in history. Every tool call passes the
 PreToolUse hooks first (a denial blocks it, even in YOLO mode); results run the
 PostToolUse / PostToolUseFailure hooks, whose messages reach the next model turn.
+Tool results are truncated before they enter history (full output saved to disk),
+and history is compacted (archive first) at 80% of the context window.
 """
 
 import asyncio
@@ -26,6 +28,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from modules.harness import config
+from modules.harness.context import Compactor, ToolOutputStore, rules_message
 from modules.harness.hooks import HookRegistry
 from modules.harness.tasks import (
     TaskStore, TASK_TOOL_SCHEMAS, TASK_TOOL_NAMES, TASK_MUTATING_TOOLS, execute_task_tool,
@@ -93,7 +96,7 @@ class AgentHarness:
                  hooks=None, recover_fn=None, failure_fn=None, mutating_tools=(),
                  max_safety_steps=None, time_budget_s=None,
                  stagnation_cycles=config.DEFAULT_STAGNATION_CYCLES,
-                 tasks_dir=None, rules=None, clock=time.monotonic, on_step=None):
+                 tasks_dir=None, rules=None, num_ctx=None, clock=time.monotonic, on_step=None):
         self.chat_fn = chat_fn
         self.dispatch_fn = dispatch_fn
         self.store = store or TaskStore()
@@ -108,6 +111,10 @@ class AgentHarness:
         self.rules = config.rules_text() if rules is None else rules
         self.clock = clock
         self.on_step = on_step
+        self.output_store = ToolOutputStore(self.session_id, os.path.join(self.tasks_dir, "tool_outputs"))
+        self.compactor = Compactor(self.session_id, num_ctx=num_ctx,
+                                   transcripts_dir=os.path.join(self.tasks_dir, "transcripts"),
+                                   rules=self.rules)
         self.native = {}                          # name -> callable(args) for harness-owned tools
         self.native_schemas = list(TASK_TOOL_SCHEMAS)
         self.mutating = set(mutating_tools) | set(TASK_MUTATING_TOOLS)
@@ -166,7 +173,7 @@ class AgentHarness:
 
     def _prepare_messages(self, base_messages):
         msgs = [dict(m) for m in (base_messages or [])]
-        rules = {"role": "system", "content": f"[LUMI.md RULES]\n{self.rules}".strip()}
+        rules = rules_message(self.rules)
         insert_at = 1 if msgs and msgs[0].get("role") == "system" else 0
         msgs.insert(insert_at, rules)
         return msgs
@@ -182,7 +189,9 @@ class AgentHarness:
         return await _maybe_await(self.dispatch_fn(name, args))
 
     def _tool_message(self, name, result):
-        return {"role": "tool", "content": str(result), "name": name}
+        """Truncate first (full output to tool_outputs/), then build the history message."""
+        text, _ = self.output_store.truncate(name, str(result))
+        return {"role": "tool", "content": text, "name": name}
 
     # ---- the loop ----
     async def run(self, goal, base_messages=None):
@@ -204,7 +213,11 @@ class AgentHarness:
                 reason = "safety_cap"
                 break
 
-            call_messages = self.messages + [self._task_state_message()]
+            state = self._task_state_message()
+            if self.compactor.needs_compaction(self.messages + [state]):
+                self.messages = self.compactor.compact(self.messages, self.store.current())
+                print(f"[harness] compacted context (archive: {self.compactor.last_archive})")
+            call_messages = self.messages + [state]
             steps += 1
             if self.on_step:
                 try:
@@ -299,7 +312,7 @@ class AgentHarness:
         result = HarnessResult(
             session_id=self.session_id, termination_reason=reason, steps=steps,
             duration_s=self.clock() - start, final_text=final_text or "...",
-            tool_calls=self.tool_call_count)
+            tool_calls=self.tool_call_count, compactions=self.compactor.compactions)
         self._finish(result, goal)
         return result
 
