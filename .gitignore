@@ -162,3 +162,11 @@ results/
 third_party/pixel-agents/
 hybrid_mode.json
 ui_theme.json
+# --- Agent harness runtime state (modules/harness/) ---
+# Tracked: data/tasks/baseline_tests.txt, data/tasks/REFACTOR_REPORT.md,
+# data/hooks/*.py, data/workflows/*.json.
+data/tasks/lumi_tasks.json
+data/tasks/lumi_tasks.json.tmp
+data/tasks/tool_outputs/
+data/tasks/transcripts/
+data/tasks/*.log

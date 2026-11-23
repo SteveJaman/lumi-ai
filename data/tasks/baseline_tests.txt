@@ -1,0 +1,42 @@
+# Baseline test run — 2026-11-22T21:47:25-05:00
+# branch: harness/autonomy-upgrade @ c02c4fa
+# cmd: <lumi env>/python.exe -m pytest tests -q -p no:cacheprovider -rfE
+# python 3.11.15 (conda env lumi), pytest 9.1.1
+SUMMARY: 829 passed, 1 failed, 2 warnings (230s)
+PRE-EXISTING FAILURE: tests/test_agent_tools.py::test_safe_path_rejects_absolute_outside_root
+
+...F.................................................................... [  8%]
+........................................................................ [ 17%]
+........................................................................ [ 26%]
+........................................................................ [ 34%]
+........................................................................ [ 43%]
+........................................................................ [ 52%]
+........................................................................ [ 60%]
+........................................................................ [ 69%]
+........................................................................ [ 78%]
+........................................................................ [ 86%]
+........................................................................ [ 95%]
+......................................                                   [100%]
+================================== FAILURES ===================================
+________________ test_safe_path_rejects_absolute_outside_root _________________
+
+    def test_safe_path_rejects_absolute_outside_root():
+        with pytest.raises(ToolError):
+            _safe_path("C:/Windows/System32")
+>       with pytest.raises(ToolError):
+E       Failed: DID NOT RAISE ToolError
+
+tests\test_agent_tools.py:32: Failed
+============================== warnings summary ===============================
+..\..\..\anaconda3\envs\lumi\Lib\site-packages\discord\player.py:30
+  C:\Users\anguy\anaconda3\envs\lumi\Lib\site-packages\discord\player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
+    import audioop
+
+..\..\..\anaconda3\envs\lumi\Lib\site-packages\speech_recognition\__init__.py:7
+  C:\Users\anguy\anaconda3\envs\lumi\Lib\site-packages\speech_recognition\__init__.py:7: DeprecationWarning: 'aifc' is deprecated and slated for removal in Python 3.13
+    import aifc
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_agent_tools.py::test_safe_path_rejects_absolute_outside_root
+1 failed, 829 passed, 2 warnings in 230.21s (0:03:50)
