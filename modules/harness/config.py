@@ -1,0 +1,112 @@
+"""Harness configuration: the model section and rules of LUMI.md, paths, switches.
+
+LUMI.md's `## Model` section holds `key: value` lines (optionally as list items):
+
+    - agent_model: qwen2.5-coder:14b
+    - num_ctx: 8192
+
+The harness never hard-codes a model name; when LUMI.md has none, it falls back
+to constants.AGENT_MODEL_NAME / constants.MAIN_NUM_CTX.
+"""
+
+import os
+import re
+
+from constants import WORKSPACE_ROOT, DATA_ROOT
+
+LUMI_MD_PATH = os.path.join(WORKSPACE_ROOT, "LUMI.md")
+TASKS_DIR = os.path.join(DATA_ROOT, "tasks")
+HOOKS_DIR = os.path.join(DATA_ROOT, "hooks")
+WORKFLOWS_DIR = os.path.join(DATA_ROOT, "workflows")
+
+DEFAULT_MAX_SAFETY_STEPS = 200
+DEFAULT_TIME_BUDGET_S = 2 * 60 * 60
+DEFAULT_STAGNATION_CYCLES = 5
+DEFAULT_COMPACT_THRESHOLD = 0.80
+
+_KV = re.compile(r"^\s*(?:[-*]\s*)?`?([A-Za-z_][\w.-]*)`?\s*[:=]\s*`?([^`#]+?)`?\s*(?:#.*)?$")
+
+
+def _read(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def section(name, path=None):
+    """The body of the `## <name>` section of LUMI.md ('' when absent)."""
+    text = _read(path or LUMI_MD_PATH)
+    m = re.search(rf"^##\s+{re.escape(name)}\s*$(.*?)(?=^##\s|\Z)", text, re.M | re.S)
+    return m.group(1).strip() if m else ""
+
+
+def model_settings(path=None):
+    """Key/value pairs from the `## Model` section, lower-cased keys."""
+    out = {}
+    for line in section("Model", path).splitlines():
+        m = _KV.match(line)
+        if m:
+            out[m.group(1).lower()] = m.group(2).strip()
+    return out
+
+
+def agent_model(path=None):
+    """The model the harness runs (LUMI.md, else constants.AGENT_MODEL_NAME)."""
+    s = model_settings(path)
+    if s.get("agent_model"):
+        return s["agent_model"]
+    from constants import AGENT_MODEL_NAME
+    return AGENT_MODEL_NAME
+
+
+def num_ctx(path=None):
+    """The context window in tokens (LUMI.md, else constants.MAIN_NUM_CTX)."""
+    s = model_settings(path)
+    try:
+        return int(s["num_ctx"])
+    except (KeyError, ValueError):
+        from constants import MAIN_NUM_CTX
+        return MAIN_NUM_CTX
+
+
+def think(path=None):
+    """LUMI.md `think: true|false`; None (absent) leaves it to the model's default.
+    Models without thinking support (e.g. qwen2.5-coder) need false or absent."""
+    v = model_settings(path).get("think", "").lower()
+    if v in ("true", "yes", "on", "1"):
+        return True
+    if v in ("false", "no", "off", "0"):
+        return False
+    return None
+
+
+def rules_text(path=None):
+    """The `## Rules` section of LUMI.md, re-injected at start and after compaction."""
+    return section("Rules", path)
+
+
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+
+
+def harness_enabled():
+    """Agent mode uses the harness unless LUMI_HARNESS=0."""
+    return os.environ.get("LUMI_HARNESS", "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+def yolo_enabled():
+    """LUMI_AGENT_YOLO=1 skips human approval (hooks still gate every call)."""
+    return os.environ.get("LUMI_AGENT_YOLO", "").strip().lower() in ("1", "true", "on", "yes")
+
+
+def max_safety_steps():
+    return _env_int("LUMI_HARNESS_MAX_STEPS", DEFAULT_MAX_SAFETY_STEPS)
+
+
+def time_budget_s():
+    return _env_int("LUMI_HARNESS_TIME_BUDGET_S", DEFAULT_TIME_BUDGET_S)
