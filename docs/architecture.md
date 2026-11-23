@@ -89,6 +89,16 @@ Prompter run loop (tick every 50ms)
           │     ├─ Wrap external-content results in provenance markers
           │     ├─ Reinject original request if result > 800 chars
           │     └─ Loop back to chat_sync (up to MAX_AGENT_STEPS = 6)
+          │        (this bounded loop is now only the one-shot path:
+          │        `!agent <task>`, Minecraft mentions, LUMI_HARNESS=0)
+          │
+          ├─ Session agent mode (`!agent_on`) → _run_harness_turn():
+          │     modules/harness/ — persistent task DAG (data/tasks/),
+          │     goal-driven loop with no fixed step cap, PreToolUse /
+          │     PostToolUse hooks (data/hooks/), tool-output truncation +
+          │     archive-first compaction, Explore/Plan/Verify subagents,
+          │     data/workflows/. Model and context size from LUMI.md.
+          │     Full spec: CLAUDE.md.
           │
           └─ If plain text returned:
                 → push to TTS

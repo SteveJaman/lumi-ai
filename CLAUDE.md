@@ -13,7 +13,9 @@ what a Claude Code session needs to work on the repo cold. Read it fully before 
 - Models are served by local Ollama at `http://127.0.0.1:11434` (not `localhost`).
 - Run the suite (≈4 min):
   `C:/Users/anguy/anaconda3/envs/lumi/python.exe -m pytest tests -q -p no:cacheprovider -rfE`
-- Baseline (recorded in `data/tasks/baseline_tests.txt`): **829 passed, 1 failed**.
+- Baseline (recorded in `data/tasks/baseline_tests.txt`): **829 passed, 1 failed**
+  before the harness; the harness adds its own `tests/test_harness_*.py` and
+  `tests/test_mode_shapes.py`.
   The one known failure is `tests/test_agent_tools.py::test_safe_path_rejects_absolute_outside_root`
   (`/etc/passwd` doesn't raise on Windows). It is pre-existing; it does not block commits.
 
@@ -57,10 +59,25 @@ architecturally like Claude Code. The local model is 14B-class and **will** misb
 answer in prose instead of calling a tool, repeat failed actions, forget the plan. Each
 behavior below exists to counter one of those failure modes; none is optional.
 
+Routing: session agent mode (`!agent_on`) runs the harness
+(`Prompter._run_harness_turn`). One-shot agent turns (`!agent <task>`, a Minecraft
+mention while the game is on) keep the bounded legacy loop in `run_agent_turn`; that
+legacy path is the "plan mode" the shape regression test covers.
+
 Switches (environment, read at call time):
 - `LUMI_HARNESS=0` — fall back to the legacy loop (kill switch; default is on).
-- `LUMI_AGENT_YOLO=1` — skip the human approval prompt for confirm-required tools while
-  the harness runs. `PreToolUse` hooks still run first and can deny.
+- `LUMI_AGENT_YOLO=1` — skip the human approval prompt for `write_file`, `run_command`
+  and `run_in_terminal` while the harness runs. `PreToolUse` hooks still run first and
+  can deny. Email, calendar, finance, desktop and Claude Code tools always ask.
+- `LUMI_HARNESS_MAX_STEPS`, `LUMI_HARNESS_TIME_BUDGET_S` — override the safety cap / budget.
+
+Local-model compensation: qwen2.5-coder writes tool calls as JSON text, not structured
+`tool_calls`. Both the main loop and subagents run `_recover_text_tool_calls`
+(prompter.py) on text-only replies before treating them as text.
+
+Open tasks persist across runs: a new request is added as a task, but an
+`in_progress` task from an earlier (crashed or stopped) run is resumed first.
+"continue" adds nothing and just resumes.
 
 ### Change 1 — Persistent task DAG (`modules/harness/tasks.py`)
 - Store: `data/tasks/lumi_tasks.json`, atomic writes (temp file + `os.replace`) under a lock.
