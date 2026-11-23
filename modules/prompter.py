@@ -56,9 +56,14 @@ from modules import workspace_hub
 from modules import island_bridge
 from modules import claude_code
 from modules import model_router, agent_tracker, hybrid_mode
+from modules.harness import config as harness_config
 
 SENTENCE_SPLIT_PATTERN = re.compile(r'(?<=[.!?;\n])\s+')
 
+# Step cap for the legacy agent loop only (one-shot `!agent <task>` turns and
+# LUMI_HARNESS=0). Session agent mode runs modules/harness/, which has no fixed
+# step limit (it stops on task completion, stalls, stagnation, a 200-step safety
+# cap or its time budget).
 MAX_AGENT_STEPS = 6
 AGENT_REQUEST_TIMEOUT = 180
 SESSION_CONTINUITY_TURNS = 3
@@ -927,6 +932,19 @@ def _request_needs_tool(user_query: str) -> bool:
         return True
 
     return False
+
+
+def _recover_text_tool_calls(content: str):
+    """Tool calls the model wrote as text (JSON or bracket notation), as Ollama
+    tool-call dicts; [] when there are none. Same recovery chain as the legacy loop."""
+    recovered = [c for c in (_normalize_text_tool_call(o)
+                             for o in _extract_text_tool_calls(content)) if c]
+    for extract in (_extract_bracket_tool_calls, _extract_bracket_json_tool_calls,
+                    _extract_bracket_positional_tool_calls):
+        if recovered:
+            break
+        recovered = extract(content)
+    return recovered or []
 
 
 def _result_looks_like_failure(result) -> bool:
@@ -3002,6 +3020,78 @@ class Prompter:
             agent_tracker.settle(agent)
         return out
 
+    async def _run_harness_turn(self, latest_user_text, base_messages, all_tools, tier):
+        """Session agent mode: run modules/harness/ until a termination condition.
+        Model, context window and thinking come from LUMI.md (## Model)."""
+        from modules.harness.loop import AgentHarness
+
+        model = hybrid_mode.model_for(tier, harness_config.agent_model())
+        think = harness_config.think()
+        options = {
+            "temperature": 0.5,
+            "top_p": 0.9,
+            "repeat_penalty": 1.15,
+            "repeat_last_n": 64,
+            "num_ctx": harness_config.num_ctx(),
+        }
+        loop = asyncio.get_running_loop()
+
+        def chat(messages, tools):
+            return loop.run_in_executor(None, lambda: chat_sync(
+                model, messages, tools=tools, think=think,
+                keep_alive=gaming_mode.keep_alive("30s"), options=options))
+
+        async def dispatch(name, args):
+            result = await self._dispatch_tool_call(name, args)
+            try:
+                sm = getattr(self.signals, "self_model", None)
+                if sm is not None and hasattr(sm, "note_tool_call"):
+                    sm.note_tool_call(name)
+            except Exception:
+                pass
+            if name == "run_command" and isinstance(result, str):
+                hint = _command_error_hint(args.get("command", ""), result)
+                if hint:
+                    result = result + hint
+            print(f"{GRAY}  -> {str(result)[:300]}{RESET}")
+            return wrap_tool_result(name, str(result))
+
+        def on_step(step, task):
+            label = f"#{task['id']} {task['description'][:60]}" if task else "choosing a task"
+            print(f"{GRAY}Thinking (harness step {step}: {label})...{RESET}")
+            agent_tracker.update("main", "thinking", task=f"Step {step}: {label}", progress=None,
+                                 model=tier, model_name=model)
+
+        harness = AgentHarness(
+            chat, dispatch, tools=all_tools,
+            recover_fn=_recover_text_tool_calls,
+            failure_fn=_result_looks_like_failure,
+            mutating_tools=set(CONFIRM_REQUIRED_TOOLS) | {"spawn_subagent", "workflow_run"},
+            on_step=on_step,
+        )
+        self._harness = harness
+        try:
+            res = await harness.run(latest_user_text, base_messages)
+        finally:
+            self._harness = None
+        print(f"{GRAY}[harness] session {res.session_id} ended: {res.termination_reason} "
+              f"after {res.steps} step(s), {res.duration_s:.1f}s{RESET}")
+        if res.termination_reason == "error":
+            agent_tracker.update("main", "error", task=res.final_text)
+        else:
+            agent_tracker.settle("main")
+        if hasattr(self.signals, "emotional_state") and harness.tool_call_count:
+            try:
+                self.signals.emotional_state.note_turn_complete(
+                    [(res.termination_reason in ("task_complete", "turn_complete"), "harness")])
+            except Exception:
+                pass
+        reply = res.final_text
+        if res.termination_reason in ("model_stalled", "stagnant", "safety_cap", "time_budget"):
+            reply = (f"{reply}\n\n(I stopped: {res.termination_reason.replace('_', ' ')}. "
+                     f"Open tasks are saved; say \"continue\" to pick them back up.)")
+        return reply
+
     async def run_agent_turn(self, latest_user_text):
         # Agent turns always run on the main model (it has the tools); the tier
         # still shows on the Pipeline view and picks Claude Code's model if she
@@ -3059,6 +3149,12 @@ class Prompter:
                     print(f"{GRAY}[MCP] {len(mcp_schemas)} tool(s) available{RESET}")
             except Exception as e:
                 print(f"{GRAY}[MCP schema fetch failed: {e}]{RESET}")
+
+        # Session agent mode runs the long-horizon harness (modules/harness/).
+        # One-shot turns (!agent <task>, a Minecraft mention) and LUMI_HARNESS=0
+        # keep the bounded legacy loop below.
+        if self.agent_mode_enabled and harness_config.harness_enabled():
+            return await self._run_harness_turn(latest_user_text, messages, all_tools, tier)
 
         loop = asyncio.get_running_loop()
 
