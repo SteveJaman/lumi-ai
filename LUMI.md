@@ -21,4 +21,20 @@ These rules are re-read at the start of every agent run and after every context 
 
 ## Model
 
-TBD (set in Phase 2)
+The agent harness reads these lines (modules/harness/config.py). Change the model here,
+not in source code.
+
+- agent_model: qwen2.5-coder:14b
+- num_ctx: 8192
+- think: false
+
+Selected 2026-11-22 from the fallback chain (qwen2.5-coder:14b → qwen3:14b →
+qwen2.5-coder:7b → deepseek-coder:6.7b); the first candidate passed:
+- `ollama run qwen2.5-coder:14b "reply with exactly the word OK and nothing else"` → `OK`
+- Tool-call test (`get_time`, no args): emits a plausible JSON call
+  `{"name": "get_time", "arguments": {}}` in the message text rather than as a structured
+  `tool_calls` entry. The harness recovers text-form calls (`_recover_text_tool_calls`).
+- 12.3 tok/s; Ollama reports 10 GB loaded, 18%/82% CPU/GPU at num_ctx 8192 (a partial
+  spill on the 11 GB card). No thinking support, hence `think: false`.
+- For comparison, qwen3:8b (already installed) emits structured tool calls at 31.9 tok/s
+  and fits fully in VRAM; to use it set `agent_model: qwen3:8b` and remove `think: false`.
