@@ -1,0 +1,70 @@
+"""
+Hand a hard task to Claude Code when the Claude API can't take it.
+
+Normal turns run on local Ollama. A hard (opus-tier) turn would escalate to the
+Claude router while Cloud Escalation is on; when that can't happen (no
+ANTHROPIC_API_KEY, or the API refused the account, e.g. no credit) and the turn
+is a coding or reasoning task, the prompter asks you whether to hand it to
+Claude Code instead. Claude Code is the official CLI running on your own Claude
+login (modules/claude_code.py: read-only tools, Lumi's private files denied).
+Decline, and the turn is answered locally as usual.
+
+    offer_reason(tier, text) -> str | None   why to offer the handoff, or None
+    looks_like_task(text) -> bool            coding / reasoning work, not chat
+    build_task(text) -> str                  what Claude Code receives
+    format_reply(answer) -> str              what Lumi says back
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Optional
+
+from modules import claude_code, claude_router, hybrid_mode
+
+MODE = "read_only"
+MODEL = "opus"                     # Claude Code's own alias; claude_code.run falls back to its default
+MIN_TASK_CHARS = 25
+
+_TASK_RE = re.compile(
+    r"\b(code|function|class|script|implement|refactor|debug|bug|error|exception|traceback|stack trace|"
+    r"fix|test|regex|sql|query|api|endpoint|algorithm|complexity|architect(ure)?|design|schema|optimi[sz]e|"
+    r"memory leak|race condition|deadlock|security|prove|proof|derive|analy[sz]e|explain why|step by step|"
+    r"python|javascript|typescript|rust|java|c\+\+|c#|golang|repo|module|file|compile|build)\b", re.I)
+
+
+def looks_like_task(text: str) -> bool:
+    t = (text or "").strip()
+    if len(t) < MIN_TASK_CHARS:
+        return False
+    return "```" in t or bool(_TASK_RE.search(t))
+
+
+def offer_reason(tier: Optional[str], text: str) -> Optional[str]:
+    """Why this turn should be offered to Claude Code, or None to stay local.
+    Offered only when it would have escalated to Claude, can't, Claude Code is
+    installed, and the message is real work rather than chat."""
+    blocked = hybrid_mode.escalation_blocked(tier)
+    if not blocked or not claude_code.available() or not looks_like_task(text):
+        return None
+    return blocked
+
+
+def build_task(text: str) -> str:
+    """The user's message as Claude Code's task, within its size limit."""
+    t = (text or "").strip()
+    limit = claude_code.MAX_TASK_CHARS
+    if len(t) > limit:
+        t = t[: limit - 40].rstrip() + "\n[message shortened to fit]"
+    return t
+
+
+def format_reply(answer: str) -> str:
+    answer = (answer or "").strip() or "(Claude Code finished without an answer.)"
+    return f"I handed that one to Claude Code. Here's what it came back with:\n\n{answer}"
+
+
+def api_reason() -> str:
+    """Short reason for logs and the Models tab."""
+    ok, why = claude_router.api_status()
+    return "" if ok else why

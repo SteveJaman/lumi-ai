@@ -57,6 +57,44 @@ _usage_lock = threading.Lock()
 _ACCOUNT_ERROR_RE = re.compile(r"credit balance|billing|\((401|403)\)|api[ _-]?key|permission|unauthori[sz]ed",
                                re.I)
 
+# After the API refuses the account (no credit, bad key), don't try again for a
+# while: every turn would wait on a call that can't succeed. Memory only, so a
+# restart (e.g. after adding credit) tries again at once.
+ACCOUNT_RETRY_S = 3600
+_account = {"down_until": 0.0, "reason": ""}
+
+
+def is_account_error(err: Any) -> bool:
+    """A refusal that no tier can get past: credit, billing, key, permission."""
+    return bool(_ACCOUNT_ERROR_RE.search(str(err or "")))
+
+
+def mark_account_error(err: Any) -> None:
+    text = str(err or "")
+    why = ("Your Anthropic API account has no credit" if re.search(r"credit balance|billing", text, re.I)
+           else "The Anthropic API refused the key")
+    _account["down_until"] = time.time() + ACCOUNT_RETRY_S
+    _account["reason"] = why
+
+
+def api_status(client=None) -> Tuple[bool, str]:
+    """(usable, why not). Usable means a key is set and the API hasn't refused
+    the account in the last ACCOUNT_RETRY_S seconds. Makes no network call."""
+    try:
+        cl = client or _client()
+        if not cl.is_configured():
+            return False, "No ANTHROPIC_API_KEY is set"
+    except Exception as e:
+        return False, f"The Anthropic client isn't available ({type(e).__name__})"
+    if time.time() < _account["down_until"]:
+        return False, _account["reason"]
+    return True, ""
+
+
+def clear_account_error() -> None:
+    _account["down_until"] = 0.0
+    _account["reason"] = ""
+
 # ─── heuristics ──────────────────────────────────────────────────────
 
 _SMALL_TALK = re.compile(
@@ -184,8 +222,8 @@ def _classify(prompt: str, context: Any = None, client=None) -> Tuple[str, str]:
     if tier is not None:
         return tier, reason
     cl = client or _client()
-    if not cl.is_configured():
-        return DEFAULT_TIER, "ambiguous; no API key for the classifier"
+    if not api_status(cl)[0]:
+        return DEFAULT_TIER, "ambiguous; the Claude API isn't usable for the classifier"
     ctx = _context_text(context)
     user = (prompt or "")[:CLASSIFIER_PROMPT_CHARS]
     if ctx:
@@ -263,6 +301,9 @@ def _call_sync(messages, system_prompt, tools=None, *, tier: Optional[str] = Non
     cl = client or _client()
     if not cl.is_configured():
         raise RuntimeError("No Anthropic API key. Add one in Settings -> Models -> Providers.")
+    ok, why = api_status(cl)
+    if not ok:                                    # refused a moment ago: don't wait on it again
+        raise RuntimeError(f"Claude API unavailable: {why}.")
     msgs = list(messages or [])
     if system_prompt:
         msgs = [{"role": "system", "content": str(system_prompt)}] + msgs
@@ -290,7 +331,9 @@ def _call_sync(messages, system_prompt, tools=None, *, tier: Optional[str] = Non
                 problem = malformed_tool_call(resp, tools)
         up = next_tier(tier)
         # Billing, key and permission errors hit every tier alike: don't spend a retry on them.
-        account_problem = err is not None and bool(_ACCOUNT_ERROR_RE.search(str(err)))
+        account_problem = err is not None and is_account_error(err)
+        if account_problem:
+            mark_account_error(err)
         if problem:
             _emit_failure(tier, model, problem, None if (escalated or account_problem) else up)
         if problem and not escalated and up is not None and not account_problem:

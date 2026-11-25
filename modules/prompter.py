@@ -54,7 +54,7 @@ from modules import hitl_server
 from modules import gaming_mode
 from modules import workspace_hub
 from modules import island_bridge
-from modules import claude_code
+from modules import claude_code, claude_handoff, claude_router
 from modules import model_router, agent_tracker, hybrid_mode
 from modules.harness import config as harness_config
 
@@ -1124,6 +1124,16 @@ def _show_route(tier, model, mode):
         pass                      # the UI must never break a turn
 
 
+def _show_handoff(tier, reason, where="claude_code"):
+    """The Claude Code handoff, on the Models tab."""
+    try:
+        from modules import workspace
+        workspace.emit_model_route(tier or "opus", "Claude Code" if where == "claude_code" else MODEL_NAME,
+                                   where, reason, "handoff")
+    except Exception:
+        pass
+
+
 def _should_use_fast_model(user_text, agent_mode):
     if not FAST_MODEL_ENABLED:
         return False
@@ -1718,7 +1728,7 @@ class Prompter:
                 pass
         return reply
 
-    def conversational_request(self, latest_user_text, pending_user=None, tier=None):
+    def conversational_request(self, latest_user_text, pending_user=None, tier=None, force_local=False):
         """The model, messages and options for a conversational turn. No side
         effects (no tracker update, no _route_tier), so a speculative turn can
         build one too.
@@ -1734,6 +1744,7 @@ class Prompter:
         #     reasoning, and memory injection all stay intact.
         #   - Plain text turn → fast model if short and simple,
         #     otherwise main model.
+        #   - force_local: never escalate (the Claude API just refused this turn).
         last_msg = self.signals.history[-1] if self.signals.history else {}
         attachments = [] if pending_user is not None else (last_msg.get("attachments") or [])
         has_attachment = bool(attachments)
@@ -1756,7 +1767,7 @@ class Prompter:
             label = "fast" if use_fast else "full"
             think_flag = not use_fast
             # Hybrid mode: hard (opus) prompts may escalate to the cloud model.
-            escalated = hybrid_mode.model_for(tier, model)
+            escalated = model if force_local else hybrid_mode.model_for(tier, model)
             if escalated != model:
                 model, label, think_flag = escalated, "cloud", None
             _show_route(tier, model, "chat")
@@ -1834,8 +1845,23 @@ class Prompter:
             if run is not None:
                 return await self._finish_speculative(run, latest_user_text)
 
-        req = self.conversational_request(latest_user_text, tier=await self._route_for(latest_user_text))
+        tier = await self._route_for(latest_user_text)
+        req = self.conversational_request(latest_user_text, tier=tier)
         self._note_route(req)
+
+        # A hard task that would escalate to Claude but can't (no key / no credit):
+        # offer it to Claude Code (modules/claude_handoff.py).
+        reason = claude_handoff.offer_reason(req["tier"], latest_user_text)
+        if reason:
+            handed = await self._offer_claude_code(latest_user_text, reason, req["tier"])
+            if handed is not None:
+                return handed
+        return await self._run_chat_request(req, latest_user_text, tier)
+
+    async def _run_chat_request(self, req, latest_user_text, tier, recover=True):
+        """Run one conversational request (streamed when local) and return the reply.
+        recover: if a Claude call is refused for account reasons (no credit, bad
+        key), offer Claude Code or answer locally instead of failing the turn."""
         model, label, think_flag = req["model"], req["label"], req["think"]
         keep_alive, messages, options = req["keep_alive"], req["messages"], req["options"]
         reply_cap = req["reply_cap"]
@@ -1857,6 +1883,19 @@ class Prompter:
                 ),
             )
         except Exception as e:
+            if recover and label == "cloud" and stream.entry is None and claude_router.is_account_error(e):
+                # The API refused the account (no credit / bad key) on this very turn;
+                # claude_router remembers it, so later turns skip straight here.
+                print(f"{GRAY}[Router] Claude API unavailable ({claude_handoff.api_reason()}); "
+                      f"staying local.{RESET}")
+                reason = claude_handoff.offer_reason(req["tier"], latest_user_text)
+                if reason:
+                    handed = await self._offer_claude_code(latest_user_text, reason, req["tier"])
+                    if handed is not None:
+                        return handed
+                local = self.conversational_request(latest_user_text, tier=tier, force_local=True)
+                self._note_route(local)
+                return await self._run_chat_request(local, latest_user_text, tier, recover=False)
             print(f"\n{GRAY}[System Error: Chat request failed - {e}]{RESET}")
             agent_tracker.update("main", "error", task=f"Chat model failed: {e}")
             if stream.entry is None:
@@ -1882,6 +1921,41 @@ class Prompter:
             # The reply is what she said, up to the sentence limit.
             return _finish_reply(stream.spoken) or "..."
         return _finish_reply(resp.content, truncated) or "..."
+
+    async def _offer_claude_code(self, text, reason, tier):
+        """A hard task the Claude API can't take (modules/claude_handoff.py): ask
+        whether Claude Code (your Claude login, read-only) should do it. Returns
+        Lumi's reply, or None to answer locally (declined, or Claude Code failed)."""
+        loop = asyncio.get_running_loop()
+        task = claude_handoff.build_task(text)
+        preview = dict(claude_code.preview(task, claude_handoff.MODE, claude_handoff.MODEL),
+                       why=(f"This looks like a hard task, and the Claude API can't take it ({reason}). "
+                            "Approve to hand it to Claude Code on your Claude login; decline and Lumi "
+                            "answers with her local model."))
+        print(f"{GRAY}[Router] Hard task, Claude API unavailable ({reason}). "
+              f"Asking to hand it to Claude Code...{RESET}")
+        _show_handoff(tier, f"asking you: {reason}")
+        if not await self._confirm(claude_code.TOOL_NAME, preview, agent="office"):
+            print(f"{GRAY}[Router] Handoff declined; answering locally.{RESET}")
+            _show_handoff(tier, "declined: answering locally", where="local")
+            return None
+        print(f"{GRAY}[Claude Code is working… this can take a few minutes]{RESET}")
+        agent_tracker.update("office", "executing", task=f"Claude Code: {task}", progress=50,
+                             model=tier or "opus", model_name="Claude Code")
+        try:
+            out = await loop.run_in_executor(None, claude_code.run, task, claude_handoff.MODE,
+                                             claude_handoff.MODEL)
+        except claude_code.ClaudeCodeError as e:
+            agent_tracker.update("office", "error", task=str(e))
+            print(f"{GRAY}[Router] Claude Code couldn't take it ({e}); answering locally.{RESET}")
+            _show_handoff(tier, f"Claude Code failed ({e}): answering locally", where="local")
+            return None
+        except BaseException as e:                       # never leave the card stuck on "executing"
+            agent_tracker.update("office", "error", task=f"{type(e).__name__}: {e}")
+            raise
+        agent_tracker.settle("office")
+        _show_handoff(tier, "Claude Code answered")
+        return claude_handoff.format_reply(out)
 
     async def _finish_speculative(self, run, final_text):
         """An accepted speculative turn: keep what it wrote and continue from

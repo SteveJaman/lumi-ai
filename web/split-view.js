@@ -366,12 +366,12 @@ function onHybrid(st) {
   else setRouter({ state: 'ready', reason: 'Hard (opus-tier) prompts go to the Claude router.' });
 }
 
-const WHERE = { local: 'Local', claude: 'Claude', cloud: 'Cloud' };
+const WHERE = { local: 'Local', claude: 'Claude', cloud: 'Cloud', claude_code: 'Claude Code' };
 function onRoute(msg, replay) {
   if (!msg || !msg.tier) return;
   const where = WHERE[msg.where] || 'Local';
   const line = `${where} · ${cap(msg.tier)} tier on ${msg.model}${msg.reason ? ` — ${msg.reason}` : ''}`;
-  if (msg.where !== 'claude') {
+  if (msg.where !== 'claude' && msg.where !== 'claude_code') {
     // A local turn: no Claude card lights up, and the reason box says what ran.
     document.querySelectorAll('#split-panel-models .mp-tier').forEach((li) => {
       li.classList.remove('on'); li.removeAttribute('aria-current');
@@ -382,7 +382,9 @@ function onRoute(msg, replay) {
     pulseLive(`${msg.mode || 'chat'} · ${where.toLowerCase()}`);
     hint();
   }
-  logLine(msg.where === 'claude' ? 'switch' : 'route', `${cap(msg.mode || 'chat')} turn: ${line}`, msg.ts);
+  const kind = msg.where === 'claude_code' ? 'warn' : msg.where === 'claude' ? 'switch' : 'route';
+  logLine(kind, `${cap(msg.mode || 'chat')}${msg.mode === 'handoff' ? '' : ' turn'}: ${line}`, msg.ts);
+  if (msg.where === 'claude_code') $('mp-reason').textContent = line;
 }
 
 function onClaudeFailed(msg) {

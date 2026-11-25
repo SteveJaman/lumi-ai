@@ -93,6 +93,12 @@ def cloud_ready() -> Optional[str]:
         provider = parse_model_spec(spec)[0]
         if not get_client(provider).is_configured():
             return f"No API key for {provider}. Add one in Settings → Models → Providers."
+        if provider == "anthropic":
+            # A key whose account the API refused (no credit, revoked) is no better than none.
+            from modules import claude_router
+            ok, why = claude_router.api_status()
+            if not ok:
+                return f"{why}. Hard tasks are offered to Claude Code instead."
     except Exception as e:
         return f"Cloud provider unavailable ({type(e).__name__})."
     return None
@@ -103,6 +109,21 @@ def model_for(tier: Optional[str], local_model: str) -> str:
     if tier == "opus" and enabled() and cloud_ready() is None:
         return cloud_model()
     return local_model
+
+
+def escalation_blocked(tier: Optional[str]) -> Optional[str]:
+    """Why a hard (opus) turn that would escalate to Claude can't, or None.
+    Only for an Anthropic cloud model with escalation on; the prompter then
+    offers the task to Claude Code (your Claude login) with your approval."""
+    if tier != "opus" or not enabled():
+        return None
+    try:
+        from modules.llm_providers import parse_model_spec
+        if parse_model_spec(cloud_model())[0] != "anthropic":
+            return None
+    except Exception:
+        return None
+    return cloud_ready()
 
 
 def claude_code_allowed() -> bool:

@@ -16,7 +16,7 @@ Socket.io (only to tabs that sent ``workspace_join``; host-only):
   claude_token_stream  {tokens, input_tokens, output_tokens, model, model_id,
                         classifier, totals: {tokens, cost_usd, opus_equivalent_usd, saved_usd, ...}, ts}
   autonomous_step      {step, phase: plan|execute|verify|done, status, tool?, session_id, ts}
-  model_route          {tier, model, where: "local"|"claude"|"cloud", reason, mode, ts}
+  model_route          {tier, model, where: "local"|"claude"|"cloud"|"claude_code", reason, mode, ts}
                        every chat / agent turn, local or not, so the tab shows what really ran
   model_pipeline_state {switch, tokens, steps, route, usage, router}   sent once on workspace_join:
                        usage = data/claude_usage.json totals, router = is Claude in use and why not
@@ -362,7 +362,7 @@ def emit_claude_failure(tier: str, model_id: str, error: str, retry_tier: Option
 def emit_model_route(tier: str, model: str, where: str, reason: str = "", mode: str = "chat") -> None:
     """The model a turn runs on, local or Claude (prompter.py)."""
     global _last_route
-    ev = {"tier": str(tier or "sonnet"), "model": str(model or ""), "where": where if where in ("local", "claude", "cloud") else "local",
+    ev = {"tier": str(tier or "sonnet"), "model": str(model or ""), "where": where if where in ("local", "claude", "cloud", "claude_code") else "local",
           "reason": str(reason or "")[:200], "mode": str(mode), "ts": time.time()}
     with _lock:
         _last_route = ev
