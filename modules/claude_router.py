@@ -54,6 +54,8 @@ CLASSIFIER_MAX_TOKENS = 8
 CLASSIFIER_PROMPT_CHARS = 2000
 
 _usage_lock = threading.Lock()
+_ACCOUNT_ERROR_RE = re.compile(r"credit balance|billing|\((401|403)\)|api[ _-]?key|permission|unauthori[sz]ed",
+                               re.I)
 
 # ─── heuristics ──────────────────────────────────────────────────────
 
@@ -287,7 +289,11 @@ def _call_sync(messages, system_prompt, tools=None, *, tier: Optional[str] = Non
             if tools:
                 problem = malformed_tool_call(resp, tools)
         up = next_tier(tier)
-        if problem and not escalated and up is not None:
+        # Billing, key and permission errors hit every tier alike: don't spend a retry on them.
+        account_problem = err is not None and bool(_ACCOUNT_ERROR_RE.search(str(err)))
+        if problem:
+            _emit_failure(tier, model, problem, None if (escalated or account_problem) else up)
+        if problem and not escalated and up is not None and not account_problem:
             escalated = True
             reason = f"auto-escalation from {tier}: {problem}"
             tier = up
@@ -407,6 +413,14 @@ def _emit_switch(tier: str, model: str, reason: str) -> None:
     try:
         from modules import workspace
         workspace.emit_model_switch(tier, model, reason, TIER_COST[tier])
+    except Exception:
+        pass
+
+
+def _emit_failure(tier: str, model: str, problem: str, retry_tier: Optional[str]) -> None:
+    try:
+        from modules import workspace
+        workspace.emit_claude_failure(tier, model, problem, retry_tier)
     except Exception:
         pass
 

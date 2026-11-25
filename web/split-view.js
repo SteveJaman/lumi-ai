@@ -131,6 +131,9 @@ function wireSocket() {
   sock.on('claude_token_stream', onTokens);
   sock.on('autonomous_step', (m) => onStep(m, false));
   sock.on('model_pipeline_state', onPipelineState);
+  sock.on('model_route', onRoute);
+  sock.on('claude_call_failed', onClaudeFailed);
+  sock.on('hybrid_mode_update', onHybrid);
   if (open) join();
 }
 
@@ -332,9 +335,73 @@ function showTier(msg) {
   $('mp-reason').textContent = `${cap(msg.model)} · ${msg.reason || ''}`;
 }
 
+/* Router chip: OFF (Claude isn't used, and the note says why), READY, or
+   ACTIVE for a few seconds after each Claude call. */
+let router = { state: 'off', reason: '' };
+let routerTimer = 0;
+
+function setRouter(r) {
+  if (!r) return;
+  router = { state: r.state === 'ready' ? 'ready' : 'off', reason: r.reason || '' };
+  paintRouter(router.state);
+}
+function paintRouter(state) {
+  const chip = $('mp-router');
+  chip.dataset.state = state;
+  chip.textContent = state;
+  $('mp-router-note').textContent = state === 'active' ? 'Claude is answering this turn.' : router.reason;
+}
+function routerActive() {
+  paintRouter('active');
+  clearTimeout(routerTimer);
+  routerTimer = setTimeout(() => paintRouter(router.state), 6000);
+}
+function onHybrid(st) {
+  // hybrid_mode_update goes to every tab; same rule as workspace.router_status().
+  if (!st) return;
+  const auto = String(st.cloud_model || '').toLowerCase() === 'anthropic:auto';
+  if (!st.enabled) setRouter({ state: 'off', reason: 'Cloud Escalation is off, so every turn runs on your local models.' });
+  else if (!st.cloud_ready) setRouter({ state: 'off', reason: st.cloud_problem || "The cloud model isn't ready." });
+  else if (!auto) setRouter({ state: 'off', reason: `Escalation goes straight to ${st.cloud_model}, not the router.` });
+  else setRouter({ state: 'ready', reason: 'Hard (opus-tier) prompts go to the Claude router.' });
+}
+
+const WHERE = { local: 'Local', claude: 'Claude', cloud: 'Cloud' };
+function onRoute(msg, replay) {
+  if (!msg || !msg.tier) return;
+  const where = WHERE[msg.where] || 'Local';
+  const line = `${where} · ${cap(msg.tier)} tier on ${msg.model}${msg.reason ? ` — ${msg.reason}` : ''}`;
+  if (msg.where !== 'claude') {
+    // A local turn: no Claude card lights up, and the reason box says what ran.
+    document.querySelectorAll('#split-panel-models .mp-tier').forEach((li) => {
+      li.classList.remove('on'); li.removeAttribute('aria-current');
+    });
+    $('mp-reason').textContent = line;
+  }
+  if (!replay) {
+    pulseLive(`${msg.mode || 'chat'} · ${where.toLowerCase()}`);
+    hint();
+  }
+  logLine(msg.where === 'claude' ? 'switch' : 'route', `${cap(msg.mode || 'chat')} turn: ${line}`, msg.ts);
+}
+
+function onClaudeFailed(msg) {
+  if (!msg || !msg.model) return;
+  const next = msg.retry_tier ? ` Retrying on ${cap(msg.retry_tier)}.` : '';
+  logLine('bad', `${cap(msg.model)} failed: ${msg.error}${next}`, msg.ts);
+  if (!msg.retry_tier) {
+    clearTimeout(routerTimer);
+    paintRouter(router.state);
+    $('mp-router-note').textContent = `Last Claude call failed: ${msg.error}`;
+    setLive('bad', 'claude failed');
+  }
+  hint();
+}
+
 function onModelSwitch(msg) {
   if (!msg || !msg.model) return;
   showTier(msg);
+  routerActive();
   pulseLive(`${msg.model} working`);
   const esc = /escalation/i.test(msg.reason || '');
   logLine(esc ? 'warn' : 'switch',
@@ -413,12 +480,16 @@ function onStep(msg, replay) {
 
 function onPipelineState(msg) {
   if (!msg) return;
+  if (msg.router) setRouter(msg.router);
+  if (msg.usage) showTotals(msg.usage);                 // data/claude_usage.json, so totals survive restarts
   if (msg.switch) showTier(msg.switch);
   if (msg.tokens) showTotals(msg.tokens.totals);
+  // A rejoin re-sends everything: start the log over so nothing shows twice.
+  $('mp-log').textContent = '';
   const steps = Array.isArray(msg.steps) ? msg.steps : [];
   if (steps.length) {
-    $('mp-log').textContent = '';
     resetFlow();
     for (const st of steps) onStep(st, true);
   }
+  if (msg.route && (!msg.switch || msg.route.ts > msg.switch.ts)) onRoute(msg.route, true);
 }

@@ -1108,6 +1108,22 @@ _OFFICE_TASKS = {
 }
 
 
+def _show_route(tier, model, mode):
+    """Tell the workspace's Models tab which model this turn runs on and why.
+    A Claude turn then gets its own claude_model_switch from claude_router."""
+    try:
+        from modules import workspace
+        from modules.llm_providers import parse_model_spec
+        provider = parse_model_spec(model)[0]
+        where = "local" if provider == "ollama" else "claude" if provider == "anthropic" else "cloud"
+        reason = model_router.last_reason()
+        if where == "local" and tier == "opus" and not hybrid_mode.enabled():
+            reason = f"{reason}; Cloud Escalation is off" if reason else "Cloud Escalation is off"
+        workspace.emit_model_route(tier, model, where, reason, mode)
+    except Exception:
+        pass                      # the UI must never break a turn
+
+
 def _should_use_fast_model(user_text, agent_mode):
     if not FAST_MODEL_ENABLED:
         return False
@@ -1743,6 +1759,7 @@ class Prompter:
             escalated = hybrid_mode.model_for(tier, model)
             if escalated != model:
                 model, label, think_flag = escalated, "cloud", None
+            _show_route(tier, model, "chat")
         tier = "sonnet" if has_attachment else tier
 
         # Gaming Mode: 0 unloads the model from VRAM right after the reply.
@@ -3062,6 +3079,7 @@ class Prompter:
         tier = await loop.run_in_executor(None, model_router.route_model, goal)
         local = await loop.run_in_executor(None, model_router.agent_model_for_tier, "opus")
         model = hybrid_mode.model_for(tier, local)        # PRIMARY tier; cloud only with escalation on
+        _show_route(tier, model, "autonomous")
         think = harness_config.think()
         options = {"temperature": 0.4, "top_p": 0.9, "repeat_penalty": 1.15,
                    "repeat_last_n": 64, "num_ctx": harness_config.num_ctx()}
@@ -3129,6 +3147,7 @@ class Prompter:
         local_model = await asyncio.get_running_loop().run_in_executor(
             None, model_router.agent_model_for_tier, tier)
         model = hybrid_mode.model_for(tier, local_model)
+        _show_route(tier, model, "agent")
         think = harness_config.think()
         # Procedural memory: a learned workflow from data/skills/ that matches this request.
         from modules import skills_manager

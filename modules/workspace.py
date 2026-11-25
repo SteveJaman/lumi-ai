@@ -16,7 +16,10 @@ Socket.io (only to tabs that sent ``workspace_join``; host-only):
   claude_token_stream  {tokens, input_tokens, output_tokens, model, model_id,
                         classifier, totals: {tokens, cost_usd, opus_equivalent_usd, saved_usd, ...}, ts}
   autonomous_step      {step, phase: plan|execute|verify|done, status, tool?, session_id, ts}
-  model_pipeline_state {switch, tokens, steps}   sent once on workspace_join (catch-up)
+  model_route          {tier, model, where: "local"|"claude"|"cloud", reason, mode, ts}
+                       every chat / agent turn, local or not, so the tab shows what really ran
+  model_pipeline_state {switch, tokens, steps, route, usage, router}   sent once on workspace_join:
+                       usage = data/claude_usage.json totals, router = is Claude in use and why not
 
 The file explorer is sandboxed to DATA_ROOT: paths are resolved with
 realpath (symlinks and junctions followed first) and must stay inside it.
@@ -64,6 +67,7 @@ _last_frame: Optional[Dict[str, Any]] = None
 _last_status: Optional[Dict[str, Any]] = None
 _last_switch: Optional[Dict[str, Any]] = None
 _last_tokens: Optional[Dict[str, Any]] = None
+_last_route: Optional[Dict[str, Any]] = None
 _recent_steps: List[Dict[str, Any]] = []
 MAX_RECENT_STEPS = 30
 
@@ -223,7 +227,9 @@ def install(server) -> None:
         with _lock:
             _viewers.add(sid)
             frame, status = _last_frame, _last_status
-            pipeline = {"switch": _last_switch, "tokens": _last_tokens, "steps": list(_recent_steps)}
+            pipeline = {"switch": _last_switch, "tokens": _last_tokens, "steps": list(_recent_steps),
+                        "route": _last_route}
+        pipeline.update(await asyncio.get_running_loop().run_in_executor(None, pipeline_extras))
         await sio.emit("model_pipeline_state", pipeline, to=sid)
         if status:
             await sio.emit("browser_status", status, to=sid)
@@ -311,6 +317,56 @@ def emit_token_usage(tier: str, model_id: str, input_tokens: int, output_tokens:
     with _lock:
         _last_tokens = ev
     _emit("claude_token_stream", ev)
+
+
+def router_status() -> Dict[str, Any]:
+    """Whether chat can reach the Claude router right now, and if not, why."""
+    from modules import hybrid_mode
+    st = hybrid_mode.status()
+    spec = (st.get("cloud_model") or "").strip()
+    auto = spec.lower() == "anthropic:auto"
+    if not st.get("enabled"):
+        state, why = "off", "Cloud Escalation is off, so every turn runs on your local models."
+    elif not st.get("cloud_ready"):
+        state, why = "off", st.get("cloud_problem") or "The cloud model isn't ready."
+    elif not auto:
+        state, why = "off", f"Escalation goes straight to {spec}, not the router."
+    else:
+        state, why = "ready", "Hard (opus-tier) prompts go to the Claude router."
+    return {"state": state, "reason": why, "cloud_model": spec}
+
+
+def pipeline_extras() -> Dict[str, Any]:
+    """Saved usage and router state for a tab that just opened. Never raises."""
+    out: Dict[str, Any] = {}
+    try:
+        from modules import claude_router
+        u = claude_router.usage_summary()
+        out["usage"] = dict(u["totals"], calls_by_tier={t: u["tiers"][t]["calls"] for t in u["tiers"]},
+                            updated=u.get("updated"))
+    except Exception:
+        out["usage"] = None
+    try:
+        out["router"] = router_status()
+    except Exception:
+        out["router"] = None
+    return out
+
+
+def emit_claude_failure(tier: str, model_id: str, error: str, retry_tier: Optional[str] = None) -> None:
+    """A Claude call failed (claude_router); retry_tier is where it escalates next, if anywhere."""
+    _emit("claude_call_failed", {"model": str(tier), "model_id": str(model_id), "error": str(error)[:240],
+                                 "retry_tier": retry_tier, "ts": time.time()})
+
+
+def emit_model_route(tier: str, model: str, where: str, reason: str = "", mode: str = "chat") -> None:
+    """The model a turn runs on, local or Claude (prompter.py)."""
+    global _last_route
+    ev = {"tier": str(tier or "sonnet"), "model": str(model or ""), "where": where if where in ("local", "claude", "cloud") else "local",
+          "reason": str(reason or "")[:200], "mode": str(mode), "ts": time.time()}
+    with _lock:
+        _last_route = ev
+    _emit("model_route", ev)
 
 
 def emit_autonomous_step(phase: str, data: Optional[Dict[str, Any]] = None) -> None:

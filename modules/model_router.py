@@ -62,12 +62,18 @@ _SYSTEM = (
 _TIER_WORD = re.compile(r"\b(haiku|sonnet|opus)\b", re.I)
 
 _last_error_log = {"t": 0.0}
+_last_reason = {"text": ""}
 _down_until = {"t": 0.0}
 _lock = threading.Lock()
 
 
 def _gaming() -> bool:
     return bool(getattr(constants, "GAMING_MODE", False))
+
+
+def last_reason() -> str:
+    """How route_model decided its last answer."""
+    return _last_reason["text"]
 
 
 def parse_tier(text: str) -> str:
@@ -102,17 +108,24 @@ def _ask_model(prompt: str) -> str:
 
 
 def route_model(prompt: str) -> str:
-    """Return "haiku", "sonnet" or "opus" for this prompt. Never raises."""
+    """Return "haiku", "sonnet" or "opus" for this prompt. Never raises.
+    last_reason() says how it was decided (the Models tab shows it)."""
     try:
         quick = heuristic_tier(prompt)
         if quick is not None:
+            _last_reason["text"] = "small talk" if (prompt or "").strip() else "empty prompt"
             return quick
         if _gaming():
+            _last_reason["text"] = "Gaming Mode: default tier"
             return DEFAULT_TIER                       # don't load the router model while gaming
         if time.time() < _down_until["t"]:
+            _last_reason["text"] = "local router unavailable: default tier"
             return DEFAULT_TIER                       # it failed a moment ago: don't make every message wait
-        return parse_tier(_ask_model(str(prompt)))
+        tier = parse_tier(_ask_model(str(prompt)))
+        _last_reason["text"] = f"sorted by {ROUTER_MODEL}"
+        return tier
     except Exception as e:                            # Ollama down, model missing, timeout, bad JSON
+        _last_reason["text"] = f"local router failed ({type(e).__name__}): fell back to sonnet"
         now = time.time()
         with _lock:
             _down_until["t"] = now + COOLDOWN_S

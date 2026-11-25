@@ -4004,3 +4004,9 @@ body.lumi-booting #app-shell { visibility: hidden; }
   .mp-node[data-state="active"] .mp-node__dot { animation: none; }
   .mp-tier, .mp__bar-fill { transition: none; }
 }
+
+.mp__router { margin-left: 6px; padding: 1px 7px; border: 1px solid var(--mp-line); border-radius: 999px; font-size: 9px; letter-spacing: .12em; color: var(--mp-mute); vertical-align: 1px; }
+.mp__router[data-state="ready"]  { color: var(--mp-ok); border-color: var(--mp-ok); }
+.mp__router[data-state="active"] { color: var(--mp-red-hi); border-color: var(--mp-red); box-shadow: 0 0 10px rgba(229, 48, 63, .45); }
+.mp__note { margin: -4px 0 0; color: var(--mp-mute); font-size: 11px; line-height: 1.4; }
+.mp-log__row--route span { color: var(--mp-text); }
