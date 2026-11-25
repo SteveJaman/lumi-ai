@@ -103,16 +103,15 @@ def test_playing_spotify_wins_with_art_liked_and_app_volume():
     assert st["can"]["like"] and st["can"]["queue"] and st["can"]["volume"]
 
 
-def test_a_playing_system_source_beats_paused_spotify():
+def test_other_apps_are_ignored_spotify_only():
+    # YouTube/Firefox playing while Spotify is paused: the tab still shows Spotify.
     b = make(sp=FakeSpotify(np={**SP_NP, "playing": False}), win=FakeWin(SYS_NP), audio=FakeAudio(master=0.3))
     st = b.refresh()
-    assert st["source"] == "system" and st["app"] == "Firefox" and st["volume"] == 30
-    assert st["can"]["next"] is False and st["can"]["like"] is False
-
-
-def test_spotify_seen_twice_is_one_source():
-    b = make(win=FakeWin({**SYS_NP, "app": "Spotify", "playing": True}))
-    assert b.refresh()["source"] == "spotify"
+    assert st["source"] == "spotify" and st["title"] == "Idol" and st["playing"] is False
+    # Nothing on Spotify: nothing at all, even with a browser playing; no system volume either.
+    b = make(sp=FakeSpotify(np=None), win=FakeWin(SYS_NP), audio=FakeAudio(master=0.3))
+    st = b.refresh()
+    assert st["source"] is None and st["volume"] is None and st["can"]["control"] is False
 
 
 def test_nothing_playing():
@@ -168,21 +167,17 @@ def test_free_spotify_uses_the_apps_windows_controls(monkeypatch):
         b.command("next")
 
 
-def test_system_commands_and_volume(monkeypatch):
+def test_without_spotify_nothing_is_controlled(monkeypatch):
     monkeypatch.setattr(mb.time, "sleep", lambda s: None)
     win, audio = FakeWin(SYS_NP), FakeAudio(master=0.5)
     b = make(sp=FakeSpotify(connected=False), win=win, audio=audio)
     b.refresh()
-    b.command("toggle")
-    assert win.calls == [("toggle", "")]
-    b.command("volume", "+10")
-    assert audio.m == pytest.approx(0.6)
-    b.command("volume", 150)
-    assert audio.m == 1.0
-    with pytest.raises(ValueError, match="Spotify songs"):
-        b.command("like")
+    for action, value in (("toggle", None), ("next", None), ("like", None), ("volume", "+10")):
+        with pytest.raises(ValueError, match="Spotify"):
+            b.command(action, value)
+    assert win.calls == [] and audio.m == 0.5                       # the browser and system volume untouched
     with pytest.raises(ValueError):
-        b.command("volume", "loud")
+        make().command("volume", "loud")
 
 
 def test_spotify_volume_on_this_pc_is_the_apps_own(monkeypatch):
@@ -225,19 +220,22 @@ def ducker(sessions, talking):
     return d, sig
 
 
-def test_ducking_lowers_only_music_apps_and_restores_them():
-    spot, ff, discord, lumi, idle = (Sess("Spotify.exe", 1, 0.8), Sess("firefox.exe", 2, 0.5),
-                                     Sess("Discord.exe", 3, 1.0), Sess("python.exe", 99, 1.0),
-                                     Sess("vlc.exe", 4, 0.9, active=0))
-    d, sig = ducker([spot, ff, discord, lumi, idle], talking=True)
+def test_ducking_lowers_only_spotify_and_restores_it():
+    spot, ff, discord, lumi = (Sess("Spotify.exe", 1, 0.8), Sess("firefox.exe", 2, 0.5),
+                               Sess("Discord.exe", 3, 1.0), Sess("python.exe", 99, 1.0))
+    d, sig = ducker([spot, ff, discord, lumi], talking=True)
     d.tick(now=100)
-    assert spot.vol == pytest.approx(0.16) and ff.vol == pytest.approx(0.1)
-    assert discord.vol == 1.0 and lumi.vol == 1.0 and idle.vol == 0.9
+    assert spot.vol == pytest.approx(0.16)
+    assert ff.vol == 0.5 and discord.vol == 1.0 and lumi.vol == 1.0       # Spotify only
     sig.AI_speaking = False
     d.tick(now=101)                                    # a pause between sentences: still ducked
     assert spot.vol == pytest.approx(0.16)
     d.tick(now=101.9)
-    assert spot.vol == pytest.approx(0.8) and ff.vol == pytest.approx(0.5) and not d.saved
+    assert spot.vol == pytest.approx(0.8) and not d.saved
+    paused = Sess("Spotify.exe", 5, 0.7, active=0)     # Spotify open but silent: left alone
+    d2, _ = ducker([paused], talking=True)
+    d2.tick(now=1)
+    assert paused.vol == 0.7
 
 
 def test_a_volume_you_changed_while_ducked_is_left_alone():

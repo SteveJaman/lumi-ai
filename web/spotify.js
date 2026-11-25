@@ -43,8 +43,7 @@ export function init(ctx) {
   refresh();
 }
 
-/* Whether the card shows: something is playing anywhere (Spotify, or any app
-   in Windows' media flyout), or Spotify is connected. */
+/* The card shows while Spotify is connected (the player is Spotify only). */
 let show = false;
 async function refreshStatus() { refresh(); }
 
@@ -55,7 +54,7 @@ async function refresh() {
   if (document.hidden) return;
   try {
     now = await C.api('/api/media/state');          // modules/media_bridge.py
-    show = !!(now.source || (now.spotify && now.spotify.connected));
+    show = !!(now.spotify && now.spotify.connected);
     paint();
   } catch (e) {
     if (e.status === 401 || e.status === 403) { show = false; paint(); return; }
@@ -83,7 +82,7 @@ function paint() {
   if (has) {
     const title = el('span', 'sp-title', now.title || 'Unknown');
     title.title = now.title || '';
-    text.append(title, el('div', 'sp-artist', [now.artists, now.app].filter(Boolean).join(' · ')));
+    text.append(title, el('div', 'sp-artist', now.artists || now.album || ''));
   } else {
     text.append(el('span', 'sp-title sp-idle', 'Nothing playing'), el('div', 'sp-artist', 'Spotify'));
   }

@@ -1627,8 +1627,7 @@
   pruneCheckDays();
 
   // ── Media: a watch-style player ────────────────────────────────
-  // Backend: modules/media_bridge.py (Spotify, or whatever Windows shows in its
-  // media flyout). State is PUSHED (media_state) while this tab is open; a
+  // Backend: modules/media_bridge.py (Spotify only). State is PUSHED (media_state) while this tab is open; a
   // media_get every 15 s keeps the bridge polling. Progress is drawn locally
   // between pushes. Three panes: Library | Now playing | Up next, moved with the
   // dots, ←/→, a sideways scroll or a swipe. The mouse wheel over the island is
@@ -1685,7 +1684,7 @@
     $('mx-title').textContent = has ? st.title || 'Unknown' : (online() ? 'Nothing playing' : 'Lumi is offline');
     $('mx-artist').textContent = has ? [st.artists, st.album].filter(Boolean).join(' · ') : '';
     const sp = (st && st.spotify) || {};
-    $('mx-src').textContent = !has ? (sp.connected ? 'Spotify · idle' : 'Play something to control it here')
+    $('mx-src').textContent = !has ? (sp.connected ? 'Spotify · nothing playing' : 'Connect Spotify in Lumi’s Settings')
       : `${st.app || 'Media'}${st.device ? ' · ' + st.device : ''}`;
     // ticker: scroll only when the title doesn't fit
     const tk = $('mx-ticker'), title = $('mx-title');

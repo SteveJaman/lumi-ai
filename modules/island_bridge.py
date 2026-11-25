@@ -35,7 +35,7 @@ that is echoed back:
                                       volume (0-100 or +5/-5), play_uri, queue_uri, transfer, play_liked
     media_library {q?}             -> media_library {playlists, liked, recent, shows} | {results}
     media_next                     -> media_next {current, queue, devices}
-                                      Media tab (modules/media_bridge.py: Spotify or Windows media)
+                                      Media tab (modules/media_bridge.py: Spotify only)
     quick_note {text, kind?}       -> quick_note {ok, kind} | {ok: false, error}
                                       Hub's idea / homework / grocery box: a long-term memory
                                       labelled with its kind (guessed from the text if absent)
