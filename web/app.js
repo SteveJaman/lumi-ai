@@ -10,6 +10,7 @@ import * as workspace from './workspace.js';
 import * as display from './display.js';
 import * as islandRemote from './island_remote.js';
 import * as lumiUi from './lumi-ui.js';
+import * as splitView from './split-view.js';
 
 const $  = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -193,6 +194,7 @@ async function checkAuth() {
 
     showShell();
     lumiUi.initUi({ api, state });       // theme, Cloud Escalation badge, sync, drag and drop
+    splitView.init({ api, state, socket: lumiUi.socket });  // right-hand Browser / Terminal / Files pane (host only)
 
     // Refresh theme button icon now that the sidebar exists
     const t = document.documentElement.getAttribute('data-theme') || 'light';

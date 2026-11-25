@@ -48,12 +48,14 @@ def test_registry_wires_every_tool_with_its_card_and_gate():
     assert names == {"triage_inbox", "auto_draft_reply", "find_free_time", "reschedule_event",
                      "track_expenses", "research_product", "add_to_wishlist",
                      "summarize_meeting", "extract_action_items", "draft_follow_up_email",
-                     "get_active_window_info", "read_window_text", "click_button", "restart_crashed_game"}
+                     "get_active_window_info", "read_window_text", "click_button", "restart_crashed_game",
+                     "find_local_deals"}
     agents = agent_tools.EVERYDAY_TOOL_AGENT
     assert {n for n, a in agents.items() if a == "main"} == {
         "summarize_meeting", "extract_action_items", "draft_follow_up_email"}
     assert all(a in agent_tracker.AGENTS for a in agents.values())
-    gated = {"auto_draft_reply", "reschedule_event", "add_to_wishlist", "click_button", "restart_crashed_game"}
+    gated = {"auto_draft_reply", "reschedule_event", "add_to_wishlist", "click_button", "restart_crashed_game",
+             "find_local_deals"}
     assert agent_tools.EVERYDAY_CONFIRM_TOOLS == gated
     assert gated <= agent_tools.CONFIRM_REQUIRED_TOOLS
 

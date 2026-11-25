@@ -3588,3 +3588,226 @@ body.lumi-booting #app-shell { visibility: hidden; }
 .lumi-pl-in-hist li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lumi-pl-in-hist time { color: #5c6c96; font: 10px ui-monospace, Consolas, monospace; margin-right: 6px; }
 .lumi-pl-in-hist b { color: #e7eeff; font-weight: 600; margin-right: 4px; }
+
+/* ============================================================
+   Split-view workspace (web/split-view.js)
+   Right-hand pane with Browser / Terminal / Files tabs. The chat
+   (or any view) keeps the middle column; the pane takes a third.
+   ============================================================ */
+.app.split-open {
+  grid-template-columns: 240px minmax(0, 1fr) minmax(340px, 40vw);
+}
+.split-pane[hidden],
+.split-panel[hidden],
+.split-toggle[hidden],
+.split-toggle__dot[hidden],
+#split-browser-img[hidden],
+.split-empty[hidden] { display: none !important; }
+
+.split-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-elev);
+  border-left: 1px solid var(--border);
+}
+.split-pane__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.split-tabs { display: flex; gap: 4px; }
+.split-tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.split-tab:hover { background: var(--bg-hover); color: var(--text); }
+.split-tab.on { background: var(--accent-bg); color: var(--accent-hi); border-color: var(--border); font-weight: 600; }
+.split-tab:focus-visible,
+.split-toggle:focus-visible,
+.split-tree__row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.split-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.split-muted { color: var(--text-mute); font-size: 12px; }
+.split-empty { color: var(--text-mute); font-size: 13px; text-align: center; padding: 24px; margin: 0; }
+
+/* Browser */
+.split-browser__bar,
+.split-terminal__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-inset);
+  min-height: 34px;
+}
+.split-browser__bar { justify-content: flex-start; }
+.split-browser__url {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.split-live {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-mute);
+}
+.split-live.on { background: #d9534f; animation: split-pulse 1.2s ease-in-out infinite; }
+@keyframes split-pulse { 50% { opacity: .35; } }
+.split-browser__view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background: var(--bg-inset);
+}
+#split-browser-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, .15);
+}
+.split-browser__status {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+  min-height: 28px;
+}
+
+/* Terminal */
+.split-terminal {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  background: #10161a;
+  color: #d6e2e5;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.split-terminal .t-stderr { color: #ff9d8f; }
+.split-terminal .t-info { color: #7fc8ba; }
+
+/* Files */
+.split-files {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(120px, 40%) minmax(0, 1fr);
+}
+.split-files__tree,
+.split-files__view { display: flex; flex-direction: column; min-height: 0; }
+.split-files__view { border-top: 1px solid var(--border); }
+.split-tree,
+.split-tree ul { list-style: none; margin: 0; padding: 0; }
+.split-tree { overflow: auto; flex: 1; padding: 4px 0; font-size: 13px; }
+.split-tree ul { padding-left: 14px; }
+.split-tree__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 10px;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.split-tree__row:hover { background: var(--bg-hover); }
+.split-tree__row.on { background: var(--accent-bg); }
+.split-tree__icon { width: 14px; flex: none; color: var(--text-mute); text-align: center; }
+.split-tree__size { margin-left: auto; color: var(--text-mute); font-size: 11px; }
+.split-code {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  background: var(--bg-inset);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 4;
+}
+
+/* Toggle button (top right, over any view) */
+.split-toggle {
+  position: fixed;
+  top: 12px;
+  right: 14px;
+  z-index: 40;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .08);
+}
+.split-toggle:hover { color: var(--accent-hi); border-color: var(--border-hi); }
+.split-toggle[aria-expanded="true"] { color: var(--accent-hi); background: var(--accent-bg); }
+.split-toggle__dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d9534f;
+}
+/* While the pane is open its own ✕ closes it. */
+.app.split-open ~ .split-toggle { display: none; }
+
+/* Narrow screens: the pane slides over the chat instead of squeezing it. */
+@media (max-width: 760px) {
+  .app.split-open { grid-template-columns: minmax(0, 1fr); }
+  .split-pane {
+    position: fixed;
+    inset: 0 0 0 auto;
+    width: min(100vw, 480px);
+    z-index: 45;
+    box-shadow: -4px 0 18px rgba(0, 0, 0, .2);
+  }
+  .split-toggle { top: auto; bottom: 76px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .split-live.on { animation: none; }
+}

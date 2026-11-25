@@ -194,6 +194,7 @@ PROVENANCE_MARKERS = {
     "auto_draft_reply":       "FROM EMAIL",
     "find_free_time":         "FROM CALENDAR",
     "research_product":       "FROM WEB",
+    "find_local_deals":       "FROM WEB",
     "summarize_meeting":      "FROM MEETING",
     "extract_action_items":   "FROM MEETING",
     "draft_follow_up_email":  "FROM MEETING",
@@ -363,8 +364,10 @@ CONFIRM_REQUIRED_TOOLS = {"write_file", "run_command", "run_in_terminal"}
 # ===============================================================
 from modules import email_agent, finance_agent, meeting_agent, windows_agent  # noqa: E402
 from modules import watchdog_agent  # noqa: E402
+from modules import deal_finder  # noqa: E402
 
-EVERYDAY_MODULES = (email_agent, finance_agent, meeting_agent, windows_agent, watchdog_agent)
+EVERYDAY_MODULES = (email_agent, finance_agent, meeting_agent, windows_agent, watchdog_agent,
+                    deal_finder)
 EVERYDAY_TOOL_MODULE = {
     s["function"]["name"]: m for m in EVERYDAY_MODULES for s in m.TOOL_SCHEMAS
 }
@@ -895,13 +898,11 @@ def run_command(command):
         )
 
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=WORKSPACE_ROOT,
-            shell=False,
-            capture_output=True,
-            text=True,
-            timeout=COMMAND_TIMEOUT_SECONDS,
+        # Same as subprocess.run(capture_output=True), but each line is also
+        # streamed to the web client's Terminal tab (modules/workspace.py).
+        from modules.workspace import run_streaming
+        returncode, stdout, stderr = run_streaming(
+            cmd, cwd=WORKSPACE_ROOT, timeout=COMMAND_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
         return f"Command timed out after {COMMAND_TIMEOUT_SECONDS}s."
@@ -910,10 +911,10 @@ def run_command(command):
     except Exception as e:
         return f"Error running command: {e}"
 
-    output = (result.stdout or "") + (result.stderr or "")
+    output = (stdout or "") + (stderr or "")
     if len(output) > MAX_COMMAND_OUTPUT_CHARS:
         output = output[:MAX_COMMAND_OUTPUT_CHARS] + "\n... [truncated]"
-    return f"Exit code {result.returncode}\n{output.strip()}"
+    return f"Exit code {returncode}\n{output.strip()}"
 
 
 def run_in_terminal(command):

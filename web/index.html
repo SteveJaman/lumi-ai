@@ -66,7 +66,69 @@
 
   <main class="main" id="main-content"></main>
 
+  <!-- Split-view workspace (web/split-view.js). Host-only; hidden until
+       toggled. Browser frames are JPEG screenshots streamed over socket.io,
+       never an iframe. -->
+  <aside class="split-pane" id="split-pane" aria-label="Workspace" hidden>
+    <div class="split-pane__head">
+      <div class="split-tabs" role="tablist" aria-label="Workspace tabs">
+        <button class="split-tab on" role="tab" id="split-tab-browser" data-tab="browser"
+                aria-selected="true" aria-controls="split-panel-browser">Browser</button>
+        <button class="split-tab" role="tab" id="split-tab-terminal" data-tab="terminal"
+                aria-selected="false" aria-controls="split-panel-terminal" tabindex="-1">Terminal</button>
+        <button class="split-tab" role="tab" id="split-tab-files" data-tab="files"
+                aria-selected="false" aria-controls="split-panel-files" tabindex="-1">Files</button>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="split-close" title="Close workspace" aria-label="Close workspace">✕</button>
+    </div>
+
+    <section class="split-panel" id="split-panel-browser" role="tabpanel" aria-labelledby="split-tab-browser">
+      <div class="split-browser__bar">
+        <span class="split-live" id="split-browser-live" aria-hidden="true"></span>
+        <span class="split-browser__url" id="split-browser-url">No page yet</span>
+      </div>
+      <div class="split-browser__view">
+        <img id="split-browser-img" alt="Live view of Lumi's read-only browser" hidden>
+        <p class="split-empty" id="split-browser-empty">When Lumi looks up deals, her read-only browser shows up here.</p>
+      </div>
+      <div class="split-browser__status" id="split-browser-status" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="split-panel" id="split-panel-terminal" role="tabpanel" aria-labelledby="split-tab-terminal" hidden>
+      <div class="split-terminal__bar">
+        <span class="split-muted">Output of commands Lumi runs</span>
+        <button class="btn btn-ghost btn-sm" id="split-terminal-clear">Clear</button>
+      </div>
+      <pre class="split-terminal" id="split-terminal" tabindex="0" aria-live="off"></pre>
+    </section>
+
+    <section class="split-panel" id="split-panel-files" role="tabpanel" aria-labelledby="split-tab-files" hidden>
+      <div class="split-files">
+        <div class="split-files__tree">
+          <div class="split-terminal__bar">
+            <span class="split-muted">data/</span>
+            <button class="btn btn-ghost btn-sm" id="split-files-refresh" title="Refresh">↻</button>
+          </div>
+          <ul class="split-tree" id="split-tree" role="tree" aria-label="Files in data"></ul>
+        </div>
+        <div class="split-files__view">
+          <div class="split-terminal__bar"><span class="split-muted" id="split-file-name">Pick a file</span></div>
+          <pre class="split-code" id="split-file-content"><code></code></pre>
+        </div>
+      </div>
+    </section>
+  </aside>
+
 </div>
+
+<button class="split-toggle" id="split-toggle" type="button" hidden
+        aria-controls="split-pane" aria-expanded="false" title="Show workspace (Ctrl+\)">
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16"/>
+  </svg>
+  <span class="split-toggle__dot" id="split-toggle-dot" hidden></span>
+</button>
 
 <!-- Wake-up screen. A direct child of <body> (never inside #app-shell, which
      themes turn into a stacking context); styles: the .lumi-boot block in

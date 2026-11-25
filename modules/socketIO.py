@@ -593,6 +593,8 @@ class SocketIOServer:
 
         self._register_http_routes()
         self._register_socket_events()
+        from modules import workspace as _workspace_pane
+        _workspace_pane.install(self)           # split view: terminal_output / browser_frame
         self._install_pipeline_bridge()
         from modules import ui_sync
         ui_sync.set_web_broadcaster(self._emit_all_threadsafe)
@@ -688,6 +690,8 @@ class SocketIOServer:
         r.add_post("/api/island",       self._handle_island_set)
         from modules import workspace_routes
         workspace_routes.register(r, self)      # /api/workspace/* (host-only)
+        from modules import workspace
+        workspace.register(r, self)             # /api/workspace/files* (host-only split-view Files tab)
         from modules import home_info
         home_info.register(r, self)             # /api/settings/display (host-only)
         from modules import island_remote
@@ -3284,6 +3288,8 @@ class SocketIOServer:
         @sio.event
         def disconnect(sid):
             self._tts_clients.discard(sid)
+            from modules import workspace as _workspace_pane
+            _workspace_pane.forget_sid(sid)
             if sid in self._pipeline_sids:
                 self._pipeline_sids.discard(sid)
                 from modules import hitl_server
