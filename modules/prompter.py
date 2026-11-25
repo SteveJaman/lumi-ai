@@ -2405,6 +2405,14 @@ class Prompter:
 
 
         injections.append(time_anchor)
+        # Your profile (Profile dialog, modules/user_profile.py), while you let Lumi use it.
+        try:
+            from modules import user_profile
+            about = user_profile.prompt_block(HOST.user_id, HOST.name, now.date())
+            if about:
+                injections.append(about)
+        except Exception:
+            pass
         injections.append(self.mood_manager.get_injection())
 
         if hasattr(self.signals, "emotional_state"):

@@ -42,9 +42,14 @@
         </div>
       </div>
 
+      <!-- Spotify mini player (web/spotify.js): shown only while Spotify is connected -->
+      <div class="sp-mini" id="sp-mini" hidden></div>
+
       <div class="user-chip">
-        <div class="avatar" id="user-avatar">?</div>
-        <span class="grow" id="user-name">—</span>
+        <button class="user-me grow" id="user-me" type="button" title="Edit your profile" aria-label="Edit your profile">
+          <span class="avatar" id="user-avatar">?</span>
+          <span class="user-me__name" id="user-name">—</span>
+        </button>
         <button class="btn btn-ghost btn-sm theme-toggle" id="theme-toggle" title="Switch to dark mode" aria-label="Toggle theme">☾</button>
 
         <!-- GitHub repository link -->

@@ -11,6 +11,8 @@ import * as display from './display.js';
 import * as islandRemote from './island_remote.js';
 import * as lumiUi from './lumi-ui.js';
 import * as splitView from './split-view.js';
+import * as profile from './profile.js';
+import * as spotify from './spotify.js';
 
 const $  = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -192,9 +194,11 @@ async function checkAuth() {
     state.isLocal = me.is_local !== false;
     state.features = me.features || { stream: false };
 
+    profile.init({ api, state });        // photo + name in the sidebar chip; the chip opens the profile
     showShell();
     lumiUi.initUi({ api, state });       // theme, Cloud Escalation badge, sync, drag and drop
     splitView.init({ api, state, socket: lumiUi.socket });  // right-hand Browser / Terminal / Files pane (host only)
+    spotify.init({ api, state });        // sidebar mini player while Spotify is connected (host only)
 
     // Refresh theme button icon now that the sidebar exists
     const t = document.documentElement.getAttribute('data-theme') || 'light';
@@ -1299,8 +1303,7 @@ function buildChatMessage(msg, { animate = true } = {}) {
     };
     avatar.appendChild(img);
   } else {
-    avatar.textContent = (state.user?.display_name || '?')
-      .slice(0, 1).toUpperCase();
+    profile.paintAvatar(avatar, state.user?.display_name || '?');   // your photo, or your initial
   }
   div.appendChild(avatar);
 
@@ -6063,22 +6066,37 @@ async function streamAction(path, body, btn) {
    ============================================================== */
 
 const _settingsState = {
-  activeTab: 'general',
+  activeTab: 'profile',
   general:   null,
   about:     null,
   advanced:  null,
   sessions:  null,
 };
 
+const _SI = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const SETTINGS_TABS = [
-  { id: 'general',  label: 'General' },
-  { id: 'connections', label: 'Connections' },
-  { id: 'security', label: 'Security' },
-  { id: 'advanced', label: 'Advanced' },
-  { id: 'about',    label: 'About' },
+  { id: 'profile', group: 'Account', label: 'Profile', icon: _SI('<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>'),
+    desc: 'Your photo and the things you’d like Lumi to know about you.' },
+  { id: 'appearance', group: 'Lumi', label: 'Appearance', icon: _SI('<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/>'),
+    desc: 'Theme, clock, units, weather city and timezone.' },
+  { id: 'ai', label: 'AI & models', icon: _SI('<rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/>'),
+    desc: 'Where Lumi thinks: local models, Cloud Escalation and Gaming Mode.' },
+  { id: 'devices', label: 'Devices', icon: _SI('<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'),
+    desc: 'Lumi Island on this PC and on your other devices.' },
+  { id: 'connections', group: 'Integrations', label: 'Connections', icon: _SI('<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>'),
+    desc: 'Google, Spotify and school mail. Sign-ins are stored on this PC.' },
+  { id: 'security', group: 'System', label: 'Security', icon: _SI('<path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/>'),
+    desc: 'Signed-in sessions and your password.' },
+  { id: 'advanced', label: 'Advanced', icon: _SI('<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>'),
+    desc: 'Reset parts of Lumi’s data.' },
+  { id: 'about', label: 'About', icon: _SI('<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>'),
+    desc: 'Version and system details.' },
 ];
+const _SETTINGS_ALIASES = { general: 'appearance' };    // old links (Settings, then General, then Display)
 
 async function renderSettings(main) {
+  _settingsState.activeTab = _SETTINGS_ALIASES[_settingsState.activeTab] || _settingsState.activeTab;
+  if (!SETTINGS_TABS.some((t) => t.id === _settingsState.activeTab)) _settingsState.activeTab = 'profile';
   main.innerHTML = `
     <div class="page">
       <div class="page-header">
@@ -6088,8 +6106,12 @@ async function renderSettings(main) {
         </div>
       </div>
       <div class="settings-wrap">
-        <aside class="settings-sidebar" id="settings-sidebar"></aside>
+        <nav class="settings-sidebar" id="settings-sidebar" aria-label="Settings sections"></nav>
         <div class="settings-main">
+          <header class="settings-head">
+            <h2 class="settings-head__title" id="settings-head-title"></h2>
+            <p class="settings-head__desc" id="settings-head-desc"></p>
+          </header>
           <div class="settings-fields" id="settings-fields">
             <div class="integration-empty">Loading…</div>
           </div>
@@ -6107,10 +6129,21 @@ function renderSettingsSidebar() {
   if (!side) return;
   side.innerHTML = '';
   for (const t of SETTINGS_TABS) {
-    const el = document.createElement('div');
-    el.className = 'settings-nav-item' +
-      (t.id === _settingsState.activeTab ? ' active' : '');
-    el.textContent = t.label;
+    if (t.group) {
+      const g = document.createElement('div');
+      g.className = 'settings-nav-group';
+      g.textContent = t.group;
+      side.appendChild(g);
+    }
+    const el = document.createElement('button');
+    el.type = 'button';
+    const on = t.id === _settingsState.activeTab;
+    el.className = 'settings-nav-item' + (on ? ' active' : '');
+    if (on) el.setAttribute('aria-current', 'page');
+    el.innerHTML = t.icon;
+    const span = document.createElement('span');
+    span.textContent = t.label;
+    el.appendChild(span);
     el.addEventListener('click', () => {
       _settingsState.activeTab = t.id;
       renderSettingsSidebar();
@@ -6128,14 +6161,26 @@ async function loadSettingsTab() {
   panel.innerHTML = '<div class="integration-empty">Loading…</div>';
 
   const tab = _settingsState.activeTab;
-  if (sub) sub.textContent = SETTINGS_TABS
-    .find(t => t.id === tab)?.label || 'Settings';
+  const meta = SETTINGS_TABS.find(t => t.id === tab) || SETTINGS_TABS[0];
+  if (sub) sub.textContent = 'Lumi and your account';
+  const ht = $('#settings-head-title'), hd = $('#settings-head-desc');
+  if (ht) ht.textContent = meta.label;
+  if (hd) hd.textContent = meta.desc;
+  const scroller = panel.closest('.settings-main');
+  if (scroller) scroller.scrollTop = 0;
 
   try {
-    if (tab === 'general') {
+    if (tab === 'profile') {
+      await profile.ready();
+      panel.replaceChildren(settingsGroup('About you', null, [profile.buildEditor()]));
+    } else if (tab === 'appearance' || tab === 'ai') {
       const data = await api('/api/settings/general');
       _settingsState.general = data;
-      renderGeneralTab(panel, data);
+      (tab === 'appearance' ? renderAppearanceTab : renderAiTab)(panel, data);
+    } else if (tab === 'devices') {
+      panel.replaceChildren(
+        settingsGroup('On this PC', null, [buildIslandField()]),
+        settingsGroup('Other devices', 'Use Lumi Island on a laptop or tablet over Tailscale.', [islandRemote.buildRemoteCard()]));
     } else if (tab === 'connections') {
       await workspace.renderConnectionsTab(panel);
     } else if (tab === 'security') {
@@ -6157,50 +6202,70 @@ async function loadSettingsTab() {
   }
 }
 
-function renderGeneralTab(panel, data) {
-  panel.innerHTML = '';
+/* One titled block of settings rows on a solid card (the rows inside are
+   ordinary .settings-field elements; the group draws the dividers). */
+function settingsGroup(title, help, children) {
+  const sec = document.createElement('section');
+  sec.className = 'settings-group';
+  if (title) {
+    const h = document.createElement('h3');
+    h.className = 'settings-group__title';
+    h.textContent = title;
+    sec.appendChild(h);
+  }
+  if (help) {
+    const p = document.createElement('p');
+    p.className = 'settings-group__help';
+    p.textContent = help;
+    sec.appendChild(p);
+  }
+  const card = document.createElement('div');
+  card.className = 'settings-group__card';
+  for (const c of children) if (c) card.appendChild(c);
+  sec.appendChild(card);
+  return sec;
+}
 
-  const h = document.createElement('h2');
-  h.className = 'settings-section-title';
-  h.textContent = 'General';
-  panel.appendChild(h);
+function settingsSaveRow(note) {
+  const actions = document.createElement('div');
+  actions.className = 'settings-actions';
+  if (note) {
+    const n = document.createElement('span');
+    n.className = 'settings-actions__note';
+    n.textContent = note;
+    actions.appendChild(n);
+  }
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn btn-primary';
+  saveBtn.textContent = 'Save changes';
+  saveBtn.addEventListener('click', onSaveGeneral);
+  actions.appendChild(saveBtn);
+  return actions;
+}
 
-  const help = document.createElement('div');
-  help.className = 'settings-help';
-  help.textContent =
-    'These values write to constants.py. A .bak is saved before every ' +
-    'write and changes take effect on the next turn — no restart required.';
-  panel.appendChild(help);
+function renderAppearanceTab(panel, data) {
+  panel.replaceChildren(
+    settingsGroup('Theme', null, [lumiUi.buildAppearanceCard()]),
+    settingsGroup('Clock, units and weather', null, [display.buildDisplayCard()]),
+    settingsGroup('Region', null, [
+      buildSettingsField({
+        label: 'Timezone',
+        help: 'IANA timezone name, e.g. America/New_York or Europe/London. Lumi uses it for the time and your birthday.',
+        value: data.timezone,
+        key: 'timezone',
+      }),
+      settingsSaveRow('Saved to constants.py (a .bak is kept). Applies from the next turn.'),
+    ]),
+  );
+}
 
-  panel.appendChild(lumiUi.buildAppearanceCard());
-  panel.appendChild(lumiUi.buildHybridCard());
-  panel.appendChild(buildGamingModeField());
-  panel.appendChild(buildIslandField());
-  panel.appendChild(islandRemote.buildRemoteCard());
-  panel.appendChild(display.buildDisplayCard());
-
-  panel.appendChild(buildSettingsField({
-    label: 'Timezone',
-    help: 'IANA timezone name, e.g. America/New_York or Europe/London.',
-    value: data.timezone,
-    key: 'timezone',
-  }));
-
-  panel.appendChild(buildSettingsField({
-    label: 'Ollama endpoint',
-    help: 'Base URL for the local Ollama server. Applies to all ' +
-          'Ollama-routed models.',
-    value: data.llm_endpoint,
-    key: 'llm_endpoint',
-  }));
-
+function renderAiTab(panel, data) {
   const info = document.createElement('div');
   info.className = 'settings-info-grid';
   const readonly = [
-    ['Workspace root', data.workspace_root],
     ['Main model',     data.model_name],
-    ['Fast model',     data.fast_model_name +
-      (data.fast_model_enabled ? '' : ' (disabled)')],
+    ['Fast model',     data.fast_model_name + (data.fast_model_enabled ? '' : ' (disabled)')],
+    ['Workspace root', data.workspace_root],
     ['Python',         data.python_version],
     ['Platform',       data.platform],
   ];
@@ -6211,19 +6276,21 @@ function renderGeneralTab(panel, data) {
     const dd = document.createElement('div');
     dd.className = 'settings-info-val';
     dd.textContent = v || '—';
-    info.appendChild(dt);
-    info.appendChild(dd);
+    info.append(dt, dd);
   }
-  panel.appendChild(info);
-
-  const actions = document.createElement('div');
-  actions.className = 'settings-actions';
-  const saveBtn = document.createElement('button');
-  saveBtn.className = 'btn btn-primary';
-  saveBtn.textContent = 'Save changes';
-  saveBtn.addEventListener('click', onSaveGeneral);
-  actions.appendChild(saveBtn);
-  panel.appendChild(actions);
+  panel.replaceChildren(
+    settingsGroup('Where Lumi thinks', null, [lumiUi.buildHybridCard(), buildGamingModeField()]),
+    settingsGroup('Local models (Ollama)', 'Pick which models run on the Models page.', [
+      buildSettingsField({
+        label: 'Ollama endpoint',
+        help: 'Base URL for the local Ollama server. Applies to all Ollama-routed models.',
+        value: data.llm_endpoint,
+        key: 'llm_endpoint',
+      }),
+      settingsSaveRow('Applies from the next turn; no restart needed.'),
+    ]),
+    settingsGroup('Running now', null, [info]),
+  );
 }
 
 // Lumi Island (island/, a Tauri app): Lumi starts and stops it, so it

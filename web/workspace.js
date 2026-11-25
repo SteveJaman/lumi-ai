@@ -10,6 +10,7 @@
    ============================================================ */
 
 import * as display from './display.js';
+import * as spotify from './spotify.js';
 
 let C = null;       // { $, state, api, navigate, openSettingsTab }
 export function init(ctx) { C = ctx; }
@@ -474,8 +475,8 @@ export async function renderConnectionsTab(panel) {
   panel.replaceChildren();
   panel.append(el('h2', 'settings-section-title', 'Connections'));
   panel.append(el('div', 'settings-help',
-    'Connect your accounts so Lumi can show your calendar and mail and help with them. ' +
-    'Sign-ins are stored on this PC, in data/credentials, and never leave it except to talk to Google or Microsoft. ' +
+    'Connect your accounts so Lumi can show your calendar, mail and music and help with them. ' +
+    'Sign-ins are stored on this PC, in data/credentials, and never leave it except to talk to Google, Microsoft or Spotify. ' +
     'Note: "Ask Lumi" and Lumi’s email tools send message text to your chat model. ' +
     'If that model is a cloud provider, the text leaves this PC.'));
   const holder = el('div', 'ws-conn');
@@ -491,7 +492,7 @@ async function refreshConnections(holder) {
     return notice(holder, `Couldn’t load connections: ${e.message}`, { retry: () => refreshConnections(holder) });
   }
   // Hidden unless switched on, or already set up from before it was hidden.
-  const cards = [googleCard(holder, st)];
+  const cards = [googleCard(holder, st), spotify.buildCard()];
   if (showKsu() || st.ksu.mode) cards.push(ksuCard(holder, st));
   holder.replaceChildren(...cards);
 }

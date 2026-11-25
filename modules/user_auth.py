@@ -325,6 +325,15 @@ class UserDB:
     # ------------------------------------------------------------------
     # Password change + session management (Phase 10.14)
     # ------------------------------------------------------------------
+    def set_display_name(self, user_id: int, name: str) -> None:
+        """The name shown in the app and used by Lumi (Profile dialog)."""
+        name = " ".join(str(name or "").split())[:40]
+        if not name:
+            return
+        with self._lock:
+            self._conn.execute("UPDATE users SET display_name = ? WHERE id = ?", (name, user_id))
+            self._conn.commit()
+
     def change_password(self, user_id: int, old_password: str,
                         new_password: str) -> Tuple[bool, str]:
         """Verify the current password, then set a new one. Does NOT

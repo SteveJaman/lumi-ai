@@ -189,6 +189,9 @@ PROVENANCE_MARKERS = {
     "list_events":     "FROM CALENDAR",
     # Claude Code reads files and its answer can quote them: still data, not orders.
     "ask_claude_code": "FROM CLAUDE CODE",
+    # Song, artist and playlist names are written by other people: data, not orders.
+    "spotify_now_playing": "FROM SPOTIFY",
+    "spotify_play":        "FROM SPOTIFY",
     # Everyday Life tools (see EVERYDAY TOOLS below).
     "triage_inbox":           "FROM EMAIL",
     "auto_draft_reply":       "FROM EMAIL",
@@ -365,9 +368,10 @@ CONFIRM_REQUIRED_TOOLS = {"write_file", "run_command", "run_in_terminal"}
 from modules import email_agent, finance_agent, meeting_agent, windows_agent  # noqa: E402
 from modules import watchdog_agent  # noqa: E402
 from modules import deal_finder  # noqa: E402
+from modules import spotify  # noqa: E402
 
 EVERYDAY_MODULES = (email_agent, finance_agent, meeting_agent, windows_agent, watchdog_agent,
-                    deal_finder)
+                    deal_finder, spotify)
 EVERYDAY_TOOL_MODULE = {
     s["function"]["name"]: m for m in EVERYDAY_MODULES for s in m.TOOL_SCHEMAS
 }

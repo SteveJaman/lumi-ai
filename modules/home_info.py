@@ -139,7 +139,18 @@ class HomeInfo:
             if values["units"] not in ("imperial", "metric"):
                 raise InvalidValue("Units must be imperial or metric.")
             new["units"] = values["units"]
-        if "location" in values:
+        coords = values.get("coords")
+        if isinstance(coords, dict):
+            # Detected by the browser (profile -> "Detect"): use the point, no name lookup.
+            try:
+                lat, lon = float(coords.get("lat")), float(coords.get("lon"))
+            except (TypeError, ValueError):
+                raise InvalidValue("Coordinates must be numbers.")
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise InvalidValue("Those coordinates are off the map.")
+            label = " ".join(str(coords.get("label") or "").split())[:MAX_LOCATION_CHARS] or f"{lat:.2f}, {lon:.2f}"
+            new.update(location=label, place=label, lat=round(lat, 2), lon=round(lon, 2))
+        elif "location" in values:
             text = " ".join(str(values["location"] or "").split())[:MAX_LOCATION_CHARS]
             if text != new["location"] or (text and new["lat"] is None):
                 if not text:
