@@ -49,7 +49,7 @@ def test_forbidden_urls_are_caught(url):
 
 
 @pytest.mark.parametrize("url", [
-    "https://html.duckduckgo.com/html/?q=egg+carton+grocery+deals",
+    "https://www.bing.com/search?q=egg+carton+grocery+deals&setlang=en",
     "https://www.example.com/author/jane",
     "https://flipp.com/en-us/search/milk?postal_code=30144",
     "https://www.example.com/cartoon-network",
@@ -60,10 +60,10 @@ def test_ordinary_urls_pass(url):
 
 def test_source_urls_are_fixed_hosts_and_refuse_forbidden_queries():
     urls = source_urls("eggs", "groceries")
-    assert len(urls) == 1 and urls[0].startswith("https://html.duckduckgo.com/html/?q=eggs")
+    assert len(urls) == 1 and urls[0].startswith("https://www.bing.com/search?q=eggs")
     urls = source_urls("eggs", "groceries", postal_code="30144")
     assert urls[0].startswith("https://flipp.com/") and "postal_code=30144" in urls[0]
-    assert source_urls("gas", "gas", postal_code="30144")[0].startswith("https://html.duckduckgo.com/")
+    assert source_urls("gas", "gas", postal_code="30144")[0].startswith("https://www.bing.com/search?")
     with pytest.raises(ForbiddenUrl):
         source_urls("checkout page", "retail")
 
@@ -160,7 +160,7 @@ def test_declined_approval_never_starts_the_browser(monkeypatch):
     out = run(deal_finder.run_tool("find_local_deals", {"search_query": "eggs", "category": "groceries"}, ctx))
     assert out == "The user declined to allow this action."
     assert asked and asked[0][0] == "find_local_deals"
-    assert "duckduckgo.com" in asked[0][1] and "no clicks" in asked[0][1]
+    assert "bing.com" in asked[0][1] and "no clicks" in asked[0][1]
 
 
 def test_forbidden_query_is_refused_before_asking(monkeypatch):
@@ -170,7 +170,7 @@ def test_forbidden_query_is_refused_before_asking(monkeypatch):
 
 
 def test_approved_search_returns_table(monkeypatch):
-    rows = extract_deals("Eggs $3.49\nMilk $2.59", "https://html.duckduckgo.com/html/")
+    rows = extract_deals("Eggs $3.49\nMilk $2.59", "https://www.bing.com/search?q=eggs")
     monkeypatch.setattr(deal_finder, "_run_in_own_loop",
                         lambda factory: SearchResult(rows=rows, visited=[], notes=["x showed a bot check"]))
     ctx, asked = ctx_with(True)

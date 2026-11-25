@@ -4283,3 +4283,69 @@ a.sp-title:hover { text-decoration: underline; }
 .pf-seg-btn:focus-visible, .pf-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .pf-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .pf .pf-custom { max-width: 320px; font-size: 13px; }
+
+/* ============================================================
+   Sidebar footer, option A (two rows)
+   One status line; you on your own row (photo, name, "Edit
+   profile"); theme, GitHub and sign-out as an even toolbar below,
+   so the name never shares a line with the buttons.
+   ============================================================ */
+.sidebar-footer .status-pills {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+.sidebar-footer .status-pills .pill { white-space: nowrap; }
+.sidebar-footer .status-pills .lumi-privacy { flex-basis: 100%; margin-top: 2px; text-align: center; }
+
+.sidebar-footer .user-chip {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 8px;
+}
+.sidebar-footer .user-me { width: 100%; padding: 4px; gap: 10px; }
+.sidebar-footer .user-me .avatar { width: 32px; height: 32px; font-size: 13px; }
+.user-me__text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.user-me__sub { font-size: 11px; color: var(--text-mute); }
+.user-me:hover .user-me__sub { color: var(--accent-hi); }
+
+.user-tools {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.user-tools > .btn,
+.user-tools > a.btn {
+  width: 100%;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-dim);
+}
+.user-tools > .btn:hover,
+.user-tools > a.btn:hover { color: var(--accent-hi); border-color: var(--border-hi); background: var(--bg-hover); }
+.user-tools > .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Narrow screens: the sidebar is a top bar, so the footer goes back to one row. */
+@media (max-width: 760px) {
+  .sidebar-footer .user-chip { flex-direction: row; align-items: center; padding: 2px; gap: 4px; }
+  .sidebar-footer .user-me { width: auto; padding: 2px; }
+  .sidebar-footer .user-chip .avatar { display: grid; width: 26px; height: 26px; }
+  .user-me__text { display: none; }
+  .user-tools { display: flex; gap: 4px; padding-top: 0; border-top: 0; }
+  .user-tools > .btn, .user-tools > a.btn { width: 30px; }
+  .sidebar-footer .sp-mini { display: none; }      /* no room in the top bar */
+}
+.sp-btn:disabled { opacity: 0.35; cursor: default; }
+.sp-btn:nth-child(2):disabled { background: color-mix(in srgb, #1db954 40%, transparent); }

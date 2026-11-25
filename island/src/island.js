@@ -68,7 +68,7 @@
 
   // ── State ──────────────────────────────────────────────────────
   let state = 'hidden';            // hidden | peek | open | approval
-  let app = 'home';                // home | hub | chat | calendar | pipeline
+  let app = 'home';                // home | hub | media | chat | calendar | pipeline
   let hovering = false;
   let beforeApproval = 'hidden';
   let leaveTimer = null, blurTimer = null;
@@ -193,9 +193,14 @@
         flushCaptures();
         loadShortcuts();
         flushNotes();
+        island.dataset.gaming = String(gaming);
+        if (app === 'media') mediaOpen();
         break;
       case 'shortcuts_update':                     // added or removed on another island or the web API
         setShortcuts(msg.shortcuts);
+        break;
+      case 'media_state':                          // now playing changed (modules/media_bridge.py)
+        setMedia(msg.state);
         break;
       case 'theme_update':
         ui.theme = msg.theme || ui.theme; applyTheme();
@@ -220,6 +225,7 @@
         break;
       case 'lumi_mode':
         gaming = !!msg.gaming; render();
+        island.dataset.gaming = String(gaming);   // the Media tab drops blur and animation
         if (gaming && focus.running) endFocus('gaming');
         break;
       case 'snapshot':
@@ -268,6 +274,7 @@
     if (name === 'calendar') loadCalendar();
     if (name === 'pipeline') renderPipeline();
     if (name === 'hub') { renderHub(); loadShortcuts(); }
+    if (name === 'media') mediaOpen(); else mediaClose();
   }
   function openApp(name) { setApp(name); setState(queue.length ? 'approval' : 'open'); }
 
@@ -1618,6 +1625,280 @@
     $('hub-check-input').value = '';
   });
   pruneCheckDays();
+
+  // ── Media: a watch-style player ────────────────────────────────
+  // Backend: modules/media_bridge.py (Spotify, or whatever Windows shows in its
+  // media flyout). State is PUSHED (media_state) while this tab is open; a
+  // media_get every 15 s keeps the bridge polling. Progress is drawn locally
+  // between pushes. Three panes: Library | Now playing | Up next, moved with the
+  // dots, ←/→, a sideways scroll or a swipe. The mouse wheel over the island is
+  // the volume crown. Gaming Mode (data-gaming) drops the blur and animations.
+  const RING = 2 * Math.PI * 56;
+  let mx = { state: null, art: '', view: 1, shelf: 'playlists', lib: null, heartbeat: null, tick: null,
+             volPending: 0, volTimer: null, volShowTimer: null, searchTimer: null };
+
+  const msClock = (ms) => { const s = Math.max(0, Math.floor((ms || 0) / 1000)); return `${Math.floor(s / 60)}:${pad(s % 60)}`; };
+  const svgUse = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+  const PLAY_D = '<path d="M7 4v16l13-8z"/>', PAUSE_D = '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>';
+
+  function mediaOpen() {
+    mediaHeartbeat();
+    clearInterval(mx.heartbeat);
+    mx.heartbeat = setInterval(mediaHeartbeat, 15000);
+    clearInterval(mx.tick);
+    mx.tick = setInterval(drawProgress, 1000);
+    mediaView(mx.view, true);
+  }
+  function mediaClose() {
+    clearInterval(mx.heartbeat); mx.heartbeat = null;
+    clearInterval(mx.tick); mx.tick = null;
+  }
+  async function mediaHeartbeat() {
+    if (!online()) return drawMedia();
+    try { const r = await req('media_get'); if (r.ok !== false) setMedia(r.state); } catch (_) { /* pushes still arrive */ }
+  }
+
+  function setMedia(st) {
+    if (!st) return;
+    if (st.art !== undefined) mx.art = st.art || '';
+    mx.state = { ...st, _recv: Date.now() };
+    drawMedia();
+  }
+
+  function mxMsg(text, bad) {
+    const m = $('mx-msg');
+    m.textContent = text || '';
+    m.classList.toggle('bad', !!bad);
+    clearTimeout(mxMsg.t);
+    if (text) mxMsg.t = setTimeout(() => { m.textContent = ''; }, 4000);
+  }
+
+  function drawMedia() {
+    const st = mx.state;
+    const has = !!(st && st.source);
+    const art = $('mx-art');
+    const imgOk = has && /^data:image\/(png|jpeg);base64,/.test(mx.art);
+    art.replaceChildren();
+    if (imgOk) { const img = document.createElement('img'); img.src = mx.art; img.alt = ''; art.append(img); }
+    else art.innerHTML = svgUse('<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>');
+    $('mx-bg').style.backgroundImage = imgOk ? `url("${mx.art}")` : 'none';
+    $('mx-title').textContent = has ? st.title || 'Unknown' : (online() ? 'Nothing playing' : 'Lumi is offline');
+    $('mx-artist').textContent = has ? [st.artists, st.album].filter(Boolean).join(' · ') : '';
+    const sp = (st && st.spotify) || {};
+    $('mx-src').textContent = !has ? (sp.connected ? 'Spotify · idle' : 'Play something to control it here')
+      : `${st.app || 'Media'}${st.device ? ' · ' + st.device : ''}`;
+    // ticker: scroll only when the title doesn't fit
+    const tk = $('mx-ticker'), title = $('mx-title');
+    requestAnimationFrame(() => tk.classList.toggle('scroll', title.scrollWidth > tk.clientWidth + 4));
+
+    const can = (st && st.can) || {};
+    const playing = has && st.playing;
+    $('mx-play').innerHTML = svgUse(playing ? PAUSE_D : PLAY_D);
+    $('mx-play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    for (const [id, ok] of [['mx-play', can.control], ['mx-prev', can.prev && can.control], ['mx-next', can.next && can.control],
+                            ['mx-shuffle', can.shuffle], ['mx-repeat', can.repeat], ['mx-like', can.like]]) {
+      $(id).disabled = !ok;
+    }
+    $('mx-shuffle').setAttribute('aria-pressed', String(!!(st && st.shuffle)));
+    const rep = (st && st.repeat) || 'off';
+    $('mx-repeat').setAttribute('aria-pressed', String(rep !== 'off'));
+    $('mx-repeat-one').hidden = rep !== 'track';
+    $('mx-like').setAttribute('aria-pressed', String(!!(st && st.liked)));
+    $('mx-like').textContent = st && st.liked ? '✓' : '+';
+    $('mx-like').title = st && st.liked ? 'In your Liked Songs' : 'Save to Liked Songs';
+    const vol = st && st.volume;
+    $('mx-volnum').textContent = vol == null ? '—' : `${vol}%`;
+    $('mx-volfill').style.width = vol == null ? '0' : `${vol}%`;
+    island.classList.toggle('mx-playing', !!playing && st.source === 'spotify');   // the record spins for music, not a video thumbnail
+    drawProgress();
+    if (sp.needs_reconnect && !mxMsg.shownReconnect) {
+      mxMsg.shownReconnect = true;
+      mxMsg('Reconnect Spotify in Settings → Connections to use Liked Songs and podcasts.');
+    }
+  }
+
+  function drawProgress() {
+    const st = mx.state;
+    const ring = $('mx-ring');
+    $('app-media').classList.toggle('mx-live', !!(st && st.source && !st.duration_ms));
+    if (!st || !st.duration_ms) {
+      ring.style.strokeDashoffset = String(RING);
+      $('mx-pos').textContent = st && st.source && !st.duration_ms ? 'Live' : '0:00';
+      $('mx-dur').textContent = st && st.duration_ms ? msClock(st.duration_ms) : '';
+      return;
+    }
+    const pos = Math.min(st.duration_ms, st.progress_ms + (st.playing ? Date.now() - st._recv : 0));
+    ring.style.strokeDasharray = String(RING);
+    ring.style.strokeDashoffset = String(RING * (1 - pos / st.duration_ms));
+    $('mx-pos').textContent = msClock(pos);
+    $('mx-dur').textContent = msClock(st.duration_ms);
+  }
+
+  async function mediaCmd(action, value) {
+    if (!online()) return mxMsg('Lumi is offline.', true);
+    try {
+      const r = await req('media_cmd', { action, value }, 20000);
+      if (r.ok === false) throw new Error(r.error || 'That didn’t work.');
+      setMedia(r.state);
+      if (r.message) mxMsg(r.message);
+      return true;
+    } catch (e) { mxMsg(e.message, true); return false; }
+  }
+
+  // views
+  function mediaView(i, instant) {
+    mx.view = Math.max(0, Math.min(2, i));
+    const views = $('mx-views');
+    views.classList.toggle('instant', !!instant);
+    views.style.transform = `translateX(${-mx.view * 100 / 3}%)`;
+    document.querySelectorAll('.mx-dot').forEach((d) => {
+      const on = +d.dataset.view === mx.view;
+      d.classList.toggle('on', on); d.setAttribute('aria-selected', String(on));
+    });
+    document.querySelectorAll('.mx-pane').forEach((p, n) => { p.inert = n !== mx.view; });
+    if (mx.view === 0) loadLibrary();
+    if (mx.view === 2) loadUpNext();
+  }
+
+  function row(item, actions) {
+    const li = document.createElement('li');
+    li.className = 'mx-row';
+    const art = document.createElement('span');
+    art.className = 'mx-row-art';
+    art.textContent = (item.title || '?').trim().charAt(0).toUpperCase();
+    const text = document.createElement('span');
+    text.className = 'mx-row-text';
+    text.append(span('mx-row-title', item.title || ''), span('mx-row-sub', item.subtitle || item.kind || ''));
+    li.append(art, text);
+    for (const [label, glyph, fn] of actions) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'mx-row-btn'; b.textContent = glyph;
+      b.setAttribute('aria-label', `${label}: ${item.title}`); b.title = label;
+      b.addEventListener('click', fn);
+      li.append(b);
+    }
+    return li;
+  }
+  function emptyLine(ul, text) { ul.replaceChildren(li('mx-empty', text)); }
+
+  async function loadLibrary() {
+    const ul = $('mx-lib-list');
+    if (!online()) return emptyLine(ul, 'Lumi is offline.');
+    const q = $('mx-search').value.trim();
+    if (!mx.lib || q) emptyLine(ul, q ? 'Searching…' : 'Loading your library…');
+    try {
+      const r = await req('media_library', { q }, 20000);
+      if (r.ok === false) throw new Error(r.error);
+      if (!r.connected) return emptyLine(ul, 'Connect Spotify in Lumi’s Settings → Connections to browse your library.');
+      if (!q) mx.lib = r;
+      drawLibrary(q ? r.results : null);
+    } catch (e) { emptyLine(ul, `Couldn’t load: ${e.message}`); }
+  }
+  function drawLibrary(results) {
+    const ul = $('mx-lib-list');
+    const items = results || (mx.lib && mx.lib[mx.shelf]) || [];
+    ul.replaceChildren();
+    if (!results && mx.shelf === 'liked' && items.length) {
+      const all = row({ title: 'Play Liked Songs', subtitle: `${items.length} recent saves`, kind: 'playlist' },
+        [['Play', '▶', () => mediaCmd('play_liked')]]);
+      all.classList.add('mx-row-feature');
+      ul.append(all);
+    }
+    for (const it of items) {
+      const acts = [['Play', '▶', async () => { if (await mediaCmd('play_uri', it.uri)) mediaView(1); }]];
+      if (it.kind === 'track' || it.kind === 'episode') acts.push(['Add to queue', '+', () => mediaCmd('queue_uri', it.uri)]);
+      ul.append(row(it, acts));
+    }
+    if (!ul.children.length) emptyLine(ul, results ? 'No matches.' : 'Nothing here yet.');
+  }
+
+  async function loadUpNext() {
+    const qu = $('mx-queue'), dv = $('mx-devices');
+    if (!online()) { emptyLine(qu, 'Lumi is offline.'); dv.replaceChildren(); return; }
+    emptyLine(qu, 'Loading…');
+    try {
+      const r = await req('media_next', {}, 20000);
+      if (r.ok === false) throw new Error(r.error);
+      if (!r.connected) { emptyLine(qu, 'Spotify isn’t connected.'); dv.replaceChildren(); return; }
+      qu.replaceChildren();
+      for (const it of (r.queue || []).slice(0, 20)) {
+        qu.append(row(it, [['Play now', '▶', async () => { if (await mediaCmd('play_uri', it.uri)) { mediaView(1); } }]]));
+      }
+      if (!qu.children.length) emptyLine(qu, r.queue_error ? `Couldn’t read the queue: ${r.queue_error}` : 'Nothing queued. Add songs from the library.');
+      dv.replaceChildren();
+      for (const d of r.devices || []) {
+        const item = row({ title: d.name, subtitle: d.active ? `${d.type} · playing here` : d.type, kind: 'device' },
+          d.active ? [] : [['Play on this device', '⇄', async () => { if (await mediaCmd('transfer', d.id)) loadUpNext(); }]]);
+        if (d.active) item.classList.add('mx-row-feature');
+        dv.append(item);
+      }
+      if (!dv.children.length) emptyLine(dv, 'Open Spotify on a device to see it here.');
+    } catch (e) { emptyLine(qu, `Couldn’t load: ${e.message}`); }
+  }
+
+  // volume crown: the wheel anywhere on the island, summed so a fast spin is one request
+  function showVolBubble(v) {
+    const b = $('mx-vol');
+    b.textContent = `${v}%`;
+    b.classList.add('on');
+    clearTimeout(mx.volShowTimer);
+    mx.volShowTimer = setTimeout(() => b.classList.remove('on'), 900);
+  }
+  island.addEventListener('wheel', (e) => {
+    if (app !== 'media' || state !== 'open' || mx.view !== 1) return;
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;       // sideways: the pane swipe below
+    const st = mx.state;
+    if (!st || st.volume == null) return;
+    e.preventDefault();
+    mx.volPending += e.deltaY < 0 ? 5 : -5;
+    const target = Math.max(0, Math.min(100, st.volume + mx.volPending));
+    showVolBubble(target);
+    $('mx-volfill').style.width = `${target}%`; $('mx-volnum').textContent = `${target}%`;
+    clearTimeout(mx.volTimer);
+    mx.volTimer = setTimeout(async () => {
+      mx.volPending = 0;
+      await mediaCmd('volume', String(target));
+    }, 180);
+  }, { passive: false });
+
+  // sideways scroll / swipe between panes
+  let swipeX = null, swipeLock = 0;
+  $('mx-views').addEventListener('wheel', (e) => {
+    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY) || Math.abs(e.deltaX) < 12 || Date.now() < swipeLock) return;
+    e.preventDefault();
+    swipeLock = Date.now() + 450;
+    mediaView(mx.view + (e.deltaX > 0 ? 1 : -1));
+  }, { passive: false });
+  $('mx-views').addEventListener('pointerdown', (e) => { if (e.target.closest('button, input')) return; swipeX = e.clientX; });
+  window.addEventListener('pointerup', (e) => {
+    if (swipeX == null) return;
+    const dx = e.clientX - swipeX; swipeX = null;
+    if (Math.abs(dx) > 50) mediaView(mx.view + (dx < 0 ? 1 : -1));
+  });
+  $('app-media').addEventListener('keydown', (e) => {
+    if (e.target.matches('input')) return;
+    if (e.key === 'ArrowRight') { e.preventDefault(); mediaView(mx.view + 1); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); mediaView(mx.view - 1); }
+    else if (e.key === ' ' && mx.view === 1 && !e.target.matches('button')) { e.preventDefault(); mediaCmd('toggle'); }
+  });
+  document.querySelectorAll('.mx-dot').forEach((d) => d.addEventListener('click', () => mediaView(+d.dataset.view)));
+  $('mx-play').addEventListener('click', () => mediaCmd('toggle'));
+  $('mx-prev').addEventListener('click', () => mediaCmd('previous'));
+  $('mx-next').addEventListener('click', () => mediaCmd('next'));
+  $('mx-shuffle').addEventListener('click', () => mediaCmd('shuffle'));
+  $('mx-repeat').addEventListener('click', () => mediaCmd('repeat'));
+  $('mx-like').addEventListener('click', () => mediaCmd('like'));
+  document.querySelectorAll('.mx-chip').forEach((c) => c.addEventListener('click', () => {
+    mx.shelf = c.dataset.shelf;
+    document.querySelectorAll('.mx-chip').forEach((o) => { o.classList.toggle('on', o === c); o.setAttribute('aria-selected', String(o === c)); });
+    $('mx-search').value = '';
+    if (mx.lib) drawLibrary(); else loadLibrary();
+  }));
+  $('mx-search').addEventListener('input', () => {
+    clearTimeout(mx.searchTimer);
+    mx.searchTimer = setTimeout(() => { if ($('mx-search').value.trim()) loadLibrary(); else drawLibrary(); }, 400);
+  });
+  drawMedia();
 
   // ── Go ─────────────────────────────────────────────────────────
   setApp('home');

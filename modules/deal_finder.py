@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from urllib.parse import quote, quote_plus, urlparse
 
+from modules import web_search
 from modules.everyday_common import ToolContext, one_line
 
 AGENT = "system"
@@ -131,7 +132,7 @@ def source_urls(query: str, category: str, postal_code: Optional[str] = None) ->
     terms = f"{query} {_CATEGORY_TERMS[category]}"
     if postal_code:
         terms += f" {postal_code}"
-    urls.append(f"https://html.duckduckgo.com/html/?q={quote_plus(terms)}")
+    urls.append(web_search.search_url(terms))             # Bing, in Firefox (like Lumi's other searches)
     return [_check_url(u) for u in urls]
 
 
@@ -262,9 +263,10 @@ class DealFinder:
 
     async def _launch(self, pw):
         try:
-            return await pw.chromium.launch(headless=True)
-        except Exception:
             return await pw.firefox.launch(headless=True)
+        except Exception as e:
+            raise DealFinderError("Firefox for Playwright isn't installed. Run `playwright install firefox` "
+                                  f"in the lumi environment. ({type(e).__name__})")
 
     async def _guard_route(self, route, request):
         """Every request passes here. A navigation to a forbidden URL is

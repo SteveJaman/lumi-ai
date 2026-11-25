@@ -46,7 +46,7 @@ FINANCES_CSV = os.path.join(DATA_ROOT, "finances.csv")
 WISHLIST_JSON = os.path.join(DATA_ROOT, "wishlist.json")
 MAX_WISHLIST = 500
 
-SEARCH_RESULTS = 6       # ddgs hits to consider
+SEARCH_RESULTS = 6       # search hits to consider
 PAGES_TO_SCRAPE = 3      # of those, how many pages to read
 PAGE_CHARS = 3500        # text per page handed to the model
 FETCH_TIMEOUT_S = 15
@@ -249,10 +249,10 @@ _EXTRACT_SYSTEM = (
 )
 
 
-def _ddgs_search(query: str) -> List[dict]:
-    from ddgs import DDGS
-    with DDGS() as d:
-        return list(d.text(query, max_results=SEARCH_RESULTS) or [])
+def _web_search(query: str) -> List[dict]:
+    """Bing in a headless Firefox (modules/web_search.py): [{title, href, body}]."""
+    from modules import web_search
+    return web_search.search(query, max_results=SEARCH_RESULTS)
 
 
 def _is_public_http(url: str) -> bool:
@@ -350,7 +350,7 @@ async def research_product(ctx: ToolContext, query: str, budget: Any = None) -> 
         budget_f = None
     search_q = f"best {query}" + (f" under ${budget_f:g}" if budget_f else "") + " review price"
     try:
-        hits = await asyncio.wait_for(asyncio.to_thread(_ddgs_search, search_q), 30)
+        hits = await asyncio.wait_for(asyncio.to_thread(_web_search, search_q), 30)
     except Exception as e:
         return f"Error: web search failed ({type(e).__name__})."
     hits = [h for h in hits if _is_public_http(h.get("href") or "")]

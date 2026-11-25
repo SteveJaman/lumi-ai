@@ -128,6 +128,11 @@ CLOUD_ESCALATION_MODEL = "anthropic:auto"     # Claude smart router; "anthropic:
 # Use it anywhere a model spec is taken by naming "anthropic:auto" (for example as
 # CLOUD_ESCALATION_MODEL). Prices are USD per million tokens (input, output), used only
 # for the cost estimate in the Model Pipeline view.
+# Media (modules/media_bridge.py): lower music apps to MEDIA_DUCK_LEVEL of their
+# volume while you talk or Lumi speaks, then fade them back.
+MEDIA_DUCKING = True
+MEDIA_DUCK_LEVEL = 0.2
+
 CLAUDE_ROUTER_MODELS = {
     "haiku":  "claude-haiku-5-5",
     "sonnet": "claude-sonnet-5-5",

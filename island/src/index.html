@@ -29,6 +29,9 @@
         <button class="tab" data-app="hub" role="tab" aria-label="Hub" aria-selected="false">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg><span>Hub</span>
         </button>
+        <button class="tab" data-app="media" role="tab" aria-label="Media" aria-selected="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span>Media</span>
+        </button>
         <button class="tab" data-app="chat" role="tab" aria-label="Chat" aria-selected="false">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Chat</span>
         </button>
@@ -152,6 +155,68 @@
           <form id="hub-check-add" class="hub-check-add" autocomplete="off">
             <input id="hub-check-input" maxlength="80" placeholder="Add to today's list…" aria-label="New checklist item">
           </form>
+        </div>
+      </section>
+
+      <!-- Media: a watch-style player. Library | Now playing | Up next, swipe or use the dots. -->
+      <section id="app-media" class="app media" aria-label="Media">
+        <div class="mx-viewport">
+          <div class="mx-views" id="mx-views">
+
+            <div class="mx-pane mx-lib" aria-label="Library">
+              <div class="mx-head">
+                <input id="mx-search" class="mx-search" placeholder="Search Spotify" aria-label="Search Spotify" spellcheck="false" autocomplete="off">
+              </div>
+              <div class="mx-chips" role="tablist" aria-label="Library shelves">
+                <button class="mx-chip on" data-shelf="playlists" role="tab" aria-selected="true">Playlists</button>
+                <button class="mx-chip" data-shelf="liked" role="tab" aria-selected="false">Liked</button>
+                <button class="mx-chip" data-shelf="recent" role="tab" aria-selected="false">Recent</button>
+                <button class="mx-chip" data-shelf="shows" role="tab" aria-selected="false">Podcasts</button>
+              </div>
+              <ul id="mx-lib-list" class="mx-list" aria-label="Library items"></ul>
+            </div>
+
+            <div class="mx-pane mx-now" aria-label="Now playing">
+              <div class="mx-bg" id="mx-bg" aria-hidden="true"></div>
+              <div class="mx-src" id="mx-src">Nothing playing</div>
+              <div class="mx-dial">
+                <svg class="mx-ring" viewBox="0 0 120 120" aria-hidden="true">
+                  <circle class="mx-ring-track" cx="60" cy="60" r="56"/>
+                  <circle class="mx-ring-fill" id="mx-ring" cx="60" cy="60" r="56"/>
+                </svg>
+                <div class="mx-art" id="mx-art"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
+                <div class="mx-vol" id="mx-vol" aria-hidden="true"></div>
+              </div>
+              <div class="mx-ticker" id="mx-ticker"><span id="mx-title">—</span></div>
+              <div class="mx-artist" id="mx-artist"></div>
+              <div class="mx-time"><span id="mx-pos">0:00</span><span id="mx-dur">0:00</span></div>
+              <div class="mx-ctl">
+                <button class="mx-btn" id="mx-shuffle" type="button" aria-label="Shuffle" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg></button>
+                <button class="mx-btn" id="mx-prev" type="button" aria-label="Previous"><svg viewBox="0 0 24 24"><path d="M19 20 9 12l10-8zM5 19V5"/></svg></button>
+                <button class="mx-btn mx-play" id="mx-play" type="button" aria-label="Play"><svg viewBox="0 0 24 24" id="mx-play-icon"><path d="M7 4v16l13-8z"/></svg></button>
+                <button class="mx-btn" id="mx-next" type="button" aria-label="Next"><svg viewBox="0 0 24 24"><path d="m5 4 10 8-10 8zM19 5v14"/></svg></button>
+                <button class="mx-btn" id="mx-repeat" type="button" aria-label="Repeat" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg><b id="mx-repeat-one" hidden>1</b></button>
+              </div>
+              <div class="mx-row2">
+                <button class="mx-like" id="mx-like" type="button" aria-label="Save to Liked Songs" aria-pressed="false">+</button>
+                <div class="mx-volbar" title="Scroll anywhere on the island to change the volume"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4zM15.5 8.5a5 5 0 0 1 0 7"/></svg><span class="mx-volbar-track"><i id="mx-volfill"></i></span><span id="mx-volnum">—</span></div>
+              </div>
+              <p class="mx-msg" id="mx-msg" role="status" aria-live="polite"></p>
+            </div>
+
+            <div class="mx-pane mx-queue" aria-label="Up next and devices">
+              <div class="mx-label">Up next</div>
+              <ul id="mx-queue" class="mx-list" aria-label="Up next"></ul>
+              <div class="mx-label">Play on</div>
+              <ul id="mx-devices" class="mx-list mx-devlist" aria-label="Devices"></ul>
+            </div>
+
+          </div>
+        </div>
+        <div class="mx-dots" role="tablist" aria-label="Media views">
+          <button class="mx-dot" data-view="0" role="tab" aria-label="Library" aria-selected="false"></button>
+          <button class="mx-dot on" data-view="1" role="tab" aria-label="Now playing" aria-selected="true"></button>
+          <button class="mx-dot" data-view="2" role="tab" aria-label="Up next" aria-selected="false"></button>
         </div>
       </section>
 

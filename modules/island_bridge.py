@@ -29,6 +29,13 @@ that is echoed back:
     shortcut_delete {sid}          -> shortcuts {ok, shortcuts} | {ok: false, error}
                                       Hub launcher (modules/shortcuts_manager.py); the island
                                       opens a link itself, in the default browser
+    media_get                      -> media_state {state}       (keeps the bridge polling ~25 s)
+    media_cmd {action, value?}     -> media_state {state, message} | {ok: false, error}
+                                      toggle/play/pause/next/previous/shuffle/repeat/like,
+                                      volume (0-100 or +5/-5), play_uri, queue_uri, transfer, play_liked
+    media_library {q?}             -> media_library {playlists, liked, recent, shows} | {results}
+    media_next                     -> media_next {current, queue, devices}
+                                      Media tab (modules/media_bridge.py: Spotify or Windows media)
     quick_note {text, kind?}       -> quick_note {ok, kind} | {ok: false, error}
                                       Hub's idea / homework / grocery box: a long-term memory
                                       labelled with its kind (guessed from the text if absent)
@@ -41,6 +48,8 @@ Server -> client (pushed, never polled):
     snapshot {snapshot}            next event + unread changed
     prefs {prefs}                  12/24 h, units or weather city changed in the web client
     shortcuts_update {shortcuts}   a shortcut was added or removed (any island, the web API)
+    media_state {state}            now playing changed; "art" is left out when the track hasn't
+                                   changed since the last push (the island keeps the last one)
 
 Everything the island can do is something the signed-in owner can already do
 in the web client; the socket is loopback-only, origin-checked, and (when
@@ -330,6 +339,42 @@ def install(signals, server=None, info=None) -> None:
         except Exception as e:
             return await send(ws, {**base, "ok": False, "error": f"memory: {type(e).__name__}"})
         await send(ws, {**base, "ok": True, "kind": kind})
+
+    # ── Media tab ─────────────────────────────────────────────────
+    from modules import media_bridge
+
+    def media(fn):
+        async def handler(ws, data):
+            kind = {"media_library": "media_library", "media_next": "media_next"}.get(data.get("type"), "media_state")
+            base = {"type": kind, "id": data.get("id")}
+            try:
+                out = await asyncio.get_running_loop().run_in_executor(None, fn, data)
+            except ValueError as e:
+                return await send(ws, {**base, "ok": False, "error": str(e)})
+            except Exception as e:
+                return await send(ws, {**base, "ok": False, "error": str(e) or type(e).__name__})
+            await send(ws, {**base, "ok": True, **out})
+        return handler
+
+    def _cmd(data):
+        msg, st = media_bridge.bridge().command(str(data.get("action") or ""), data.get("value"))
+        return {"state": st, "message": msg}
+
+    reg("media_get", media(lambda d: {"state": media_bridge.bridge().state()}))
+    reg("media_cmd", media(_cmd))
+    reg("media_library", media(lambda d: media_bridge.bridge().library(str(d.get("q") or ""))))
+    reg("media_next", media(lambda d: media_bridge.bridge().up_next()))
+
+    last_art = {"key": None}
+
+    def push_media(st):
+        out = dict(st)
+        if out.get("key") == last_art["key"]:
+            out.pop("art", None)                        # same track: the island already has it
+        else:
+            last_art["key"] = out.get("key")
+        push({"type": "media_state", "state": out})
+    media_bridge.bridge().add_listener(push_media)
 
     # ── Focus Mode ────────────────────────────────────────────────
     async def set_paused(ws, data):

@@ -45,7 +45,8 @@ AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com/v1"
 SCOPES = ("user-read-playback-state user-modify-playback-state user-read-currently-playing "
-          "user-read-recently-played user-top-read playlist-read-private")
+          "user-read-recently-played user-top-read playlist-read-private "
+          "user-library-read user-library-modify")        # Liked Songs, podcasts, the like button
 TIMEOUT_S = 10
 PENDING_TTL_S = 600
 
@@ -98,9 +99,14 @@ def save_client(client_id: str) -> None:
 def status() -> Dict[str, Any]:
     data = _load()
     user = data.get("user") or {}
-    return {"configured": bool(data.get("client_id")), "connected": bool((data.get("token") or {}).get("refresh_token")),
+    tok = data.get("token") or {}
+    granted = set(str(tok.get("scope") or "").split())
+    connected_ = bool(tok.get("refresh_token"))
+    return {"configured": bool(data.get("client_id")), "connected": connected_,
             "user": user.get("display_name") or user.get("id"), "product": user.get("product"),
-            "premium": user.get("product") == "premium"}
+            "premium": user.get("product") == "premium",
+            # Signed in before a feature needed a new permission (e.g. Liked Songs): sign in again.
+            "needs_reconnect": connected_ and bool(granted) and not set(SCOPES.split()) <= granted}
 
 
 def connected() -> bool:
@@ -248,11 +254,147 @@ def now_playing() -> Optional[Dict[str, Any]]:
             "playing": bool(st.get("is_playing")), "progress_ms": st.get("progress_ms") or 0,
             "duration_ms": item.get("duration_ms") or 0, "shuffle": bool(st.get("shuffle_state")),
             "device": dev.get("name", ""), "volume": dev.get("volume_percent"),
+            "id": item.get("id", ""), "type": item.get("type", "track"),
+            "repeat": st.get("repeat_state") or "off", "device_id": dev.get("id", ""),
+            "device_type": dev.get("type", ""), "context_uri": (st.get("context") or {}).get("uri", ""),
             "at": time.time()}
 
 
 def _devices() -> List[Dict[str, Any]]:
     return (_api("GET", "/me/player/devices") or {}).get("devices") or []
+
+
+# ─── library, queue, devices (the Media tab) ────────────────────────
+
+def _item(obj: Dict[str, Any], kind: str) -> Optional[Dict[str, Any]]:
+    """Any Spotify object as a row: {uri, title, subtitle, art, kind}."""
+    if not obj or not obj.get("uri"):
+        return None
+    if kind == "track":
+        sub = ", ".join(a.get("name", "") for a in obj.get("artists") or [])
+        art = _images(obj.get("album") or {})
+    elif kind == "episode":
+        sub, art = (obj.get("show") or {}).get("name", ""), _images(obj.get("show") or obj)
+    elif kind == "playlist":
+        sub = ((obj.get("owner") or {}).get("display_name") or "") + (
+            f" · {(obj.get('tracks') or {}).get('total')} songs" if (obj.get("tracks") or {}).get("total") else "")
+        art = _images(obj)
+    elif kind == "album":
+        sub, art = ", ".join(a.get("name", "") for a in obj.get("artists") or []), _images(obj)
+    elif kind == "show":
+        sub, art = obj.get("publisher", ""), _images(obj)
+    else:                                                    # artist
+        sub, art = "Artist", _images(obj)
+    return {"uri": obj["uri"], "title": obj.get("name", ""), "subtitle": sub, "art": art, "kind": kind,
+            "id": obj.get("id", "")}
+
+
+def _rows(objs, kind) -> List[Dict[str, Any]]:
+    return [r for r in (_item(o, kind) for o in objs or []) if r]
+
+
+def library(limit: int = 20) -> Dict[str, List[Dict[str, Any]]]:
+    """Playlists, recent Liked Songs, recently played and saved podcasts."""
+    def get(path, params=None):
+        try:
+            return _api("GET", path, params=params) or {}
+        except SpotifyError:                       # e.g. a scope from an older sign-in: skip that shelf
+            return {}
+    recent, seen = [], set()
+    for it in get("/me/player/recently-played", {"limit": 30}).get("items") or []:
+        t = it.get("track") or {}
+        if t.get("uri") and t["uri"] not in seen:
+            seen.add(t["uri"])
+            recent.append(t)
+    return {
+        "playlists": _rows(get("/me/playlists", {"limit": limit}).get("items"), "playlist"),
+        "liked": _rows([i.get("track") for i in get("/me/tracks", {"limit": limit}).get("items") or []], "track"),
+        "recent": _rows(recent[:limit], "track"),
+        "shows": _rows([i.get("show") for i in get("/me/shows", {"limit": limit}).get("items") or []], "show"),
+    }
+
+
+def search(query: str, kinds=("track", "playlist", "album", "show"), limit: int = 6) -> List[Dict[str, Any]]:
+    query = " ".join(str(query or "").split())[:200]
+    if not query:
+        return []
+    res = _api("GET", "/search", params={"q": query, "type": ",".join(kinds), "limit": limit}) or {}
+    out: List[Dict[str, Any]] = []
+    for k in kinds:
+        out += _rows((res.get(k + "s") or {}).get("items"), k)
+    return out
+
+
+def queue() -> Dict[str, Any]:
+    """What's playing and what's up next (Spotify can't remove or reorder these)."""
+    q = _api("GET", "/me/player/queue") or {}
+    cur = q.get("currently_playing")
+    rows = [r for r in (_item(t, t.get("type", "track")) for t in q.get("queue") or [] if t) if r]
+    return {"current": _item(cur, cur.get("type", "track")) if cur else None, "queue": rows[:30]}
+
+
+def add_to_queue(uri: str) -> str:
+    if not str(uri or "").startswith("spotify:"):
+        raise ValueError("That isn't a Spotify item.")
+    _with_device(lambda dev: _api("POST", "/me/player/queue", params={"uri": uri, **({"device_id": dev} if dev else {})}))
+    return "Added to the queue."
+
+
+def play_uri(uri: str) -> str:
+    """Play a track/episode now, or start a playlist, album, artist or show."""
+    uri = str(uri or "")
+    if not uri.startswith("spotify:"):
+        raise ValueError("That isn't a Spotify item.")
+    kind = uri.split(":")[1] if uri.count(":") >= 2 else ""
+    body = {"uris": [uri]} if kind in ("track", "episode") else {"context_uri": uri}
+    _with_device(lambda dev: _api("PUT", "/me/player/play", params={"device_id": dev} if dev else None, body=body))
+    return "Playing."
+
+
+def play_uris(uris: List[str]) -> str:
+    uris = [u for u in uris if str(u).startswith("spotify:track:")][:50]
+    if not uris:
+        raise ValueError("Nothing to play.")
+    _with_device(lambda dev: _api("PUT", "/me/player/play", params={"device_id": dev} if dev else None,
+                                  body={"uris": uris}))
+    return "Playing."
+
+
+def devices() -> List[Dict[str, Any]]:
+    return [{"id": d.get("id"), "name": d.get("name", ""), "type": d.get("type", ""),
+             "active": bool(d.get("is_active")), "volume": d.get("volume_percent")}
+            for d in _devices() if d.get("id")]
+
+
+def transfer(device_id: str, play: bool = True) -> str:
+    if not device_id:
+        raise ValueError("Pick a device.")
+    _api("PUT", "/me/player", body={"device_ids": [device_id], "play": bool(play)})
+    return "Switched device."
+
+
+REPEAT = ("off", "context", "track")
+
+
+def set_repeat(state: str) -> str:
+    if state not in REPEAT:
+        raise ValueError("Repeat is off, context or track.")
+    _with_device(lambda dev: _api("PUT", "/me/player/repeat", params={"state": state, **({"device_id": dev} if dev else {})}))
+    return {"off": "Repeat off.", "context": "Repeating this playlist.", "track": "Repeating this song."}[state]
+
+
+def is_liked(track_id: str) -> bool:
+    if not track_id:
+        return False
+    res = _api("GET", "/me/tracks/contains", params={"ids": track_id})
+    return bool(res and res[0])
+
+
+def set_liked(track_id: str, on: bool) -> str:
+    if not track_id:
+        raise ValueError("Nothing to like.")
+    _api("PUT" if on else "DELETE", "/me/tracks", params={"ids": track_id})
+    return "Saved to your Liked Songs." if on else "Removed from your Liked Songs."
 
 
 def _with_device(fn):

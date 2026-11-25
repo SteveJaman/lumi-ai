@@ -87,7 +87,8 @@ def test_pkce_sign_in_round_trip(spot):
     token_call = spot.calls["post"][0][1]
     assert token_call["grant_type"] == "authorization_code" and token_call["code"] == "CODE"
     assert len(token_call["code_verifier"]) >= 43 and token_call["redirect_uri"].endswith("/api/spotify/callback")
-    assert st == {"configured": True, "connected": True, "user": "Anthony", "product": "premium", "premium": True}
+    assert st == {"configured": True, "connected": True, "user": "Anthony", "product": "premium", "premium": True,
+                  "needs_reconnect": False}
     with pytest.raises(sp.SpotifyError, match="expired"):        # a state works once
         sp.finish(q["state"][0], "CODE")
 
@@ -159,7 +160,8 @@ def test_tools_offered_only_when_connected(spot):
     assert {"spotify_now_playing", "spotify_control", "spotify_play"} <= names()
     assert agent_tools.wrap_tool_result("spotify_now_playing", "Playing: x").startswith("[FROM SPOTIFY]")
     sp.disconnect()
-    assert sp.status() == {"configured": True, "connected": False, "user": None, "product": None, "premium": False}
+    assert sp.status() == {"configured": True, "connected": False, "user": None, "product": None, "premium": False,
+                           "needs_reconnect": False}
 
 
 # ─── profile ────────────────────────────────────────────────────
@@ -299,3 +301,36 @@ def test_display_prefs_accept_detected_coordinates(tmp_path, monkeypatch):
     assert prefs["location"] == "Kennesaw, Georgia" and prefs["has_location"] is True
     with pytest.raises(ValueError):
         info.update({"coords": {"lat": 200, "lon": 0}})
+
+
+def test_media_tab_calls(spot):
+    connect()
+    spot.script += [Resp(200, {"currently_playing": {"uri": "spotify:track:1", "name": "Now", "type": "track",
+                                                     "artists": [{"name": "A"}], "album": {}},
+                               "queue": [{"uri": "spotify:track:2", "name": "Next", "type": "track",
+                                          "artists": [{"name": "B"}], "album": {"images": [{"url": "https://i/x.jpg"}]}}]})]
+    q = sp.queue()
+    assert q["current"]["title"] == "Now" and q["queue"][0]["subtitle"] == "B" and q["queue"][0]["art"] == "https://i/x.jpg"
+    spot.script.append(Resp(204))
+    assert sp.add_to_queue("spotify:track:2") == "Added to the queue."
+    assert spot.calls["api"][-1][:3] == ("POST", "/me/player/queue", {"uri": "spotify:track:2"})
+    with pytest.raises(ValueError):
+        sp.add_to_queue("https://evil.example")
+    spot.script.append(Resp(204))
+    sp.play_uri("spotify:playlist:9")
+    assert spot.calls["api"][-1][3] == {"context_uri": "spotify:playlist:9"}
+    spot.script.append(Resp(204))
+    assert sp.set_repeat("track") == "Repeating this song."
+    spot.script.append(Resp(200, [True]))
+    assert sp.is_liked("T1") is True
+    spot.script.append(Resp(200, None, text=""))
+    assert sp.set_liked("T1", False) == "Removed from your Liked Songs."
+    assert spot.calls["api"][-1][:3] == ("DELETE", "/me/tracks", {"ids": "T1"})
+
+
+def test_old_sign_ins_are_asked_to_reconnect(spot):
+    connect()
+    data = json.load(open(sp.PATH))
+    data["token"]["scope"] = "user-read-playback-state"          # signed in before the library scopes
+    json.dump(data, open(sp.PATH, "w"))
+    assert sp.status()["needs_reconnect"] is True

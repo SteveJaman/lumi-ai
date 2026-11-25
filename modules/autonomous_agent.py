@@ -61,7 +61,8 @@ DEFAULT_TIME_BUDGET_S = 30 * 60
 DEFAULT_MAX_STEPS = 80
 
 # data/ folders the agent may never read (secrets, private mail, sign-ins).
-READ_BLOCKED_DATA_DIRS = frozenset({"credentials", "workspace", "browser_profile", "memories", "profiles"})
+READ_BLOCKED_DATA_DIRS = frozenset({"credentials", "workspace", "browser_profile", "memories", "profiles",
+                                    "browser_search_profile"})
 # ...and never write: its own safety hooks, workflows, task store and skills too.
 WRITE_BLOCKED_DATA_DIRS = READ_BLOCKED_DATA_DIRS | {"hooks", "workflows", "tasks", "skills"}
 

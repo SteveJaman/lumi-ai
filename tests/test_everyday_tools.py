@@ -267,7 +267,7 @@ def test_research_product_builds_a_budgeted_table(monkeypatch):
     hits = [{"href": "https://a.example/p", "title": "A", "body": "a"},
             {"href": "http://127.0.0.1/admin", "title": "local", "body": ""},
             {"href": "https://b.example/p", "title": "B", "body": "b"}]
-    monkeypatch.setattr(finance_agent, "_ddgs_search", lambda q: hits)
+    monkeypatch.setattr(finance_agent, "_web_search", lambda q: hits)
 
     async def scrape(ctx, urls):
         assert "http://127.0.0.1/admin" not in urls

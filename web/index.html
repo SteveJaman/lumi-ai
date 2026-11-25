@@ -30,14 +30,15 @@
     <nav class="nav" id="nav"></nav>
 
     <div class="sidebar-footer">
-      <div class="status-pills">
-        <div class="pill">
-          <span class="dot" id="dot-vts"></span> VTube Studio
+      <!-- Footer, option A: one status line, you on your own row, then the buttons. -->
+      <div class="status-pills" role="group" aria-label="System status">
+        <div class="pill" title="VTube Studio">
+          <span class="dot" id="dot-vts"></span> VTube
         </div>
-        <div class="pill">
-          <span class="dot" id="dot-mic"></span> Microphone
+        <div class="pill" title="Microphone">
+          <span class="dot" id="dot-mic"></span> Mic
         </div>
-        <div class="pill">
+        <div class="pill" title="Ollama (local models)">
           <span class="dot" id="dot-ollama"></span> Ollama
         </div>
       </div>
@@ -46,10 +47,14 @@
       <div class="sp-mini" id="sp-mini" hidden></div>
 
       <div class="user-chip">
-        <button class="user-me grow" id="user-me" type="button" title="Edit your profile" aria-label="Edit your profile">
+        <button class="user-me" id="user-me" type="button" title="Edit your profile" aria-label="Edit your profile">
           <span class="avatar" id="user-avatar">?</span>
-          <span class="user-me__name" id="user-name">—</span>
+          <span class="user-me__text">
+            <span class="user-me__name" id="user-name">—</span>
+            <span class="user-me__sub">Edit profile</span>
+          </span>
         </button>
+        <div class="user-tools" role="group" aria-label="Account and app">
         <button class="btn btn-ghost btn-sm theme-toggle" id="theme-toggle" title="Switch to dark mode" aria-label="Toggle theme">☾</button>
 
         <!-- GitHub repository link -->
@@ -64,7 +69,8 @@
           </svg>
         </a>
 
-        <button class="btn btn-ghost btn-sm" id="btn-logout" title="Sign out">⏻</button>
+        <button class="btn btn-ghost btn-sm" id="btn-logout" title="Sign out" aria-label="Sign out">⏻</button>
+        </div>
       </div>
     </div>
   </aside>

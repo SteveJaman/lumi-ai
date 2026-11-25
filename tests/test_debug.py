@@ -818,7 +818,7 @@ OPTIONAL_DEPS = [
     ("psutil",           "SDK example clients"),
     ("argon2",           "password hashing (falls back to pbkdf2)"),
     ("ruamel.yaml",      "persona comment preservation"),
-    ("ddgs",             "web_search tool"),
+    ("playwright",       "web_search tool (Firefox + Bing)"),
     ("pytest",           "running the test suite"),
 ]
 

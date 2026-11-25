@@ -693,7 +693,8 @@ class SocketIOServer:
         from modules import shortcuts_manager, workspace
         workspace.register(r, self)             # /api/workspace/files* (host-only split-view Files tab)
         shortcuts_manager.register(r, self)     # /api/shortcuts (Lumi Island Hub)
-        from modules import spotify, user_profile
+        from modules import spotify, user_profile, media_bridge
+        media_bridge.register(r, self)          # /api/media/* (web sidebar player: Spotify or Windows media)
         user_profile.register(r, self)          # /api/profile* (the sidebar's profile dialog)
         spotify.register(r, self)               # /api/spotify/* (Settings -> Connections, sidebar player)
         from modules import home_info

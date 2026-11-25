@@ -1,0 +1,338 @@
+"""Media controller: modules/media_bridge.py (Spotify + Windows media + volume),
+voice ducking, modules/voice_dj.py, the island's Media messages and tab.
+Every backend is faked: no audio, Spotify or Ollama is touched."""
+
+import os
+import types
+
+import pytest
+
+from modules import media_bridge as mb
+from modules import voice_dj as dj
+from tests.test_island_bridge import Env, recv, run
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# ─── fakes ──────────────────────────────────────────────────────
+
+class FakeSpotify:
+    REPEAT = ("off", "context", "track")
+
+    def __init__(self, connected=True, premium=True, np=None):
+        self.st = {"connected": connected, "premium": premium, "needs_reconnect": False}
+        self.np = np
+        self.calls = []
+        self.liked = False
+
+    def status(self): return dict(self.st)
+    def now_playing(self): return dict(self.np) if self.np else None
+    def is_liked(self, tid): self.calls.append(("is_liked", tid)); return self.liked
+    def control(self, a, v=None): self.calls.append(("control", a, v)); return f"did {a}"
+    def set_repeat(self, s): self.calls.append(("repeat", s)); return f"repeat {s}"
+    def set_liked(self, tid, on): self.calls.append(("like", tid, on)); self.liked = on; return "liked" if on else "unliked"
+    def play_uri(self, u): self.calls.append(("play_uri", u)); return "Playing."
+    def add_to_queue(self, u): self.calls.append(("queue", u)); return "Added to the queue."
+    def transfer(self, d): self.calls.append(("transfer", d)); return "Switched device."
+    def library(self, n=20): return {"playlists": [], "liked": [{"uri": "spotify:track:L1"}], "recent": [], "shows": []}
+    def play_uris(self, uris): self.calls.append(("play_uris", uris)); return "Playing."
+    def search(self, q, kinds=("track",), limit=6): return [{"uri": "spotify:track:S1", "title": "Snow halation",
+                                                              "subtitle": "μ's", "kind": "track"}]
+    def queue(self): return {"current": None, "queue": [{"uri": "spotify:track:Q1", "title": "Next one"}]}
+    def devices(self): return [{"id": "pc", "name": "DESKTOP", "type": "Computer", "active": True}]
+
+
+class FakeWin:
+    def __init__(self, st=None, ok=True):
+        self.st, self.ok, self.calls = st, ok, []
+    def state(self): return dict(self.st) if self.st else None
+    def command(self, action, prefer=""):
+        self.calls.append((action, prefer))
+        return self.ok
+
+
+class Sess:
+    def __init__(self, name, pid, vol=1.0, active=1):
+        self.Process = types.SimpleNamespace(name=lambda n=name: n, pid=pid)
+        self.State = active
+        self.vol = vol
+        self.SimpleAudioVolume = types.SimpleNamespace(GetMasterVolume=lambda s=self: s.vol,
+                                                       SetMasterVolume=lambda v, ctx, s=self: setattr(s, "vol", v))
+
+
+class FakeAudio:
+    def __init__(self, sessions=(), master=0.5):
+        self._s, self.m = list(sessions), master
+    def _com(self): pass
+    def sessions(self): return self._s
+    def app_volume(self, p):
+        return next((s.vol for s in self._s if s.Process.name().lower() == p), None)
+    def set_app_volume(self, p, lvl):
+        for s in self._s:
+            if s.Process.name().lower() == p:
+                s.vol = lvl
+        return True
+    def master(self): return self.m
+    def set_master(self, v): self.m = v
+
+
+SP_NP = {"title": "Idol", "artists": "YOASOBI", "album": "Idol", "art": "https://i.scdn.co/a.jpg", "playing": True,
+         "progress_ms": 1000, "duration_ms": 200000, "shuffle": False, "repeat": "off", "device": "DESKTOP",
+         "device_type": "Computer", "id": "T1", "uri": "spotify:track:T1", "type": "track", "volume": 40}
+SYS_NP = {"source": "system", "app": "Firefox", "title": "Lofi stream", "artists": "Lofi Girl", "playing": True,
+          "progress_ms": 0, "duration_ms": 0, "key": "Lofi stream|Lofi Girl", "art": "", "can_next": False,
+          "can_prev": False, "can_shuffle": False, "can_repeat": False}
+
+
+def fetch_ok(url):
+    return types.SimpleNamespace(status_code=200, content=b"\xff\xd8\xff\xe0jpegdata")
+
+
+def make(sp=None, win=None, audio=None):
+    return mb.MediaBridge(spotify_mod=sp or FakeSpotify(np=SP_NP), win=win or FakeWin(),
+                          audio=audio or FakeAudio([Sess("Spotify.exe", 10, 0.6)]), fetch=fetch_ok)
+
+
+# ─── state ──────────────────────────────────────────────────────
+
+def test_playing_spotify_wins_with_art_liked_and_app_volume():
+    b = make()
+    st = b.refresh()
+    assert st["source"] == "spotify" and st["title"] == "Idol" and st["art"].startswith("data:image/jpeg;base64,")
+    assert st["liked"] is False and st["volume"] == 60                       # Spotify.exe's own volume
+    assert st["can"]["like"] and st["can"]["queue"] and st["can"]["volume"]
+
+
+def test_a_playing_system_source_beats_paused_spotify():
+    b = make(sp=FakeSpotify(np={**SP_NP, "playing": False}), win=FakeWin(SYS_NP), audio=FakeAudio(master=0.3))
+    st = b.refresh()
+    assert st["source"] == "system" and st["app"] == "Firefox" and st["volume"] == 30
+    assert st["can"]["next"] is False and st["can"]["like"] is False
+
+
+def test_spotify_seen_twice_is_one_source():
+    b = make(win=FakeWin({**SYS_NP, "app": "Spotify", "playing": True}))
+    assert b.refresh()["source"] == "spotify"
+
+
+def test_nothing_playing():
+    b = make(sp=FakeSpotify(connected=False), win=FakeWin(None))
+    st = b.refresh()
+    assert st["source"] is None and st["spotify"]["connected"] is False and st["can"]["control"] is False
+
+
+def test_listeners_fire_on_change_only():
+    b = make()
+    seen = []
+    b.add_listener(seen.append)
+    b.refresh()
+    b.refresh()                                                             # nothing changed
+    assert len(seen) == 1
+    b.sp.np = {**SP_NP, "playing": False}
+    b.refresh()
+    assert len(seen) == 2 and seen[-1]["playing"] is False
+
+
+def test_art_is_fetched_once_per_url_and_bad_art_is_dropped():
+    calls = []
+    b = make()
+    b.fetch = lambda url: (calls.append(url), fetch_ok(url))[1]
+    b.refresh(); b.refresh()
+    assert len(calls) == 1
+    assert b._art("http://insecure/a.jpg") == ""
+
+
+# ─── commands ───────────────────────────────────────────────────
+
+def test_premium_spotify_commands_use_the_web_api(monkeypatch):
+    monkeypatch.setattr(mb.time, "sleep", lambda s: None)
+    sp = FakeSpotify(np=SP_NP)
+    b = make(sp=sp)
+    b.refresh()
+    b.command("toggle"); b.command("next"); b.command("shuffle"); b.command("repeat")
+    msg, st = b.command("like")
+    assert ("control", "pause", None) in sp.calls and ("control", "next", None) in sp.calls
+    assert ("control", "shuffle", True) in sp.calls and ("repeat", "context") in sp.calls
+    assert ("like", "T1", True) in sp.calls and st["liked"] is True
+
+
+def test_free_spotify_uses_the_apps_windows_controls(monkeypatch):
+    monkeypatch.setattr(mb.time, "sleep", lambda s: None)
+    sp, win = FakeSpotify(premium=False, np=SP_NP), FakeWin()
+    b = make(sp=sp, win=win)
+    b.refresh()
+    b.command("next")
+    assert win.calls == [("next", "spotify")] and not [c for c in sp.calls if c[0] == "control"]
+    win.ok = False
+    with pytest.raises(ValueError, match="Premium"):
+        b.command("next")
+
+
+def test_system_commands_and_volume(monkeypatch):
+    monkeypatch.setattr(mb.time, "sleep", lambda s: None)
+    win, audio = FakeWin(SYS_NP), FakeAudio(master=0.5)
+    b = make(sp=FakeSpotify(connected=False), win=win, audio=audio)
+    b.refresh()
+    b.command("toggle")
+    assert win.calls == [("toggle", "")]
+    b.command("volume", "+10")
+    assert audio.m == pytest.approx(0.6)
+    b.command("volume", 150)
+    assert audio.m == 1.0
+    with pytest.raises(ValueError, match="Spotify songs"):
+        b.command("like")
+    with pytest.raises(ValueError):
+        b.command("volume", "loud")
+
+
+def test_spotify_volume_on_this_pc_is_the_apps_own(monkeypatch):
+    monkeypatch.setattr(mb.time, "sleep", lambda s: None)
+    audio = FakeAudio([Sess("Spotify.exe", 10, 0.6)])
+    sp = FakeSpotify(np=SP_NP)
+    b = make(sp=sp, audio=audio)
+    b.refresh()
+    b.command("volume", "-10")
+    assert audio._s[0].vol == pytest.approx(0.5) and not [c for c in sp.calls if c[:2] == ("control", "volume")]
+    b.sp.np = {**SP_NP, "device_type": "Smartphone"}                      # playing on the phone
+    b.refresh()
+    b.command("volume", 70)
+    assert ("control", "volume", 70) in sp.calls
+
+
+def test_library_queue_and_spotify_only_actions(monkeypatch):
+    monkeypatch.setattr(mb.time, "sleep", lambda s: None)
+    sp = FakeSpotify(np=SP_NP)
+    b = make(sp=sp)
+    b.refresh()
+    assert b.library("snow")["results"][0]["uri"] == "spotify:track:S1"
+    assert b.up_next()["queue"][0]["title"] == "Next one" and b.up_next()["devices"][0]["name"] == "DESKTOP"
+    b.command("play_uri", "spotify:playlist:9"); b.command("queue_uri", "spotify:track:2")
+    b.command("transfer", "pc"); b.command("play_liked")
+    assert ("play_uri", "spotify:playlist:9") in sp.calls and ("queue", "spotify:track:2") in sp.calls
+    assert ("transfer", "pc") in sp.calls and ("play_uris", ["spotify:track:L1"]) in sp.calls
+    off = make(sp=FakeSpotify(connected=False))
+    assert off.library() == {"connected": False}
+    with pytest.raises(ValueError, match="Connect Spotify"):
+        off.command("play_uri", "spotify:track:1")
+
+
+# ─── ducking ────────────────────────────────────────────────────
+
+def ducker(sessions, talking):
+    sig = types.SimpleNamespace(AI_speaking=talking, human_speaking=False)
+    d = mb.Ducker(sig, audio=FakeAudio(sessions), level=0.2, own_pid=99)
+    d._ramp = lambda moves, steps, step_s: [m[0].SimpleAudioVolume.SetMasterVolume(m[2], None) for m in moves]
+    return d, sig
+
+
+def test_ducking_lowers_only_music_apps_and_restores_them():
+    spot, ff, discord, lumi, idle = (Sess("Spotify.exe", 1, 0.8), Sess("firefox.exe", 2, 0.5),
+                                     Sess("Discord.exe", 3, 1.0), Sess("python.exe", 99, 1.0),
+                                     Sess("vlc.exe", 4, 0.9, active=0))
+    d, sig = ducker([spot, ff, discord, lumi, idle], talking=True)
+    d.tick(now=100)
+    assert spot.vol == pytest.approx(0.16) and ff.vol == pytest.approx(0.1)
+    assert discord.vol == 1.0 and lumi.vol == 1.0 and idle.vol == 0.9
+    sig.AI_speaking = False
+    d.tick(now=101)                                    # a pause between sentences: still ducked
+    assert spot.vol == pytest.approx(0.16)
+    d.tick(now=101.9)
+    assert spot.vol == pytest.approx(0.8) and ff.vol == pytest.approx(0.5) and not d.saved
+
+
+def test_a_volume_you_changed_while_ducked_is_left_alone():
+    spot = Sess("Spotify.exe", 1, 0.8)
+    d, sig = ducker([spot], talking=True)
+    d.tick(now=1)
+    spot.vol = 0.4                                     # you turned it up mid-conversation
+    sig.AI_speaking = False
+    d.tick(now=2); d.tick(now=3)
+    assert spot.vol == 0.4
+
+
+# ─── voice DJ ───────────────────────────────────────────────────
+
+@pytest.mark.parametrize("text,action,value", [
+    ("skip", "next", None), ("Skip this song!", "next", None), ("pause the music", "pause", None),
+    ("resume", "play", None), ("volume 30", "volume", "30"), ("set the volume to 80%", "volume", "80"),
+    ("turn it up", "volume", "+10"), ("quieter", "volume", "-10"), ("like this song", "like", None),
+    ("shuffle off", "shuffle", False), ("go back", "previous", None),
+])
+def test_exact_phrases_need_no_model(text, action, value):
+    it = dj.parse(text, ask=lambda t: pytest.fail("no model call for exact phrases"))
+    assert (it.action, it.value) == (action, value)
+
+
+def test_fuzzy_requests_go_to_the_local_model_and_default_to_none(monkeypatch):
+    monkeypatch.setattr(dj.constants, "GAMING_MODE", False, raising=False)
+    ask = lambda t: {"action": "queue", "query": "chill instrumental", "kind": "playlist"}
+    it = dj.parse("queue some chill instrumental music", ask=ask)
+    assert (it.action, it.query) == ("queue_query", "chill instrumental")
+    assert dj.parse("let's play a game", ask=lambda t: {"action": "none"}) is None
+    assert dj.parse("how was your day", ask=lambda t: pytest.fail("no music words, no model")) is None
+    monkeypatch.setattr(dj.constants, "GAMING_MODE", True, raising=False)
+    assert dj.parse("put on some lofi", ask=lambda t: pytest.fail("no model in Gaming Mode")) is None
+
+
+def test_handle_runs_the_command_and_answers(monkeypatch):
+    monkeypatch.setattr(mb.time, "sleep", lambda s: None)
+    sp = FakeSpotify(np=SP_NP)
+    b = make(sp=sp)
+    b.refresh()
+    from modules import spotify
+    monkeypatch.setattr(spotify, "connected", lambda: True)
+    monkeypatch.setattr(spotify, "search", sp.search)
+    assert dj.handle("skip", bridge=b) == "Skipping."
+    reply = dj.handle("queue snow halation", bridge=b, ask=lambda t: {"action": "queue", "query": "snow halation"})
+    assert reply == "Queued “Snow halation” by μ's." and ("queue", "spotify:track:S1") in sp.calls
+    assert dj.handle("shuffle off", bridge=b) == "Shuffle is already off."
+    assert dj.handle("what a nice day", bridge=b, ask=lambda t: {"action": "none"}) is None
+    monkeypatch.setattr(spotify, "connected", lambda: False)
+    assert "connected" in dj.handle("play lofi", bridge=b, ask=lambda t: {"action": "play", "query": "lofi"})
+
+
+# ─── island ─────────────────────────────────────────────────────
+
+async def reply(ws, kind, rid):
+    """The answer to request `rid` (pushes of the same type are skipped)."""
+    while True:
+        m = await recv(ws, kind, timeout=5)
+        if m.get("id") == rid:
+            return m
+
+
+def test_island_media_messages(monkeypatch):
+    monkeypatch.setattr(mb.time, "sleep", lambda s: None)
+    fake = make()
+    monkeypatch.setattr(mb, "bridge", lambda: fake)
+
+    async def t():
+        async with Env() as e:
+            ws = await e.connect(); await recv(ws, "hello_ok")
+            await ws.send_json({"type": "media_get", "id": 1})
+            r = await reply(ws, "media_state", 1)
+            assert r["ok"] and r["state"]["title"] == "Idol"
+            await ws.send_json({"type": "media_cmd", "id": 2, "action": "like"})
+            r = await reply(ws, "media_state", 2)
+            assert r["state"]["liked"] is True and r["message"] == "liked"
+            await ws.send_json({"type": "media_cmd", "id": 3, "action": "volume", "value": "loud"})
+            r = await reply(ws, "media_state", 3)
+            assert r["ok"] is False and "Volume" in r["error"]
+            await ws.send_json({"type": "media_next", "id": 4})
+            r = await reply(ws, "media_next", 4)
+            assert r["queue"][0]["title"] == "Next one"
+            await ws.send_json({"type": "media_library", "id": 5, "q": "snow"})
+            r = await reply(ws, "media_library", 5)
+            assert r["results"][0]["title"] == "Snow halation"
+    run(t())
+
+
+def test_island_has_the_media_tab_and_gaming_lite_mode():
+    html = open(os.path.join(ROOT, "island", "src", "index.html"), encoding="utf-8").read()
+    js = open(os.path.join(ROOT, "island", "src", "island.js"), encoding="utf-8").read()
+    css = open(os.path.join(ROOT, "island", "src", "island.css"), encoding="utf-8").read()
+    assert 'data-app="media"' in html and 'id="app-media"' in html
+    for msg in ("'media_get'", "'media_cmd'", "'media_library'", "'media_next'", "case 'media_state'"):
+        assert msg in js
+    assert ".island[data-gaming=\"true\"] .mx-bg { display: none; }" in css
+    assert "island.addEventListener('wheel'" in js                      # the volume crown

@@ -9,7 +9,6 @@ import datetime
 import random
 import io
 import sys
-from ddgs import DDGS
 import pypdf
 from docx import Document
 
@@ -54,7 +53,7 @@ from modules import hitl_server
 from modules import gaming_mode
 from modules import workspace_hub
 from modules import island_bridge
-from modules import claude_code, claude_handoff, claude_router
+from modules import claude_code, claude_handoff, claude_router, voice_dj
 from modules import model_router, agent_tracker, hybrid_mode
 from modules.harness import config as harness_config
 
@@ -123,6 +122,7 @@ COMMANDS = {
         "!agent": "Toggle agent mode on/off",
         "!agent <task>": "One-shot agent turn for <task>, then return to current mode",
         "!auto <goal>": "Autonomous task: plan, one approval, run unsupervised in sandbox/, verify",
+        "!searchbrowser": "Open Lumi's search browser so you can pass a bot check or sign in",
     },
     "Persona": {
         "set mood <name>": "Switch mood profile (default, bratty, brocon, soft)",
@@ -1844,7 +1844,8 @@ class Prompter:
             run = spec.claim(latest_user_text) if spec is not None else None
             if run is not None:
                 return await self._finish_speculative(run, latest_user_text)
-
+        if dj := await self._voice_dj(latest_user_text):      # "skip", "queue chill instrumental music"
+            return dj
         tier = await self._route_for(latest_user_text)
         req = self.conversational_request(latest_user_text, tier=tier)
         self._note_route(req)
@@ -1857,6 +1858,13 @@ class Prompter:
             if handed is not None:
                 return handed
         return await self._run_chat_request(req, latest_user_text, tier)
+
+    async def _voice_dj(self, text):
+        """A music request (modules/voice_dj.py) answered without the chat model, or None."""
+        try:
+            return await asyncio.get_running_loop().run_in_executor(None, voice_dj.handle, text)
+        except Exception:
+            return None
 
     async def _run_chat_request(self, req, latest_user_text, tier, recover=True):
         """Run one conversational request (streamed when local) and return the reply.
@@ -2684,16 +2692,16 @@ class Prompter:
                 if res.status_code == 200 and "Unknown location" not in res.text:
                     return f"System Info - Live Weather Data: {res.text.strip()}"
 
-            print(f"\n\033[93m[Lumi searching the web for: '{query}']\033[0m")
-            with DDGS() as ddgs:
-                results = [r for r in ddgs.text(query, max_results=3)]
-                if not results:
-                    return "System Info: No relevant web results found."
+            print(f"\n\033[93m[Lumi searching the web (Firefox, Bing) for: '{query}']\033[0m")
+            from modules import web_search as firefox_search
+            results = firefox_search.search(query, max_results=3)
+            if not results:
+                return "System Info: No relevant web results found."
 
-                context = "System Info - Live Web Search Results:\n"
-                for r in results:
-                    context += f"- Title: {r.get('title')}\n  Snippet: {r.get('body')}\n\n"
-                return context.strip()
+            context = "System Info - Live Web Search Results:\n"
+            for r in results:
+                context += f"- Title: {r.get('title')}\n  Source: {r.get('href')}\n  Snippet: {r.get('body')}\n\n"
+            return context.strip()
         except Exception as e:
             return f"System Info - Search error: {e}"
 
@@ -4206,6 +4214,16 @@ class Prompter:
                     # ─────────────────────────────────────────────────
                     # wipe memory / set mood / !sleep — already history-bound
                     # ─────────────────────────────────────────────────
+                    # !searchbrowser: open Lumi's own search profile in a visible Firefox
+                    # window so YOU can pass a bot check or sign in; Lumi keeps the trust.
+                    if stripped_lower == "!searchbrowser" and self.signals.history[-1].get("from_host"):
+                        from modules import web_search as firefox_search
+                        ack_msg = firefox_search.open_for_user()
+                        print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {ack_msg}")
+                        self.signals.history.append({"role": "assistant", "content": ack_msg})
+                        self.signals.AI_thinking = False
+                        continue
+
                     if lowered_text in ["wipe memory", "clear memory", "reset memory"]:
                         wipe_result = self.wipe_memory()
                         self.signals.history.append({"role": "system", "content": wipe_result})

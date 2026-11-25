@@ -14,7 +14,6 @@ let C = null;
 let timer = 0;
 let now = null;            // last /player answer
 let busy = false;
-let connected = false;
 let tick = 0;
 
 const REDIRECT_PATH = '/api/spotify/callback';
@@ -41,29 +40,27 @@ export function init(ctx) {
   C = ctx;
   if (!C.state.isLocal) return;                       // the routes are host-only
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); else stop(); });
-  refreshStatus();
+  refresh();
 }
 
-async function refreshStatus() {
-  try {
-    const st = await C.api('/api/spotify/status');
-    connected = !!st.connected;
-  } catch { connected = false; }
-  if (connected) refresh(); else { stop(); paint(); }
-}
+/* Whether the card shows: something is playing anywhere (Spotify, or any app
+   in Windows' media flyout), or Spotify is connected. */
+let show = false;
+async function refreshStatus() { refresh(); }
 
 function stop() { clearTimeout(timer); timer = 0; clearInterval(tick); tick = 0; }
 
 async function refresh() {
   stop();
-  if (!connected || document.hidden) return;
+  if (document.hidden) return;
   try {
-    now = (await C.api('/api/spotify/player')).now;
+    now = await C.api('/api/media/state');          // modules/media_bridge.py
+    show = !!(now.source || (now.spotify && now.spotify.connected));
     paint();
   } catch (e) {
-    if (e.status === 409) { connected = false; now = null; paint(); return; }   // signed out
+    if (e.status === 401 || e.status === 403) { show = false; paint(); return; }
   }
-  timer = setTimeout(refresh, now && now.playing ? 5000 : 20000);
+  timer = setTimeout(refresh, now && now.playing ? 5000 : 15000);
   if (now && now.playing) tick = setInterval(paintProgress, 1000);
 }
 
@@ -72,34 +69,37 @@ async function refresh() {
 function paint() {
   const box = document.getElementById('sp-mini');
   if (!box) return;
-  box.hidden = !connected;
-  if (!connected) { box.replaceChildren(); return; }
+  box.hidden = !show;
+  if (!show) { box.replaceChildren(); return; }
   box.replaceChildren();
+  const has = !!(now && now.source);
   const art = el('div', 'sp-art');
-  if (now && now.art && now.art.startsWith('https://')) {
+  if (has && /^(data:image\/(png|jpeg);base64,|https:\/\/)/.test(now.art || '')) {
     const img = el('img');
     img.src = now.art; img.alt = ''; img.referrerPolicy = 'no-referrer';
     art.append(img);
   }
   const text = el('div', 'sp-text');
-  if (now) {
-    const title = el(now.url && now.url.startsWith('https://open.spotify.com/') ? 'a' : 'span', 'sp-title', now.title);
-    if (title.tagName === 'A') { title.href = now.url; title.target = '_blank'; title.rel = 'noopener noreferrer'; title.title = 'Open in Spotify'; }
-    text.append(title, el('div', 'sp-artist', now.artists || now.album || ''));
+  if (has) {
+    const title = el('span', 'sp-title', now.title || 'Unknown');
+    title.title = now.title || '';
+    text.append(title, el('div', 'sp-artist', [now.artists, now.app].filter(Boolean).join(' · ')));
   } else {
     text.append(el('span', 'sp-title sp-idle', 'Nothing playing'), el('div', 'sp-artist', 'Spotify'));
   }
+  const can = (now && now.can) || {};
   const ctl = el('div', 'sp-ctl');
-  const mk = (name, label, action) => {
+  const mk = (name, label, action, ok) => {
     const b = btn('', 'sp-btn', () => act(action));
     b.innerHTML = ICON[name];
     b.setAttribute('aria-label', label); b.title = label;
+    b.disabled = !ok;
     return b;
   };
   const playing = !!(now && now.playing);
-  ctl.append(mk('prev', 'Previous track', 'previous'),
-    mk(playing ? 'pause' : 'play', playing ? 'Pause' : 'Play', playing ? 'pause' : 'play'),
-    mk('next', 'Next track', 'next'));
+  ctl.append(mk('prev', 'Previous track', 'previous', can.prev && can.control),
+    mk(playing ? 'pause' : 'play', playing ? 'Pause' : 'Play', 'toggle', can.control),
+    mk('next', 'Next track', 'next', can.next && can.control));
   const bar = el('div', 'sp-bar');
   bar.append(el('i'));
   const err = el('div', 'sp-err');
@@ -122,8 +122,9 @@ async function act(action) {
   const err = document.querySelector('#sp-mini .sp-err');
   if (err) err.textContent = '';
   try {
-    await C.api(`/api/spotify/player/${action}`, { method: 'POST', csrf: true, body: {} });
-    setTimeout(refresh, 400);                         // Spotify takes a moment to report the change
+    const r = await C.api('/api/media/command', { method: 'POST', csrf: true, body: { action } });
+    if (r && r.state) { now = r.state; paint(); }
+    setTimeout(refresh, 800);
   } catch (e) {
     if (err) err.textContent = e.message;
   } finally { busy = false; }
@@ -160,7 +161,15 @@ async function draw(card, body, badge, onChange) {
   if (st.connected) {
     badge.className = 'integration-status state-ok'; badge.textContent = 'connected';
     body.append(el('div', 'integration-message',
-      `Signed in as ${st.user || 'your account'} · ${st.premium ? 'Premium' : 'Free (Lumi can show what’s playing, but not control it)'}.`));
+      `Signed in as ${st.user || 'your account'} · ${st.premium ? 'Premium' : 'Free (playback goes through the Spotify app on this PC)'}.`));
+    if (st.needs_reconnect) {
+      body.append(el('div', 'integration-message ws-error',
+        'Lumi needs one more permission for Liked Songs, podcasts and the like button. Reconnect to grant it.'));
+      actions.append(btn('Reconnect', 'btn btn-sm btn-primary', async () => {
+        try { await C.api('/api/spotify/disconnect', { method: 'POST', csrf: true, body: {} }); } catch (e) { return fail(e); }
+        again();                                     // shows "Connect Spotify" with your saved Client ID
+      }));
+    }
     actions.append(btn('Disconnect', 'btn btn-sm btn-danger', async () => {
       if (!confirm('Disconnect Spotify? Lumi will stop seeing and controlling your music.')) return;
       try { await C.api('/api/spotify/disconnect', { method: 'POST', csrf: true, body: {} }); } catch (e) { return fail(e); }

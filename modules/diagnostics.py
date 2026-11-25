@@ -112,9 +112,10 @@ FIX_RULES = [
     (r"Playwright|Executable doesn't exist|browserType\.launch",
      "The browser for browse_url isn't installed",
      "Run `playwright install firefox` in the lumi environment."),
-    (r"DDGSException|ratelimit|202 Ratelimit",
-     "Web search was rate-limited",
-     "DuckDuckGo throttled the searches. Wait a minute and ask again."),
+    (r"SearchBlocked|bot check|ratelimit",
+     "Web search hit a bot check",
+     "Bing asked to confirm a person is searching. Type !searchbrowser, complete the check in the window "
+     "that opens, close it, and ask again."),
     (r"Timeout|timed out|ReadTimeout",
      "Something took too long",
      "A service (model, web page or account) didn't answer in time. If it keeps happening with the model, "
@@ -399,7 +400,7 @@ def run_checks(signals=None) -> List[Dict[str, str]]:
 
     missing = [(mod, why) for mod, why in (
         ("psutil", "the watchdog"), ("mss", "screen capture"), ("PIL", "images"),
-        ("ddgs", "web search"), ("playwright", "browse_url"), ("numpy", "lip-sync vowels"),
+        ("playwright", "web search (Firefox + Bing)"), ("playwright", "browse_url"), ("numpy", "lip-sync vowels"),
         ("pywinauto", "read_window_text / click_button")) if importlib.util.find_spec(mod) is None]
     if missing:
         checks.append(_check("packages", "Python packages", "warn",

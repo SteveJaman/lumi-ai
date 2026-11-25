@@ -48,7 +48,8 @@ from constants import DATA_ROOT
 ROOM = "workspace"
 
 # Top-level folders under data/ that hold secrets or private data.
-PRIVATE_DIRS = frozenset({"credentials", "workspace", "browser_profile", "memories", "profiles"})
+PRIVATE_DIRS = frozenset({"credentials", "workspace", "browser_profile", "memories", "profiles",
+                          "browser_search_profile"})
 # File names never listed or served, wherever they are.
 PRIVATE_PATTERNS = (
     "*.db", "*.db-*", "*.sqlite", "*.sqlite3", "*.key", "*.pem", "*.pfx", "*.p12",
