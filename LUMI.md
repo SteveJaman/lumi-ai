@@ -27,6 +27,16 @@ not in source code.
 - agent_model: qwen2.5-coder:14b
 - num_ctx: 8192
 - think: false
+- primary_agent_models: qwen3.8:27b, qwen2.5-coder:14b, qwen3:8b
+- fast_agent_models: qwen3.5:9b, qwen3:8b
+- vram_headroom_gb: 2.5
+
+Tiers (modules/model_router.py `agent_model_for_tier`): sonnet/opus agent turns and
+`!auto` tasks use the first `primary_agent_models` entry that is installed in Ollama and
+fits in VRAM minus `vram_headroom_gb`; haiku turns (and every turn in Gaming Mode) use
+`fast_agent_models` the same way. Add `vram_gb: N` to override GPU detection. When no
+chain entry is installed, `agent_model` above is used. On the 11 GB 2080 Ti both chains
+resolve to qwen3:8b until a bigger card or smaller quant is available.
 
 Selected 2026-11-22 from the fallback chain (qwen2.5-coder:14b → qwen3:14b →
 qwen2.5-coder:7b → deepseek-coder:6.7b); the first candidate passed:

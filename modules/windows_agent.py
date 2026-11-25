@@ -4,6 +4,8 @@ Contextual desktop tools (Pipeline card: System). Windows only.
     get_active_window_info()               title + process of the focused window
     read_window_text(window_title)         visible text of an open window (UI Automation)
     click_button(window_title, button_text) clicks a button by its label (approval required)
+    focus_window(app_name)                 brings an open app to the front (no approval: it
+                                           only changes which window is on top)
 
 get_active_window_info uses plain Win32 calls. The other two use pywinauto's
 UI Automation backend (pip install pywinauto), imported lazily so Lumi starts
@@ -35,12 +37,13 @@ TASKS = {
     "get_active_window_info": "Checking the active window",
     "read_window_text": "Reading a window",
     "click_button": "Clicking a button",
+    "focus_window": "Bringing a window to the front",
 }
 
 TOOL_SCHEMAS = [
     {"type": "function", "function": {
         "name": "get_active_window_info",
-        "description": "Get the title and app (process name) of the window the user is currently focused on.",
+        "description": "Get the focused window's title and app, plus the other apps open on the desktop.",
         "parameters": {"type": "object", "properties": {}, "required": []}}},
     {"type": "function", "function": {
         "name": "read_window_text",
@@ -58,7 +61,27 @@ TOOL_SCHEMAS = [
         }, "required": ["window_title", "button_text"]}}},
 ]
 
+TOOL_SCHEMAS.append({"type": "function", "function": {
+    "name": "focus_window",
+    "description": "Bring an already-open app or window to the front, matched by app name or title (e.g. 'VS Code', 'Chrome').",
+    "parameters": {"type": "object", "properties": {
+        "app_name": {"type": "string", "description": "App or window name, e.g. 'VS Code', 'chrome', 'Notepad'."},
+    }, "required": ["app_name"]}}})
+
 CONFIRM_TOOLS = {"click_button"}
+TOOL_TIMEOUT_S = 20.0           # a hung UIA call must not hang the agent turn
+MAX_LISTED_WINDOWS = 15
+
+# Friendly names -> process names, for focus_window.
+APP_ALIASES = {
+    "vs code": "code.exe", "vscode": "code.exe", "visual studio code": "code.exe", "code": "code.exe",
+    "chrome": "chrome.exe", "google chrome": "chrome.exe", "edge": "msedge.exe",
+    "microsoft edge": "msedge.exe", "firefox": "firefox.exe", "terminal": "windowsterminal.exe",
+    "windows terminal": "windowsterminal.exe", "powershell": "powershell.exe", "explorer": "explorer.exe",
+    "file explorer": "explorer.exe", "notepad": "notepad.exe", "word": "winword.exe",
+    "excel": "excel.exe", "discord": "discord.exe", "spotify": "spotify.exe", "obs": "obs64.exe",
+    "steam": "steam.exe", "vtube studio": "vtube studio.exe",
+}
 
 MAX_TEXT_CHARS = 10_000
 MAX_ELEMENTS = 4000
@@ -105,13 +128,22 @@ async def run_tool(name: str, args: Dict[str, Any], ctx: ToolContext) -> str:
         return "Error: desktop tools only work on Windows."
     try:
         if name == "get_active_window_info":
-            return await asyncio.to_thread(get_active_window_info)
+            return await asyncio.wait_for(asyncio.to_thread(get_active_window_info), TOOL_TIMEOUT_S)
         if name == "read_window_text":
-            return await _on_uia_thread(read_window_text, str(args.get("window_title") or ""))
+            return await asyncio.wait_for(
+                _on_uia_thread(read_window_text, str(args.get("window_title") or "")), TOOL_TIMEOUT_S)
+        if name == "focus_window":
+            return await asyncio.wait_for(
+                asyncio.to_thread(focus_window, str(args.get("app_name") or args.get("window_title") or "")),
+                TOOL_TIMEOUT_S)
         if name == "click_button":
             return await click_button(ctx, str(args.get("window_title") or ""), str(args.get("button_text") or ""))
     except EverydayError as e:
         return f"Error: {e}"
+    except asyncio.TimeoutError:
+        return f"Error: {name} timed out after {TOOL_TIMEOUT_S:g}s (the window may be busy or hung)."
+    except OSError as e:
+        return f"Error: {name} failed: {e}"
     return f"Unknown desktop tool: {name}"
 
 
@@ -167,12 +199,127 @@ def blocked_reason(title: str, proc: str, pid: int) -> Optional[str]:
     return None
 
 
+def top_level_windows() -> List[Tuple[int, str, int]]:
+    """(hwnd, title, pid) of visible, titled, top-level app windows, in
+    Z-order (front first). Plain Win32: no pywinauto needed."""
+    u32 = ctypes.windll.user32
+    out: List[Tuple[int, str, int]] = []
+    GW_OWNER, GWL_EXSTYLE, WS_EX_TOOLWINDOW = 4, -20, 0x00000080
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def cb(hwnd, _lparam):
+        try:
+            if not u32.IsWindowVisible(hwnd) or u32.GetWindow(hwnd, GW_OWNER):
+                return True
+            if u32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW:
+                return True
+            n = u32.GetWindowTextLengthW(hwnd)
+            if n <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(n + 1)
+            u32.GetWindowTextW(hwnd, buf, n + 1)
+            pid = ctypes.c_ulong()
+            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            out.append((int(hwnd), buf.value, pid.value))
+        except Exception:
+            pass
+        return True
+
+    u32.EnumWindows(cb, 0)
+    return out
+
+
+def _window_state(hwnd: int) -> str:
+    u32 = ctypes.windll.user32
+    if u32.IsIconic(hwnd):
+        return "minimized"
+    if u32.IsZoomed(hwnd):
+        return "maximized"
+    return "normal"
+
+
 def get_active_window_info() -> str:
     hwnd, title, pid = _foreground()
+    proc = process_name(pid) if hwnd else ""
     if not hwnd:
-        return "No window has focus right now (the desktop may be showing)."
-    proc = process_name(pid)
-    return f"Active window: \"{one_line(title, 200) or '(untitled)'}\"\nApp: {proc or 'unknown'} (pid {pid})"
+        head = "No window has focus right now (the desktop may be showing)."
+    elif blocked_reason(title, proc, pid) and pid not in _own_pids():
+        head = f"Active window: (hidden: {proc or 'a protected app'} holds passwords or sign-ins)"
+    else:
+        head = (f"Active window: \"{one_line(title, 200) or '(untitled)'}\"\n"
+                f"App: {proc or 'unknown'} (pid {pid}), {_window_state(hwnd)}")
+    others = []
+    try:
+        for h, t, p in top_level_windows():
+            if h == hwnd:
+                continue
+            pr = process_name(p)
+            if blocked_reason(t, pr, p):
+                continue
+            mini = ", minimized" if _window_state(h) == "minimized" else ""
+            others.append(f"- {one_line(t, 80)} ({pr or 'unknown'}{mini})")
+            if len(others) >= MAX_LISTED_WINDOWS:
+                break
+    except Exception:
+        pass
+    if others:
+        head += "\nOther open windows (front first):\n" + "\n".join(others)
+    return head
+
+
+def _match_windows(app_name: str) -> List[Tuple[int, str, int, str]]:
+    """Windows matching an app name: by process (aliases like 'VS Code' ->
+    Code.exe), then by title. Front-most first."""
+    want = _norm(app_name)
+    if not want:
+        return []
+    proc_want = APP_ALIASES.get(want, "")
+    bare = want[:-4] if want.endswith(".exe") else want
+    by_proc, by_title = [], []
+    for h, t, p in top_level_windows():
+        pr = process_name(p)
+        prl = pr.lower()
+        if prl and (prl == proc_want or prl == bare + ".exe"):
+            by_proc.append((h, t, p, pr))
+        elif want in _norm(t):
+            by_title.append((h, t, p, pr))
+    return by_proc + by_title
+
+
+def _bring_to_front(hwnd: int) -> bool:
+    """Restore if minimized and ask Windows to focus it. Windows refuses
+    SetForegroundWindow from a background process unless it just received
+    input, so a no-op ALT tap (the same workaround pywinauto's set_focus
+    uses) is sent before the second try."""
+    u32 = ctypes.windll.user32
+    SW_RESTORE, SW_SHOW, VK_MENU, KEYEVENTF_KEYUP = 9, 5, 0x12, 0x0002
+    u32.ShowWindow(hwnd, SW_RESTORE if u32.IsIconic(hwnd) else SW_SHOW)
+    if u32.SetForegroundWindow(hwnd):
+        return True
+    u32.keybd_event(VK_MENU, 0, 0, 0)
+    u32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+    ok = bool(u32.SetForegroundWindow(hwnd))
+    u32.BringWindowToTop(hwnd)
+    return ok or u32.GetForegroundWindow() == hwnd
+
+
+def focus_window(app_name: str) -> str:
+    if not str(app_name or "").strip():
+        raise EverydayError("focus_window needs an app_name, e.g. 'VS Code' or 'Chrome'.")
+    matches = _match_windows(app_name)
+    if not matches:
+        open_apps = sorted({process_name(p) or one_line(t, 30) for _, t, p in top_level_windows()} - {""})
+        raise EverydayError(f"no open window matches '{app_name}'. It isn't running or has no window. "
+                            f"Open apps: {', '.join(open_apps[:15]) or 'none'}.")
+    for h, t, p, pr in matches:
+        if blocked_reason(t, pr, p):
+            continue
+        if _bring_to_front(h):
+            return f"Brought \"{one_line(t, 100)}\" ({pr or 'unknown'}) to the front."
+        return (f"Found \"{one_line(t, 100)}\" ({pr or 'unknown'}) but Windows wouldn't switch focus to it; "
+                "it was restored and may be flashing in the taskbar.")
+    raise EverydayError(f"Lumi isn't allowed to focus '{app_name}': it holds passwords, "
+                        "sign-ins or Lumi's own approvals.")
 
 
 # ─── UI Automation (runs on the UIA thread) ───────────────────────────

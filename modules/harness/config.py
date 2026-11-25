@@ -71,6 +71,43 @@ def num_ctx(path=None):
         return MAIN_NUM_CTX
 
 
+def _chain(key, fallback, path=None):
+    raw = model_settings(path).get(key, "")
+    names = [n.strip() for n in raw.split(",") if n.strip()]
+    return names or list(fallback)
+
+
+def primary_agent_models(path=None):
+    """Heavy-work model chain, first choice first (LUMI.md `primary_agent_models`,
+    else constants.PRIMARY_AGENT_MODEL_CHAIN)."""
+    import constants
+    return _chain("primary_agent_models", getattr(constants, "PRIMARY_AGENT_MODEL_CHAIN", ()), path)
+
+
+def fast_agent_models(path=None):
+    """Quick tool-calling model chain (LUMI.md `fast_agent_models`, else
+    constants.FAST_AGENT_MODEL_CHAIN)."""
+    import constants
+    return _chain("fast_agent_models", getattr(constants, "FAST_AGENT_MODEL_CHAIN", ()), path)
+
+
+def _float(key, fallback, path=None):
+    try:
+        return float(model_settings(path)[key])
+    except (KeyError, ValueError):
+        return fallback
+
+
+def vram_gb(path=None):
+    """LUMI.md `vram_gb` overrides the detected GPU memory (None: detect)."""
+    return _float("vram_gb", None, path)
+
+
+def vram_headroom_gb(path=None):
+    import constants
+    return _float("vram_headroom_gb", getattr(constants, "VRAM_HEADROOM_GB", 2.5), path)
+
+
 def think(path=None):
     """LUMI.md `think: true|false`; None (absent) leaves it to the model's default.
     Models without thinking support (e.g. qwen2.5-coder) need false or absent."""

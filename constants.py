@@ -32,6 +32,19 @@ FAST_MODEL_NAME = "dolphin3:8b"
 #   ollama show <model>     -> "Capabilities: completion, tools, thinking"
 AGENT_MODEL_NAME = "qwen3:8b"
 VISION_MODEL_NAME = "qwen2.5vl:latest"  # Used only when an image is attached this turn
+# Tiered agent models (modules/model_router.py: agent_model_for_tier). These
+# are FALLBACKS only: the agent harness reads the chains from LUMI.md (## Model,
+# primary_agent_models / fast_agent_models). Each chain is tried in order and the
+# first model that is installed in Ollama and fits in VRAM wins.
+#   PRIMARY: heavy autonomous work (sonnet / opus tier, !auto tasks). The 27B
+#            first choice needs a ~24 GB card.
+#   FAST:    quick tool calling (haiku tier, and every agent turn in Gaming Mode).
+#            The 9B first choice fits in ~8 GB.
+PRIMARY_AGENT_MODEL = "qwen3.8:27b"
+FAST_AGENT_MODEL = "qwen3.5:9b"
+PRIMARY_AGENT_MODEL_CHAIN = (PRIMARY_AGENT_MODEL, "qwen2.5-coder:14b", "qwen3:8b")
+FAST_AGENT_MODEL_CHAIN = (FAST_AGENT_MODEL, "qwen3:8b")
+VRAM_HEADROOM_GB = 2.5      # left free for the KV cache, vision and STT on a shared card
 # GAME_AGENT_MODEL picks goals for background game agents (plugin/
 # minecraft_bot.py) so they never queue behind or evict the chat models.
 # Keep it small: it has to fit in VRAM next to MODEL_NAME (an 8B model in
@@ -107,6 +120,24 @@ CLAUDE_CODE_ENABLED = True
 # provider's API key (Settings -> Models -> Providers); without one, Lumi stays local.
 HYBRID_MODE = False
 CLOUD_ESCALATION_MODEL = "anthropic:claude-opus-5-5"
+
+# Claude smart router (modules/claude_router.py). call_claude() sorts each request into
+# haiku / sonnet / opus and sends it to the model below, so easy turns don't pay Opus
+# prices. A tool-calling turn never goes below sonnet, and a failed or malformed reply
+# is retried once on the next tier up. Usage per tier is kept in data/claude_usage.json.
+# Use it anywhere a model spec is taken by naming "anthropic:auto" (for example as
+# CLOUD_ESCALATION_MODEL). Prices are USD per million tokens (input, output), used only
+# for the cost estimate in the Model Pipeline view.
+CLAUDE_ROUTER_MODELS = {
+    "haiku":  "claude-haiku-5-5",
+    "sonnet": "claude-sonnet-5-5",
+    "opus":   "claude-opus-5-5",
+}
+CLAUDE_ROUTER_PRICES = {
+    "haiku":  (0.10, 0.50),
+    "sonnet": (2.00, 10.00),
+    "opus":   (4.00, 20.00),
+}
 
 AUDIO_OUTPUT_MODE = "both"
 OUTPUT_DEVICE_INDEX = [24, 20]

@@ -214,9 +214,12 @@ class AgentHarness:
         return {"role": "tool", "content": text, "name": name}
 
     # ---- the loop ----
-    async def run(self, goal, base_messages=None):
+    async def run(self, goal, base_messages=None, seed=True):
+        """seed=False: the caller already filled the task store (e.g. an
+        approved plan from modules/autonomous_agent.py); `goal` is only logged."""
         start = self.clock()
-        self.seed(goal)
+        if seed:
+            self.seed(goal)
         self.messages = self._prepare_messages(base_messages)
         steps = 0
         text_only_streak = 0

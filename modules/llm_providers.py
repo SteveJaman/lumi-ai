@@ -144,6 +144,7 @@ PROVIDER_MODEL_OVERRIDES: Dict[str, List[str]] = {
         "o4-mini",
     ],
     "anthropic": [
+        "auto",
         "claude-opus-5.5", "claude-sonnet-5.5", "claude-haiku-5.5",
         "claude-fable-5.1", "claude-mythos-5.1",
         "claude-fable-5", "claude-opus-5", "claude-sonnet-5",
@@ -1199,6 +1200,9 @@ class AnthropicClient(LLMClient):
             payload["temperature"] = opts["temperature"]
         if "top_p" in opts:
             payload["top_p"] = opts["top_p"]
+        extra = opts.get("anthropic_payload")         # claude_router: e.g. thinking off for the classifier
+        if isinstance(extra, dict):
+            payload.update(extra)
         conv_tools = self._convert_tools(tools)
         if conv_tools:
             payload["tools"] = conv_tools
@@ -1317,6 +1321,13 @@ def chat_sync(model_spec, messages, tools=None, think=None,
     """on_text, if given, receives the reply as it's written. Ollama
     streams it; other providers deliver it in one piece at the end."""
     provider_id, model = parse_model_spec(model_spec)
+    if provider_id == "anthropic" and model.lower() == "auto":
+        # "anthropic:auto" = the Claude smart router picks haiku / sonnet / opus per call.
+        from modules import claude_router
+        resp = claude_router.call_claude_sync(messages, None, tools=tools)
+        if on_text is not None and resp.content:
+            on_text(resp.content)
+        return resp
     client = get_client(provider_id)
     if on_text is not None and isinstance(client, OllamaClient):
         return client.chat(

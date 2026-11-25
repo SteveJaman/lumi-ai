@@ -11,6 +11,13 @@ Socket.io (only to tabs that sent ``workspace_join``; host-only):
   browser_frame    {data: <base64 jpeg>, url, ts}       ~5 fps while the deal finder runs
   browser_status   {message, active, ts}
 
+  Model Pipeline tab (modules/claude_router.py, modules/autonomous_agent.py):
+  claude_model_switch  {model: "haiku"|"sonnet"|"opus", model_id, reason, tier_cost, ts}
+  claude_token_stream  {tokens, input_tokens, output_tokens, model, model_id,
+                        classifier, totals: {tokens, cost_usd, opus_equivalent_usd, saved_usd, ...}, ts}
+  autonomous_step      {step, phase: plan|execute|verify|done, status, tool?, session_id, ts}
+  model_pipeline_state {switch, tokens, steps}   sent once on workspace_join (catch-up)
+
 The file explorer is sandboxed to DATA_ROOT: paths are resolved with
 realpath (symlinks and junctions followed first) and must stay inside it.
 Sign-ins, cached mail, the browser profile, the user database and anything
@@ -55,6 +62,10 @@ _server = None                    # SocketIOServer, set by install()
 _viewers: set = set()
 _last_frame: Optional[Dict[str, Any]] = None
 _last_status: Optional[Dict[str, Any]] = None
+_last_switch: Optional[Dict[str, Any]] = None
+_last_tokens: Optional[Dict[str, Any]] = None
+_recent_steps: List[Dict[str, Any]] = []
+MAX_RECENT_STEPS = 30
 
 
 # ─── sandbox ─────────────────────────────────────────────────────────
@@ -212,6 +223,8 @@ def install(server) -> None:
         with _lock:
             _viewers.add(sid)
             frame, status = _last_frame, _last_status
+            pipeline = {"switch": _last_switch, "tokens": _last_tokens, "steps": list(_recent_steps)}
+        await sio.emit("model_pipeline_state", pipeline, to=sid)
         if status:
             await sio.emit("browser_status", status, to=sid)
         if frame:
@@ -275,6 +288,48 @@ def emit_browser_status(message: str, active: Optional[bool] = None) -> None:
     with _lock:
         _last_status = status
     _emit("browser_status", status)
+
+
+# ─── Model Pipeline ──────────────────────────────────────────────────
+# Kept even with nobody watching (they're tiny), so a tab opened mid-run catches up.
+
+def emit_model_switch(tier: str, model_id: str, reason: str, tier_cost: str) -> None:
+    global _last_switch
+    ev = {"model": str(tier), "model_id": str(model_id), "reason": str(reason)[:240],
+          "tier_cost": str(tier_cost), "ts": time.time()}
+    with _lock:
+        _last_switch = ev
+    _emit("claude_model_switch", ev)
+
+
+def emit_token_usage(tier: str, model_id: str, input_tokens: int, output_tokens: int,
+                     totals: Optional[Dict[str, Any]] = None, classifier: bool = False) -> None:
+    global _last_tokens
+    ev = {"tokens": int(input_tokens) + int(output_tokens), "input_tokens": int(input_tokens),
+          "output_tokens": int(output_tokens), "model": str(tier), "model_id": str(model_id),
+          "classifier": bool(classifier), "totals": dict(totals or {}), "ts": time.time()}
+    with _lock:
+        _last_tokens = ev
+    _emit("claude_token_stream", ev)
+
+
+def emit_autonomous_step(phase: str, data: Optional[Dict[str, Any]] = None) -> None:
+    """One Plan -> Execute -> Verify progress event from an autonomous task."""
+    d = dict(data or {})
+    ev = {"step": str(d.get("step") or phase)[:120], "phase": str(phase), "status": str(d.get("status") or "running"),
+          "ts": time.time()}
+    for k in ("tool", "session_id", "round", "steps", "rounds"):
+        if d.get(k) is not None:
+            ev[k] = d[k] if isinstance(d[k], (int, float)) else str(d[k])[:120]
+    if isinstance(d.get("checks"), list):
+        ev["checks"] = [{"name": str(c.get("name"))[:40], "passed": bool(c.get("passed"))}
+                        for c in d["checks"][:8] if isinstance(c, dict)]
+    with _lock:
+        if phase == "plan" and ev["step"] == "Planning":
+            _recent_steps.clear()                       # a new run starts a fresh trail
+        _recent_steps.append(ev)
+        del _recent_steps[:-MAX_RECENT_STEPS]
+    _emit("autonomous_step", ev)
 
 
 # ─── subprocess streaming ────────────────────────────────────────────

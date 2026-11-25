@@ -122,6 +122,7 @@ COMMANDS = {
         "!agent_off": "Disable agent mode — pure conversation only",
         "!agent": "Toggle agent mode on/off",
         "!agent <task>": "One-shot agent turn for <task>, then return to current mode",
+        "!auto <goal>": "Autonomous task: plan, one approval, run unsupervised in sandbox/, verify",
     },
     "Persona": {
         "set mood <name>": "Switch mood profile (default, bratty, brocon, soft)",
@@ -2924,6 +2925,9 @@ class Prompter:
                 # LUMI_AGENT_YOLO=1 inside a harness run: the harness's PreToolUse
                 # hooks (data/hooks/, e.g. block_rm_rf) already vetted this call.
                 print(f"{YELLOW}[YOLO] auto-approved {name} (PreToolUse hooks passed){RESET}")
+            elif self._plan_preapproved(name, arguments):
+                # An approved !auto plan covers read-only commands (autonomous_agent.py).
+                print(f"{GRAY}[auto] {name} covered by the approved plan (read-only){RESET}")
             else:
                 allowed = await self._confirm(name, arguments)
                 if not allowed:
@@ -3001,6 +3005,10 @@ class Prompter:
                         if m.__class__.__name__ == "BrowserController"), None)
 
         async def confirm(tool_name, preview):
+            if self._plan_preapproved(tool_name, None):
+                # find_local_deals inside an approved !auto plan (autonomous_agent.py).
+                print(f"{GRAY}[auto] {tool_name} covered by the approved plan{RESET}")
+                return True
             return await self._confirm(tool_name, preview, agent=agent)
 
         return ToolContext(
@@ -3034,6 +3042,82 @@ class Prompter:
         """True only while a harness run is in progress and LUMI_AGENT_YOLO=1."""
         return getattr(self, "_harness", None) is not None and harness_config.yolo_enabled()
 
+    def _plan_preapproved(self, name, arguments):
+        """True while an approved !auto plan covers this call (read-only web
+        searches and read-only commands). See autonomous_agent.SandboxPolicy."""
+        policy = getattr(self, "_autonomous_policy", None)
+        if policy is None:
+            return False
+        try:
+            return bool(policy.preapproved(name, arguments))
+        except Exception:
+            return False
+
+    async def run_autonomous_task(self, goal):
+        """!auto <goal>: plan, one approval, unsupervised harness run limited
+        to data/ and sandbox/, then independent verification (up to 3 rounds)
+        and a learned skill on success. modules/autonomous_agent.py."""
+        from modules.autonomous_agent import AutonomousTask
+        loop = asyncio.get_running_loop()
+        tier = await loop.run_in_executor(None, model_router.route_model, goal)
+        local = await loop.run_in_executor(None, model_router.agent_model_for_tier, "opus")
+        model = hybrid_mode.model_for(tier, local)        # PRIMARY tier; cloud only with escalation on
+        think = harness_config.think()
+        options = {"temperature": 0.4, "top_p": 0.9, "repeat_penalty": 1.15,
+                   "repeat_last_n": 64, "num_ctx": harness_config.num_ctx()}
+        agent_tracker.update("main", "thinking", task="Planning an autonomous task", progress=0,
+                             model=tier, model_name=model)
+
+        def chat(messages, tools):
+            return loop.run_in_executor(None, lambda: chat_sync(
+                model, messages, tools=tools, think=think,
+                keep_alive=gaming_mode.keep_alive("30s"), options=options))
+
+        async def llm(system, user):
+            resp = await chat([{"role": "system", "content": system},
+                               {"role": "user", "content": user}], None)
+            return getattr(resp, "content", "") or ""
+
+        async def dispatch(name, args):
+            result = await self._dispatch_tool_call(name, args)
+            if name == "run_command" and isinstance(result, str):
+                hint = _command_error_hint(args.get("command", ""), result)
+                if hint:
+                    result = result + hint
+            print(f"{GRAY}  -> {str(result)[:300]}{RESET}")
+            return wrap_tool_result(name, str(result))
+
+        async def confirm(tool_name, preview):
+            return await self._confirm(tool_name, preview, timeout=300, agent="main")
+
+        def on_step(step, task):
+            label = f"#{task['id']} {task['description'][:60]}" if task else "choosing a task"
+            print(f"{GRAY}Thinking (auto step {step}: {label})...{RESET}")
+            agent_tracker.update("main", "thinking", task=f"Auto {step}: {label}", progress=None,
+                                 model=tier, model_name=model)
+
+        context_injections = self.gather_injections(goal, agent_context=True)
+        base = [{"role": "system", "content": f"{get_chat_system_prompt(agent=True)}\n\n{context_injections}"}]
+        tools = TOOL_SCHEMAS + EXTRA_TOOL_SCHEMAS + everyday_tool_schemas(self._everyday_ctx())
+        from modules import workspace
+        task = AutonomousTask(goal, chat_fn=chat, dispatch_fn=dispatch, confirm_fn=confirm, tools=tools,
+                              llm_fn=llm, recover_fn=_recover_text_tool_calls, on_step=on_step,
+                              on_event=workspace.emit_autonomous_step)
+        self._autonomous_policy = task.policy
+        self._harness = task                      # LUMI_AGENT_YOLO applies to !auto runs too
+        try:
+            res = await task.run(base)
+        finally:
+            self._autonomous_policy = None
+            self._harness = None
+        print(f"{GRAY}[auto] {res.session_id}: {res.status} after {res.rounds} round(s)"
+              f"{'; skill ' + res.skill_path if res.skill_path else ''}{RESET}")
+        if res.status == "error":
+            agent_tracker.update("main", "error", task=res.reply[:120])
+        else:
+            agent_tracker.settle("main")
+        return res.reply
+
     async def _run_harness_turn(self, latest_user_text, base_messages, all_tools, tier):
         """Session agent mode: run modules/harness/ until a termination condition.
         Model, context window and thinking come from LUMI.md (## Model)."""
@@ -3041,8 +3125,16 @@ class Prompter:
         from modules.harness.subagents import SubagentRunner
         from modules.harness.tasks import TASK_TOOL_SCHEMAS
 
-        model = hybrid_mode.model_for(tier, harness_config.agent_model())
+        # PRIMARY chain for sonnet/opus, FAST for haiku (LUMI.md ## Model, model_router).
+        local_model = await asyncio.get_running_loop().run_in_executor(
+            None, model_router.agent_model_for_tier, tier)
+        model = hybrid_mode.model_for(tier, local_model)
         think = harness_config.think()
+        # Procedural memory: a learned workflow from data/skills/ that matches this request.
+        from modules import skills_manager
+        skill_block = skills_manager.format_for_prompt(skills_manager.find_relevant(latest_user_text))
+        if skill_block:
+            base_messages = list(base_messages) + [{"role": "system", "content": skill_block}]
         options = {
             "temperature": 0.5,
             "top_p": 0.9,
@@ -3605,6 +3697,7 @@ class Prompter:
                             pass
 
                     force_agent = False
+                    autonomous_goal = None
 
                     # ─────────────────────────────────────────────────
                     # !list / !help
@@ -3982,6 +4075,17 @@ class Prompter:
                             lowered_text = rest.lower()
                             force_agent = True
 
+                    # !auto <goal>: autonomous task (modules/autonomous_agent.py)
+                    # Host only: Discord / remote senders never start unsupervised runs.
+                    if stripped_lower.startswith("!auto ") and self.signals.history[-1].get("from_host"):
+                        rest = stripped[len("!auto"):].strip()
+                        if rest:
+                            self.signals.history[-1] = {"role": "user", "content": rest}
+                            latest_user_text = rest
+                            lowered_text = rest.lower()
+                            force_agent = True
+                            autonomous_goal = rest
+
                     # ─────────────────────────────────────────────────
                     # wipe memory / set mood / !sleep — already history-bound
                     # ─────────────────────────────────────────────────
@@ -4046,7 +4150,9 @@ class Prompter:
 
                     self._live_stream = None
                     try:
-                        if use_agent:
+                        if use_agent and autonomous_goal:
+                            raw_reply = await self.run_autonomous_task(autonomous_goal)
+                        elif use_agent:
                             raw_reply = await self.run_agent_turn(latest_user_text)
                         elif is_sdk_event:
                             raw_reply = await self.run_event_reaction(latest_user_text)

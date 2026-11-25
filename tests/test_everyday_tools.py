@@ -49,7 +49,7 @@ def test_registry_wires_every_tool_with_its_card_and_gate():
                      "track_expenses", "research_product", "add_to_wishlist",
                      "summarize_meeting", "extract_action_items", "draft_follow_up_email",
                      "get_active_window_info", "read_window_text", "click_button", "restart_crashed_game",
-                     "find_local_deals"}
+                     "find_local_deals", "focus_window"}
     agents = agent_tools.EVERYDAY_TOOL_AGENT
     assert {n for n, a in agents.items() if a == "main"} == {
         "summarize_meeting", "extract_action_items", "draft_follow_up_email"}

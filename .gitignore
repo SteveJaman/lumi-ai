@@ -170,3 +170,9 @@ data/tasks/lumi_tasks.json.tmp
 data/tasks/tool_outputs/
 data/tasks/transcripts/
 data/tasks/*.log
+
+# --- Autonomous tasks (modules/autonomous_agent.py): the agent's scratch area ---
+sandbox/
+data/tasks/autonomous/
+data/skills/
+data/claude_usage.json

@@ -5,6 +5,10 @@
      Terminal  output of commands Lumi runs (socket: terminal_output)
      Files     read-only tree of ./data/ (GET /api/workspace/files,
                /api/workspace/files/content?path=)
+     Models    the Model Pipeline: which Claude tier is working and why
+               (claude_model_switch, claude_token_stream), an !auto task's
+               Plan -> Execute -> Verify progress (autonomous_step), and the
+               catch-up snapshot sent on join (model_pipeline_state)
    app.js calls init({ api, state, socket }) once the user is signed in.
    Host-only: the server ignores workspace_join from remote tabs and the
    file routes answer 403, so the toggle is only shown on the host.
@@ -23,6 +27,10 @@ let tab = 'browser';
 let filesLoaded = false;
 let fileSeq = 0;
 let selectedRow = null;
+
+const TABS = ['browser', 'terminal', 'files', 'models'];
+const PHASES = ['plan', 'execute', 'verify'];
+const MAX_LOG = 60;
 
 const $ = (id) => document.getElementById(id);
 
@@ -86,7 +94,7 @@ function setOpen(on) {
 }
 
 function selectTab(name) {
-  if (!['browser', 'terminal', 'files'].includes(name)) name = 'browser';
+  if (!TABS.includes(name)) name = 'browser';
   tab = name;
   document.querySelectorAll('#split-pane .split-tab').forEach((b) => {
     const on = b.dataset.tab === name;
@@ -94,7 +102,8 @@ function selectTab(name) {
     b.setAttribute('aria-selected', String(on));
     b.tabIndex = on ? 0 : -1;
   });
-  for (const t of ['browser', 'terminal', 'files']) $(`split-panel-${t}`).hidden = t !== name;
+  for (const t of TABS) $(`split-panel-${t}`).hidden = t !== name;
+  if (name === 'models') $('split-toggle-dot').hidden = true;
   try { localStorage.setItem(TAB_KEY, name); } catch { /* private mode */ }
   if (name === 'files' && open && !filesLoaded) loadFiles();
   if (name === 'terminal') scrollTerminal(true);
@@ -118,6 +127,10 @@ function wireSocket() {
   sock.on('browser_frame', onFrame);
   sock.on('browser_status', onStatus);
   sock.on('terminal_output', onTerminal);
+  sock.on('claude_model_switch', onModelSwitch);
+  sock.on('claude_token_stream', onTokens);
+  sock.on('autonomous_step', (m) => onStep(m, false));
+  sock.on('model_pipeline_state', onPipelineState);
   if (open) join();
 }
 
@@ -263,5 +276,149 @@ async function openFile(path, row) {
   } catch (e) {
     if (seq !== fileSeq) return;
     code.textContent = `Couldn't open this file: ${e.message || e}`;
+  }
+}
+
+/* ---------- models tab (Model Pipeline) ---------- */
+
+let liveTimer = 0;
+const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '');
+
+function fmtUsd(n) {
+  const v = Number(n) || 0;
+  if (v === 0) return '$0.00';
+  return v < 1 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
+}
+
+function setLive(state, text) {
+  const el = $('mp-live');
+  el.dataset.state = state;
+  el.textContent = text;
+}
+
+function pulseLive(text) {
+  setLive('busy', text);
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(() => setLive('idle', 'idle'), 6000);
+}
+
+function logLine(kind, text, ts) {
+  const ol = $('mp-log');
+  const li = document.createElement('li');
+  li.className = `mp-log__row mp-log__row--${kind}`;
+  const t = document.createElement('time');
+  const d = ts ? new Date(ts * 1000) : new Date();
+  t.textContent = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const span = document.createElement('span');
+  span.textContent = text;
+  li.append(t, span);
+  ol.prepend(li);
+  while (ol.children.length > MAX_LOG) ol.removeChild(ol.lastElementChild);
+}
+
+function hint() {
+  // A quiet dot on the toggle when something happens out of view.
+  if (!open || tab !== 'models') $('split-toggle-dot').hidden = false;
+}
+
+function showTier(msg) {
+  document.querySelectorAll('#split-panel-models .mp-tier').forEach((li) => {
+    const on = li.dataset.tier === msg.model;
+    li.classList.toggle('on', on);
+    if (on) li.setAttribute('aria-current', 'true'); else li.removeAttribute('aria-current');
+  });
+  const id = msg.model_id && $(`mp-id-${msg.model}`);
+  if (id) id.textContent = msg.model_id;
+  $('mp-reason').textContent = `${cap(msg.model)} · ${msg.reason || ''}`;
+}
+
+function onModelSwitch(msg) {
+  if (!msg || !msg.model) return;
+  showTier(msg);
+  pulseLive(`${msg.model} working`);
+  const esc = /escalation/i.test(msg.reason || '');
+  logLine(esc ? 'warn' : 'switch',
+    `${esc ? 'Escalated to' : 'Routed to'} ${cap(msg.model)} (${msg.tier_cost} cost): ${msg.reason || ''}`, msg.ts);
+  hint();
+}
+
+function showTotals(totals) {
+  if (!totals) return;
+  $('mp-tokens').textContent = (Number(totals.tokens) || 0).toLocaleString();
+  $('mp-cost').textContent = fmtUsd(totals.cost_usd);
+  $('mp-saved').textContent = fmtUsd(totals.saved_usd);
+  const calls = totals.calls_by_tier || {};
+  for (const t of ['haiku', 'sonnet', 'opus']) {
+    if (calls[t] != null) $(`mp-calls-${t}`).textContent = Number(calls[t]).toLocaleString();
+  }
+}
+
+function onTokens(msg) {
+  if (!msg || !msg.model) return;
+  showTotals(msg.totals);
+  logLine('tokens', `${cap(msg.model)} ${msg.classifier ? 'classifier' : 'reply'}: `
+    + `${(Number(msg.tokens) || 0).toLocaleString()} tokens (${msg.input_tokens} in / ${msg.output_tokens} out)`, msg.ts);
+}
+
+function resetFlow() {
+  for (const p of PHASES) $(`mp-state-${p}`).textContent = '—';
+  document.querySelectorAll('#split-panel-models .mp-node').forEach((li) => { li.dataset.state = 'todo'; });
+  setBar(0, 'run');
+}
+
+function setBar(pct, state) {
+  $('mp-bar-fill').style.width = `${pct}%`;
+  $('mp-bar').setAttribute('aria-valuenow', String(pct));
+  $('mp-bar').dataset.state = state;
+}
+
+function setPhase(msg) {
+  const bad = ['failed', 'declined'].includes(msg.status);
+  const nodes = [...document.querySelectorAll('#split-panel-models .mp-node')];
+  if (msg.phase === 'done') {
+    const ok = msg.status === 'success';
+    nodes.forEach((li) => { li.dataset.state = 'done'; });
+    if (!ok) nodes[nodes.length - 1].dataset.state = 'failed';
+    $('mp-state-execute').textContent = 'done';
+    $('mp-state-verify').textContent = ok ? 'verified' : 'unverified';
+    setBar(100, ok ? 'done' : 'failed');
+    return;
+  }
+  const at = PHASES.indexOf(msg.phase);
+  if (at < 0) return;
+  nodes.forEach((li, i) => {
+    if (i < at) li.dataset.state = 'done';
+    else if (i > at) li.dataset.state = 'todo';
+    else if (bad) li.dataset.state = 'failed';
+    else li.dataset.state = msg.status === 'success' && msg.phase !== 'execute' ? 'done' : 'active';
+  });
+  $(`mp-state-${msg.phase}`).textContent = msg.tool ? `${msg.tool} · ${msg.status}` : (msg.step || msg.status);
+  const pct = Math.round(((at + (msg.status === 'success' && msg.phase !== 'execute' ? 1 : 0.5)) / PHASES.length) * 100);
+  setBar(pct, bad ? 'failed' : 'run');
+}
+
+function onStep(msg, replay) {
+  if (!msg || !msg.phase) return;
+  if (msg.phase === 'plan' && msg.step === 'Planning') resetFlow();
+  if (msg.session_id) $('mp-session').textContent = msg.session_id;
+  setPhase(msg);
+  if (!replay) {
+    if (msg.phase === 'done') setLive(msg.status === 'success' ? 'ok' : 'bad', msg.status === 'success' ? 'verified' : 'unverified');
+    else pulseLive(msg.step || msg.phase);
+    hint();
+  }
+  const kind = ['failed', 'declined', 'denied'].includes(msg.status) ? 'bad' : msg.status === 'success' ? 'ok' : 'step';
+  logLine(kind, `${msg.step}${msg.tool ? ` · ${msg.tool}` : ''} — ${msg.status}`, msg.ts);
+}
+
+function onPipelineState(msg) {
+  if (!msg) return;
+  if (msg.switch) showTier(msg.switch);
+  if (msg.tokens) showTotals(msg.tokens.totals);
+  const steps = Array.isArray(msg.steps) ? msg.steps : [];
+  if (steps.length) {
+    $('mp-log').textContent = '';
+    resetFlow();
+    for (const st of steps) onStep(st, true);
   }
 }

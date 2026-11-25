@@ -272,3 +272,96 @@ def agent_model_info(choice: str, local_model: Optional[str] = None) -> Dict[str
                                                                  "groq", "openrouter") else spec
     return {"choice": choice or "local", "label": AGENT_MODEL_LABELS.get(choice or "local", choice),
             "model": model}
+
+
+# ─── tiered agent models ───────────────────────────────────────────────
+# Agent-mode turns pick a local model by tier: sonnet / opus (and !auto tasks)
+# run the PRIMARY chain, haiku the FAST chain. Each chain comes from LUMI.md
+# (## Model) and is tried in order; the first model that is installed in Ollama
+# and fits in VRAM wins. Chat mode is untouched (MODEL_NAME / FAST_MODEL_NAME).
+
+INSTALLED_TTL_S = 60.0
+_installed_cache: Dict[str, object] = {"t": 0.0, "models": None}
+_vram_cache: Dict[str, object] = {"done": False, "gb": None}
+
+
+def installed_models() -> Dict[str, float]:
+    """{model name: size in GB} from Ollama's /api/tags, cached for a minute.
+    Empty when Ollama can't be reached."""
+    now = time.time()
+    with _lock:
+        if _installed_cache["models"] is not None and now - float(_installed_cache["t"]) < INSTALLED_TTL_S:
+            return dict(_installed_cache["models"])
+    try:
+        r = requests.get(f"{constants.LLM_ENDPOINT.rstrip('/')}/api/tags", timeout=3)
+        r.raise_for_status()
+        models = {m["name"]: round(float(m.get("size") or 0) / 1e9, 2)
+                  for m in (r.json() or {}).get("models", []) if m.get("name")}
+    except Exception:
+        models = {}
+    with _lock:
+        _installed_cache.update(t=now, models=models)
+    return dict(models)
+
+
+def gpu_vram_gb() -> Optional[float]:
+    """Total memory of the first NVIDIA GPU in GB (nvidia-smi), detected once.
+    None when there is no NVIDIA GPU or the tool is missing."""
+    if _vram_cache["done"]:
+        return _vram_cache["gb"]
+    gb = None
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        first = (out.stdout or "").strip().splitlines()[0]
+        gb = round(float(first) / 1024, 1)
+    except Exception:
+        gb = None
+    _vram_cache.update(done=True, gb=gb)
+    return gb
+
+
+def _same_model(a: str, b: str) -> bool:
+    norm = lambda n: n if ":" in n else n + ":latest"
+    return norm(a.strip().lower()) == norm(b.strip().lower())
+
+
+def pick_model(chain, installed: Dict[str, float], vram_gb: Optional[float],
+               headroom_gb: float) -> Optional[str]:
+    """The first chain entry that is installed and fits in vram - headroom;
+    else the first installed entry (it will spill to the CPU); else None.
+    Unknown VRAM counts as 'fits'."""
+    present = []
+    for want in chain:
+        name = next((n for n in installed if _same_model(n, want)), None)
+        if name is not None:
+            present.append(name)
+    if not present:
+        return None
+    if vram_gb is None:
+        return present[0]
+    budget = vram_gb - headroom_gb
+    for name in present:
+        if installed.get(name, 0.0) <= budget:
+            return name
+    return present[0]
+
+
+def agent_model_for_tier(tier: Optional[str]) -> str:
+    """The local model for an agent-mode turn of this tier. Never raises:
+    falls back to LUMI.md `agent_model` when no chain entry is installed."""
+    from modules.harness import config as hcfg
+    fallback = hcfg.agent_model()
+    try:
+        fast = (tier == "haiku") or _gaming()          # games need the VRAM
+        chain = hcfg.fast_agent_models() if fast else hcfg.primary_agent_models()
+        vram = hcfg.vram_gb()
+        if vram is None:
+            vram = gpu_vram_gb()
+        picked = pick_model(chain, installed_models(), vram, hcfg.vram_headroom_gb())
+        return picked or fallback
+    except Exception:
+        return fallback

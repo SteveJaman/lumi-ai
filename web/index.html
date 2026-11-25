@@ -78,6 +78,8 @@
                 aria-selected="false" aria-controls="split-panel-terminal" tabindex="-1">Terminal</button>
         <button class="split-tab" role="tab" id="split-tab-files" data-tab="files"
                 aria-selected="false" aria-controls="split-panel-files" tabindex="-1">Files</button>
+        <button class="split-tab" role="tab" id="split-tab-models" data-tab="models"
+                aria-selected="false" aria-controls="split-panel-models" tabindex="-1">Models</button>
       </div>
       <button class="btn btn-ghost btn-sm" id="split-close" title="Close workspace" aria-label="Close workspace">✕</button>
     </div>
@@ -116,6 +118,58 @@
           <pre class="split-code" id="split-file-content"><code></code></pre>
         </div>
       </div>
+    </section>
+
+    <!-- Model Pipeline: which Claude tier is working, and where an !auto task is. -->
+    <section class="split-panel mp" id="split-panel-models" role="tabpanel" aria-labelledby="split-tab-models" hidden>
+      <div class="mp__head">
+        <span class="mp__title">Model pipeline</span>
+        <span class="mp__live" id="mp-live" data-state="idle">idle</span>
+      </div>
+
+      <div class="mp__label">Claude router</div>
+      <ol class="mp__tiers" aria-label="Claude tiers">
+        <li class="mp-tier" data-tier="haiku">
+          <span class="mp-tier__name">Haiku</span>
+          <span class="mp-tier__cost">low cost</span>
+          <span class="mp-tier__id" id="mp-id-haiku">claude-haiku</span>
+          <span class="mp-tier__calls"><b id="mp-calls-haiku">0</b> calls</span>
+        </li>
+        <li class="mp-tier__link" aria-hidden="true"></li>
+        <li class="mp-tier" data-tier="sonnet">
+          <span class="mp-tier__name">Sonnet</span>
+          <span class="mp-tier__cost">medium cost</span>
+          <span class="mp-tier__id" id="mp-id-sonnet">claude-sonnet</span>
+          <span class="mp-tier__calls"><b id="mp-calls-sonnet">0</b> calls</span>
+        </li>
+        <li class="mp-tier__link" aria-hidden="true"></li>
+        <li class="mp-tier" data-tier="opus">
+          <span class="mp-tier__name">Opus</span>
+          <span class="mp-tier__cost">high cost</span>
+          <span class="mp-tier__id" id="mp-id-opus">claude-opus</span>
+          <span class="mp-tier__calls"><b id="mp-calls-opus">0</b> calls</span>
+        </li>
+      </ol>
+      <p class="mp__reason" id="mp-reason" role="status" aria-live="polite">No Claude call yet.</p>
+
+      <div class="mp__label">Autonomous task <span class="mp__session" id="mp-session"></span></div>
+      <ol class="mp__flow" aria-label="Autonomous task phases">
+        <li class="mp-node" data-phase="plan"><span class="mp-node__dot"></span><span class="mp-node__name">Plan</span><span class="mp-node__state" id="mp-state-plan">—</span></li>
+        <li class="mp-node" data-phase="execute"><span class="mp-node__dot"></span><span class="mp-node__name">Execute</span><span class="mp-node__state" id="mp-state-execute">—</span></li>
+        <li class="mp-node" data-phase="verify"><span class="mp-node__dot"></span><span class="mp-node__name">Verify</span><span class="mp-node__state" id="mp-state-verify">—</span></li>
+      </ol>
+      <div class="mp__bar" role="progressbar" aria-label="Autonomous task progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="mp-bar">
+        <span class="mp__bar-fill" id="mp-bar-fill"></span>
+      </div>
+
+      <dl class="mp__stats">
+        <div><dt>Tokens</dt><dd id="mp-tokens">0</dd></div>
+        <div><dt>Spent</dt><dd id="mp-cost">$0.00</dd></div>
+        <div><dt>Saved vs all-Opus</dt><dd id="mp-saved">$0.00</dd></div>
+      </dl>
+
+      <div class="mp__label">Events</div>
+      <ol class="mp__log" id="mp-log" aria-live="off"></ol>
     </section>
   </aside>
 

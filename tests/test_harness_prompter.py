@@ -54,7 +54,9 @@ def test_agent_mode_runs_harness_past_six_steps(monkeypatch, harness_env):
     assert len(seen) == 12                       # past the legacy cap of 6
     assert {"task_next", "task_complete", "task_add"} <= set(seen[0]["tools"])
     assert seen[0]["messages"][1]["content"].startswith("[LUMI.md RULES]")
-    assert seen[0]["model"] == config.agent_model()
+    # Tier routing (LUMI.md primary/fast chains), falling back to agent_model.
+    from modules import model_router
+    assert seen[0]["model"] == model_router.agent_model_for_tier(p._route_tier)
     assert seen[0]["kw"]["options"]["num_ctx"] == config.num_ctx()
     log = (harness_env / "tasks" / "sessions.log").read_text(encoding="utf-8").splitlines()
     assert json.loads(log[-1])["termination_reason"] == "task_complete"
