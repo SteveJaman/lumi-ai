@@ -26,6 +26,9 @@
         <button class="tab" data-app="home" role="tab" aria-label="Home" aria-selected="true">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10"/></svg><span>Home</span>
         </button>
+        <button class="tab" data-app="hub" role="tab" aria-label="Hub" aria-selected="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg><span>Hub</span>
+        </button>
         <button class="tab" data-app="chat" role="tab" aria-label="Chat" aria-selected="false">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Chat</span>
         </button>
@@ -103,6 +106,53 @@
           <ul id="unread" class="unread"></ul>
         </div>
         <p id="home-note" class="note"></p>
+      </section>
+
+      <!-- Hub: shortcuts that open in your browser, a quick-note box, today's checklist -->
+      <section id="app-hub" class="app hub" aria-label="Hub">
+        <div class="hub-head">
+          <div>
+            <div id="hub-hello" class="hub-hello">Hello</div>
+            <div id="hub-sub" class="hub-sub"></div>
+          </div>
+          <button id="hub-edit" class="hub-link" type="button" aria-pressed="false">Edit</button>
+        </div>
+
+        <ul id="hub-grid" class="hub-grid" aria-label="Shortcuts"></ul>
+
+        <form id="hub-add" class="hub-add card" autocomplete="off" hidden>
+          <div class="label">New shortcut</div>
+          <div class="hub-add-row">
+            <input id="hub-add-title" maxlength="40" placeholder="Name" aria-label="Shortcut name" spellcheck="false">
+            <input id="hub-add-url" maxlength="2048" placeholder="https://…" aria-label="Shortcut link" spellcheck="false" inputmode="url">
+          </div>
+          <div id="hub-add-msg" class="hub-msg" role="status"></div>
+          <div class="hub-add-actions">
+            <button id="hub-add-cancel" class="fbtn" type="button">Cancel</button>
+            <button id="hub-add-save" class="fbtn hub-primary" type="submit">Add</button>
+          </div>
+        </form>
+
+        <form id="hub-note" class="hub-note" autocomplete="off">
+          <span id="hub-note-kind" class="hub-kind" data-kind="idea">Idea</span>
+          <input id="hub-note-input" maxlength="1000" placeholder="An idea, homework, or a grocery item…" aria-label="Quick note for Lumi" spellcheck="true">
+          <button id="hub-note-send" class="hub-note-send" type="submit" aria-label="Save to Lumi's memory">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </button>
+        </form>
+        <p class="hub-note-hint">Enter saves it to Lumi's memory. Start with <b>hw:</b>, <b>buy:</b> or <b>idea:</b> to pick the list.</p>
+
+        <div class="card hub-checks">
+          <div class="hub-checks-head">
+            <span class="label">Today</span>
+            <span id="hub-progress" class="hub-progress" aria-live="polite">0/0</span>
+          </div>
+          <div class="hub-meter" aria-hidden="true"><i id="hub-meter"></i></div>
+          <ul id="hub-list" class="hub-list" aria-label="Daily checklist"></ul>
+          <form id="hub-check-add" class="hub-check-add" autocomplete="off">
+            <input id="hub-check-input" maxlength="80" placeholder="Add to today's list…" aria-label="New checklist item">
+          </form>
+        </div>
       </section>
 
       <!-- Chat -->

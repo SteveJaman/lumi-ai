@@ -24,6 +24,14 @@ that is echoed back:
     focus_summary {minutes}        -> focus_summary {summary | null}
                                       one sentence from the ambient sampler's recent
                                       observations, written by the local fast model
+    get_shortcuts                  -> shortcuts {shortcuts: [{id, title, url}]}
+    shortcut_add {title, url}      -> shortcuts {ok, shortcut, shortcuts} | {ok: false, error}
+    shortcut_delete {sid}          -> shortcuts {ok, shortcuts} | {ok: false, error}
+                                      Hub launcher (modules/shortcuts_manager.py); the island
+                                      opens a link itself, in the default browser
+    quick_note {text, kind?}       -> quick_note {ok, kind} | {ok: false, error}
+                                      Hub's idea / homework / grocery box: a long-term memory
+                                      labelled with its kind (guessed from the text if absent)
 
 Server -> client (pushed, never polled):
     lumi_status {state}            idle / thinking / speaking
@@ -32,6 +40,7 @@ Server -> client (pushed, never polled):
     chat_reset                     the chat was wiped or rewritten
     snapshot {snapshot}            next event + unread changed
     prefs {prefs}                  12/24 h, units or weather city changed in the web client
+    shortcuts_update {shortcuts}   a shortcut was added or removed (any island, the web API)
 
 Everything the island can do is something the signed-in owner can already do
 in the web client; the socket is loopback-only, origin-checked, and (when
@@ -56,6 +65,30 @@ MAX_URL_CHARS = 2000
 MAX_PAUSE_MIN = 180             # a focus pause expires on its own after this
 FOCUS_LOOKBACK_S = 600          # observations this long before the block count too
 _URL_RE = re.compile(r"^https?://\S+$", re.I)
+MAX_NOTE_CHARS = 1000
+NOTE_KINDS = {"idea": "Idea", "homework": "Homework", "grocery": "Grocery list", "note": "Note"}
+_NOTE_PREFIX_RE = re.compile(r"^\s*(idea|hw|homework|todo|grocery|groceries|buy|shopping)\s*[:\-]\s*", re.I)
+_HOMEWORK_RE = re.compile(r"\b(homework|hw|assignment|essay|quiz|exam|midterm|final|lab \d+|due|canvas|"
+                          r"chapter|problem set|pset|study|project)\b", re.I)
+_GROCERY_RE = re.compile(r"\b(buy|grocer(y|ies)|milk|eggs|bread|rice|chicken|beef|fruit|veggies|vegetables|"
+                         r"cheese|butter|coffee|snacks|toilet paper|shopping list|pick up)\b", re.I)
+
+
+def note_kind(text: str) -> tuple:
+    """(kind, text without a "hw:" / "buy:" / "idea:" prefix). Kind is one of
+    NOTE_KINDS; a plain thought is an idea."""
+    t = str(text or "").strip()
+    m = _NOTE_PREFIX_RE.match(t)
+    if m:
+        word = m.group(1).lower()
+        kind = ("idea" if word == "idea" else "homework" if word in ("hw", "homework", "todo")
+                else "grocery")
+        return kind, t[m.end():].strip() or t
+    if _HOMEWORK_RE.search(t):
+        return "homework", t
+    if _GROCERY_RE.search(t):
+        return "grocery", t
+    return "idea", t
 
 
 def link_note(url: str, now: datetime.datetime) -> str:
@@ -247,6 +280,57 @@ def install(signals, server=None, info=None) -> None:
             return await send(ws, {**base, "ok": True, "name": link_label(url)})
         await send(ws, {**base, "ok": False, "error": "Unknown capture kind."})
 
+    # ── Hub: shortcuts and the quick-note box ─────────────────────
+    from modules import shortcuts_manager
+
+    async def shortcuts(ws, data):
+        items = await asyncio.get_running_loop().run_in_executor(None, shortcuts_manager.list_shortcuts)
+        await send(ws, {"type": "shortcuts", "id": data.get("id"), "shortcuts": items})
+
+    async def shortcut_add(ws, data):
+        base = {"type": "shortcuts", "id": data.get("id")}
+        loop = asyncio.get_running_loop()
+        try:
+            item = await loop.run_in_executor(None, shortcuts_manager.add_shortcut, data.get("title"), data.get("url"))
+        except shortcuts_manager.ShortcutError as e:
+            return await send(ws, {**base, "ok": False, "error": str(e)})
+        except OSError:
+            return await send(ws, {**base, "ok": False, "error": "Couldn't save the shortcut."})
+        items = await loop.run_in_executor(None, shortcuts_manager.list_shortcuts)
+        await send(ws, {**base, "ok": True, "shortcut": item, "shortcuts": items})
+
+    async def shortcut_delete(ws, data):
+        base = {"type": "shortcuts", "id": data.get("id")}
+        loop = asyncio.get_running_loop()
+        try:
+            ok = await loop.run_in_executor(None, shortcuts_manager.remove_shortcut, data.get("sid"))
+        except OSError:
+            return await send(ws, {**base, "ok": False, "error": "Couldn't save the change."})
+        items = await loop.run_in_executor(None, shortcuts_manager.list_shortcuts)
+        if not ok:
+            return await send(ws, {**base, "ok": False, "error": "That shortcut is already gone.", "shortcuts": items})
+        await send(ws, {**base, "ok": True, "shortcuts": items})
+
+    # Like Quick Capture, nothing here logs the note's text.
+    async def quick_note(ws, data):
+        base = {"type": "quick_note", "id": data.get("id")}
+        raw = str(data.get("text") or "").strip()
+        if not raw:
+            return await send(ws, {**base, "ok": False, "error": "Nothing to save."})
+        kind, text = note_kind(raw)
+        if data.get("kind") in NOTE_KINDS:
+            kind = data["kind"]
+        api = getattr(getattr(signals, "memory", None), "API", None)
+        if api is None:
+            return await send(ws, {**base, "ok": False, "error": "Memory isn't loaded."})
+        entry = f"{NOTE_KINDS[kind]}: {text[:MAX_NOTE_CHARS]}"
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, lambda: api.create_memory(
+                entry, importance=0.8, memory_type="manual"))
+        except Exception as e:
+            return await send(ws, {**base, "ok": False, "error": f"memory: {type(e).__name__}"})
+        await send(ws, {**base, "ok": True, "kind": kind})
+
     # ── Focus Mode ────────────────────────────────────────────────
     async def set_paused(ws, data):
         paused = bool(data.get("paused"))
@@ -284,6 +368,10 @@ def install(signals, server=None, info=None) -> None:
     reg("quick_capture", quick_capture)
     reg("heartbeat_set_paused", set_paused)
     reg("focus_summary", focus_summary)
+    reg("get_shortcuts", shortcuts)
+    reg("shortcut_add", shortcut_add)
+    reg("shortcut_delete", shortcut_delete)
+    reg("quick_note", quick_note)
 
     def on_history(kind, start, msgs):
         if kind == "reset":
@@ -296,6 +384,7 @@ def install(signals, server=None, info=None) -> None:
     signals.on_history_change = on_history
 
     prefs_src.add_listener(lambda prefs: push({"type": "prefs", "prefs": prefs}))
+    shortcuts_manager.add_listener(lambda items: push({"type": "shortcuts_update", "shortcuts": items}))
 
     h = hub()
     if h is not None:

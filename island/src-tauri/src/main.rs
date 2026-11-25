@@ -13,7 +13,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 #[tauri::command]
 fn fit(window: WebviewWindow, width: f64, height: f64) -> Result<(), String> {
     let width = width.clamp(40.0, 600.0);
-    let height = height.clamp(4.0, 600.0);
+    let height = height.clamp(4.0, 700.0);
     let monitor = window
         .current_monitor()
         .map_err(|e| e.to_string())?
@@ -113,6 +113,84 @@ fn read_capture_file(path: String) -> Result<tauri::ipc::Response, String> {
     std::fs::read(p).map(tauri::ipc::Response::new).map_err(|e| e.to_string())
 }
 
+// ── Hub shortcuts ─────────────────────────────────────────────────────
+// Open a link in the user's default browser (never inside the island).
+// Only plain http(s) URLs: a page that went wrong can't use this to start a
+// program or open a local file. The URL is passed as one argument to the
+// OS opener, never through a shell, so characters like & stay inside it.
+
+const MAX_URL_LEN: usize = 2048;
+
+fn check_external_url(url: &str) -> Result<&str, String> {
+    let u = url.trim();
+    if u.is_empty() || u.len() > MAX_URL_LEN {
+        return Err("That link is empty or too long.".into());
+    }
+    if u.chars().any(|c| c.is_control() || c.is_whitespace() || c == '"') {
+        return Err("A link can't contain spaces or quotes.".into());
+    }
+    let lower = u.to_ascii_lowercase();
+    let rest = if let Some(r) = lower.strip_prefix("https://") {
+        r
+    } else if let Some(r) = lower.strip_prefix("http://") {
+        r
+    } else {
+        return Err("Only http and https links can be opened.".into());
+    };
+    let host = rest.split(|c| c == '/' || c == '?' || c == '#').next().unwrap_or("");
+    if host.is_empty() || host.contains('@') {
+        return Err("That isn't a web address.".into());
+    }
+    Ok(u)
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let u = check_external_url(&url)?;
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut c = std::process::Command::new("rundll32.exe");
+        c.arg("url.dll,FileProtocolHandler").arg(u).creation_flags(CREATE_NO_WINDOW);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(u);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(u);
+        c
+    };
+    cmd.spawn().map(|_| ()).map_err(|e| format!("Couldn't open the browser: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_external_url;
+
+    #[test]
+    fn accepts_web_links() {
+        assert!(check_external_url("https://canvas.instructure.com").is_ok());
+        assert!(check_external_url("http://example.com/a?b=1&c=2#x").is_ok());
+    }
+
+    #[test]
+    fn rejects_everything_else() {
+        for bad in [
+            "", "file:///C:/Windows/System32/calc.exe", "javascript:alert(1)", "C:\\Windows\\notepad.exe",
+            "https://", "https://user@evil.com", "https://a b.com", "ms-settings:privacy", "\"https://x.com\"",
+        ] {
+            assert!(check_external_url(bad).is_err(), "{bad} should be rejected");
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(
@@ -129,7 +207,8 @@ fn main() {
             island_token,
             island_ws_url,
             set_capture_shortcut,
-            read_capture_file
+            read_capture_file,
+            open_external_url
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("island") {

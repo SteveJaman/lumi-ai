@@ -690,8 +690,9 @@ class SocketIOServer:
         r.add_post("/api/island",       self._handle_island_set)
         from modules import workspace_routes
         workspace_routes.register(r, self)      # /api/workspace/* (host-only)
-        from modules import workspace
+        from modules import shortcuts_manager, workspace
         workspace.register(r, self)             # /api/workspace/files* (host-only split-view Files tab)
+        shortcuts_manager.register(r, self)     # /api/shortcuts (Lumi Island Hub)
         from modules import home_info
         home_info.register(r, self)             # /api/settings/display (host-only)
         from modules import island_remote

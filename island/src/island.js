@@ -15,6 +15,7 @@
   const BLUR_CLOSE_MS = 1500;
   const SIZES = { hidden: [200, 8], peek: [330, 58], open: [480, 590], approval: [440, 310],
                   capture: [440, 96], flash: [330, 46] };   // Quick Capture bar; a notice line
+  const HUB_OPEN_H = 640;          // the Hub grows the open island a little (Rust fit allows up to 700)
   // The window keeps one width (the widest state) and only its height changes.
   // Tauri resizes and then re-centres a window in two separate steps; with the
   // width changing too, the island (centred in the window) jumped sideways for a
@@ -67,7 +68,7 @@
 
   // ── State ──────────────────────────────────────────────────────
   let state = 'hidden';            // hidden | peek | open | approval
-  let app = 'home';                // home | chat | calendar
+  let app = 'home';                // home | hub | chat | calendar | pipeline
   let hovering = false;
   let beforeApproval = 'hidden';
   let leaveTimer = null, blurTimer = null;
@@ -85,14 +86,17 @@
 
   const effStatus = () => (conn !== 'online' ? conn : (gaming && lumiState === 'idle' ? 'gaming' : lumiState));
 
+  const heightOf = (st, a = app) => (st === 'open' && a === 'hub' ? HUB_OPEN_H : SIZES[st][1]);
+  const islandClass = (st) => `island ${st}${app === 'hub' ? ' tall' : ''}${island.classList.contains('danger') ? ' danger' : ''}`;
+
   function setState(next) {
     if (next === state) return;
-    const h = SIZES[next][1];
-    const ch = SIZES[state][1];
+    const h = heightOf(next);
+    const ch = heightOf(state);
     const grows = h >= ch;
     if (grows) fit(WIN_W, h);                     // room first, then animate into it
     state = next;
-    island.className = `island ${next}${island.classList.contains('danger') ? ' danger' : ''}`;
+    island.className = islandClass(next);
     $('approval').inert = next !== 'approval';
     $('capture').inert = next !== 'capture';
     if (!grows) setTimeout(() => { if (state === next) fit(WIN_W, h); }, MORPH_MS);
@@ -187,6 +191,11 @@
         if (app === 'calendar') loadCalendar();
         onFocusOnline();
         flushCaptures();
+        loadShortcuts();
+        flushNotes();
+        break;
+      case 'shortcuts_update':                     // added or removed on another island or the web API
+        setShortcuts(msg.shortcuts);
         break;
       case 'theme_update':
         ui.theme = msg.theme || ui.theme; applyTheme();
@@ -243,7 +252,14 @@
     // The gear's panel covers the apps: picking any tab (even the current one)
     // closes it, so a tab always takes one click to show its app.
     if (!$('settings').hidden) closeSettings();
+    const before = heightOf(state);
     app = name;
+    const after = heightOf(state);
+    if (after !== before) {                       // the Hub is a little taller than the other apps
+      if (after > before) fit(WIN_W, after);
+      else setTimeout(() => { if (heightOf(state) === after) fit(WIN_W, after); }, MORPH_MS);
+    }
+    island.className = islandClass(state);
     document.querySelectorAll('.tab').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.app === name)));
     document.querySelectorAll('.app').forEach((s) => s.classList.toggle('on', s.id === `app-${name}`));
     syncClock();
@@ -251,6 +267,7 @@
     if (name === 'chat') { scrollMsgs(true); if (state === 'open') focusComposer(); }
     if (name === 'calendar') loadCalendar();
     if (name === 'pipeline') renderPipeline();
+    if (name === 'hub') { renderHub(); loadShortcuts(); }
   }
   function openApp(name) { setApp(name); setState(queue.length ? 'approval' : 'open'); }
 
@@ -1328,6 +1345,279 @@
   $('focus-stop').addEventListener('click', () => endFocus('stopped'));
   pruneFocusDays();
   renderFocus();
+
+  // ── Hub: shortcuts, quick notes, today's checklist ─────────────
+  // Shortcuts live on Lumi's PC (modules/shortcuts_manager.py, data/shortcuts.json)
+  // and are cached here so the grid still works while Lumi is offline. A tile
+  // opens in the default browser through Rust (open_external_url), never in the
+  // island. Notes go to Lumi's memory (quick_note); offline they wait in
+  // localStorage like Quick Capture. The checklist is this island's own: the
+  // items are kept, the ticks reset every day.
+  const SC_CACHE_KEY = 'lumi-island-shortcuts';
+  const NOTES_PENDING_KEY = 'lumi-island-notes-pending';
+  const CHECK_ITEMS_KEY = 'lumi-island-checklist';
+  const CHECK_DONE_PREFIX = 'lumi-island-checks-';
+  const DEFAULT_CHECKS = ['Drink water', 'Check emails', 'Review today\'s plan', 'Stretch for 5 minutes'];
+  const NOTE_LABEL = { idea: 'Idea', homework: 'Homework', grocery: 'Grocery' };
+  const TILE_TINTS = ['--teal', '--ice', '--pink', '--violet', '--amber'];
+  let hubEditing = false;
+
+  const readJson = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k) || 'null'); return v == null ? d : v; } catch (_) { return d; } };
+  const writeJson = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} };
+  let shortcuts = (readJson(SC_CACHE_KEY, []) || []).filter((s) => s && s.id && s.url);
+
+  function setShortcuts(list) {
+    if (!Array.isArray(list)) return;
+    shortcuts = list.filter((s) => s && s.id && typeof s.url === 'string');
+    writeJson(SC_CACHE_KEY, shortcuts);
+    renderGrid();
+  }
+  async function loadShortcuts() {
+    if (!online()) return renderGrid();
+    try { setShortcuts((await req('get_shortcuts')).shortcuts); } catch (_) { renderGrid(); }
+  }
+
+  const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch (_) { return u; } };
+  function tintFor(text) {
+    let h = 0;
+    for (const ch of String(text)) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+    return `var(${TILE_TINTS[h % TILE_TINTS.length]})`;
+  }
+
+  async function openLink(url) {
+    const invoke = tauriInvoke();
+    try {
+      if (invoke) await invoke('open_external_url', { url });
+      else window.open(url, '_blank', 'noopener,noreferrer');      // opened as a page in a browser (development)
+    } catch (e) {
+      notice(String((e && e.message) || e), 'error');
+    }
+  }
+
+  function renderGrid() {
+    const ul = $('hub-grid');
+    ul.textContent = '';
+    ul.classList.toggle('editing', hubEditing);
+    for (const s of shortcuts) {
+      const li = document.createElement('li');
+      li.className = 'hub-cell';
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'hub-tile';
+      b.style.setProperty('--tint', tintFor(s.title || s.url));
+      b.title = `${s.title} — ${hostOf(s.url)}`;
+      b.setAttribute('aria-label', hubEditing ? `Remove ${s.title}` : `Open ${s.title} in your browser`);
+      const icon = span('hub-icon', (s.title || hostOf(s.url)).trim().charAt(0).toUpperCase() || '•');
+      icon.setAttribute('aria-hidden', 'true');
+      b.append(icon, span('hub-name', s.title || hostOf(s.url)));
+      b.addEventListener('click', () => (hubEditing ? removeShortcut(s) : openLink(s.url)));
+      if (hubEditing) {
+        const x = span('hub-x', '×');
+        x.setAttribute('aria-hidden', 'true');
+        b.append(x);
+      }
+      li.append(b);
+      ul.append(li);
+    }
+    const li = document.createElement('li');
+    li.className = 'hub-cell';
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'hub-tile hub-tile-add';
+    add.setAttribute('aria-label', 'Add a shortcut');
+    const plus = span('hub-icon', '+');
+    plus.setAttribute('aria-hidden', 'true');
+    add.append(plus, span('hub-name', 'Add'));
+    add.addEventListener('click', openAddForm);
+    li.append(add);
+    ul.append(li);
+  }
+
+  function openAddForm() {
+    if (hubEditing) setEditing(false);
+    $('hub-add').hidden = false;
+    $('hub-add-msg').textContent = ''; $('hub-add-msg').className = 'hub-msg';
+    setTimeout(() => $('hub-add-title').focus(), 30);
+  }
+  function closeAddForm() {
+    $('hub-add').hidden = true;
+    $('hub-add-title').value = ''; $('hub-add-url').value = '';
+  }
+  async function saveShortcut() {
+    const title = $('hub-add-title').value.trim();
+    const url = $('hub-add-url').value.trim();
+    const msg = $('hub-add-msg');
+    if (!url) { msg.textContent = 'Enter a link.'; msg.className = 'hub-msg bad'; return; }
+    if (!online()) { msg.textContent = 'Lumi is offline. Shortcuts are saved on her PC.'; msg.className = 'hub-msg bad'; return; }
+    $('hub-add-save').disabled = true;
+    try {
+      const r = await req('shortcut_add', { title, url });
+      if (!r.ok) throw new Error(r.error || 'not saved');
+      setShortcuts(r.shortcuts);
+      closeAddForm();
+      notice(`Added ${r.shortcut.title}`, 'ok');
+    } catch (e) {
+      msg.textContent = (e && e.message) || String(e); msg.className = 'hub-msg bad';
+    } finally {
+      $('hub-add-save').disabled = false;
+    }
+  }
+  async function removeShortcut(s) {
+    if (!online()) return notice('Lumi is offline — shortcuts are changed on her PC', 'warn');
+    try {
+      const r = await req('shortcut_delete', { sid: s.id });
+      if (r.shortcuts) setShortcuts(r.shortcuts);
+      if (!r.ok) throw new Error(r.error || 'not removed');
+      notice(`Removed ${s.title}`, 'ok');
+    } catch (e) {
+      notice(`Couldn't remove it: ${(e && e.message) || e}`, 'error');
+    }
+  }
+  function setEditing(on) {
+    hubEditing = !!on;
+    $('hub-edit').textContent = hubEditing ? 'Done' : 'Edit';
+    $('hub-edit').setAttribute('aria-pressed', String(hubEditing));
+    renderGrid();
+  }
+
+  // Quick notes. The kind shown is a guess (the server makes the same one);
+  // a "hw:" / "buy:" / "idea:" prefix picks it outright.
+  function guessKind(t) {
+    const m = /^\s*(idea|hw|homework|todo|grocery|groceries|buy|shopping)\s*[:-]/i.exec(t);
+    if (m) { const w = m[1].toLowerCase(); return w === 'idea' ? 'idea' : ['hw', 'homework', 'todo'].includes(w) ? 'homework' : 'grocery'; }
+    if (/\b(homework|hw|assignment|essay|quiz|exam|midterm|final|lab \d+|due|canvas|chapter|problem set|pset|study|project)\b/i.test(t)) return 'homework';
+    if (/\b(buy|grocer(y|ies)|milk|eggs|bread|rice|chicken|beef|fruit|veggies|vegetables|cheese|butter|coffee|snacks|toilet paper|shopping list|pick up)\b/i.test(t)) return 'grocery';
+    return 'idea';
+  }
+  function showKind() {
+    const k = guessKind($('hub-note-input').value);
+    const el = $('hub-note-kind');
+    el.dataset.kind = k; el.textContent = NOTE_LABEL[k];
+  }
+  async function sendNote(text) {
+    const r = await req('quick_note', { text }, 30000);
+    if (!r.ok) throw new Error(r.error || 'not saved');
+    return r.kind;
+  }
+  async function submitNote() {
+    const input = $('hub-note-input'), btn = $('hub-note-send');
+    const text = input.value.trim();
+    if (!text || btn.disabled) return;
+    if (!online()) {
+      writeJson(NOTES_PENDING_KEY, [...readJson(NOTES_PENDING_KEY, []), { text, at: Date.now() }]);
+      input.value = ''; showKind();
+      return notice('Lumi is offline — saved here, sending when she\'s back', 'warn');
+    }
+    btn.disabled = true;
+    try {
+      const kind = await sendNote(text);
+      input.value = ''; showKind();
+      notice(`Saved to Lumi's memory · ${NOTE_LABEL[kind] || 'Note'}`, 'ok');
+    } catch (e) {
+      notice(`Couldn't save: ${(e && e.message) || e}`, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  let flushingNotes = false;
+  async function flushNotes() {
+    if (flushingNotes) return;
+    let list = readJson(NOTES_PENDING_KEY, []);
+    if (!Array.isArray(list) || !list.length) return;
+    flushingNotes = true;
+    let ok = 0;
+    try {
+      while (list.length && online()) {
+        try { await sendNote(String(list[0].text || '')); ok++; } catch (e) {
+          if (!online() || /offline|timeout/.test(String(e && e.message))) break;
+        }
+        list = list.slice(1);
+        if (list.length) writeJson(NOTES_PENDING_KEY, list); else localStorage.removeItem(NOTES_PENDING_KEY);
+      }
+    } finally {
+      flushingNotes = false;
+    }
+    if (ok) notice(`Saved ${ok} note${ok === 1 ? '' : 's'} from while Lumi was offline`, 'ok');
+  }
+
+  // Daily checklist
+  const checkItems = () => {
+    const v = readJson(CHECK_ITEMS_KEY, null);
+    return Array.isArray(v) ? v : DEFAULT_CHECKS.map((text, i) => ({ id: `d${i}`, text }));
+  };
+  const doneKey = () => CHECK_DONE_PREFIX + ymd(new Date());
+  const doneSet = () => new Set(readJson(doneKey(), []));
+  function pruneCheckDays() {
+    const keep = new Set([...Array(7)].map((_, i) => CHECK_DONE_PREFIX + ymd(addDays(new Date(), -i))));
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(CHECK_DONE_PREFIX) && !keep.has(k)) localStorage.removeItem(k);
+      }
+    } catch (_) {}
+  }
+  function renderChecks() {
+    const items = checkItems(), done = doneSet();
+    const ul = $('hub-list');
+    ul.textContent = '';
+    for (const it of items) {
+      const li = document.createElement('li');
+      li.className = `hub-check${done.has(it.id) ? ' done' : ''}`;
+      const label = document.createElement('label');
+      const box = Object.assign(document.createElement('input'), { type: 'checkbox', checked: done.has(it.id) });
+      box.addEventListener('change', () => toggleCheck(it.id, box.checked));
+      label.append(box, span('hub-check-text', it.text));
+      const del = Object.assign(document.createElement('button'), { type: 'button', className: 'hub-check-del', textContent: '×' });
+      del.setAttribute('aria-label', `Remove "${it.text}" from the list`);
+      del.addEventListener('click', () => removeCheck(it.id));
+      li.append(label, del);
+      ul.append(li);
+    }
+    const n = items.filter((it) => done.has(it.id)).length;
+    $('hub-progress').textContent = items.length ? `${n}/${items.length}` : 'empty';
+    $('hub-meter').style.width = items.length ? `${Math.round((n / items.length) * 100)}%` : '0';
+    $('hub-progress').classList.toggle('all', !!items.length && n === items.length);
+  }
+  function toggleCheck(id, on) {
+    const d = doneSet();
+    if (on) d.add(id); else d.delete(id);
+    writeJson(doneKey(), [...d]);
+    renderChecks();
+  }
+  function removeCheck(id) {
+    writeJson(CHECK_ITEMS_KEY, checkItems().filter((it) => it.id !== id));
+    renderChecks();
+  }
+  function addCheck(text) {
+    const t = text.replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!t) return;
+    writeJson(CHECK_ITEMS_KEY, [...checkItems(), { id: `c${Date.now().toString(36)}`, text: t }]);
+    renderChecks();
+  }
+
+  function greeting() {
+    const h = new Date().getHours();
+    return h < 5 ? 'Up late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  }
+  function renderHub() {
+    $('hub-hello').textContent = greeting();
+    $('hub-sub').textContent = new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+    renderGrid();
+    renderChecks();
+  }
+
+  $('hub-edit').addEventListener('click', () => setEditing(!hubEditing));
+  $('hub-add').addEventListener('submit', (e) => { e.preventDefault(); saveShortcut(); });
+  $('hub-add-cancel').addEventListener('click', closeAddForm);
+  $('hub-add').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeAddForm(); } });
+  $('hub-note').addEventListener('submit', (e) => { e.preventDefault(); submitNote(); });
+  $('hub-note-input').addEventListener('input', showKind);
+  $('hub-check-add').addEventListener('submit', (e) => {
+    e.preventDefault();
+    addCheck($('hub-check-input').value);
+    $('hub-check-input').value = '';
+  });
+  pruneCheckDays();
 
   // ── Go ─────────────────────────────────────────────────────────
   setApp('home');

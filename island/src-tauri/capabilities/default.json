@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The island window only calls Lumi Island's own fit command.",
+  "description": "The island window calls only Lumi Island's own commands (fit, island_token, island_ws_url, set_capture_shortcut, read_capture_file, open_external_url), which main.rs registers; no plugin permissions beyond core.",
   "windows": ["island"],
   "permissions": ["core:default"]
 }
