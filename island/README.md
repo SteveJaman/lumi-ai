@@ -3,7 +3,7 @@
 A small island that hangs from the top of the screen. It's hidden as a thin
 sliver, peeks out when you hover, and opens when you click. Lumi's face is
 its icon: a looping video cropped from her art, ringed by her live status
-(here, thinking, speaking, gaming, offline). Open it for four mini-apps, so
+(here, thinking, speaking, gaming, offline). Open it for five mini-apps, so
 you don't have to switch to the web client:
 
 - **Home:** the time and day, the weather, your next event, today's
@@ -11,6 +11,12 @@ you don't have to switch to the web client:
   chosen in the web client (**Settings, then General, then Display**), and
   changing it there updates an open island at once. Calendar times follow the
   same choice. The weather needs a city set in that same card; see below.
+- **Hub:** your launcher. Shortcut tiles (Amazon, Canvas, Google, YouTube to
+  start; **+** adds one, **Edit** removes) open in your default browser, never
+  inside the island. They're kept on Lumi's PC in `data/shortcuts.json`. The
+  note box saves an idea, homework or grocery item to Lumi's memory (start
+  with `hw:`, `buy:` or `idea:` to pick the list), and **Today** is a
+  checklist kept on this island whose ticks reset each day.
 - **Chat:** talk to Lumi. Her replies appear the moment they exist, and
   while she thinks you see typing dots. Messages you send are host messages,
   the same as typing in the web client on this PC.
@@ -80,6 +86,12 @@ while the island is open on Home. The video also pauses in Gaming Mode.
    `src-tauri/target/release/lumi-island.exe`.
 
 Stop Lumi and the island before building again: Windows locks a running exe.
+
+After that, Lumi keeps it current on its own. The page is baked into the exe,
+so when the island's source (`src/`, `src-tauri/src/`, its config) is newer
+than the exe, Lumi rebuilds it in the background at boot (the island is off
+for that minute or two) and then starts it. Set `LUMI_ISLAND_AUTOBUILD=0` to
+build by hand instead; Settings then says the island is out of date.
 
 ## Installers for another device
 

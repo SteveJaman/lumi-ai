@@ -33,6 +33,7 @@ from modules.tunnel import start_quick_tunnel
 from modules.game_manager import GameManager
 from modules import gaming_mode
 from modules.island_manager import IslandManager
+from modules import shortcuts_manager
 from modules.workspace_hub import WorkspaceHub
 
 from sdk.server import SDKServer
@@ -283,7 +284,8 @@ def main():
 
     signals.log_hub.emit("system", f"Lumi booting — audio mode = {selected_audio_mode}")
     _global_games.resume_if_enabled()
-    IslandManager(signals).resume_if_enabled()
+    IslandManager(signals).start_at_boot()   # rebuilds a stale island in the background, then starts it
+    shortcuts_manager.list_shortcuts()       # Island Hub: seeds data/shortcuts.json on first run
     WorkspaceHub(signals)       # Google Calendar / Gmail / KSU mail; idle until you connect
 
     try:
