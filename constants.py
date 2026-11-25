@@ -119,7 +119,7 @@ CLAUDE_CODE_ENABLED = True
 # data/hybrid_mode.json and wins over this default on boot. The cloud model needs its
 # provider's API key (Settings -> Models -> Providers); without one, Lumi stays local.
 HYBRID_MODE = False
-CLOUD_ESCALATION_MODEL = "anthropic:claude-opus-5-5"
+CLOUD_ESCALATION_MODEL = "anthropic:auto"     # Claude smart router; "anthropic:claude-opus-5-5" = always Opus
 
 # Claude smart router (modules/claude_router.py). call_claude() sorts each request into
 # haiku / sonnet / opus and sends it to the model below, so easy turns don't pay Opus
