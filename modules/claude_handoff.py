@@ -11,8 +11,15 @@ Decline, and the turn is answered locally as usual.
 
     offer_reason(tier, text) -> str | None   why to offer the handoff, or None
     looks_like_task(text) -> bool            coding / reasoning work, not chat
+    wants_edits(text) -> bool                the message asks for changes to files
+    modes_to_offer(text) -> [mode, ...]      edit first (then read-only) when it does
     build_task(text) -> str                  what Claude Code receives
-    format_reply(answer) -> str              what Lumi says back
+    format_reply(answer, mode) -> str        what Lumi shows in the chat
+    SPOKEN[mode]                             the one line she says out loud
+
+Approvals are approve / decline everywhere (web, island, terminal), so the edit
+option is a second prompt rather than a third button: a request for changes is
+offered with edits first; decline it and you're asked about read-only.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ from typing import Optional
 from modules import claude_code, claude_router, hybrid_mode
 
 MODE = "read_only"
+EDIT_MODE = "edit"
 MODEL = "opus"                     # Claude Code's own alias; claude_code.run falls back to its default
 MIN_TASK_CHARS = 25
 
@@ -31,6 +39,35 @@ _TASK_RE = re.compile(
     r"fix|test|regex|sql|query|api|endpoint|algorithm|complexity|architect(ure)?|design|schema|optimi[sz]e|"
     r"memory leak|race condition|deadlock|security|prove|proof|derive|analy[sz]e|explain why|step by step|"
     r"python|javascript|typescript|rust|java|c\+\+|c#|golang|repo|module|file|compile|build)\b", re.I)
+
+
+_EDIT_RE = re.compile(
+    r"\b(refactor|fix|change|implement|add|write|update|rename|remove|delete|edit|create|modify|rewrite|"
+    r"patch|apply|replace|move|convert|migrate|clean ?up)\b", re.I)
+
+# What Lumi says out loud after a handoff. The full answer (often long, with code)
+# stays in the chat: reading it all through the voice would take minutes and,
+# with Fish Audio, spend voice credit.
+SPOKEN = {
+    MODE: "I handed that to Claude Code. It's done, and the full answer is in the chat.",
+    EDIT_MODE: "I handed that to Claude Code and let it make the changes. The details are in the chat.",
+}
+
+_REDUNDANT_RE = re.compile(r"\.?\s*Hard tasks are offered to Claude Code instead\.?\s*$", re.I)
+
+
+def wants_edits(text: str) -> bool:
+    return bool(_EDIT_RE.search(text or ""))
+
+
+def modes_to_offer(text: str) -> list:
+    """Edit mode first for a request that changes things, then read-only."""
+    return [EDIT_MODE, MODE] if wants_edits(text) else [MODE]
+
+
+def clean_reason(reason: str) -> str:
+    """The reason without the "offered to Claude Code" tail (the prompt says that itself)."""
+    return _REDUNDANT_RE.sub("", str(reason or "")).strip().rstrip(".")
 
 
 def looks_like_task(text: str) -> bool:
@@ -47,7 +84,7 @@ def offer_reason(tier: Optional[str], text: str) -> Optional[str]:
     blocked = hybrid_mode.escalation_blocked(tier)
     if not blocked or not claude_code.available() or not looks_like_task(text):
         return None
-    return blocked
+    return clean_reason(blocked) or "the Claude API isn't available"
 
 
 def build_task(text: str) -> str:
@@ -59,9 +96,10 @@ def build_task(text: str) -> str:
     return t
 
 
-def format_reply(answer: str) -> str:
+def format_reply(answer: str, mode: str = MODE) -> str:
     answer = (answer or "").strip() or "(Claude Code finished without an answer.)"
-    return f"I handed that one to Claude Code. Here's what it came back with:\n\n{answer}"
+    how = "with permission to edit files" if mode == EDIT_MODE else "read-only"
+    return f"I handed that one to Claude Code ({how}). Here's what it came back with:\n\n{answer}"
 
 
 def api_reason() -> str:

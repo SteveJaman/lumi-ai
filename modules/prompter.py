@@ -1924,27 +1924,42 @@ class Prompter:
 
     async def _offer_claude_code(self, text, reason, tier):
         """A hard task the Claude API can't take (modules/claude_handoff.py): ask
-        whether Claude Code (your Claude login, read-only) should do it. Returns
-        Lumi's reply, or None to answer locally (declined, or Claude Code failed)."""
+        whether Claude Code (your Claude login) should do it. A request for changes
+        is offered with edits first, then read-only if you decline that. Returns
+        Lumi's reply, or None to answer locally (all declined, or Claude Code failed).
+        On success the voice says one line (self._spoken_override), not the answer."""
         loop = asyncio.get_running_loop()
         task = claude_handoff.build_task(text)
-        preview = dict(claude_code.preview(task, claude_handoff.MODE, claude_handoff.MODEL),
-                       why=(f"This looks like a hard task, and the Claude API can't take it ({reason}). "
-                            "Approve to hand it to Claude Code on your Claude login; decline and Lumi "
-                            "answers with her local model."))
+        why_api = reason[:1].lower() + reason[1:]
         print(f"{GRAY}[Router] Hard task, Claude API unavailable ({reason}). "
               f"Asking to hand it to Claude Code...{RESET}")
-        _show_handoff(tier, f"asking you: {reason}")
-        if not await self._confirm(claude_code.TOOL_NAME, preview, agent="office"):
+        mode = None
+        for i, candidate in enumerate(claude_handoff.modes_to_offer(text)):
+            edit = candidate == claude_handoff.EDIT_MODE
+            if i == 0:
+                why = (f"This looks like a hard task, and the Claude API can't take it: {why_api}. "
+                       + ("Approve to let Claude Code (your Claude login) work on it and edit files. "
+                          "Lumi's own code, settings and private data stay off limits. Decline to be "
+                          "asked about read-only instead." if edit else
+                          "Approve to hand it to Claude Code (your Claude login, read-only). "
+                          "Decline and Lumi answers with her local model."))
+            else:
+                why = ("Read-only instead? Claude Code can investigate and propose the change, "
+                       "without editing anything. Decline and Lumi answers with her local model.")
+            preview = dict(claude_code.preview(task, candidate, claude_handoff.MODEL), why=why)
+            _show_handoff(tier, f"asking you ({'edits' if edit else 'read-only'}): {reason}")
+            if await self._confirm(claude_code.TOOL_NAME, preview, agent="office"):
+                mode = candidate
+                break
+        if mode is None:
             print(f"{GRAY}[Router] Handoff declined; answering locally.{RESET}")
             _show_handoff(tier, "declined: answering locally", where="local")
             return None
-        print(f"{GRAY}[Claude Code is working… this can take a few minutes]{RESET}")
+        print(f"{GRAY}[Claude Code ({mode}) is working… this can take a few minutes]{RESET}")
         agent_tracker.update("office", "executing", task=f"Claude Code: {task}", progress=50,
                              model=tier or "opus", model_name="Claude Code")
         try:
-            out = await loop.run_in_executor(None, claude_code.run, task, claude_handoff.MODE,
-                                             claude_handoff.MODEL)
+            out = await loop.run_in_executor(None, claude_code.run, task, mode, claude_handoff.MODEL)
         except claude_code.ClaudeCodeError as e:
             agent_tracker.update("office", "error", task=str(e))
             print(f"{GRAY}[Router] Claude Code couldn't take it ({e}); answering locally.{RESET}")
@@ -1954,8 +1969,9 @@ class Prompter:
             agent_tracker.update("office", "error", task=f"{type(e).__name__}: {e}")
             raise
         agent_tracker.settle("office")
-        _show_handoff(tier, "Claude Code answered")
-        return claude_handoff.format_reply(out)
+        _show_handoff(tier, f"Claude Code answered ({mode})")
+        self._spoken_override = claude_handoff.SPOKEN[mode]
+        return claude_handoff.format_reply(out, mode)
 
     async def _finish_speculative(self, run, final_text):
         """An accepted speculative turn: keep what it wrote and continue from
@@ -4242,6 +4258,7 @@ class Prompter:
                     print(f"\n{BOLD}{MAGENTA}{AI_NAME}:{RESET} {mode_tag} ", end="", flush=True)
 
                     self._live_stream = None
+                    self._spoken_override = None      # a Claude Code handoff sets a short spoken line
                     try:
                         if use_agent and autonomous_goal:
                             raw_reply = await self.run_autonomous_task(autonomous_goal)
@@ -4257,7 +4274,9 @@ class Prompter:
                     agent_tracker.settle("main")      # idle again, unless the turn ended in an error
 
                     display_reply = _clean_reply(raw_reply)
-                    if not use_agent:
+                    spoken_override = getattr(self, "_spoken_override", None)
+                    if not use_agent and not spoken_override:
+                        # (A Claude Code answer keeps its lists and headings.)
                         display_reply = _strip_list_formatting(display_reply)
                     # Everything below (TTS, SDK, Discord, history) uses the
                     # cleaned text; the raw reply had invented tags in it.
@@ -4270,7 +4289,8 @@ class Prompter:
 
                     stream = self._live_stream
                     if stream is None:
-                        sentences = SENTENCE_SPLIT_PATTERN.split(raw_reply)
+                        # A handoff's answer stays in the chat; the voice says one line.
+                        sentences = SENTENCE_SPLIT_PATTERN.split(spoken_override or raw_reply)
                         for sentence in sentences:
                             self._push_to_tts(sentence)
                     elif stream.entry is not None:

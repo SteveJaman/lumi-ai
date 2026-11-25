@@ -133,7 +133,7 @@ def fake_prompter(monkeypatch, approve, handoff="No API key for anthropic"):
 
     async def confirm(name, preview, timeout=None, agent=None):
         seen["confirm"].append((name, preview, agent))
-        return approve
+        return approve.pop(0) if isinstance(approve, list) else approve
 
     async def local_turn(req, text, tier, recover=True):
         seen["local"].append(req)
@@ -157,20 +157,61 @@ def fake_prompter(monkeypatch, approve, handoff="No API key for anthropic"):
     return p, seen
 
 
-def test_an_approved_handoff_answers_with_claude_code(monkeypatch):
+EXPLAIN = "Explain why this regex backtracks so badly on long input: ^(a+)+$"
+
+
+def test_a_change_request_is_offered_with_edits_first(monkeypatch):
     p, seen = fake_prompter(monkeypatch, approve=True)
-    reply = asyncio.run(p.run_conversational(HARD))
-    assert "Claude Code" in reply and "unbounded retry list" in reply
+    reply = asyncio.run(p.run_conversational(HARD))                 # "Refactor …": asks for changes
+    assert "Claude Code (with permission to edit files)" in reply and "unbounded retry list" in reply
     name, preview, agent = seen["confirm"][0]
-    assert name == claude_code.TOOL_NAME and agent == "office"
-    assert preview["task"] == HARD and preview["mode"] == "read_only" and "No API key" in preview["why"]
-    assert seen["cc"] == [(HARD, "read_only", "opus")] and seen["local"] == []
+    assert name == claude_code.TOOL_NAME and agent == "office" and len(seen["confirm"]) == 1
+    assert preview["task"] == HARD and preview["mode"] == "edit" and "edit files" in preview["why"]
+    assert "can't take it: no API key for anthropic." in preview["why"]
+    assert seen["cc"] == [(HARD, "edit", "opus")] and seen["local"] == []
+    assert p._spoken_override == claude_handoff.SPOKEN["edit"]      # the voice says one line
+
+
+def test_declining_edits_then_read_only_is_offered(monkeypatch):
+    p, seen = fake_prompter(monkeypatch, approve=[False, True])
+    reply = asyncio.run(p.run_conversational(HARD))
+    assert [c[1]["mode"] for c in seen["confirm"]] == ["edit", "read_only"]
+    assert seen["confirm"][1][1]["why"].startswith("Read-only instead?")
+    assert seen["cc"] == [(HARD, "read_only", "opus")] and "(read-only)" in reply
+    assert p._spoken_override == claude_handoff.SPOKEN["read_only"]
+
+
+def test_a_question_is_only_offered_read_only(monkeypatch):
+    p, seen = fake_prompter(monkeypatch, approve=True)
+    asyncio.run(p.run_conversational(EXPLAIN))
+    assert [c[1]["mode"] for c in seen["confirm"]] == ["read_only"]
+    assert seen["cc"][0][1] == "read_only"
 
 
 def test_a_declined_handoff_answers_locally(monkeypatch):
     p, seen = fake_prompter(monkeypatch, approve=False)
     assert asyncio.run(p.run_conversational(HARD)) == "local reply"
+    assert len(seen["confirm"]) == 2                                 # edits, then read-only
     assert seen["cc"] == [] and len(seen["local"]) == 1
+    assert getattr(p, "_spoken_override", None) is None             # a local reply is spoken in full
+
+
+@pytest.mark.parametrize("text,edits", [
+    (HARD, True), ("please fix the bug in parser.py where dates break", True),
+    (EXPLAIN, False), ("Analyze the time complexity of my merge sort", False),
+])
+def test_wants_edits(text, edits):
+    assert claude_handoff.wants_edits(text) is edits
+    assert claude_handoff.modes_to_offer(text) == (["edit", "read_only"] if edits else ["read_only"])
+
+
+def test_the_reason_drops_the_redundant_tail(monkeypatch):
+    assert claude_handoff.clean_reason(
+        "Your Anthropic API account has no credit. Hard tasks are offered to Claude Code instead.") \
+        == "Your Anthropic API account has no credit"
+    with_key(monkeypatch)
+    cr.mark_account_error("credit balance is too low")
+    assert claude_handoff.offer_reason("opus", HARD) == "Your Anthropic API account has no credit"
 
 
 def test_a_failed_claude_code_run_falls_back_to_local(monkeypatch):
@@ -207,5 +248,6 @@ def test_the_first_refusal_mid_turn_offers_the_handoff_then_goes_local(monkeypat
         raise RuntimeError("Claude API unavailable: Your Anthropic API account has no credit (credit balance).")
     monkeypatch.setattr(pr, "chat_sync", refused)
     assert asyncio.run(p.run_conversational(HARD)) == "local reply"
-    assert len(seen["confirm"]) == 1 and "no credit" in seen["confirm"][0][1]["why"]
+    assert len(seen["confirm"]) == 2 and "no credit" in seen["confirm"][0][1]["why"]
+    assert "Hard tasks are offered" not in seen["confirm"][0][1]["why"]
     assert seen["local"][0]["forced_local"] is True             # the retry was forced local
