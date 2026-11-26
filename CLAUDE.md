@@ -86,13 +86,15 @@ Local-model compensation: qwen2.5-coder writes tool calls as JSON text, not stru
 `tool_calls`. Both the main loop and subagents run `_recover_text_tool_calls`
 (prompter.py) on text-only replies before treating them as text.
 
-Open tasks persist across runs: a new request is added as a task, but an
-`in_progress` task from an earlier (crashed or stopped) run is resumed first.
-"continue" adds nothing and just resumes.
+Open tasks persist across runs, but a new request comes first: it is added as a task
+and every task still open from earlier runs is set to `parked`, so a stalled
+"resume my spotify music" can't hijack "find a restaurant". Parked tasks aren't picked
+by `task_next` and don't keep a run going. "continue" adds nothing: it un-parks them
+(back to `pending`) and resumes.
 
 ### Change 1 — Persistent task DAG (`modules/harness/tasks.py`)
 - Store: `data/tasks/lumi_tasks.json`, atomic writes (temp file + `os.replace`) under a lock.
-- Task: `{id, description, status: pending|in_progress|done|failed|blocked,
+- Task: `{id, description, status: pending|in_progress|done|failed|blocked|parked,
   depends_on: [ids], acceptance_criteria, result, attempts, last_error}`.
 - Tools: `task_list`, `task_add`, `task_next`, `task_complete(id, result)`, `task_fail(id, reason)`.
 - `task_next` returns the in-progress task if there is one (resume), else the first
@@ -120,7 +122,9 @@ Open tasks persist across runs: a new request is added as a task, but an
      real work tool (not a task tool), the re-prompt is `TOOL_THEN_TEXT_PROMPT`, a system
      note: "Tool executed. If the task is done, you MUST call `task_complete`…".
      With no task in progress, a text turn ends the run → `turn_complete`.
-  c. No mutating tool call in 5 consecutive cycles → `stagnant`.
+  c. No progress in 5 consecutive cycles → `stagnant`. Progress is a mutating tool, or any
+     other tool call that succeeded and isn't just looking (`spotify_play`,
+     `click_button`…; reads, searches and "now playing" don't count; `is_progress`).
   d. `max_safety_steps = 200` → `safety_cap`.
   e. Wall-clock budget (default 2 h) → `time_budget`.
 - Every termination is logged (session id, reason, steps, duration) to `data/tasks/sessions.log`.

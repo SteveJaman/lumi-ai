@@ -139,3 +139,18 @@ def test_plain_chat_gets_no_note_either_way():
 def test_spoken_messages_from_the_mic_count_as_the_host():
     src = open(os.path.join(os.path.dirname(gm.__file__), "mic_input.py"), encoding="utf-8").read()
     assert 'add_message("user", cleaned_text, from_host=True)' in src
+
+
+@pytest.mark.parametrize("text", [
+    "Lumi can you go play my liked song please",      # the field report: went to Minecraft
+    "Lumi go play some music", "Lumi get me a song on spotify", "Lumi go play my liked songs",
+    "Lumi find my playlist", "Lumi put on some music"])
+def test_music_requests_are_never_minecraft_orders(text):
+    assert extract_order(text) is None
+
+
+@pytest.mark.parametrize("text, order", [
+    ("Lumi go mine some iron", "go mine some iron"), ("Lumi follow me", "follow me"),
+    ("Lumi find some diamonds", "find some diamonds")])
+def test_game_orders_still_work(text, order):
+    assert extract_order(text) == order

@@ -57,6 +57,11 @@ _VERBS = {
 # Stance words are everyday speech too. Addressed to her they still only
 # count on their own or as a game stance, so "Lumi, stop it lol" or "Lumi,
 # wait, what?" stays conversation.
+# Everyday requests that start with an order verb ("go play ...", "get me a song")
+# but are about music, video or the PC, not the game.
+_NOT_GAME = re.compile(
+    r"^go\s+play\b|\b(?:spotify|songs?|music|playlists?|liked|album|tracks?|podcasts?|youtube|video|"
+    r"netflix|movie|tune|radio|volume|shuffle|discord|email|calendar|browser|website)\b", re.I)
 _STANCE = {"stop", "stay", "wait", "hold", "halt", "freeze"}
 _STANCE_OK = re.compile(
     r"^(?:stop|stay|wait|hold|halt|freeze)$"
@@ -111,6 +116,8 @@ def extract_order(text: str) -> Optional[str]:
         return None
     first = t.split()[0].lower().strip(",")
     if first not in _VERBS:
+        return None
+    if _NOT_GAME.search(t):              # "go play my liked songs" is Spotify, not Minecraft
         return None
     if first in _STANCE and not _STANCE_OK.match(t):
         return None

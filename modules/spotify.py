@@ -680,12 +680,16 @@ def control(action: str, value: Any = None) -> str:
     if action not in ACTIONS:
         raise ValueError(f"Unknown action {action!r}. Use one of: {', '.join(ACTIONS)}.")
     q = lambda dev: ({"device_id": dev} if dev else None)
-    if action == "play":
-        _with_device(lambda dev: _api("PUT", "/me/player/play", params=q(dev)))
-        return "Resumed playback."
-    if action == "pause":
-        _with_device(lambda dev: _api("PUT", "/me/player/pause", params=q(dev)))
-        return "Paused."
+    if action in ("play", "pause"):
+        try:
+            _with_device(lambda dev: _api("PUT", f"/me/player/{action}", params=q(dev)))
+        except ApiError as e:
+            # Spotify answers 403 "Restriction violated" to play while already playing
+            # (or pause while paused): that's already what was asked for.
+            if e.status == 403 and _already(action):
+                return "Already playing." if action == "play" else "Already paused."
+            raise
+        return "Resumed playback." if action == "play" else "Paused."
     if action == "next":
         _with_device(lambda dev: _api("POST", "/me/player/next", params=q(dev)))
         return "Skipped to the next track."
@@ -702,6 +706,15 @@ def control(action: str, value: Any = None) -> str:
     on = str(value).lower() in ("1", "true", "on", "yes") if value is not None else True
     _with_device(lambda dev: _api("PUT", "/me/player/shuffle", params={"state": str(on).lower(), **(q(dev) or {})}))
     return f"Shuffle {'on' if on else 'off'}."
+
+
+def _already(action: str) -> bool:
+    """Whether the player is already in the state play/pause asks for."""
+    try:
+        np = now_playing() or {}
+    except SpotifyError:
+        return False
+    return bool(np.get("title")) and bool(np.get("playing")) == (action == "play")
 
 
 KINDS = ("track", "artist", "album", "playlist")

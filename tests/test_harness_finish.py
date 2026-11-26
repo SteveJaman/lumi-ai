@@ -5,6 +5,7 @@ one re-prompt, that the sentence belongs in task_complete's result, which is the
 reply the user sees. Scripted fake models; no Ollama."""
 
 import asyncio
+import os
 
 from modules.harness import config
 from modules.harness.loop import AgentHarness, CONTINUE_PROMPT, TOOL_THEN_TEXT_PROMPT
@@ -171,10 +172,11 @@ def test_her_own_stop_notes_are_never_her_finishing_reply(tmp_path):
 
 
 def test_switching_tasks_clears_the_old_tasks_messages(tmp_path):
-    """The restaurant task must not see the Spotify task's chatter."""
+    """Two tasks in one run (she split the request): the second can't see the
+    first one's Spotify chatter."""
     store = TaskStore(str(tmp_path / "tasks.json"))
-    store.add("play my Liked Songs", acceptance_criteria="music plays")
     s = Script([call("task_next"), call("spotify_play", query="Liked Songs"),
+                call("task_add", description="find chinese food in Duluth"),
                 call("task_complete", id=1, result="Playing."),
                 call("task_next"), call("web_search", query="chinese food duluth"),
                 call("task_complete", id=2, result="Here are three places.")])
@@ -183,16 +185,66 @@ def test_switching_tasks_clears_the_old_tasks_messages(tmp_path):
         return "ok"
     h = AgentHarness(s, dispatch, tools=[], store=store, tasks_dir=str(tmp_path))
     history = [{"role": "system", "content": "SYS"},
-               {"role": "user", "content": "play my Liked Songs"},
                {"role": "assistant", "content": "Alright, Liked Songs are on!"},
-               {"role": "user", "content": "find chinese food in Duluth"}]
-    res = asyncio.run(h.run("find chinese food in Duluth", history))
+               {"role": "user", "content": "play my Liked Songs, then find chinese food in Duluth"}]
+    res = asyncio.run(h.run("play my Liked Songs, then find chinese food in Duluth", history))
     assert res.termination_reason == "task_complete" and h.task_switches == 1
-    after = s.seen[4]                                          # the call right after the switch
+    after = s.seen[5]                                          # the call right after the switch
     text = " ".join(str(m.get("content")) for m in after[2:])             # after the system prompt + rules
     assert len(after) == 4 and "spotify" not in text.lower() and "Liked Songs" not in text
     assert after[0]["content"] == "SYS" and after[1]["content"].startswith("[LUMI.md RULES]")
     assert "[New task #2] find chinese food in Duluth" in after[2]["content"]
+
+
+def _stale_store(tmp_path):
+    """What the field log had: last night's requests still open."""
+    store = TaskStore(str(tmp_path / "tasks.json"))
+    store.add("find some good chinese restaurant in Duluth GA")
+    store.add("resume my spotify music")
+    store.next()                                               # #1 in progress, #2 pending
+    return store
+
+
+def test_a_new_request_parks_old_open_tasks_and_runs_first(tmp_path):
+    store = _stale_store(tmp_path)
+    s = Script([call("task_next"), call("spotify_play", query="Liked Songs"),
+                call("task_complete", id=3, result="Playing your Liked Songs.")])
+
+    async def dispatch(name, args):
+        return "ok"
+    h = AgentHarness(s, dispatch, tools=[], store=store, tasks_dir=str(tmp_path))
+    res = asyncio.run(h.run("Lumi can you go play my liked song please",
+                            [{"role": "system", "content": "SYS"},
+                             {"role": "user", "content": "Lumi can you go play my liked song please"}]))
+    assert res.termination_reason == "task_complete" and res.steps == 3      # straight to it, then stop
+    assert res.final_text == "Playing your Liked Songs."
+    status = {t["id"]: t["status"] for t in store.list()}
+    assert status == {1: "parked", 2: "parked", 3: "done"} and sorted(h.parked_ids) == [1, 2]
+    assert "Current task (in progress): #3" in s.seen[1][-1]["content"]       # never #1
+
+
+def test_continue_brings_parked_tasks_back(tmp_path):
+    store = _stale_store(tmp_path)
+    store.park_open()
+    assert not store.has_open() and store.has_parked()
+    s = Script([call("task_next"), call("task_complete", id=1, result="found 3"),
+                call("task_next"), call("task_complete", id=2, result="resumed")])
+
+    async def dispatch(name, args):
+        return "ok"
+    h = AgentHarness(s, dispatch, tools=[], store=store, tasks_dir=str(tmp_path))
+    res = asyncio.run(h.run("continue", [{"role": "system", "content": "SYS"}]))
+    assert sorted(h.resumed_ids) == [1, 2] and res.termination_reason == "task_complete"
+    assert {t["status"] for t in store.list()} == {"done"} and len(store.list()) == 2   # "continue" added nothing
+
+
+def test_parked_tasks_dont_count_as_open():
+    import tempfile
+    store = TaskStore(os.path.join(tempfile.mkdtemp(), "t.json"))
+    store.add("old")
+    assert store.park_open() == [1]
+    assert not store.has_open() and store.peek_next() is None and store.next() is None
+    assert store.unpark_all() == [1] and store.peek_next()["id"] == 1
 
 
 def test_the_first_task_keeps_its_chat_context(tmp_path):
@@ -204,3 +256,28 @@ def test_the_first_task_keeps_its_chat_context(tmp_path):
                                         {"role": "user", "content": "play it again"}]))
     assert h.task_switches == 0
     assert any("Idol by YOASOBI" in str(m.get("content")) for m in s.seen[2])
+
+
+def test_a_successful_action_counts_as_progress(tmp_path):
+    """Field log: spotify_play worked, then she checked what was playing, and the
+    run ended 'stagnant' because only file/command tools counted as progress."""
+    s = Script([call("task_next"), call("spotify_play", query="Liked Songs")]
+               + [call("spotify_now_playing")] * 4 + [call("task_complete", id=1, result="Playing.")])
+    res = go(harness(tmp_path, s, []))
+    assert res.termination_reason == "task_complete"
+
+
+def test_only_looking_is_still_stagnant(tmp_path):
+    s = Script([call("task_next")] + [call("spotify_now_playing")] * 6)
+    assert go(harness(tmp_path, s, [])).termination_reason == "stagnant"
+
+
+def test_what_counts_as_progress():
+    from modules.harness.loop import is_progress
+    mutating = {"write_file", "run_command"}
+    assert is_progress("spotify_play", False, mutating) and is_progress("click_button", False, mutating)
+    assert is_progress("write_file", True, mutating)                 # mutating tools, as before
+    for looking in ("spotify_now_playing", "web_search", "browse_url", "read_file", "media_playlist_tracks",
+                    "get_active_window_info", "task_next", "task_list"):
+        assert not is_progress(looking, False, mutating), looking
+    assert not is_progress("spotify_play", True, mutating)           # a failed action isn't progress
