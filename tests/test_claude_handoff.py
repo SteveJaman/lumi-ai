@@ -165,7 +165,7 @@ def test_a_change_request_is_offered_with_edits_first(monkeypatch):
     reply = asyncio.run(p.run_conversational(HARD))                 # "Refactor …": asks for changes
     assert "Claude Code (with permission to edit files)" in reply and "unbounded retry list" in reply
     name, preview, agent = seen["confirm"][0]
-    assert name == claude_code.TOOL_NAME and agent == "office" and len(seen["confirm"]) == 1
+    assert name == claude_code.TOOL_NAME and agent == "build" and len(seen["confirm"]) == 1
     assert preview["task"] == HARD and preview["mode"] == "edit" and "edit files" in preview["why"]
     assert "can't take it: no API key for anthropic." in preview["why"]
     assert seen["cc"] == [(HARD, "edit", "opus")] and seen["local"] == []

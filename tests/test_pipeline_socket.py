@@ -56,12 +56,12 @@ async def closed_with(ws):
 
 def test_a_new_island_gets_every_agents_state():
     async def t():
-        agent_tracker.update("office", "executing", task="Claude Code: tests", progress=50, model="opus")
+        agent_tracker.update("build", "executing", task="Claude Code: tests", progress=50, model="opus")
         async with Env() as e:
             ws = await e.connect()
             agents = (await recv(ws, "agent_update"))["agents"]
-            assert set(agents) == {"main", "minecraft", "office", "system"}
-            assert agents["office"]["status"] == "executing" and agents["office"]["model"] == "opus"
+            assert set(agents) == {"lead", "research", "build", "operate"}
+            assert agents["build"]["status"] == "executing" and agents["build"]["model"] == "opus"
     run(t())
 
 
@@ -71,8 +71,8 @@ def test_changes_from_any_thread_are_pushed():
             ws = await e.connect()
             await recv(ws, "agent_update")
             await asyncio.get_running_loop().run_in_executor(
-                None, lambda: agent_tracker.update("main", "thinking", task="Generating response", model="haiku"))
-            main = (await recv(ws, "agent_update"))["agents"]["main"]
+                None, lambda: agent_tracker.update("lead", "thinking", task="Generating response", model="haiku"))
+            main = (await recv(ws, "agent_update"))["agents"]["lead"]
             assert main["status"] == "thinking" and main["model"] == "haiku"
     run(t())
 
@@ -93,15 +93,15 @@ def test_an_approval_marks_its_agent_waiting_then_restores_it():
         async with Env() as e:
             ws = await e.connect()
             await recv(ws, "hello_ok")                 # connected before asking, or it goes to the terminal
-            agent_tracker.update("office", "executing", task="Claude Code: refactor", progress=50)
-            ask = asyncio.ensure_future(e.server.request_approval("ask_claude_code", "{}", timeout=5, agent="office"))
+            agent_tracker.update("build", "executing", task="Claude Code: refactor", progress=50)
+            ask = asyncio.ensure_future(e.server.request_approval("ask_claude_code", "{}", timeout=5, agent="build"))
             req = await recv(ws, "approval_request")
-            assert req["agent"] == "office"
-            office = agent_tracker.get("office")
+            assert req["agent"] == "build"
+            office = agent_tracker.get("build")
             assert office["status"] == "waiting_approval" and "ask_claude_code" in office["task"]
             await ws.send_json({"type": "approval_response", "id": req["id"], "decision": "approve"})
             assert await ask is True
-            office = agent_tracker.get("office")
+            office = agent_tracker.get("build")
             assert office["status"] == "executing" and office["task"] == "Claude Code: refactor"
     run(t())
 
@@ -113,10 +113,10 @@ def test_an_unknown_agent_is_treated_as_main():
             await recv(ws, "hello_ok")
             ask = asyncio.ensure_future(e.server.request_approval("write_file", "{}", timeout=5, agent="boss"))
             req = await recv(ws, "approval_request")
-            assert req["agent"] == "main" and agent_tracker.get("main")["status"] == "waiting_approval"
+            assert req["agent"] == "lead" and agent_tracker.get("lead")["status"] == "waiting_approval"
             await ws.send_json({"type": "approval_response", "id": req["id"], "decision": "decline"})
             assert await ask is False
-            assert agent_tracker.get("main")["status"] == "idle"
+            assert agent_tracker.get("lead")["status"] == "idle"
     run(t())
 
 
@@ -193,18 +193,29 @@ def track(text="", gone=False, game="MinecraftAgent"):
     from sdk.server import SDKServer
     client = types.SimpleNamespace(game_name=game)
     SDKServer._track_minecraft(SDKServer.__new__(SDKServer), client, text, gone)
-    return agent_tracker.get("minecraft")
+    return agent_tracker.get("operate")
 
 
-def test_minecraft_card_follows_the_currently_line():
+def test_minecraft_shows_on_the_operate_card():
     mc = track("Health 20/20\nCurrently: mining iron at y=12\nNearby: zombie")
-    assert mc["status"] == "executing" and mc["task"] == "mining iron at y=12" and mc["model_name"]
+    assert mc["status"] == "executing" and mc["task"] == "Minecraft: mining iron at y=12" and mc["model_name"]
     assert track("Currently: idle, waiting for orders")["status"] == "idle"
     assert track("no status line here")["status"] == "idle"
     mc = track(gone=True)
-    assert mc["status"] == "idle" and mc["task"] == "Not running"
+    assert mc["status"] == "idle" and mc["task"] == "Minecraft: not running"
 
 
-def test_other_games_dont_touch_the_minecraft_card():
+def test_minecraft_going_idle_doesnt_clear_other_operate_work():
+    agent_tracker.update("operate", "executing", task="Triaging your inbox", progress=50)
+    try:
+        card = track("Currently: idle, waiting for orders")
+        assert card["status"] == "executing" and card["task"] == "Triaging your inbox"
+        assert track(gone=True)["task"] == "Triaging your inbox"
+    finally:
+        agent_tracker.update("operate", "idle")
+
+
+def test_other_games_dont_touch_the_operate_card():
+    agent_tracker.update("operate", "idle")
     track("Currently: mining", game="SomethingElse")
-    assert agent_tracker.get("minecraft")["status"] == "idle" and agent_tracker.get("minecraft")["task"] == ""
+    assert agent_tracker.get("operate")["status"] == "idle" and agent_tracker.get("operate")["task"] == ""

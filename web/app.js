@@ -5760,7 +5760,13 @@ function renderPipeline(main) {
 function mountPixelPipeline() {
   if (!window.LumiPipeline || typeof io === 'undefined') return;
   const STATUS = { idle: 'Idle', thinking: 'Thinking', executing: 'Executing', waiting_approval: 'Needs you', error: 'Error' };
-  const NAMES = { main: 'Main', minecraft: 'Minecraft', office: 'Office', system: 'System' };
+  const NAMES = { lead: 'Lead', research: 'Research', build: 'Build', operate: 'Operate' };
+  const ROLES = {                              // modules/agent_tracker.py: who does what
+    lead: 'Talks to you, plans and delegates',
+    research: 'Searches the web, reads files, recalls memories',
+    build: 'Writes files, runs commands, hands code to Claude Code',
+    operate: 'Uses your apps and PC: email, calendar, Spotify, games',
+  };
   let agents = {};
   let approvals = [];
   const sock = lumiUi.socket();                 // shared: visiting this page never reconnects
@@ -5788,6 +5794,7 @@ function mountPixelPipeline() {
         const a = view[id];
         const li = document.createElement('li');
         li.className = `pt s-${STATUS[a.status] ? a.status : 'idle'}`;
+        li.title = `${name}: ${ROLES[id]}`;
         for (const [cls, text] of [['pt-name', name], ['pt-status', STATUS[a.status] || 'Idle'], ['pt-task', a.task || a.model_name || '']]) {
           const span = document.createElement('span'); span.className = cls; span.textContent = text; li.appendChild(span);
         }

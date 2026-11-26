@@ -742,7 +742,7 @@ def describe(np: Optional[Dict[str, Any]]) -> str:
 
 # ─── Lumi's tools ────────────────────────────────────────────────────
 
-AGENT = "main"
+AGENT = "operate"
 CONFIRM_TOOLS: set = set()
 TASKS = {"spotify_now_playing": "Checking Spotify", "spotify_control": "Controlling Spotify",
          "spotify_play": "Playing music on Spotify", "media_seek": "Seeking in the song",

@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(ROOT, "web", "pixel-office")
 ISLAND = os.path.join(ROOT, "island", "src", "pixel-office")
-AGENTS = ("main", "minecraft", "office", "system")
+AGENTS = ("lead", "research", "build", "operate")
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 CW, CH = 40, 56
 
@@ -147,7 +147,7 @@ def test_the_slicer_keeps_her_white_jacket_and_finds_a_rough_grid():
 
 def test_the_prompts_describe_her():
     import generate_sprites as gs
-    p = gs.prompt_for("main")
+    p = gs.prompt_for("lead")
     for words in ("split silver and teal hair", "white cat ears", "cyan halo", "white jacket, mint tie",
                   "3 rows (facing down, up, and right)", "4 columns", "Solid white background"):
         assert words in p
@@ -178,7 +178,7 @@ def test_credits_ship_with_the_art():
 
 # ── Lumi's sprite manifest and the ambient layer ──────────────────
 
-def test_the_four_agents_are_main_minecraft_office_system(meta):
+def test_the_four_agents_are_lead_research_build_operate(meta):
     assert set(meta["agents"]) == set(AGENTS)
     for d in (WEB, ISLAND):
         assert not os.path.exists(os.path.join(d, "chars", "planner.png"))

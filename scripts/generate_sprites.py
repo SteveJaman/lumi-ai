@@ -53,7 +53,7 @@ RAW_DIR = os.path.join(ROOT, "assets", "sprites_raw")
 OUT_DIRS = [os.path.join(ROOT, "web", "pixel-office", "chars"),
             os.path.join(ROOT, "island", "src", "pixel-office", "chars")]
 
-AGENTS = ("main", "minecraft", "office", "system")
+AGENTS = ("lead", "research", "build", "operate")
 CELL_W, CELL_H = 40, 56          # same cell as scripts/lumi_pixel_art.py: her body ~one 32px room tile wide
 COLS, ROWS = 4, 3
 ROW_NAMES = ("down", "up", "right")
@@ -64,11 +64,11 @@ PROMPT = ("A high quality 32-bit pixel art sprite sheet of an anime girl with sp
           "The sprite sheet must be perfectly aligned on a grid, showing 3 rows (facing down, up, and right) "
           "and 4 columns (walking animation frames). Solid white background. Crisp black outlines. "
           "Chibi proportions: a big head with large shiny eyes and a small body, soft pastel shading.")
-LOOKS = {   # main: halo cyan, tie mint; the others swap her accent colour and add one prop
-    "main":      {"halo": "cyan", "tie": "mint", "extra": ""},
-    "minecraft": {"halo": "green", "tie": "green", "extra": ", and carries a small brown backpack"},
-    "office":    {"halo": "lavender", "tie": "purple", "extra": ", and wears thin round glasses"},
-    "system":    {"halo": "red", "tie": "red", "extra": ", with a mint hood on the jacket"},
+LOOKS = {   # lead: halo cyan, tie mint; the others swap her accent colour and add one prop
+    "lead":     {"halo": "cyan", "tie": "mint", "extra": ""},
+    "research": {"halo": "ice blue", "tie": "light blue", "extra": ", and wears thin round glasses"},
+    "build":    {"halo": "lavender", "tie": "purple", "extra": ", and wears small headphones"},
+    "operate":  {"halo": "red", "tie": "red", "extra": ", with a mint hood on the jacket"},
 }
 NEGATIVE = "blurry, 3d render, photo, text, watermark, labels, numbers, grid lines, multiple characters, cropped"
 

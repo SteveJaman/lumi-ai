@@ -27,7 +27,7 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIRS = [os.path.join(ROOT, "web", "pixel-office", "chars"),
             os.path.join(ROOT, "island", "src", "pixel-office", "chars")]
-AGENTS = ("main", "minecraft", "office", "system")
+AGENTS = ("lead", "research", "build", "operate")
 GW, GH = 36, 50                 # the drawing
 CELL_W, CELL_H = 40, 56         # the sheet cell (drawing + outline + room for the bob)
 
@@ -54,9 +54,9 @@ BASE = {
     "i": "d8fdff",                                         # ice-crystal wing (with E and U)
 }
 TEAL = {"G": "6fd6c8", "g": "3f9f95", "Q": "7fe0d3", "H": "9cf0e6", "n": "a6eee6"}   # tie, lining, halo, soles
-ACCENTS = {a: TEAL for a in ("main", "minecraft", "office", "system")}   # her sheet: teal on every outfit
+ACCENTS = {a: TEAL for a in AGENTS}   # her sheet: teal on every outfit
 # Each agent wears one of the four outfits on her character sheet.
-OUTFIT = {"office": "ponytail", "main": "twintails", "minecraft": "shirt", "system": "hood"}
+OUTFIT = {"build": "ponytail", "lead": "twintails", "research": "shirt", "operate": "hood"}
 SHADE = {"S": "s", "s": "z", "T": "t", "t": "y", "w": "v", "v": "c", "K": "k", "F": "f", "L": "d",
          "l": "L", "G": "g", "Q": "G", "R": "r", "O": "Y", "Y": "Z", "b": "m", "x": "c"}
 HAIR = set("SszTtyOYZ")

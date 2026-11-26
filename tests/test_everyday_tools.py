@@ -53,10 +53,10 @@ def test_registry_wires_every_tool_with_its_card_and_gate():
                      "spotify_now_playing", "spotify_control", "spotify_play",
                      "media_seek", "media_shuffle", "media_repeat", "media_playlist_tracks"}
     agents = agent_tools.EVERYDAY_TOOL_AGENT
-    assert {n for n, a in agents.items() if a == "main"} == {
-        "summarize_meeting", "extract_action_items", "draft_follow_up_email",
-        "spotify_now_playing", "spotify_control", "spotify_play",
-        "media_seek", "media_shuffle", "media_repeat", "media_playlist_tracks"}
+    assert {n for n, a in agents.items() if a == "research"} == {
+        "summarize_meeting", "extract_action_items", "draft_follow_up_email", "find_local_deals"}
+    assert {n for n, a in agents.items() if a == "operate"} == names - {
+        "summarize_meeting", "extract_action_items", "draft_follow_up_email", "find_local_deals"}
     assert all(a in agent_tracker.AGENTS for a in agents.values())
     gated = {"auto_draft_reply", "reschedule_event", "add_to_wishlist", "click_button", "restart_crashed_game",
              "find_local_deals"}
@@ -371,7 +371,7 @@ def make_prompter(approve, hub=None):
     p.modules = []
     p.asked = []
 
-    async def confirm(name, arguments, timeout=120, agent="main"):
+    async def confirm(name, arguments, timeout=120, agent="lead"):
         p.asked.append((name, agent))
         return approve
     p._confirm = confirm
@@ -380,23 +380,24 @@ def make_prompter(approve, hub=None):
 
 def test_prompter_runs_system_tools_on_the_system_card(tmp_path, monkeypatch):
     seen = []
-    agent_tracker.register(cb := lambda snap: seen.append(snap["system"]["status"]))
+    agent_tracker.register(cb := lambda snap: seen.append(snap["operate"]["status"]))
     try:
         p = make_prompter(False, hub=Hub())
         out = run(p._dispatch_tool_call("reschedule_event", {"event_id": "abcde123", "new_time": "2026-11-18T10:00"}))
     finally:
         agent_tracker.unregister(cb)
-    assert "declined" in out and p.asked == [("reschedule_event", "system")]
-    assert "executing" in seen and agent_tracker.get("system")["status"] == "idle"
+    assert "declined" in out and p.asked == [("reschedule_event", "operate")]
+    assert "executing" in seen and agent_tracker.get("operate")["status"] == "idle"
 
 
-def test_prompter_runs_meeting_tools_on_main(monkeypatch):
+def test_prompter_runs_meeting_tools_on_research(monkeypatch):
     monkeypatch.setattr(meeting_agent, "ask_llm", fake_llm({"action_items": []}))
     p = make_prompter(True)
     out = run(p._dispatch_tool_call("extract_action_items", {"text": "nothing to do"}))
     assert json.loads(out) == {"action_items": []} and p.asked == []
-    assert agent_tracker.get("main")["status"] == "thinking"
-    agent_tracker.update("main", "idle")
+    assert agent_tracker.get("research")["status"] == "idle"          # the meeting work is done
+    assert agent_tracker.get("lead")["status"] == "thinking"           # and Lead reads the result
+    agent_tracker.update("lead", "idle")
 
 
 def test_tool_failures_put_the_system_card_in_error():

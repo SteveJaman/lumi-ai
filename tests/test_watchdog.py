@@ -50,8 +50,8 @@ def test_resource_event_text_matches_the_spec(monkeypatch):
     assert fired == [[], [], ["RAM"]]
     assert sig.history[-1]["content"] == "[WATCHDOG EVENT] High RAM usage detected. chrome.exe is using 41%."
     assert sig.history[-1]["source"] == "watchdog_event" and sig.new_message
-    assert agent_tracker.get("system")["visual_state"] == "alarm"
-    agent_tracker.update("system", "idle")
+    assert agent_tracker.get("operate")["visual_state"] == "alarm"
+    agent_tracker.update("operate", "idle")
 
 
 def test_crash_with_evidence_is_reported_and_offers_a_restart():
@@ -64,8 +64,8 @@ def test_crash_with_evidence_is_reported_and_offers_a_restart():
     assert ev["say"] == "[worried] Hey, your game just crashed. Want me to try and restart it?"
     assert ev["offer_restart"] is True
     assert wd.restart_preview()["arguments"] == ["-dx12"]
-    assert agent_tracker.get("system")["status"] == "error"
-    agent_tracker.update("system", "idle")
+    assert agent_tracker.get("operate")["status"] == "error"
+    agent_tracker.update("operate", "idle")
 
 
 def test_quitting_normally_is_not_a_crash():
@@ -80,7 +80,7 @@ def test_event_log_entry_counts_as_a_crash():
     wd.check_games()
     state["wins"] = []
     assert wd.check_games() == ["crash:Stellar Blade"]
-    agent_tracker.update("system", "idle")
+    agent_tracker.update("operate", "idle")
 
 
 def test_hang_is_reported_once_after_two_checks():
@@ -90,7 +90,7 @@ def test_hang_is_reported_once_after_two_checks():
     assert wd.check_games() == []                        # not repeated
     assert "stopped responding" in sig.history[-1]["say"]
     assert wd.restart_preview()["note"]                  # will close the frozen one first
-    agent_tracker.update("system", "idle")
+    agent_tracker.update("operate", "idle")
 
 
 def test_window_gone_but_process_alive_is_not_a_crash():
@@ -117,7 +117,7 @@ def make_prompter(sig, approve):
     p._push_to_tts = p.said.append
     p._extract_and_apply_emotions = lambda text: None
 
-    async def confirm(name, args, timeout=120, agent="main"):
+    async def confirm(name, args, timeout=120, agent="lead"):
         p.asked.append((name, agent, args))
         return approve
     p._confirm = confirm
@@ -140,14 +140,14 @@ def test_lumi_speaks_the_offer_and_yes_restarts_after_approval(monkeypatch, appr
 
     sig.history.append({"role": "user", "content": "yes"})
     assert asyncio.run(p._handle_watchdog_turn(sig.history[-1], "yes"))
-    assert p.asked[0][0] == "restart_crashed_game" and p.asked[0][1] == "system"
+    assert p.asked[0][0] == "restart_crashed_game" and p.asked[0][1] == "operate"
     if approve:
         assert launched == [([r"C:\Games\SB\SB.exe", "-dx12"], r"C:\Games\SB")]
         assert "Restarted Stellar Blade" in p.said[-1]
-        assert agent_tracker.get("system")["status"] == "idle"
+        assert agent_tracker.get("operate")["status"] == "idle"
     else:
         assert launched == [] and "leave it closed" in p.said[-1]
-    agent_tracker.update("system", "idle")
+    agent_tracker.update("operate", "idle")
 
 
 def test_yes_to_something_else_does_not_restart():
@@ -161,4 +161,4 @@ def test_yes_to_something_else_does_not_restart():
     sig.history.append({"role": "user", "content": "yes"})
     assert asyncio.run(p._handle_watchdog_turn(sig.history[-1], "yes")) is False
     assert p.asked == []
-    agent_tracker.update("system", "idle")
+    agent_tracker.update("operate", "idle")

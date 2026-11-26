@@ -2,15 +2,20 @@
 Agent tracker: what each of Lumi's agents is doing right now, for the Pipeline
 view on Lumi Island.
 
-    main       Lumi herself: chat and agent turns, research (web search,
-               browsing, product research) and meetings (summaries,
-               action items, follow-up drafts)
-    minecraft  her Minecraft "other half" (a separate process, via the SDK)
-    office     coding work handed to Claude Code
-    system     your computer and accounts: OS control (active window,
-               reading windows, clicking buttons), finance (expenses,
-               wishlist) and email & calendar (inbox triage, drafts,
-               free time, rescheduling, plus the workspace mail/calendar tools)
+A modern agent team, one character each:
+
+    lead       talks to you, plans and delegates: chat turns, agent-mode
+               planning, the task list, subagents
+    research   finds things out: web search, the browser, memory, the
+               library, reading files, deals, product research, meetings
+    build      makes and changes things: writing files, the terminal,
+               Claude Code, MCP tools, workflows
+    operate    uses your apps and PC: desktop windows, email & calendar,
+               finance, Spotify, VTube Studio, and Minecraft (her game
+               agent, a separate process via the SDK)
+
+Older names still work (LEGACY): main -> lead, office -> build,
+minecraft and system -> operate.
 
 Each agent has:
     status      idle | thinking | executing | waiting_approval | error
@@ -22,9 +27,9 @@ Each agent has:
 
 For the pixel-art Pipeline (web/pipeline.js, island/src/pipeline.js) each
 agent also reports where it works and how to draw it:
-    station       desk | window | bookshelf | server_rack (fixed per agent)
-    visual_state  derived from status, e.g. Main thinking -> typing,
-                  Minecraft executing -> swinging, System executing ->
+    station       desk | bookshelf | workbench | server_rack (fixed per agent)
+    visual_state  derived from status, e.g. Lead thinking -> typing,
+                  Research executing -> reading, Operate executing ->
                   blinking, any waiting_approval -> waving, any error -> alarm
 
 update(...) is thread-safe and calls every registered callback with a fresh
@@ -39,23 +44,47 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-AGENTS = ("main", "minecraft", "office", "system")
+AGENTS = ("lead", "research", "build", "operate")
+LEGACY = {"main": "lead", "office": "build", "minecraft": "operate", "system": "operate"}
 STATUSES = ("idle", "thinking", "executing", "waiting_approval", "error")
 MODELS = ("haiku", "sonnet", "opus")
 MAX_TASK_CHARS = 140
 
-STATIONS = {"main": "desk", "minecraft": "window", "office": "bookshelf", "system": "server_rack"}
+STATIONS = {"lead": "desk", "research": "bookshelf", "build": "workbench", "operate": "server_rack"}
 
 # status -> visual_state, per agent (what the pixel character is doing).
 _VISUALS = {
-    "main":      {"idle": "sitting",  "thinking": "typing",   "executing": "typing"},
-    "minecraft": {"idle": "standing", "thinking": "swinging", "executing": "swinging"},
-    "office":    {"idle": "sitting",  "thinking": "reading",  "executing": "reading"},
-    "system":    {"idle": "standing", "thinking": "blinking", "executing": "blinking"},
+    "lead":     {"idle": "sitting",  "thinking": "typing",   "executing": "typing"},
+    "research": {"idle": "sitting",  "thinking": "reading",  "executing": "reading"},
+    "build":    {"idle": "sitting",  "thinking": "typing",   "executing": "typing"},
+    "operate":  {"idle": "standing", "thinking": "blinking", "executing": "blinking"},
 }
+
+# Built-in tools by who does them (everyday tools carry their own AGENT).
+RESEARCH_TOOLS = frozenset({"web_search", "browse_url", "recall_memory", "search_library",
+                            "read_file", "list_dir", "search_files"})
+BUILD_TOOLS = frozenset({"write_file", "run_command", "run_in_terminal", "workflow_run"})
+OPERATE_TOOLS = frozenset({"dispatch_game_command", "look_at_minecraft", "vtube_move", "vtube_set_expression"})
+
+
+def agent_id_for(name: str) -> str:
+    """An agent id, or an older name for one (main, office, ...), as today's id."""
+    return LEGACY.get(name, name)
+
+
+def agent_for_tool(name: str) -> str:
+    """Which character shows a built-in tool running."""
+    if name in RESEARCH_TOOLS:
+        return "research"
+    if name in BUILD_TOOLS or name.startswith("mcp__"):
+        return "build"
+    if name in OPERATE_TOOLS or name.startswith("sdk__"):
+        return "operate"
+    return "lead"
 
 
 def visual_state(agent_id: str, status: str) -> str:
+    agent_id = agent_id_for(agent_id)
     if status == "waiting_approval":
         return "waving"
     if status == "error":
@@ -89,6 +118,7 @@ class AgentTracker:
             return copy.deepcopy(self._agents)
 
     def get(self, agent_id: str) -> Dict[str, Any]:
+        agent_id = agent_id_for(agent_id)
         with self._lock:
             return dict(self._agents[agent_id])
 
@@ -98,6 +128,7 @@ class AgentTracker:
         """Set an agent's state. Fields left as None keep their value, except
         that going idle clears the task and progress. Returns True if anything
         changed (and the callbacks ran)."""
+        agent_id = agent_id_for(agent_id)
         if agent_id not in AGENTS:
             raise ValueError(f"unknown agent {agent_id!r}; expected one of {AGENTS}")
         if status not in STATUSES:
@@ -136,6 +167,7 @@ class AgentTracker:
     def settle(self, agent_id: str) -> None:
         """End of a piece of work: back to idle, unless it ended in an error
         (that stays on show until the agent's next piece of work)."""
+        agent_id = agent_id_for(agent_id)
         with self._lock:
             status = self._agents[agent_id]["status"]
         if status != "error":
