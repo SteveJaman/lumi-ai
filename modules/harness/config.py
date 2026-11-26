@@ -91,6 +91,41 @@ def fast_agent_models(path=None):
     return _chain("fast_agent_models", getattr(constants, "FAST_AGENT_MODEL_CHAIN", ()), path)
 
 
+# ── task tiers (modules/model_router.py: task_tier, TurnRouter) ──────────
+# daily:  conversation, web browsing, media, light tools. Must fit in VRAM, so the
+#         big context (scraped pages, tool schemas) never spills to system RAM.
+# coding: writing and fixing code. May spill; its small context keeps the KV
+#         cache from thrashing system RAM.
+TASK_TIERS = ("daily", "coding")
+
+
+def daily_models(path=None):
+    """Daily / web / media model chain (LUMI.md `daily_models`, else the fast chain)."""
+    names = _chain("daily_models", (), path)
+    return names or fast_agent_models(path)
+
+
+def coding_models(path=None):
+    """Coding model chain (LUMI.md `coding_models`, else the primary chain)."""
+    names = _chain("coding_models", (), path)
+    return names or primary_agent_models(path)
+
+
+def tier_num_ctx(task, path=None):
+    """Context window for a task tier (LUMI.md `daily_num_ctx` / `coding_num_ctx`,
+    else `num_ctx`)."""
+    s = model_settings(path)
+    try:
+        return int(s[f"{task}_num_ctx"])
+    except (KeyError, ValueError):
+        return num_ctx(path)
+
+
+def game_model(path=None):
+    """The Minecraft agent's model (LUMI.md `game_model`), or None to use constants."""
+    return model_settings(path).get("game_model") or None
+
+
 def _float(key, fallback, path=None):
     try:
         return float(model_settings(path)[key])

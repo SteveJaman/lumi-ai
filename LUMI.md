@@ -21,30 +21,45 @@ These rules are re-read at the start of every agent run and after every context 
 
 ## Model
 
-The agent harness reads these lines (modules/harness/config.py). Change the model here,
-not in source code.
+The agent harness reads these lines (modules/harness/config.py). Change models here,
+not in source code. Every agent turn is sorted into a task tier
+(modules/model_router.py `task_tier`, `TurnRouter`), and each tier has its own model
+chain and context window. The first installed model in a chain wins.
 
-- agent_model: qwen2.5-coder:14b
-- num_ctx: 8192
+- daily_models: qwen3.5:9b, qwen3:8b
+- daily_num_ctx: 16384
+- coding_models: qwen2.5-coder:14b, qwen3:8b
+- coding_num_ctx: 4096
+- game_model: qwen2.5:3b
 - think: false
-- primary_agent_models: qwen3.8:27b, qwen2.5-coder:14b, qwen3:8b
-- fast_agent_models: qwen3.5:9b, qwen3:8b
 - vram_headroom_gb: 2.5
 
-Tiers (modules/model_router.py `agent_model_for_tier`): sonnet/opus agent turns and
-`!auto` tasks use the first `primary_agent_models` entry that is installed in Ollama and
-fits in VRAM minus `vram_headroom_gb`; haiku turns (and every turn in Gaming Mode) use
-`fast_agent_models` the same way. Add `vram_gb: N` to override GPU detection. When no
-chain entry is installed, `agent_model` above is used. On the 11 GB 2080 Ti both chains
-resolve to qwen3:8b until a bigger card or smaller quant is available.
+Older keys, used only when a tier key above is missing:
+- agent_model: qwen3:8b
+- num_ctx: 8192
+- primary_agent_models: qwen2.5-coder:14b, qwen3:8b
+- fast_agent_models: qwen3.5:9b, qwen3:8b
 
-Selected 2026-11-22 from the fallback chain (qwen2.5-coder:14b → qwen3:14b →
-qwen2.5-coder:7b → deepseek-coder:6.7b); the first candidate passed:
-- `ollama run qwen2.5-coder:14b "reply with exactly the word OK and nothing else"` → `OK`
-- Tool-call test (`get_time`, no args): emits a plausible JSON call
-  `{"name": "get_time", "arguments": {}}` in the message text rather than as a structured
-  `tool_calls` entry. The harness recovers text-form calls (`_recover_text_tool_calls`).
-- 12.3 tok/s; Ollama reports 10 GB loaded, 18%/82% CPU/GPU at num_ctx 8192 (a partial
-  spill on the 11 GB card). No thinking support, hence `think: false`.
-- For comparison, qwen3:8b (already installed) emits structured tool calls at 31.9 tok/s
-  and fits fully in VRAM; to use it set `agent_model: qwen3:8b` and remove `think: false`.
+### Tiers (RTX 2080 Ti, 11 GB VRAM, shared with vision and STT)
+
+- **daily**: conversation, web browsing (`web_search`, `browse_url`), memory and
+  library, Spotify and media, game tools, light tool use. `qwen3.5:9b` is 6.6 GB at
+  Q4_K_M and fits in VRAM with room for a 16K KV cache, so scraped pages and the
+  SDK tool schemas don't spill. The chain only takes a model that fits in VRAM minus
+  `vram_headroom_gb`. Native tool calls, thinking and vision (`ollama show`).
+- **coding**: writing, fixing or debugging code. `qwen2.5-coder:14b` is 9.0 GB and
+  already spills (18%/82% CPU/GPU, ~12.3 tok/s at 8K), so this chain takes the first
+  installed model even when it doesn't fit, and its context is capped at 4K so the
+  KV cache doesn't thrash system RAM. Its turns get a short coding prompt and only
+  the file, terminal and task tools, because Lumi's full agent prompt (~3.3K tokens)
+  and every tool schema wouldn't fit in 4K. No thinking support, hence `think: false`.
+- **Switching**: a turn starts on the tier its request asks for (web and media words
+  win over code words, so "look up how to fix X" is daily). If a coding turn calls a
+  web or media tool, the rest of the turn runs on the daily model with 16K, so no
+  web page is ever fed to the 4K coder.
+- **game**: the Minecraft agent (a separate process) picks goals with `game_model`.
+  It sets its own small context (2048) in plugin/minecraft_bot.py.
+
+Gaming Mode keeps every agent turn on the daily tier, so the 9 GB coder never loads
+next to a game. One-shot `!agent <task>` turns keep the legacy bounded loop and its
+fixed model (constants.AGENT_MODEL_NAME).

@@ -54,10 +54,11 @@ def test_agent_mode_runs_harness_past_six_steps(monkeypatch, harness_env):
     assert len(seen) == 12                       # past the legacy cap of 6
     assert {"task_next", "task_complete", "task_add"} <= set(seen[0]["tools"])
     assert seen[0]["messages"][1]["content"].startswith("[LUMI.md RULES]")
-    # Tier routing (LUMI.md primary/fast chains), falling back to agent_model.
+    # Task-tier routing (LUMI.md daily / coding): no code words, so a daily turn.
     from modules import model_router
-    assert seen[0]["model"] == model_router.agent_model_for_tier(p._route_tier)
-    assert seen[0]["kw"]["options"]["num_ctx"] == config.num_ctx()
+    assert model_router.task_tier("write ten files") == "daily"
+    assert seen[0]["model"] == model_router.model_for_task("daily")
+    assert seen[0]["kw"]["options"]["num_ctx"] == config.tier_num_ctx("daily")
     log = (harness_env / "tasks" / "sessions.log").read_text(encoding="utf-8").splitlines()
     assert json.loads(log[-1])["termination_reason"] == "task_complete"
 

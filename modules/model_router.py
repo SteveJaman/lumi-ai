@@ -14,6 +14,12 @@ goes wrong (Ollama down, model missing, slow, nonsense answer) falls back to
 "sonnet". In Gaming Mode the model isn't asked at all, so nothing extra is
 loaded into VRAM while you play.
 
+Agent turns also get a TASK tier (task_tier, TurnRouter, bottom of this file):
+daily (chat, web, media, light tools: a model that fits in VRAM, 16K context) or
+coding (the coder, 4K context), from LUMI.md ## Model. That picks the local model;
+the haiku/sonnet/opus tier above still drives the Pipeline card, Claude Code's
+model and cloud escalation.
+
 What a tier RUNS (see TIER_INFO): Lumi's chat is local, so haiku means her fast
 local model and sonnet / opus her main local model. The names matter for real
 when she delegates to Claude Code: that run uses `--model haiku|sonnet|opus`
@@ -201,10 +207,17 @@ class CloudKeyMissing(RuntimeError):
 
 
 def local_agent_model() -> str:
-    """The local model game agents use: MINECRAFT_AGENT_LOCAL_MODEL, else
-    GAME_AGENT_MODEL."""
-    return (getattr(constants, "MINECRAFT_AGENT_LOCAL_MODEL", None)
-            or getattr(constants, "GAME_AGENT_MODEL", "qwen2.5:3b"))
+    """The local model game agents use: MINECRAFT_AGENT_LOCAL_MODEL, else LUMI.md
+    `game_model`, else GAME_AGENT_MODEL."""
+    override = getattr(constants, "MINECRAFT_AGENT_LOCAL_MODEL", None)
+    if override:
+        return override
+    try:
+        from modules.harness import config as hcfg
+        configured = hcfg.game_model()
+    except Exception:
+        configured = None
+    return configured or getattr(constants, "GAME_AGENT_MODEL", "qwen2.5:3b")
 
 
 def provider_has_key(choice: str) -> bool:
@@ -378,3 +391,150 @@ def agent_model_for_tier(tier: Optional[str]) -> str:
         return picked or fallback
     except Exception:
         return fallback
+
+
+# ─── task tiers: daily vs coding (LUMI.md ## Model) ────────────────────
+# The 11 GB card can't hold the 14B coder AND a big context: the coder spills to
+# system RAM, and a scraped web page in its KV cache makes it crawl. So every
+# agent turn is sorted by the work it asks for:
+#   daily   conversation, web, memory, media, games, light tools -> a model that
+#           fits in VRAM, with a big context (daily_num_ctx, 16K)
+#   coding  writing / fixing code -> the coder, with a small context (4K)
+# and a coding turn that calls a web or media tool finishes on the daily tier.
+
+TASK_TIERS = ("daily", "coding")
+
+# Words that mean "go and look / play something": checked first, so "look up how
+# to fix X" stays on the big-context model.
+_DAILY_WORDS = re.compile(
+    r"\b(search(es|ed|ing)?|browse|browsing|look\s*(it\s*)?up|google|web\s*(site|page)?s?|website|url|link|"
+    r"online|internet|news|weather|play(ing)?|pause|skip|spotify|song|music|playlist|album|podcast|"
+    r"queue|volume|shuffle|minecraft)\b", re.I)
+_CODE_WORDS = re.compile(
+    r"\b(code|coding|script|function|bug|bugs|debug(ging)?|stack\s*trace|traceback|exception|"
+    r"refactor|compile[sd]?|unit\s*tests?|pytest|regex|python|javascript|typescript|java|rust|golang|c\+\+|"
+    r"c#|sql|html|css|json|yaml|api|endpoint|repo|git|commit|syntax|segfault|null\s*pointer|implement)\b"
+    r"|\.(py|js|ts|tsx|jsx|rs|go|java|cpp|cc|c|h|cs|rb|php|sh|ps1|bat|sql|html|css|scss|json|ya?ml|toml|ini)\b",
+    re.I)
+
+# Tools whose output is big or whose work is "daily": the turn moves to the daily tier.
+WEB_MEDIA_TOOLS = frozenset({"web_search", "browse_url", "recall_memory", "search_library",
+                             "dispatch_game_command", "look_at_minecraft",
+                             "vtube_set_expression", "vtube_move"})
+WEB_MEDIA_PREFIXES = ("spotify_", "media_", "sdk__")
+
+# The only tools a 4K coding turn is offered (plus the harness task tools).
+CODING_TOOLS = frozenset({"read_file", "write_file", "list_dir", "search_files", "run_command",
+                          "run_in_terminal", "task_list", "task_add", "task_next", "task_complete",
+                          "task_fail"})
+
+
+def task_tier(prompt: str) -> str:
+    """'daily' or 'coding' for a request. Web and media words win; code words
+    (or a source file name) make it coding; everything else is daily."""
+    text = prompt or ""
+    if _DAILY_WORDS.search(text):
+        return "daily"
+    if _CODE_WORDS.search(text):
+        return "coding"
+    return "daily"
+
+
+def is_web_media_tool(name: str) -> bool:
+    name = name or ""
+    return name in WEB_MEDIA_TOOLS or name.startswith(WEB_MEDIA_PREFIXES)
+
+
+def tier_for_tools(names) -> Optional[str]:
+    """'daily' when any of these tools is a web or media tool, else None (no change)."""
+    return "daily" if any(is_web_media_tool(n) for n in names or ()) else None
+
+
+def tools_used(messages) -> list:
+    """Tool names already called in a conversation (assistant tool_calls and tool results)."""
+    names = []
+    for m in messages or ():
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") == "tool" and m.get("name"):
+            names.append(str(m["name"]))
+        for tc in m.get("tool_calls") or ():
+            fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
+            if fn.get("name"):
+                names.append(str(fn["name"]))
+    return names
+
+
+def model_for_task(task: str) -> str:
+    """The local model for a task tier. Daily must fit in VRAM (falls back to the
+    first installed); coding takes the first installed entry even if it spills
+    (its context is capped instead). Gaming Mode always uses daily. Never raises."""
+    from modules.harness import config as hcfg
+    fallback = hcfg.agent_model()
+    try:
+        if _gaming():
+            task = "daily"
+        installed = installed_models()
+        if task == "coding":
+            chain = hcfg.coding_models()
+            picked = next((n for want in chain for n in installed if _same_model(n, want)), None)
+            return picked or fallback
+        vram = hcfg.vram_gb()
+        if vram is None:
+            vram = gpu_vram_gb()
+        return pick_model(hcfg.daily_models(), installed, vram, hcfg.vram_headroom_gb()) or fallback
+    except Exception:
+        return fallback
+
+
+def num_ctx_for(task: str) -> int:
+    from modules.harness import config as hcfg
+    return hcfg.tier_num_ctx("daily" if _gaming() else task)
+
+
+_caps_cache: Dict[str, list] = {}
+
+
+def model_supports_tools(model: str) -> bool:
+    """Whether Ollama says this model takes structured tool calls (cached; True
+    when Ollama can't be asked or the model is a cloud spec)."""
+    if not model or model.split(":", 1)[0] in ("anthropic", "openai", "gemini", "groq", "openrouter"):
+        return True                                   # a cloud model: tools are native
+    if model not in _caps_cache:
+        try:
+            r = requests.post(f"{constants.LLM_ENDPOINT.rstrip('/')}/api/show", json={"model": model}, timeout=3)
+            r.raise_for_status()
+            _caps_cache[model] = list((r.json() or {}).get("capabilities") or ["tools"])
+        except Exception:
+            return True
+    return "tools" in _caps_cache[model]
+
+
+TEXT_TOOL_HINT = (
+    "To use a tool, reply with ONLY a JSON object on its own, no other text: "
+    '{"name": "<tool name>", "arguments": {<arguments>}}. One tool per reply. '
+    "Tools you can use: {names}.")
+
+
+class TurnRouter:
+    """The model and context window for each model call of one agent turn.
+    Starts on task_tier(prompt); a coding turn that has called a web or media
+    tool moves to daily for the rest of the turn (never back)."""
+
+    def __init__(self, prompt: str):
+        self.start = "daily" if _gaming() else task_tier(prompt)
+        self.task = self.start
+        self.model = model_for_task(self.task)
+        self.num_ctx = num_ctx_for(self.task)
+
+    def route(self, messages) -> str:
+        """The tier for the next call, given the conversation so far."""
+        if self.task == "coding" and tier_for_tools(tools_used(messages)) == "daily":
+            self.task = "daily"
+            self.model = model_for_task("daily")
+            self.num_ctx = num_ctx_for("daily")
+        return self.task
+
+    @staticmethod
+    def coding_tools(tools) -> list:
+        return [t for t in tools or () if ((t.get("function") or {}).get("name") in CODING_TOOLS)]
