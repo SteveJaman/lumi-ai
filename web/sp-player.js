@@ -2,11 +2,11 @@
    Mini Spotify desktop in the web app (host only).
    Backend: modules/media_bridge.py (/api/media/*) -> modules/spotify.py.
 
-     init(ctx)    builds the bottom player bar and the library view
+     init(ctx)    builds the sidebar player and the library view
      refresh()    re-reads the player now (the Settings card calls it)
 
-   Bottom bar: art, title, heart | shuffle, previous, play, next, repeat,
-   and a seek bar | volume, and a button that opens the library.
+   Player (sidebar, above you): art, title, heart; shuffle, previous, play,
+   next, repeat; a seek bar; volume and a button that opens the library.
    Library view: Liked Songs, your playlists and albums on the left,
    the chosen list's songs on the right; a row plays from that song.
 
@@ -202,7 +202,6 @@ function fill(range) {
 function paint() {
   if (!D.dock) return;
   D.dock.hidden = !show;
-  document.getElementById('app-shell')?.classList.toggle('sp-on', show);
   if (!show) { setOpen(false); return; }
   const has = !!(now && now.source);
   const can = (now && now.can) || {};

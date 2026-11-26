@@ -34,7 +34,7 @@ html[data-lumi-theme="default"][data-surface="island"] .island {
     linear-gradient(var(--teal), var(--teal)) left top / 2px 16px no-repeat,
     linear-gradient(var(--pink), var(--pink)) right bottom / 16px 2px no-repeat,
     linear-gradient(var(--pink), var(--pink)) right bottom / 2px 16px no-repeat,
-    rgba(6, 9, 19, 0.55);
+    rgba(6, 9, 19, 0.82);             /* text stays readable over a bright desktop */
   backdrop-filter: blur(20px) saturate(1.2);
   -webkit-backdrop-filter: blur(20px) saturate(1.2);
 }

@@ -11,8 +11,8 @@
   --line: rgba(120, 160, 255, 0.16);
   --line-hi: rgba(120, 160, 255, 0.30);
   --text: #E7EEFF;
-  --dim: #9BAAD0;
-  --mute: #5C6C96;
+  --dim: #B8C4E2;                 /* readable on the glass over any desktop */
+  --mute: #8F9DC4;
   --teal: #5CF2D2;
   --ice: #7FE3FF;
   --pink: #FF71C4;
@@ -28,7 +28,7 @@
 }
 
 html, body { margin: 0; padding: 0; overflow: hidden; background: transparent; user-select: none; -webkit-user-select: none; }
-body { color: var(--text); font: 13px/1.4 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+body { color: var(--text); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45); font: 13px/1.4 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
 * { box-sizing: border-box; }
 button { font: inherit; color: inherit; }
 svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }

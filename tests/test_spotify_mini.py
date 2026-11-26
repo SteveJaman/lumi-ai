@@ -265,7 +265,21 @@ def test_web_has_the_player_bar_and_library_view():
         assert re.fullmatch(r"(icon|ICON\.\w+|playing \? ICON\.pause : ICON\.play|volOk && now\.volume === 0 \? ICON\.mute : ICON\.vol)",
                             rhs.strip()), rhs
     css = read("web", "style.css")
-    assert ".app.sp-on" in css and ".spx-row" in css and ".sp-mini" not in css
+    assert ".spx-row" in css and ".sp-mini" not in css and ".app.sp-on" not in css
+    # The player lives in the sidebar footer, above the profile; the library view paints a solid
+    # colour (themes make --bg transparent) and sits above the chat.
+    footer = html[html.index('class="sidebar-footer"'):html.index('class="user-chip"')]
+    assert 'id="sp-dock"' in footer
+    spx = css[css.index("\n.spx {"):]
+    spx = spx[:spx.index("}")]
+    assert "var(--lt-bg" in spx and "background: var(--bg)" not in spx
+    assert int(re.search(r"z-index:\s*(\d+)", spx).group(1)) > 100
+
+
+def test_island_text_is_readable_on_the_glass():
+    css = read("island", "src", "island.css")
+    assert "--mute: #5C6C96" not in css and "text-shadow" in css
+    assert "rgba(6, 9, 19, 0.55)" not in read("web", "themes", "default", "style.css")
 
 
 def test_playlist_song_counts_and_the_playing_context():

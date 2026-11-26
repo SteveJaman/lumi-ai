@@ -109,6 +109,8 @@ html[data-lumi-theme="cyberpunk"][data-surface="island"] {
   --line: rgba(0, 240, 255, 0.2);
   --line-hi: rgba(0, 240, 255, 0.45);
   --text: var(--lt-text);
+  --dim: #B5E6F0;
+  --mute: #8FB3CC;
   --teal: var(--lt-primary);
   --pink: var(--lt-secondary);
   --amber: var(--lt-accent);
