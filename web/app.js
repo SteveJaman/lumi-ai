@@ -2021,6 +2021,7 @@ async function renderDashboard(main) {
         <button class="btn btn-sm" id="dash-refresh">Refresh</button>
       </div>
       <div class="page-scroll">
+        <section class="card stage-card" id="dash-stage" aria-label="Lumi's avatar"></section>
         <section class="diag" id="dash-diag"></section>
         <div class="stat-grid" id="dash-stats"></div>
         <div class="event-stream">
@@ -2032,6 +2033,16 @@ async function renderDashboard(main) {
   `;
 
   mountDiagnostics();
+  // Lumi's avatar on the Stage: a Live2D model if one is configured (web/live2d-stage.js),
+  // else a VRM file (web/vrm-stage.js), else a note saying where to put one. Loaded on demand.
+  Promise.all([import('/web/live2d-stage.js'), import('/web/vrm-stage.js')])
+    .then(async ([live2d, vrm]) => {
+      const host = document.getElementById('dash-stage');
+      if (!host) return;
+      const cleanup = await live2d.mount(host);
+      if (cleanup === null) await vrm.mount(host);
+    })
+    .catch(() => { const s = document.getElementById('dash-stage'); if (s) s.textContent = 'The avatar stage couldn’t load.'; });
 
   // Events come through the web server so this works from any device.
   // Remote sessions can't read them (they can include window titles

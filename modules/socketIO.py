@@ -69,6 +69,9 @@ import secrets
 import asyncio
 import functools
 import mimetypes
+
+# ES modules (.mjs) must be served as JavaScript or the browser refuses them; Windows' table says text/plain.
+mimetypes.add_type("application/javascript", ".mjs")
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
@@ -697,6 +700,8 @@ class SocketIOServer:
         shortcuts_manager.register(r, self)     # /api/shortcuts (Lumi Island Hub)
         from modules import spotify, user_profile, media_bridge
         media_bridge.register(r, self)          # /api/media/* (web sidebar player: Spotify or Windows media)
+        from modules import avatar_stage
+        avatar_stage.register(r, self)          # /api/avatar/* (web Stage: the VRM model, host only)
         user_profile.register(r, self)          # /api/profile* (the sidebar's profile dialog)
         spotify.register(r, self)               # /api/spotify/* (Integrations -> Accounts, sidebar player)
         from modules import home_info

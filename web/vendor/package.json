@@ -1,0 +1,12 @@
+{
+  "name": "lumi-web-vendor",
+  "private": true,
+  "description": "Browser libraries the web Stage loads from this PC (offline). Run npm install here once.",
+  "dependencies": {
+    "three": "0.187.0",
+    "@pixiv/three-vrm": "3.6.0",
+    "pixi.js": "7.4.3",
+    "@pixi/sound": "5.2.3",
+    "pixi-live2d-display-advanced": "1.1.0"
+  }
+}
