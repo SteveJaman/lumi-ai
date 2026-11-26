@@ -31,7 +31,24 @@ _FN_FOR_EVENT = {
     POST_TOOL_USE: "post_tool_use",
     POST_TOOL_USE_FAILURE: "post_tool_use_failure",
 }
-FAILURE_LIMIT = 3
+# Loop breaker: a local model retries a refused call word for word. After the same
+# tool+args (or, for a command off the allowlist, the same program) fails this many
+# times, the model is told to stop, and any further identical call is refused
+# before it runs.
+FAILURE_LIMIT = 2
+SHELL_TOOLS = ("run_command", "run_in_terminal")
+_ALLOWLIST_REFUSAL = "not on the command allowlist"
+STOP_MESSAGE = ("STOP TRYING THIS COMMAND. {tool} failed {count}x with exactly these arguments: {args}. "
+                "It is blocked by system policy or it doesn't work here. You must use a different tool "
+                "or tell the user you cannot do this (task_fail with the reason).")
+
+
+def _shown(args):
+    try:
+        shown = json.dumps(args or {}, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        shown = str(args)
+    return shown[:300] + "…" if len(shown) > 300 else shown
 
 
 def args_key(tool, args):
@@ -85,8 +102,30 @@ class HookRegistry:
         return [n for n, _ in self._hooks[event]]
 
     # ---- dispatch ----
+    def _program_key(self, tool, args):
+        """For shell tools: one key per program, so 'ipconfig' and 'ipconfig /all'
+        count as the same refused command."""
+        if tool not in SHELL_TOOLS:
+            return None
+        cmd = str((args or {}).get("command") or "").strip()
+        first = cmd.split()[0].lower() if cmd else ""
+        return f"{tool}::program::{first}" if first else None
+
+    def blocked_reason(self, tool, args):
+        """The stop message when this exact call already failed FAILURE_LIMIT times."""
+        count = self.failures.get(args_key(tool, args), 0)
+        pkey = self._program_key(tool, args)
+        count = max(count, self.failures.get(pkey, 0) if pkey else 0)
+        if count < FAILURE_LIMIT:
+            return None
+        return STOP_MESSAGE.format(tool=tool, count=count, args=_shown(args))
+
     def pre_tool_use(self, tool, args, session_id=""):
-        """Return (allowed, reason). The first denial wins."""
+        """Return (allowed, reason). The first denial wins. A call that already
+        failed FAILURE_LIMIT times with the same args is refused without running."""
+        repeat = self.blocked_reason(tool, args)
+        if repeat:
+            return False, repeat
         event = {"event": PRE_TOOL_USE, "tool": tool, "args": args or {}, "session_id": session_id}
         for name, fn in self._hooks[PRE_TOOL_USE]:
             try:
@@ -121,18 +160,15 @@ class HookRegistry:
         key = args_key(tool, args)
         self.failures[key] = self.failures.get(key, 0) + 1
         count = self.failures[key]
+        pkey = self._program_key(tool, args)
+        if pkey and _ALLOWLIST_REFUSAL in str(error):         # the program itself is refused
+            self.failures[pkey] = self.failures.get(pkey, 0) + 1
+            count = max(count, self.failures[pkey])
         messages = self._post(POST_TOOL_USE_FAILURE, {
             "event": POST_TOOL_USE_FAILURE, "tool": tool, "args": args or {},
             "error": error, "session_id": session_id, "failure_count": count})
         if count >= FAILURE_LIMIT:
-            try:
-                shown = json.dumps(args or {}, ensure_ascii=False, default=str)
-            except (TypeError, ValueError):
-                shown = str(args)
-            if len(shown) > 300:
-                shown = shown[:300] + "…"
-            messages.append(f"Tool {tool} failed {count}× with these args: {shown}; "
-                            f"try a different approach (or call task_fail with the error).")
+            messages.append(STOP_MESSAGE.format(tool=tool, count=count, args=_shown(args)))
         return messages
 
     def failure_count(self, tool, args):

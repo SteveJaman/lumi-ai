@@ -305,3 +305,74 @@ def test_text_tool_calls_with_raw_newlines_in_code_are_recovered():
     calls = _recover_text_tool_calls(reply)
     assert [c["function"]["name"] for c in calls] == ["write_file"]
     assert calls[0]["function"]["arguments"]["content"].startswith("def rev(s):")
+
+
+# ─── agent model timeouts: wait longer, retry the same model once, then stop ──
+
+def _ask(prompt="search the web for ramen"):
+    """One routed agent call (built inside a running loop, as in Lumi)."""
+    from modules import prompter as P
+
+    async def go():
+        chat = P.Prompter._routed_chat(None, mr.TurnRouter(prompt), "sonnet", False, {}, "FULL")
+        return await chat([{"role": "user", "content": "hi"}], [])
+    return asyncio.run(go())
+
+
+def test_a_timeout_is_retried_once_on_the_same_model(tiers, monkeypatch):
+    from modules import prompter as P
+    calls = []
+
+    def flaky(model, messages, **kw):
+        calls.append((model, kw.get("timeout")))
+        if len(calls) == 1:
+            raise requests.exceptions.ReadTimeout("slow")
+        return P.LLMResponse(content="ok")
+    monkeypatch.setattr(P, "chat_sync", flaky)
+    resp = _ask()
+    assert resp.content == "ok"
+    assert calls == [("qwen3.5:9b", 300.0), ("qwen3.5:9b", 300.0)]      # same model, LUMI.md timeout
+
+
+def test_two_timeouts_stop_with_a_clear_message_and_no_smaller_model(tiers, monkeypatch):
+    from modules import prompter as P
+    models = []
+
+    def slow(model, messages, **kw):
+        models.append(model)
+        raise requests.exceptions.ReadTimeout("slow")
+    monkeypatch.setattr(P, "chat_sync", slow)
+    with pytest.raises(RuntimeError, match="didn't answer within 300s, twice"):
+        _ask()
+    assert models == ["qwen3.5:9b", "qwen3.5:9b"]                        # never qwen2.5:3b
+
+
+def test_the_timeout_comes_from_lumi_md_and_reaches_ollama(tiers, monkeypatch):
+    with open(tiers, "a", encoding="utf-8") as f:
+        f.write("- agent_timeout_s: 450\n")
+    assert hcfg.agent_timeout_s() == 450.0
+    from modules import llm_providers as lp
+    seen = {}
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"message": {"role": "assistant", "content": "ok"}, "done": True}
+
+    def post(url, json=None, timeout=None, **kw):
+        seen["timeout"] = timeout
+        return Resp()
+    monkeypatch.setattr(lp.requests, "post", post)
+    monkeypatch.setattr(lp.OllamaClient, "capabilities", lambda self, model: ["completion", "tools"])
+    _ask()
+    assert seen["timeout"] == 450.0
+    lp.chat_sync("qwen3:8b", [{"role": "user", "content": "x"}])            # other callers keep the default
+    assert seen["timeout"] == lp.get_client("ollama").timeout
+
+
+def test_the_routers_quick_sort_never_picks_the_agents_model():
+    """route_model only labels the turn (haiku/sonnet/opus) with the small sorter and
+    falls back to 'sonnet' on a timeout; the agent's model comes from TurnRouter."""
+    assert mr.TIMEOUT_S <= 10 and mr.DEFAULT_TIER == "sonnet"

@@ -11,7 +11,8 @@ Whatever you want to tell the user ("Done, your Liked Songs are playing") goes i
 instead of a tool call while a task is open stops the run as stalled.
 
 1. Always call `task_next` before deciding the next action.
-2. If a tool fails 3× with the same args, do not retry — call `task_fail` with the error.
+2. If a tool fails twice with the same args, do not retry it: use a different tool, or call
+   `task_fail` with the error. A third identical call is refused.
 3. If you have nothing to do, call `task_complete`; do not answer in prose.
 4. Never call `run_command` with patterns matching `rm -rf`, `del /s`, `format`, `mkfs`.
 5. The current task comes from the task store, not from the conversation. If you are
@@ -39,6 +40,7 @@ chain and context window. The first installed model in a chain wins.
 - game_model: qwen2.5:3b
 - think: false
 - vram_headroom_gb: 2.5
+- agent_timeout_s: 300
 
 Older keys, used only when a tier key above is missing:
 - agent_model: qwen3:8b
@@ -65,6 +67,10 @@ Older keys, used only when a tier key above is missing:
   web page is ever fed to the 4K coder.
 - **game**: the Minecraft agent (a separate process) picks goals with `game_model`.
   It sets its own small context (2048) in plugin/minecraft_bot.py.
+
+Each agent model call may take `agent_timeout_s` (a big context on the 11 GB card can
+take minutes). A call that times out is retried once on the same model; a second
+timeout stops the task with a clear message. It never drops to a smaller model.
 
 Gaming Mode keeps every agent turn on the daily tier, so the 9 GB coder never loads
 next to a game. One-shot `!agent <task>` turns keep the legacy bounded loop and its

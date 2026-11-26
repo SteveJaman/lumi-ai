@@ -111,11 +111,26 @@ Open tasks persist across runs: a new request is added as a task, but an
      `task_complete` with the message to the user in `result` (that is the reply the
      user sees); otherwise take the next concrete action or `task_fail`. Two
      consecutive text-only turns → `model_stalled`.
+     Exception (b'): when a non-task tool already succeeded for the open task this
+     run, a text reply finishes that task with the text as the reply (counted in
+     `finished_by_reply`): at once if it reads as finished, else on the second text
+     reply instead of stalling. A reply that promises more work ("let me…", "I'll…"),
+     asks the user a question, or copies one of the harness's own status lines
+     ("(I stopped: …)") gets the re-prompt first. When that text reply came right after a
+     real work tool (not a task tool), the re-prompt is `TOOL_THEN_TEXT_PROMPT`, a system
+     note: "Tool executed. If the task is done, you MUST call `task_complete`…".
      With no task in progress, a text turn ends the run → `turn_complete`.
   c. No mutating tool call in 5 consecutive cycles → `stagnant`.
   d. `max_safety_steps = 200` → `safety_cap`.
   e. Wall-clock budget (default 2 h) → `time_budget`.
 - Every termination is logged (session id, reason, steps, duration) to `data/tasks/sessions.log`.
+- Task isolation: when `task_next` moves the run from one task to a different one, the
+  transcript is archived and the window is cut to the system prompt, the `LUMI.md` rules
+  and a brief of the new task, so an earlier task (and the chat history it came with)
+  can't steer it. The run's first task keeps its chat context.
+- Model calls: each may take `agent_timeout_s` (`LUMI.md`, default 300). A timeout is
+  retried once on the same model; a second one ends the run (`error`) with a clear
+  message. Never a smaller model.
 
 ### Change 3 — Hook registry (`modules/harness/hooks.py`)
 - Events: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`.
@@ -124,8 +139,12 @@ Open tasks persist across runs: a new request is added as a task, but an
   `event = {"tool", "args", "session_id", "result"?, "error"?}`.
 - `PreToolUse` returning `{"deny": true, "reason": "..."}` blocks the call, even in YOLO
   mode; the reason goes back to the model as the tool result.
-- `PostToolUseFailure`: the registry counts failures per tool+args; at 3 it injects
-  "Tool X failed 3× with these args; try a different approach."
+- `PostToolUseFailure`: the registry counts failures per tool+args (and, for a
+  `run_command`/`run_in_terminal` refused as "not on the command allowlist", per
+  program, so `ipconfig` and `ipconfig /all` count together). At 2 it injects
+  "STOP TRYING THIS COMMAND. … You must use a different tool or tell the user you cannot
+  do this", and a further identical call is denied before it runs (the stop message is
+  the tool result).
 - Hooks run outside model context (zero tokens). Shipped: `data/hooks/block_rm_rf.py`.
 
 ### Change 4 — Context management (`modules/harness/context.py`)
