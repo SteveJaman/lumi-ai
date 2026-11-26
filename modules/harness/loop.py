@@ -35,8 +35,13 @@ from modules.harness.tasks import (
     TaskStore, TASK_TOOL_SCHEMAS, TASK_TOOL_NAMES, TASK_MUTATING_TOOLS, execute_task_tool,
 )
 
-CONTINUE_PROMPT = ("Continue with the next concrete action, or call "
-                   "`task_complete`/`task_fail`.")
+# Sent once after a text-only reply while a task is open. A small local model
+# often "finishes" by chatting ("Alright, it's playing!"); this tells it where
+# that sentence belongs.
+CONTINUE_PROMPT = ("You replied with text, not a tool call. If the request is done, call "
+                   "`task_complete` now and put your message to the user in `result` (it is shown "
+                   "to them as your reply). Otherwise call the tool for the next concrete action, "
+                   "or `task_fail` with the reason.")
 RESUME_WORDS = ("continue", "resume", "keep going", "go on", "carry on")
 
 
@@ -167,7 +172,9 @@ class AgentHarness:
             body = "No open tasks. If the goal is met, call task_complete on the last task or stop."
         return {"role": "system",
                 "content": f"[TASK STORE — {open_count} open]\n{body}\n"
-                           f"Every reply must be a tool call."}
+                           f"Every reply must be a tool call. When the request is done, call "
+                           f"task_complete; its result is your reply to the user, so never "
+                           f"announce it in a text reply."}
 
     def _log_session(self, result, goal):
         os.makedirs(self.tasks_dir, exist_ok=True)

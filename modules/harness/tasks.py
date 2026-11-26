@@ -240,9 +240,11 @@ TASK_TOOL_SCHEMAS = [
              "acceptance_criteria": {"type": "string", "description": "How to tell the task is done."}},
             ["description"]),
     _schema("task_next", "Return the task to work on now (the one in progress, or the next unblocked one); call it before every decision."),
-    _schema("task_complete", "Mark a task done and record its result as evidence.",
+    _schema("task_complete", "Mark a task done as soon as the request is fulfilled; its result "
+            "is shown to the user as your reply.",
             {"id": {"type": "integer", "description": "Task id."},
-             "result": {"type": "string", "description": "What was done and how you know it worked."}},
+             "result": {"type": "string",
+                        "description": "Your reply to the user: what you did and how you know it worked."}},
             ["id", "result"]),
     _schema("task_fail", "Mark a task failed with the reason; tasks depending on it become blocked.",
             {"id": {"type": "integer", "description": "Task id."},
