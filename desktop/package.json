@@ -1,0 +1,14 @@
+{
+  "name": "lumi-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Lumi's web app in its own window (Tauri). Connects to Lumi on this PC or another one.",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build --no-bundle",
+    "build:installer": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.9.4"
+  }
+}

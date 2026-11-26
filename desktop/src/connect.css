@@ -1,0 +1,53 @@
+:root {
+  color-scheme: dark;
+  --bg: #070b16; --card: rgba(16, 24, 44, 0.82); --line: rgba(231, 238, 255, 0.10);
+  --text: #e7eeff; --dim: #9baad0; --mute: #6c7ca6; --accent: #5cf2d2; --accent-hi: #9bfbe6;
+  --ok: #4df0a8; --bad: #ff6b8a;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: grid; place-items: center; padding: 24px;
+  color: var(--text);
+  background:
+    radial-gradient(900px 520px at 10% -10%, rgba(92, 242, 210, 0.14), transparent 62%),
+    radial-gradient(800px 520px at 110% 110%, rgba(167, 139, 255, 0.14), transparent 62%),
+    var(--bg);
+}
+.card {
+  width: min(520px, 100%); padding: 32px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 20px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45); backdrop-filter: blur(16px);
+}
+.logo { width: 56px; height: 56px; border-radius: 14px; border: 1px solid rgba(92, 242, 210, 0.5); display: block; object-fit: cover; }
+h1 { font: 650 24px/1.2 "Segoe UI Variable Display", "Segoe UI", sans-serif; margin: 16px 0 6px; }
+.sub { color: var(--dim); margin: 0 0 20px; line-height: 1.5; font-size: 14px; }
+.servers { list-style: none; padding: 0; margin: 0 0 20px; display: grid; gap: 8px; }
+.server {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line);
+  background: rgba(231, 238, 255, 0.04); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.server:hover, .server:focus-visible { border-color: rgba(92, 242, 210, 0.55); background: rgba(92, 242, 210, 0.08); outline: none; }
+.server .name { font-weight: 600; font-size: 14px; }
+.server .addr { color: var(--mute); font-size: 12.5px; overflow-wrap: anywhere; }
+.server .txt { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--mute); flex: none; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.dot.bad { background: var(--bad); }
+.forget { border: 0; background: none; color: var(--mute); font: inherit; font-size: 12.5px; cursor: pointer; padding: 4px 6px; border-radius: 8px; }
+.forget:hover { color: var(--text); background: rgba(231, 238, 255, 0.08); }
+.add label { display: block; font-size: 13px; font-weight: 600; color: var(--dim); margin-bottom: 6px; }
+.row { display: flex; gap: 8px; }
+input {
+  flex: 1; min-width: 0; padding: 10px 12px; border-radius: 12px; font: inherit; font-size: 14px;
+  color: var(--text); background: rgba(4, 6, 14, 0.7); border: 1px solid rgba(231, 238, 255, 0.16);
+}
+input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(92, 242, 210, 0.25); }
+.btn { padding: 10px 16px; border-radius: 12px; border: 1px solid transparent; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+.btn.primary { background: var(--accent); color: #04221c; }
+.btn.primary:hover { background: var(--accent-hi); }
+.hint { color: var(--mute); font-size: 12.5px; line-height: 1.5; margin: 8px 0 0; }
+.status { min-height: 1.4em; margin: 16px 0 0; color: var(--dim); font-size: 13px; }
+.status.bad { color: var(--bad); }

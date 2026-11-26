@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumi</title>
+<link rel="stylesheet" href="connect.css">
+</head>
+<body>
+<main class="card" aria-labelledby="title">
+  <img src="lumi.png" alt="" class="logo">
+  <h1 id="title">Connect to Lumi</h1>
+  <p class="sub">Pick where Lumi is running. On the PC that runs her, that's <b>This PC</b>. On a laptop, use your desktop's remote link.</p>
+
+  <ul class="servers" id="servers" aria-label="Saved servers"></ul>
+
+  <form id="add" class="add" autocomplete="off">
+    <label for="url">Another server</label>
+    <div class="row">
+      <input id="url" type="url" inputmode="url" placeholder="https://something.trycloudflare.com" required>
+      <button type="submit" class="btn primary">Connect</button>
+    </div>
+    <p class="hint">Lumi prints her remote link in the console when she starts. A quick tunnel gets a new link on every start, so paste the new one here.</p>
+  </form>
+
+  <p class="status" id="status" role="status" aria-live="polite"></p>
+</main>
+<script src="connect.js"></script>
+</body>
+</html>

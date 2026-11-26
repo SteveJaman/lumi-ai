@@ -592,6 +592,8 @@ class SocketIOServer:
         self.signals.broadcast_event = self._broadcast_event   # any thread -> every socket client
 
         self._register_http_routes()
+        from modules import claude_bridge as _claude_bridge
+        _claude_bridge.install(self)            # Claude Desktop / Claude Code bridge (loopback + token)
         self._register_socket_events()
         from modules import workspace as _workspace_pane
         _workspace_pane.install(self)           # split view: terminal_output / browser_frame

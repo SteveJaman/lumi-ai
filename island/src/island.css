@@ -697,3 +697,76 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--teal); o
 .island[data-gaming="true"] .mx-ring-fill { filter: none; }
 .mx-live .mx-ring-fill { opacity: 0; }
 .mx-live .mx-time { justify-content: center; color: var(--pink); font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+
+/* ── Studio refresh ───────────────────────────────────────────
+   Matches the web app's studio layer (web/studio.css): glass instead of
+   corner ticks, sentence-case labels in the system font, rounder
+   controls, and icon-only tabs so the status line isn't cut off.
+   Cyberpunk keeps the HUD look above. Static rules only. */
+
+html:not([data-lumi-theme="cyberpunk"]) {
+  --ui: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --hair: rgba(231, 238, 255, 0.10);
+  --hair-hi: rgba(231, 238, 255, 0.18);
+}
+html:not([data-lumi-theme="cyberpunk"]) body { font-family: var(--ui); }
+html:not([data-lumi-theme="cyberpunk"]) .island {
+  background: linear-gradient(180deg, rgba(14, 21, 40, 0.94), rgba(7, 11, 22, 0.95));
+  border-color: var(--hair-hi);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.42), inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px) saturate(1.25);
+}
+html:not([data-lumi-theme="cyberpunk"]) .island.hidden { box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--teal) 70%, transparent); }
+html:not([data-lumi-theme="cyberpunk"]) .island.open { border-radius: 0 0 26px 26px; }
+
+html:not([data-lumi-theme="cyberpunk"]) .name {
+  font: 650 15px/1.1 var(--display);
+  letter-spacing: 0.01em;
+}
+html:not([data-lumi-theme="cyberpunk"]) .status { font: 500 12px/1.3 var(--ui); letter-spacing: 0; }
+
+/* Icon-only tabs: the selected one is a filled pill; names stay in the tooltips. */
+html:not([data-lumi-theme="cyberpunk"]) .open .tab[aria-selected="true"] span { display: none; }
+html:not([data-lumi-theme="cyberpunk"]) .tab { width: 34px; padding: 0; justify-content: center; border-radius: 10px; }
+html:not([data-lumi-theme="cyberpunk"]) .tab[aria-selected="true"] {
+  color: var(--ink);
+  background: var(--teal);
+  border-color: transparent;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--teal) 35%, transparent);
+}
+html:not([data-lumi-theme="cyberpunk"]) .collapse,
+html:not([data-lumi-theme="cyberpunk"]) .gear { border-radius: 10px; border-color: var(--hair); }
+
+html:not([data-lumi-theme="cyberpunk"]) .card {
+  border-radius: 16px;
+  border-color: var(--hair);
+  background: rgba(231, 238, 255, 0.045);
+}
+html:not([data-lumi-theme="cyberpunk"]) :is(.label, .eyebrow, .lday h4, .mx-label, .mx-src, .field span, .pt-name, .ac-name, .ac-status, .mhead div, .ym h5, .cal-title, .settings h3) {
+  font-family: var(--ui);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) :is(.label, .eyebrow, .mx-label, .field span) { font-size: 12px; }
+html:not([data-lumi-theme="cyberpunk"]) :is(.cal-title, .settings h3) { font-family: var(--display); font-size: 17px; }
+
+html:not([data-lumi-theme="cyberpunk"]) :is(.btn, .qc-send, .fbtn, .hub-link, .mx-chip, .cal-nav button, .seg button, .cal-msg button, .hub-kind) {
+  font-family: var(--ui);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) :is(.btn, .qc-send) { border-radius: 12px; font-size: 13px; }
+html:not([data-lumi-theme="cyberpunk"]) :is(.fbtn, .cal-nav button, .seg button, .cal-msg button) { border-radius: 10px; font-size: 12px; }
+html:not([data-lumi-theme="cyberpunk"]) :is(.hub-link, .mx-chip) { font-size: 12px; }
+
+html:not([data-lumi-theme="cyberpunk"]) :is(.date, .sub, .today time, .wx-sub) { font-family: var(--ui); }
+html:not([data-lumi-theme="cyberpunk"]) .clock { font-family: var(--display); font-weight: 650; letter-spacing: -0.01em; }
+html:not([data-lumi-theme="cyberpunk"]) .next-title { font-family: var(--display); font-weight: 650; letter-spacing: 0; }
+
+html:not([data-lumi-theme="cyberpunk"]) :is(button, [role="tab"]):focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}

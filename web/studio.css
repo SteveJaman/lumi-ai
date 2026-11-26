@@ -1,0 +1,389 @@
+/* ============================================================
+   Lumi // STUDIO layer
+   Loaded after cyber.css. The cyber layer gives every component its
+   tokens and glow; this layer makes the everyday look calmer and easier
+   to read: sentence-case type in the system UI font, softer corners,
+   glass panels, a centred chat column and a floating composer.
+
+   Scoped to every theme except Cyberpunk, which keeps the full HUD look
+   (uppercase display type, corner ticks, scanlines) on purpose.
+   Static CSS only: no animation loops, so it adds no idle cost.
+   ============================================================ */
+
+html:not([data-lumi-theme="cyberpunk"]) {
+  --font-sans: "Segoe UI Variable Text", "Segoe UI Variable", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Inter", "Segoe UI", system-ui, sans-serif;
+  --fs-xs: 11.5px; --fs-sm: 12.5px; --fs-md: 14px; --fs-lg: 16px;
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-xl: 20px;
+  --glass: color-mix(in srgb, var(--bg-elev) 78%, transparent);
+  --glass-strong: color-mix(in srgb, var(--bg-elev) 92%, transparent);
+  --hairline: color-mix(in srgb, var(--text) 9%, transparent);
+  --hairline-hi: color-mix(in srgb, var(--text) 16%, transparent);
+  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+  --lift: 0 1px 0 color-mix(in srgb, #fff 5%, transparent) inset, 0 10px 30px rgba(0, 0, 0, 0.22);
+  /* Cards: plain glass, no corner ticks. */
+  --panel: linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 90%, var(--accent) 2%), var(--glass));
+  --scan: transparent;
+}
+
+html:not([data-lumi-theme="cyberpunk"]) body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* No CRT scanlines, softer page grid. */
+html:not([data-lumi-theme="cyberpunk"]) .main::after { display: none; }
+html:not([data-lumi-theme="cyberpunk"]) .main {
+  background:
+    radial-gradient(1100px 620px at 8% -14%, var(--bg-glow-top), transparent 64%),
+    radial-gradient(900px 560px at 104% 112%, var(--bg-glow-bottom), transparent 62%),
+    var(--bg);
+}
+
+/* Keyboard focus is always visible. */
+html:not([data-lumi-theme="cyberpunk"]) :is(a, button, [role="tab"], [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+html:not([data-lumi-theme="cyberpunk"]) ::-webkit-scrollbar-thumb {
+  background: var(--hairline-hi);
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+html:not([data-lumi-theme="cyberpunk"]) ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+
+/* ── Sidebar ────────────────────────────────────────────────── */
+
+html:not([data-lumi-theme="cyberpunk"]) .sidebar {
+  background: color-mix(in srgb, var(--bg-inset) 86%, transparent);
+  backdrop-filter: blur(18px) saturate(1.2);
+  border-right: 1px solid var(--hairline);
+  border-image: none;
+  box-shadow: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) .brand::after { opacity: 0.35; }
+html:not([data-lumi-theme="cyberpunk"]) .brand-logo {
+  border-radius: 12px;
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 4px 16px var(--glow-soft);
+}
+html:not([data-lumi-theme="cyberpunk"]) .brand-name {
+  font: 650 18px/1.1 var(--font-display);
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) .brand-sub {
+  font: 500 11.5px/1.3 var(--font-sans);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html:not([data-lumi-theme="cyberpunk"]) .nav-label {
+  font: 600 11px/1 var(--font-sans);
+  letter-spacing: 0.06em;
+  color: var(--text-mute);
+  padding: 6px 12px 4px;
+}
+html:not([data-lumi-theme="cyberpunk"]) .nav-label::after { display: none; }
+html:not([data-lumi-theme="cyberpunk"]) .nav-item {
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-dim);
+}
+html:not([data-lumi-theme="cyberpunk"]) .nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  transform: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) .nav-item.active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: transparent;
+  box-shadow: inset 3px 0 0 var(--accent);
+  font-weight: 600;
+}
+html:not([data-lumi-theme="cyberpunk"]) .nav-item.active svg { color: var(--accent); filter: none; }
+
+html:not([data-lumi-theme="cyberpunk"]) .status-pills {
+  font: 500 11.5px/1 var(--font-sans);
+  letter-spacing: 0;
+  text-transform: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) .user-chip {
+  background: var(--glass);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+}
+
+/* ── Page header ────────────────────────────────────────────── */
+
+html:not([data-lumi-theme="cyberpunk"]) .page-header {
+  padding: 26px var(--s-6) 18px;
+  background: transparent;
+  border-bottom: 1px solid var(--hairline);
+  border-image: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) .page-title {
+  font: 650 26px/1.15 var(--font-display);
+  letter-spacing: -0.01em;
+  text-transform: none;
+  text-shadow: none;
+  color: var(--text);
+}
+html:not([data-lumi-theme="cyberpunk"]) .page-title::before { content: none; }
+html:not([data-lumi-theme="cyberpunk"]) .page-sub {
+  font: 400 14px/1.4 var(--font-sans);
+  letter-spacing: 0;
+  margin-top: 6px;
+  color: var(--text-dim);
+}
+
+/* ── Panels ─────────────────────────────────────────────────── */
+
+html:not([data-lumi-theme="cyberpunk"]) :is(.card, .stat, .integration-card, .provider-card, .model-card,
+  .settings-card, .game-card, .persona-obj-card, .persona-list-obj-card, .setup-card, .ws-event,
+  .ws-list.card, .ws-reader.card) {
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+  box-shadow: var(--lift);
+  backdrop-filter: blur(14px);
+}
+html:not([data-lumi-theme="cyberpunk"]) :is(.integration-card, .provider-card, .model-card, .game-card, .ws-event):hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--hairline));
+  box-shadow: var(--lift), 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+html:not([data-lumi-theme="cyberpunk"]) .card-header::after { background: var(--hairline); }
+html:not([data-lumi-theme="cyberpunk"]) :is(.card-title, .settings-section-title, .models-section-title,
+  .persona-section-title, .settings-card-title, .int-section-title, .diag-title) {
+  font: 600 15px/1.3 var(--font-display);
+  letter-spacing: 0;
+  text-transform: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) .settings-section-title { font-size: 20px; }
+
+html:not([data-lumi-theme="cyberpunk"]) .stat { padding: 16px 18px; }
+html:not([data-lumi-theme="cyberpunk"]) .stat-label {
+  font: 500 12.5px/1.2 var(--font-sans);
+  letter-spacing: 0;
+  text-transform: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) .stat-value {
+  font: 650 26px/1.2 var(--font-display);
+  text-shadow: none;
+  color: var(--text);
+}
+
+/* ── Buttons, inputs, chips ─────────────────────────────────── */
+
+html:not([data-lumi-theme="cyberpunk"]) .btn {
+  padding: 8px 14px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--hairline-hi);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  font: 600 13px/1.2 var(--font-sans);
+  letter-spacing: 0;
+  text-transform: none;
+  box-shadow: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) .btn:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--hairline-hi));
+  color: var(--text);
+  box-shadow: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) .btn-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--btn-primary-text);
+  box-shadow: 0 6px 18px var(--glow-soft);
+}
+html:not([data-lumi-theme="cyberpunk"]) .btn-primary:hover {
+  background: var(--accent-hi);
+  color: var(--btn-primary-text);
+  border-color: transparent;
+  box-shadow: 0 8px 22px var(--glow);
+}
+html:not([data-lumi-theme="cyberpunk"]) .btn-danger { color: var(--error-text); border-color: var(--error-border); background: transparent; }
+html:not([data-lumi-theme="cyberpunk"]) .btn-danger:hover { background: var(--error-bg); color: var(--error-text); }
+html:not([data-lumi-theme="cyberpunk"]) .btn-ghost { background: transparent; border-color: transparent; }
+html:not([data-lumi-theme="cyberpunk"]) .btn-ghost:hover { background: var(--bg-hover); border-color: transparent; }
+html:not([data-lumi-theme="cyberpunk"]) .btn-sm { padding: 6px 11px; font-size: 12.5px; }
+
+html:not([data-lumi-theme="cyberpunk"]) :is(input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]),
+  textarea, select, .input, .textarea, .settings-input, .persona-input, .persona-textarea) {
+  background: color-mix(in srgb, var(--bg-inset) 80%, transparent);
+  border: 1px solid var(--hairline-hi);
+  border-radius: var(--r-md);
+  font-size: 14px;
+}
+html:not([data-lumi-theme="cyberpunk"]) :is(input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]),
+  textarea, select, .settings-input, .persona-input, .persona-textarea):focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+html:not([data-lumi-theme="cyberpunk"]) :is(.filter-chip, .mood-chip, .mode-chip) {
+  border-radius: 999px;
+  border: 1px solid var(--hairline-hi);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  font: 600 12px/1 var(--font-sans);
+  letter-spacing: 0;
+  text-transform: none;
+  padding: 6px 12px;
+}
+html:not([data-lumi-theme="cyberpunk"]) .filter-chip { text-transform: capitalize; }
+html:not([data-lumi-theme="cyberpunk"]) .filter-chip.active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  color: var(--text);
+  box-shadow: none;
+}
+
+html:not([data-lumi-theme="cyberpunk"]) :is(.settings-nav-item, .persona-nav-item) {
+  border-radius: var(--r-md);
+  letter-spacing: 0;
+  font-weight: 500;
+}
+html:not([data-lumi-theme="cyberpunk"]) :is(.settings-nav-item, .persona-nav-item):hover { background: var(--bg-hover); }
+html:not([data-lumi-theme="cyberpunk"]) :is(.settings-nav-item, .persona-nav-item).active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: transparent;
+  box-shadow: inset 3px 0 0 var(--accent);
+  font-weight: 600;
+}
+
+/* Workspace tabs: a segmented control instead of slanted HUD tabs. */
+html:not([data-lumi-theme="cyberpunk"]) .ws-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+html:not([data-lumi-theme="cyberpunk"]) .ws-tab {
+  padding: 7px 18px;
+  clip-path: none;
+  border-radius: 9px;
+  background: transparent;
+  font: 600 13px/1.2 var(--font-sans);
+  letter-spacing: 0;
+  text-transform: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) .ws-tab[aria-selected="true"] {
+  background: var(--bg-elev);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+/* Small labels that were HUD-style. */
+html:not([data-lumi-theme="cyberpunk"]) :is(.memory-table th, .empty-title, .modal-title, .integration-name,
+  .provider-name, .model-name, .integration-status, .model-badge, .provider-status, .settings-module-chip,
+  .settings-session-badge, .ws-day-title, .ws-badge, .disp .disp-name, .remote .remote-code-label,
+  .auth-title, .setup-title) {
+  font-family: var(--font-sans);
+  letter-spacing: 0;
+  text-transform: none;
+  text-shadow: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) :is(.modal-title, .empty-title) { font-weight: 650; font-size: 17px; }
+html:not([data-lumi-theme="cyberpunk"]) :is(.auth-title, .setup-title) { font: 650 24px/1.2 var(--font-display); }
+html:not([data-lumi-theme="cyberpunk"]) .memory-table th { font-weight: 600; font-size: 12px; }
+
+/* ── Chat ───────────────────────────────────────────────────── */
+
+/* One centred reading column on wide screens. */
+html:not([data-lumi-theme="cyberpunk"]) .chat-scroll {
+  padding: 28px max(24px, calc((100% - 920px) / 2)) 20px;
+  gap: 18px;
+}
+html:not([data-lumi-theme="cyberpunk"]) .msg { max-width: min(760px, 88%); }
+
+html:not([data-lumi-theme="cyberpunk"]) .msg-bubble {
+  padding: 11px 16px;
+  border-radius: 6px 18px 18px 18px;
+  background: var(--glass-strong);
+  border: 1px solid var(--hairline);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.16);
+  font-size: 14.5px;
+  line-height: 1.6;
+  backdrop-filter: blur(10px);
+}
+html:not([data-lumi-theme="cyberpunk"]) .msg.user .msg-bubble {
+  border-radius: 18px 6px 18px 18px;
+  background: color-mix(in srgb, var(--accent) 22%, var(--bg-elev));
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 4px 18px var(--glow-soft);
+}
+html:not([data-lumi-theme="cyberpunk"]) .msg.system .msg-bubble { background: transparent; box-shadow: none; border-style: dashed; }
+html:not([data-lumi-theme="cyberpunk"]) .msg-avatar { width: 32px; height: 32px; }
+html:not([data-lumi-theme="cyberpunk"]) .msg.assistant .msg-avatar {
+  border: 1.5px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  box-shadow: 0 2px 10px var(--glow-soft);
+}
+html:not([data-lumi-theme="cyberpunk"]) .msg.user .msg-avatar {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) .thinking-bubble { border-radius: 6px 18px 18px 18px; }
+
+/* The mode chips and the composer float together as one dock. */
+html:not([data-lumi-theme="cyberpunk"]) .chat-status {
+  background: transparent;
+  border-top: 0;
+  padding: 6px max(24px, calc((100% - 920px) / 2)) 8px;
+  gap: 8px;
+}
+html:not([data-lumi-theme="cyberpunk"]) .chat-status .mode-chip.agent {
+  border-color: color-mix(in srgb, var(--neon-pink) 60%, transparent);
+  color: var(--neon-pink);
+}
+html:not([data-lumi-theme="cyberpunk"]) .chat-input {
+  margin: 0 max(24px, calc((100% - 920px) / 2)) 20px;
+  padding: 8px 8px 8px 10px;
+  gap: 8px;
+  align-items: flex-end;
+  background: var(--glass-strong);
+  border: 1px solid var(--hairline-hi);
+  border-radius: 22px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(18px) saturate(1.2);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+html:not([data-lumi-theme="cyberpunk"]) .chat-input:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 65%, transparent);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28), var(--ring);
+}
+html:not([data-lumi-theme="cyberpunk"]) #main-content .chat-input textarea {
+  background: transparent;
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 6px;
+  font-size: 15px;
+  box-shadow: none;
+}
+html:not([data-lumi-theme="cyberpunk"]) #main-content .chat-input textarea:focus { border: 0; box-shadow: none; }
+html:not([data-lumi-theme="cyberpunk"]) .chat-attach-btn { border-radius: 14px; }
+html:not([data-lumi-theme="cyberpunk"]) .chat-input .btn-primary { border-radius: 14px; padding: 10px 18px; }
+
+@media (max-width: 760px) {
+  html:not([data-lumi-theme="cyberpunk"]) .chat-input { margin: 0 10px 10px; border-radius: 18px; }
+  html:not([data-lumi-theme="cyberpunk"]) .chat-status { padding: 6px 12px; }
+  html:not([data-lumi-theme="cyberpunk"]) .chat-scroll { padding: 18px 12px; }
+  html:not([data-lumi-theme="cyberpunk"]) .msg { max-width: 94%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-lumi-theme="cyberpunk"]) .msg { animation: none; }
+}
