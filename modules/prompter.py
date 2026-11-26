@@ -212,8 +212,10 @@ def _extract_text_tool_calls(content: str):
     text = re.sub(r"\s*```$", "", text)
     text = text.strip()
 
+    # strict=False: local models often put raw newlines and tabs inside JSON strings
+    # (code in a write_file "content"), which strict JSON refuses.
     try:
-        obj = json.loads(text)
+        obj = json.loads(text, strict=False)
         if isinstance(obj, dict):
             return [obj]
         if isinstance(obj, list):
@@ -221,7 +223,7 @@ def _extract_text_tool_calls(content: str):
     except json.JSONDecodeError:
         pass
 
-    decoder = json.JSONDecoder()
+    decoder = json.JSONDecoder(strict=False)
     found = []
     idx = 0
     while idx < len(text):
@@ -938,6 +940,18 @@ def _request_needs_tool(user_query: str) -> bool:
 # Tools YOLO mode may run without a human prompt (still behind PreToolUse hooks).
 # Email, calendar, finance, desktop and Claude Code keep their own approval.
 _YOLO_TOOLS = frozenset({"write_file", "run_command", "run_in_terminal"})
+
+
+# A coding turn runs with a 4K context (LUMI.md coding_num_ctx): Lumi's full agent
+# prompt (~3.3K tokens) wouldn't leave room to work, so the coder gets this instead.
+# LUMI.md's rules are added by the harness itself.
+CODING_SYSTEM_PROMPT = (
+    "You are Lumi, working as a coding agent on the user's PC. Write, fix and debug code with "
+    "your tools: read a file before you change it, make focused edits with write_file, and run "
+    "the code or its tests with run_command to check your work. Paths are relative to the "
+    "workspace. Keep replies short and plain; show code only when asked. When the task is done, "
+    "call task_complete with what you changed; if you can't do it, call task_fail with why. "
+    "You can't browse the web in this mode: if you need to look something up, say so.")
 
 
 def _recover_text_tool_calls(content: str):
@@ -3181,6 +3195,35 @@ class Prompter:
         except Exception:
             return False
 
+    def _routed_chat(self, router, tier, think, options, full_system):
+        """chat(messages, tools) for one agent turn. The model and num_ctx follow
+        router (model_router.TurnRouter): a coding call gets only the coding tools;
+        once the turn moves to daily (a web or media tool ran), the full system
+        prompt comes back in place of the coding one. A model without native tool
+        calls gets the tools described in text instead (the harness recovers
+        text-form calls)."""
+        loop = asyncio.get_running_loop()
+
+        def chat(messages, tools):
+            task = router.route(messages)
+            msgs, send_tools = list(messages), tools
+            if task == "coding":
+                send_tools = router.coding_tools(tools)
+            elif (router.start == "coding" and msgs and msgs[0].get("role") == "system"
+                    and msgs[0].get("content") == CODING_SYSTEM_PROMPT):
+                msgs[0] = {"role": "system", "content": full_system}
+            model = hybrid_mode.model_for(tier, router.model)
+            if send_tools and not model_router.model_supports_tools(model):
+                names = ", ".join((t.get("function") or {}).get("name", "") for t in send_tools)
+                msgs.append({"role": "system", "content": model_router.TEXT_TOOL_HINT.replace("{names}", names)})
+                send_tools = None
+            opts = dict(options, num_ctx=router.num_ctx)
+            return loop.run_in_executor(None, lambda: chat_sync(
+                model, msgs, tools=send_tools, think=think,
+                keep_alive=gaming_mode.keep_alive("30s"), options=opts))
+
+        return chat
+
     async def run_autonomous_task(self, goal):
         """!auto <goal>: plan, one approval, unsupervised harness run limited
         to data/ and sandbox/, then independent verification (up to 3 rounds)
@@ -3188,19 +3231,17 @@ class Prompter:
         from modules.autonomous_agent import AutonomousTask
         loop = asyncio.get_running_loop()
         tier = await loop.run_in_executor(None, model_router.route_model, goal)
-        local = await loop.run_in_executor(None, model_router.agent_model_for_tier, "opus")
-        model = hybrid_mode.model_for(tier, local)        # PRIMARY tier; cloud only with escalation on
+        # Task tier (LUMI.md ## Model): daily (web, media, light work) or coding.
+        router = await loop.run_in_executor(None, model_router.TurnRouter, goal)
+        model = hybrid_mode.model_for(tier, router.model)  # cloud only for opus with escalation on
         _show_route(tier, model, "autonomous")
         think = harness_config.think()
-        options = {"temperature": 0.4, "top_p": 0.9, "repeat_penalty": 1.15,
-                   "repeat_last_n": 64, "num_ctx": harness_config.num_ctx()}
+        options = {"temperature": 0.4, "top_p": 0.9, "repeat_penalty": 1.15, "repeat_last_n": 64}
         agent_tracker.update("lead", "thinking", task="Planning an autonomous task", progress=0,
                              model=tier, model_name=model)
-
-        def chat(messages, tools):
-            return loop.run_in_executor(None, lambda: chat_sync(
-                model, messages, tools=tools, think=think,
-                keep_alive=gaming_mode.keep_alive("30s"), options=options))
+        context_injections = self.gather_injections(goal, agent_context=True)
+        full_system = f"{get_chat_system_prompt(agent=True)}\n\n{context_injections}"
+        chat = self._routed_chat(router, tier, think, options, full_system)
 
         async def llm(system, user):
             resp = await chat([{"role": "system", "content": system},
@@ -3223,15 +3264,15 @@ class Prompter:
             label = f"#{task['id']} {task['description'][:60]}" if task else "choosing a task"
             print(f"{GRAY}Thinking (auto step {step}: {label})...{RESET}")
             agent_tracker.update("lead", "thinking", task=f"Auto {step}: {label}", progress=None,
-                                 model=tier, model_name=model)
+                                 model=tier, model_name=hybrid_mode.model_for(tier, router.model))
 
-        context_injections = self.gather_injections(goal, agent_context=True)
-        base = [{"role": "system", "content": f"{get_chat_system_prompt(agent=True)}\n\n{context_injections}"}]
+        base = [{"role": "system",
+                 "content": CODING_SYSTEM_PROMPT if router.start == "coding" else full_system}]
         tools = TOOL_SCHEMAS + EXTRA_TOOL_SCHEMAS + everyday_tool_schemas(self._everyday_ctx())
         from modules import workspace
         task = AutonomousTask(goal, chat_fn=chat, dispatch_fn=dispatch, confirm_fn=confirm, tools=tools,
                               llm_fn=llm, recover_fn=_recover_text_tool_calls, on_step=on_step,
-                              on_event=workspace.emit_autonomous_step)
+                              on_event=workspace.emit_autonomous_step, num_ctx=router.num_ctx)
         self._autonomous_policy = task.policy
         self._harness = task                      # LUMI_AGENT_YOLO applies to !auto runs too
         try:
@@ -3254,10 +3295,11 @@ class Prompter:
         from modules.harness.subagents import SubagentRunner
         from modules.harness.tasks import TASK_TOOL_SCHEMAS
 
-        # PRIMARY chain for sonnet/opus, FAST for haiku (LUMI.md ## Model, model_router).
-        local_model = await asyncio.get_running_loop().run_in_executor(
-            None, model_router.agent_model_for_tier, tier)
-        model = hybrid_mode.model_for(tier, local_model)
+        # Task tier (LUMI.md ## Model, model_router.TurnRouter): daily for chat, web,
+        # media and light tools (fits in VRAM, 16K); coding for code (the coder, 4K).
+        router = await asyncio.get_running_loop().run_in_executor(
+            None, model_router.TurnRouter, latest_user_text)
+        model = hybrid_mode.model_for(tier, router.model)
         _show_route(tier, model, "agent")
         think = harness_config.think()
         # Procedural memory: a learned workflow from data/skills/ that matches this request.
@@ -3265,19 +3307,11 @@ class Prompter:
         skill_block = skills_manager.format_for_prompt(skills_manager.find_relevant(latest_user_text))
         if skill_block:
             base_messages = list(base_messages) + [{"role": "system", "content": skill_block}]
-        options = {
-            "temperature": 0.5,
-            "top_p": 0.9,
-            "repeat_penalty": 1.15,
-            "repeat_last_n": 64,
-            "num_ctx": harness_config.num_ctx(),
-        }
-        loop = asyncio.get_running_loop()
-
-        def chat(messages, tools):
-            return loop.run_in_executor(None, lambda: chat_sync(
-                model, messages, tools=tools, think=think,
-                keep_alive=gaming_mode.keep_alive("30s"), options=options))
+        options = {"temperature": 0.5, "top_p": 0.9, "repeat_penalty": 1.15, "repeat_last_n": 64}
+        full_system = base_messages[0]["content"] if base_messages and base_messages[0].get("role") == "system" else ""
+        if router.start == "coding" and full_system:
+            base_messages = [{"role": "system", "content": CODING_SYSTEM_PROMPT}] + list(base_messages[1:])
+        chat = self._routed_chat(router, tier, think, options, full_system)
 
         async def dispatch(name, args):
             result = await self._dispatch_tool_call(name, args)
@@ -3298,7 +3332,7 @@ class Prompter:
             label = f"#{task['id']} {task['description'][:60]}" if task else "choosing a task"
             print(f"{GRAY}Thinking (harness step {step}: {label})...{RESET}")
             agent_tracker.update("lead", "thinking", task=f"Step {step}: {label}", progress=None,
-                                 model=tier, model_name=model)
+                                 model=tier, model_name=hybrid_mode.model_for(tier, router.model))
 
         # Explore / Plan / Verify subagents: same model and tool dispatch (so the
         # approval gate and hooks still apply), but each runs in a fresh history.
@@ -3312,6 +3346,7 @@ class Prompter:
             mutating_tools=set(CONFIRM_REQUIRED_TOOLS) | {"spawn_subagent", "workflow_run"},
             on_step=on_step,
             subagents=subagents,
+            num_ctx=router.num_ctx,              # compaction follows the turn's task tier
         )
         self._harness = harness
         try:

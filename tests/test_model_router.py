@@ -106,3 +106,202 @@ def test_a_tier_is_never_a_model_name():
     assert "agent_model = hybrid_mode.model_for(tier, AGENT_MODEL_NAME)" in flat
     assert "chat_sync( agent_model," in flat
     assert "tier" not in flat.split("chat_sync(")[1].split(")")[0]   # no tier variable reaches a chat call
+
+
+# ─── task tiers: daily (web, media, light work) vs coding ───────────────
+import asyncio
+
+from modules.harness import config as hcfg
+
+TIER_LUMI_MD = """# LUMI.md
+
+## Rules
+- be careful
+
+## Model
+- daily_models: qwen3.5:9b, qwen3:8b
+- daily_num_ctx: 16384
+- coding_models: qwen2.5-coder:14b, qwen3:8b
+- coding_num_ctx: 4096
+- game_model: qwen2.5:3b
+- agent_model: qwen3:8b
+- num_ctx: 8192
+- vram_headroom_gb: 2.5
+"""
+INSTALLED = {"qwen3.5:9b": 6.6, "qwen3:8b": 5.2, "qwen2.5-coder:14b": 9.0, "qwen2.5:3b": 1.9}
+
+
+@pytest.fixture
+def tiers(tmp_path, monkeypatch):
+    path = tmp_path / "LUMI.md"
+    path.write_text(TIER_LUMI_MD, encoding="utf-8")
+    monkeypatch.setattr(hcfg, "LUMI_MD_PATH", str(path))
+    monkeypatch.setattr(mr, "installed_models", lambda: dict(INSTALLED))
+    monkeypatch.setattr(mr, "gpu_vram_gb", lambda: 11.0)                # the RTX 2080 Ti
+    monkeypatch.setattr(mr, "_caps_cache", {})
+    return path
+
+
+@pytest.mark.parametrize("prompt", [
+    "search the web for good ramen near me", "browse to the KSU parking page", "look up the weather tomorrow",
+    "play my liked songs on Spotify", "skip this song", "look up how to fix this python bug",
+    "hey, how was your day?", "fix the typo in notes.txt", "what's on my class schedule today?"])
+def test_daily_requests(prompt):
+    assert mr.task_tier(prompt) == "daily"
+
+
+@pytest.mark.parametrize("prompt", [
+    "write a python script that renames my photos by date", "fix the bug in app.py",
+    "debug this traceback: KeyError in main", "refactor the parser function", "add unit tests for utils.ts"])
+def test_coding_requests(prompt):
+    assert mr.task_tier(prompt) == "coding"
+
+
+def test_a_write_code_prompt_runs_the_coder_with_4k(tiers):
+    r = mr.TurnRouter("write a python script that renames my photos by date")
+    assert (r.start, r.model, r.num_ctx) == ("coding", "qwen2.5-coder:14b", 4096)
+
+
+def test_a_web_search_call_moves_the_turn_to_the_daily_model(tiers):
+    r = mr.TurnRouter("fix the bug in app.py")
+    assert r.route([{"role": "user", "content": "fix the bug in app.py"}]) == "coding"
+    convo = [{"role": "user", "content": "fix the bug in app.py"},
+             {"role": "assistant", "content": "", "tool_calls": [
+                 {"function": {"name": "web_search", "arguments": {"query": "KeyError fix"}}}]},
+             {"role": "tool", "name": "web_search", "content": "<html>" + "x" * 5000}]
+    assert r.route(convo) == "daily"
+    assert (r.model, r.num_ctx) == ("qwen3.5:9b", 16384)
+    assert r.route(convo[:1]) == "daily"                              # never back to the 4K coder
+
+
+@pytest.mark.parametrize("tool", ["web_search", "browse_url", "spotify_play", "media_seek",
+                                  "media_playlist_tracks", "sdk__minecraft__mine", "recall_memory"])
+def test_web_and_media_tools_are_daily(tool):
+    assert mr.tier_for_tools([tool]) == "daily"
+    assert mr.tier_for_tools(["read_file", "write_file"]) is None
+
+
+def test_daily_must_fit_in_vram_but_coding_may_spill(tiers, monkeypatch):
+    assert mr.model_for_task("daily") == "qwen3.5:9b"                 # 6.6 GB <= 11 - 2.5
+    monkeypatch.setattr(mr, "installed_models", lambda: {"qwen3:8b": 5.2, "qwen2.5-coder:14b": 9.0})
+    assert mr.model_for_task("daily") == "qwen3:8b"                   # 9B not pulled: the fallback
+    assert mr.model_for_task("coding") == "qwen2.5-coder:14b"         # 9 GB spills, still chosen
+    monkeypatch.setattr(mr, "installed_models", lambda: {"qwen3:8b": 5.2})
+    assert mr.model_for_task("coding") == "qwen3:8b"
+    monkeypatch.setattr(mr, "installed_models", lambda: {})
+    assert mr.model_for_task("coding") == "qwen3:8b"                  # LUMI.md agent_model
+
+
+def test_gaming_mode_keeps_every_turn_on_daily(tiers, monkeypatch):
+    monkeypatch.setattr(constants, "GAMING_MODE", True, raising=False)
+    r = mr.TurnRouter("write a python script")
+    assert (r.start, r.model, r.num_ctx) == ("daily", "qwen3.5:9b", 16384)
+
+
+def test_tiers_come_from_lumi_md_and_old_keys_still_work(tiers, tmp_path, monkeypatch):
+    assert hcfg.daily_models() == ["qwen3.5:9b", "qwen3:8b"] and hcfg.coding_models()[0] == "qwen2.5-coder:14b"
+    assert (hcfg.tier_num_ctx("daily"), hcfg.tier_num_ctx("coding")) == (16384, 4096)
+    monkeypatch.setattr(constants, "MINECRAFT_AGENT_LOCAL_MODEL", None, raising=False)
+    assert mr.local_agent_model() == "qwen2.5:3b"
+    old = tmp_path / "OLD.md"
+    old.write_text("## Model\n- num_ctx: 8192\n- fast_agent_models: qwen3:8b\n- primary_agent_models: qwen2.5-coder:14b\n",
+                   encoding="utf-8")
+    monkeypatch.setattr(hcfg, "LUMI_MD_PATH", str(old))
+    assert hcfg.daily_models() == ["qwen3:8b"] and hcfg.coding_models() == ["qwen2.5-coder:14b"]
+    assert hcfg.tier_num_ctx("coding") == 8192
+
+
+def _ollama_payloads(monkeypatch):
+    """Capture what Lumi sends to Ollama's /api/chat."""
+    from modules import llm_providers as lp
+    sent = []
+
+    class Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"message": {"role": "assistant", "content": "ok"}, "done": True}
+
+    def post(url, json=None, **kw):
+        if url.endswith("/api/chat"):
+            sent.append(json)
+        return Resp()
+    monkeypatch.setattr(lp.requests, "post", post)
+    monkeypatch.setattr(lp.OllamaClient, "capabilities", lambda self, model: ["completion", "tools"])
+    return sent
+
+
+def _tool(name):
+    return {"type": "function", "function": {"name": name, "description": name, "parameters": {"type": "object"}}}
+
+
+def test_each_tier_sends_its_num_ctx_to_ollama(tiers, monkeypatch):
+    from modules import prompter as P
+    sent = _ollama_payloads(monkeypatch)
+    tools = [_tool(n) for n in ("read_file", "write_file", "run_command", "web_search", "spotify_play", "task_complete")]
+
+    async def go(prompt, messages):
+        router = mr.TurnRouter(prompt)
+        chat = P.Prompter._routed_chat(None, router, "sonnet", False, {"temperature": 0.5}, "FULL LUMI PROMPT")
+        return await chat(messages, tools)
+
+    coding = [{"role": "system", "content": P.CODING_SYSTEM_PROMPT}, {"role": "user", "content": "fix the bug in app.py"}]
+    asyncio.run(go("fix the bug in app.py", coding))
+    p = sent[-1]
+    assert p["model"] == "qwen2.5-coder:14b" and p["options"]["num_ctx"] == 4096
+    assert {t["function"]["name"] for t in p["tools"]} == {"read_file", "write_file", "run_command", "task_complete"}
+
+    asyncio.run(go("search the web for ramen", [{"role": "system", "content": "FULL LUMI PROMPT"},
+                                                 {"role": "user", "content": "search the web for ramen"}]))
+    p = sent[-1]
+    assert p["model"] == "qwen3.5:9b" and p["options"]["num_ctx"] == 16384 and len(p["tools"]) == len(tools)
+
+    # A coding turn that searched the web finishes on daily, with the full prompt back.
+    after_web = coding + [{"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "web_search", "arguments": {}}}]},
+                          {"role": "tool", "name": "web_search", "content": "results"}]
+    asyncio.run(go("fix the bug in app.py", after_web))
+    p = sent[-1]
+    assert p["model"] == "qwen3.5:9b" and p["options"]["num_ctx"] == 16384
+    assert p["messages"][0]["content"] == "FULL LUMI PROMPT"
+
+
+def test_a_model_without_native_tools_gets_the_text_format(tiers, monkeypatch):
+    from modules import prompter as P
+    sent = _ollama_payloads(monkeypatch)
+    monkeypatch.setattr(mr, "_caps_cache", {"qwen3.5:9b": ["completion"]})
+
+    async def go():
+        router = mr.TurnRouter("search the web for ramen")
+        chat = P.Prompter._routed_chat(None, router, "sonnet", False, {}, "FULL")
+        return await chat([{"role": "system", "content": "FULL"}, {"role": "user", "content": "hi"}],
+                          [_tool("web_search")])
+    asyncio.run(go())
+    p = sent[-1]
+    assert "tools" not in p                                            # Ollama would refuse them
+    assert '{"name": "<tool name>", "arguments"' in p["messages"][-1]["content"]
+    assert "web_search" in p["messages"][-1]["content"]
+
+
+def test_the_coding_prompt_leaves_room_in_4k():
+    from modules import prompter as P
+    from modules.agent_tools import TOOL_SCHEMAS
+    from modules.harness.tasks import TASK_TOOL_SCHEMAS
+    import json
+    coding_tools = mr.TurnRouter.coding_tools(TOOL_SCHEMAS + TASK_TOOL_SCHEMAS)
+    used = (len(P.CODING_SYSTEM_PROMPT) + len(hcfg.rules_text()) + len(json.dumps(coding_tools))) // 4
+    assert used < 4096 // 2, used                                    # at least half the window left to work
+
+
+def test_text_tool_calls_with_raw_newlines_in_code_are_recovered():
+    """qwen2.5-coder writes its calls as fenced JSON text, often with real line
+    breaks inside the code string, which strict JSON refuses."""
+    from modules.prompter import _recover_text_tool_calls
+    reply = ('```json\n{"name": "write_file", "arguments": {"path": "rev.py", '
+             '"content": "def rev(s):\n    return s[::-1]\n"}}\n```')
+    assert "\n    return" in reply                                   # a raw newline inside the string
+    calls = _recover_text_tool_calls(reply)
+    assert [c["function"]["name"] for c in calls] == ["write_file"]
+    assert calls[0]["function"]["arguments"]["content"].startswith("def rev(s):")

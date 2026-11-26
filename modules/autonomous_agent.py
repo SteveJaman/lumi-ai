@@ -329,7 +329,8 @@ class AutonomousTask:
                  recover_fn=None, policy: Optional[SandboxPolicy] = None,
                  tasks_dir: Optional[str] = None, skills_dir: Optional[str] = None,
                  time_budget_s: Optional[float] = None, max_steps: Optional[int] = None,
-                 on_step=None, sleep=asyncio.sleep, harness_factory=None, store=None, on_event=None):
+                 on_step=None, sleep=asyncio.sleep, harness_factory=None, store=None, on_event=None,
+                 num_ctx: Optional[int] = None):
         self.goal = " ".join(str(goal or "").split())
         self.chat_fn = chat_fn
         self.dispatch_fn = dispatch_fn
@@ -348,6 +349,7 @@ class AutonomousTask:
         self.sleep = sleep
         self.harness_factory = harness_factory
         self._store = store
+        self.num_ctx = num_ctx            # compaction size: the turn's task tier (model_router)
         self.evidence = Evidence()
         self.plan: Optional[Plan] = None
         self.skill: Optional[skills_manager.Skill] = None
@@ -586,7 +588,8 @@ class AutonomousTask:
             self.chat_fn, self.gate, tools=self.tools, store=self.store, session_id=self.session_id,
             recover_fn=self.recover_fn, failure_fn=default_failure,
             mutating_tools=set(WRITE_TOOLS | COMMAND_TOOLS), max_safety_steps=self.max_steps,
-            time_budget_s=self.time_budget_s, on_step=self.on_step, tasks_dir=self.tasks_dir)
+            time_budget_s=self.time_budget_s, on_step=self.on_step, tasks_dir=self.tasks_dir,
+            num_ctx=self.num_ctx)
 
     async def run(self, base_messages=None) -> AutonomousResult:
         if not self.goal:
