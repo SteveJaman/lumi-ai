@@ -7,7 +7,7 @@ reply the user sees. Scripted fake models; no Ollama."""
 import asyncio
 
 from modules.harness import config
-from modules.harness.loop import AgentHarness, CONTINUE_PROMPT
+from modules.harness.loop import AgentHarness, CONTINUE_PROMPT, TOOL_THEN_TEXT_PROMPT
 from modules.harness.tasks import TASK_TOOL_SCHEMAS, TaskStore
 from modules.llm_providers import LLMResponse, ToolCall
 
@@ -89,7 +89,9 @@ def test_a_reply_that_promises_more_work_gets_one_reprompt_first(tmp_path):
                 text("Let me check it actually started."), text("Yep, it's playing.")])
     h = harness(tmp_path, s, [])
     res = go(h)
-    assert any(m.get("content") == CONTINUE_PROMPT for m in h.messages)    # re-prompted once
+    nudges = [m for m in h.messages if m.get("content") == TOOL_THEN_TEXT_PROMPT]
+    assert len(nudges) == 1 and nudges[0]["role"] == "system"            # the tool-then-text note, once
+    assert "MUST call `task_complete`" in TOOL_THEN_TEXT_PROMPT and "Do not reply with text" in TOOL_THEN_TEXT_PROMPT
     assert res.termination_reason == "task_complete" and res.final_text == "Yep, it's playing."
 
 
@@ -150,3 +152,55 @@ def test_the_tool_descriptions_stay_short():
     import re
     tc = next(t["function"] for t in TASK_TOOL_SCHEMAS if t["function"]["name"] == "task_complete")
     assert len(re.findall(r"[.!?](\s|$)", tc["description"])) < 2
+
+
+def test_her_own_stop_notes_are_never_her_finishing_reply(tmp_path):
+    """Chat history holds lines like "(I stopped: model stalled...)"; a small model
+    copies them. They must never become the reply that closes a task."""
+    from modules.harness.loop import sounds_unfinished
+    for note in ('(I stopped: model stalled. Open tasks are saved; say "continue".)',
+                 "I couldn't finish that: unknown error",
+                 "Something went wrong talking to my own model: timeout"):
+        assert sounds_unfinished(note), note
+    s = Script([call("task_next"), call("spotify_play", query="Liked Songs"),
+                text('(I stopped: model stalled. Open tasks are saved; say "continue".)'),
+                call("task_complete", id=1, result="Playing your Liked Songs.")])
+    h = harness(tmp_path, s, [])
+    res = go(h)
+    assert h.finished_by_reply == 0 and res.final_text == "Playing your Liked Songs."
+
+
+def test_switching_tasks_clears_the_old_tasks_messages(tmp_path):
+    """The restaurant task must not see the Spotify task's chatter."""
+    store = TaskStore(str(tmp_path / "tasks.json"))
+    store.add("play my Liked Songs", acceptance_criteria="music plays")
+    s = Script([call("task_next"), call("spotify_play", query="Liked Songs"),
+                call("task_complete", id=1, result="Playing."),
+                call("task_next"), call("web_search", query="chinese food duluth"),
+                call("task_complete", id=2, result="Here are three places.")])
+
+    async def dispatch(name, args):
+        return "ok"
+    h = AgentHarness(s, dispatch, tools=[], store=store, tasks_dir=str(tmp_path))
+    history = [{"role": "system", "content": "SYS"},
+               {"role": "user", "content": "play my Liked Songs"},
+               {"role": "assistant", "content": "Alright, Liked Songs are on!"},
+               {"role": "user", "content": "find chinese food in Duluth"}]
+    res = asyncio.run(h.run("find chinese food in Duluth", history))
+    assert res.termination_reason == "task_complete" and h.task_switches == 1
+    after = s.seen[4]                                          # the call right after the switch
+    text = " ".join(str(m.get("content")) for m in after[2:])             # after the system prompt + rules
+    assert len(after) == 4 and "spotify" not in text.lower() and "Liked Songs" not in text
+    assert after[0]["content"] == "SYS" and after[1]["content"].startswith("[LUMI.md RULES]")
+    assert "[New task #2] find chinese food in Duluth" in after[2]["content"]
+
+
+def test_the_first_task_keeps_its_chat_context(tmp_path):
+    """No switch on the run's own first task: "it" and "that one" still make sense."""
+    s = Script([call("task_next"), call("spotify_play", query="it"), call("task_complete", id=1, result="ok")])
+    h = harness(tmp_path, s, [])
+    asyncio.run(h.run("play it again", [{"role": "system", "content": "SYS"},
+                                        {"role": "assistant", "content": "That was Idol by YOASOBI."},
+                                        {"role": "user", "content": "play it again"}]))
+    assert h.task_switches == 0
+    assert any("Idol by YOASOBI" in str(m.get("content")) for m in s.seen[2])

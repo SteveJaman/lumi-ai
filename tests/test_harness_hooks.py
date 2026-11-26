@@ -66,15 +66,32 @@ def test_crashing_pre_hook_fails_closed(tmp_path):
     assert not allowed and "crashed" in reason
 
 
-def test_failure_counter_injects_at_three(tmp_path):
+def test_two_identical_failures_say_stop_and_the_third_never_runs(tmp_path):
     reg = HookRegistry(str(tmp_path))
     args = {"command": "python missing.py"}
     assert reg.post_tool_use_failure("run_command", args, "Error 1") == []
-    assert reg.post_tool_use_failure("run_command", args, "Error 2") == []
-    msgs = reg.post_tool_use_failure("run_command", args, "Error 3")
-    assert len(msgs) == 1 and "failed 3×" in msgs[0] and "different approach" in msgs[0]
-    # different args count separately
+    msgs = reg.post_tool_use_failure("run_command", args, "Error 2")
+    assert len(msgs) == 1 and msgs[0].startswith("STOP TRYING THIS COMMAND.") and "failed 2x" in msgs[0]
+    assert "different tool or tell the user you cannot do this" in msgs[0]
+    allowed, reason = reg.pre_tool_use("run_command", args)              # a third try is refused
+    assert not allowed and reason.startswith("STOP TRYING THIS COMMAND.")
+    # different args count separately, and aren't blocked
     assert reg.post_tool_use_failure("run_command", {"command": "other"}, "e") == []
+    assert reg.pre_tool_use("run_command", {"command": "other"})[0]
+
+
+def test_a_program_off_the_allowlist_is_blocked_whatever_its_flags(tmp_path):
+    reg = HookRegistry(str(tmp_path))
+    refusal = "Error: 'ipconfig' is not on the command allowlist. Allowed: ..."
+    reg.post_tool_use_failure("run_command", {"command": "ipconfig"}, refusal)
+    msgs = reg.post_tool_use_failure("run_command", {"command": "ipconfig /all"}, refusal)
+    assert msgs and msgs[0].startswith("STOP TRYING THIS COMMAND.")
+    assert not reg.pre_tool_use("run_command", {"command": "IPCONFIG /release"})[0]
+    assert reg.pre_tool_use("run_command", {"command": "git status"})[0]
+    # an ordinary failure (not an allowlist refusal) doesn't block the program
+    reg.post_tool_use_failure("run_command", {"command": "python a.py"}, "Exit code 1")
+    reg.post_tool_use_failure("run_command", {"command": "python b.py"}, "Exit code 1")
+    assert reg.pre_tool_use("run_command", {"command": "python c.py"})[0]
 
 
 def _harness(tmp_path, items, dispatch, hooks, **kw):
@@ -111,14 +128,22 @@ def test_pre_hook_denial_blocks_run_command_in_yolo_mode(tmp_path, monkeypatch):
     assert res.termination_reason == "task_complete"
 
 
-def test_three_failures_inject_notice_into_next_turn(tmp_path):
+def test_two_failures_inject_stop_into_next_turn_and_block_the_third(tmp_path):
     reg = HookRegistry(str(tmp_path))
+    ran = []
+
+    def dispatch(n, a):
+        ran.append(a.get("command"))
+        return "Error: exit 1"
     items = [tc("task_next")] + [tc("run_command", command="python bad.py")] * 3 + [tc("task_fail", id=1, reason="x")]
-    h, seen = _harness(tmp_path, items, lambda n, a: "Error: exit 1", reg)
+    h, seen = _harness(tmp_path, items, dispatch, reg)
     asyncio.run(h.run("x", [{"role": "system", "content": "S"}]))
-    notices = [m for m in seen[4] if "failed 3×" in str(m.get("content"))]
-    assert notices, "the 3x-failure notice should be in the turn after the third failure"
-    assert not any("failed 3×" in str(m.get("content")) for m in seen[3])
+    stop = [m for m in seen[3] if "STOP TRYING THIS COMMAND" in str(m.get("content"))]
+    assert stop, "the stop notice should be in the turn after the second failure"
+    assert not any("STOP TRYING" in str(m.get("content")) for m in seen[2])
+    assert ran == ["python bad.py", "python bad.py"]                    # the third never ran
+    denied = [m for m in seen[4] if m.get("role") == "tool" and str(m.get("content")).startswith("Denied: STOP")]
+    assert denied
 
 
 # ---- through the real prompter approval path ----

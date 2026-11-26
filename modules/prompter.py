@@ -3218,9 +3218,22 @@ class Prompter:
                 msgs.append({"role": "system", "content": model_router.TEXT_TOOL_HINT.replace("{names}", names)})
                 send_tools = None
             opts = dict(options, num_ctx=router.num_ctx)
-            return loop.run_in_executor(None, lambda: chat_sync(
-                model, msgs, tools=send_tools, think=think,
-                keep_alive=gaming_mode.keep_alive("30s"), options=opts))
+            timeout = harness_config.agent_timeout_s()
+
+            def call():
+                # A timeout is retried once on the SAME model (never a smaller one);
+                # a second one stops the task with a clear message.
+                for attempt in (1, 2):
+                    try:
+                        return chat_sync(model, msgs, tools=send_tools, think=think,
+                                         keep_alive=gaming_mode.keep_alive("30s"), options=opts,
+                                         timeout=timeout)
+                    except requests.exceptions.Timeout:
+                        print(f"{GRAY}[agent] {model} didn't answer within {timeout:.0f}s "
+                              f"(attempt {attempt} of 2){RESET}")
+                raise RuntimeError(f"{model} didn't answer within {timeout:.0f}s, twice. I stopped this "
+                                   f"task; try again, or ask for something smaller.")
+            return loop.run_in_executor(None, call)
 
         return chat
 

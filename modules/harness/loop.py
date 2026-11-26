@@ -31,7 +31,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from modules.harness import config, workflows
-from modules.harness.context import Compactor, ToolOutputStore, rules_message
+from modules.harness.context import Compactor, ToolOutputStore, rules_message, archive
 from modules.harness.hooks import HookRegistry
 from modules.harness.subagents import SPAWN_SUBAGENT_SCHEMA
 from modules.harness.tasks import (
@@ -47,6 +47,16 @@ CONTINUE_PROMPT = ("You replied with text, not a tool call. If the request is do
                    "or `task_fail` with the reason.")
 RESUME_WORDS = ("continue", "resume", "keep going", "go on", "carry on")
 
+# Sent (as a system note) when a text-only reply follows a tool call and isn't
+# taken as the finish: the tool ran; finishing is task_complete, not prose.
+TOOL_THEN_TEXT_PROMPT = ("Tool executed. If the task is done, you MUST call `task_complete` "
+                         "(put your message to the user in `result`). Do not reply with text.")
+
+# The harness's and prompter's own status lines. A small model copies them out of
+# chat history; they are never her finishing reply.
+_HARNESS_NOTES = ("(I stopped:", "I couldn't finish that:", "Something went wrong talking to my own model",
+                  "[Harness notice", "[TASK STORE")
+
 # A text reply that still promises work, or asks the user something, isn't a finish.
 _UNFINISHED = re.compile(
     r"\b(i'?ll|i will|i'?m going to|i am going to|gonna|let me|about to|next,? i|first,? i|"
@@ -57,7 +67,8 @@ _UNFINISHED = re.compile(
 def sounds_unfinished(text):
     """True when a reply reads as 'about to do something' or asks the user a question."""
     t = (text or "").strip()
-    return not t or t.endswith("?") or bool(_UNFINISHED.search(t))
+    return (not t or t.endswith("?") or bool(_UNFINISHED.search(t))
+            or any(note in t for note in _HARNESS_NOTES))
 
 
 @dataclass
@@ -146,6 +157,8 @@ class AgentHarness:
         self.messages = []
         self.tool_call_count = 0
         self.finished_by_reply = 0          # tasks finished by a text reply after their work (b')
+        self.task_switches = 0              # times the window was cleared for a new task
+        self._head_len = 0
         self.subagents = subagents
         if subagents is not None:
             # Subagents share the store, hooks and output truncation, never the history.
@@ -219,7 +232,24 @@ class AgentHarness:
         rules = rules_message(self.rules)
         insert_at = 1 if msgs and msgs[0].get("role") == "system" else 0
         msgs.insert(insert_at, rules)
+        self._head_len = insert_at + 1            # system prompt + rules: kept on a task switch
         return msgs
+
+    def _isolate(self, task):
+        """A different task was just picked (task_next): archive the transcript and
+        drop everything after the system prompt and rules, so the old task's chatter
+        (and the chat history it came with) can't steer this one."""
+        try:
+            archive(self.messages, self.session_id, getattr(self.compactor, "transcripts_dir", None),
+                    reason=f"task switch to #{task['id']}")
+        except OSError:
+            pass
+        head = self.messages[:self._head_len]
+        brief = (f"[New task #{task['id']}] {task['description']}\n"
+                 f"Acceptance criteria: {task.get('acceptance_criteria') or 'n/a'}\n"
+                 "Earlier tasks' messages were cleared; work only on this one.")
+        self.messages = head + [{"role": "user", "content": brief}]
+        self.task_switches += 1
 
     def _open_task(self, goal_task):
         """The task being worked on: the one in progress, else this run's own
@@ -258,6 +288,9 @@ class AgentHarness:
         steps = 0
         text_only_streak = 0
         acted_for = None              # task id whose real work (a non-task tool) succeeded
+        last_step_had_tools = False   # the previous model step called a non-task tool
+        resumed = self.store.current()
+        worked_on = resumed["id"] if resumed else None   # the last task this run worked on
         cycles_since_mutation = 0
         reason = None
         final_text = ""
@@ -326,17 +359,25 @@ class AgentHarness:
                 if text_only_streak >= 2:
                     reason = "model_stalled"
                     break
-                self.messages.append({"role": "user", "content": CONTINUE_PROMPT})
+                if last_step_had_tools:
+                    self.messages.append({"role": "system", "content": TOOL_THEN_TEXT_PROMPT})
+                else:
+                    self.messages.append({"role": "user", "content": CONTINUE_PROMPT})
+                last_step_had_tools = False
                 if cycles_since_mutation >= self.stagnation_cycles:
                     reason = "stagnant"
                     break
                 continue
 
             text_only_streak = 0
+            # Only real work counts (spotify_play, write_file...), not task bookkeeping.
+            last_step_had_tools = any(((c.get("function") or {}).get("name") or "") not in TASK_TOOL_NAMES
+                                      for c in tool_calls)
             self.messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
             mutated = False
             resolved = False
             notices = []
+            switched_to = None
             for call in tool_calls:
                 fn = call.get("function", {}) or {}
                 name = fn.get("name") or ""
@@ -362,6 +403,12 @@ class AgentHarness:
                 if not failed and name not in TASK_TOOL_NAMES:
                     work_on = self._open_task(goal_task)
                     acted_for = work_on["id"] if work_on else acted_for
+                if name == "task_next" and not failed:
+                    now = self.store.current()
+                    if now is not None:
+                        if worked_on is not None and now["id"] != worked_on:
+                            switched_to = now
+                        worked_on = now["id"]
                 if name in ("task_complete", "task_fail") and not failed:
                     resolved = True
                     acted_for = None
@@ -371,6 +418,8 @@ class AgentHarness:
                     else:
                         final_text = f"I couldn't finish that: {args.get('reason') or 'unknown error'}"
 
+            if switched_to is not None:               # (Change 2) only this task in view
+                self._isolate(switched_to)
             if notices:
                 self.messages.append({"role": "user", "content": "[Harness notice — not from the user]\n"
                                       + "\n".join(notices)})

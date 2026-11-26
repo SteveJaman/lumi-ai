@@ -121,6 +121,12 @@ def tier_num_ctx(task, path=None):
         return num_ctx(path)
 
 
+def agent_timeout_s(path=None):
+    """Seconds one agent model call may take (LUMI.md `agent_timeout_s`, default 300).
+    A 9B/14B on the 11 GB card can need minutes to read a big context."""
+    return _float("agent_timeout_s", 300.0, path)
+
+
 def game_model(path=None):
     """The Minecraft agent's model (LUMI.md `game_model`), or None to use constants."""
     return model_settings(path).get("game_model") or None

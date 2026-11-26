@@ -715,7 +715,8 @@ class OllamaClient(LLMClient):
         return caps
 
     def chat(self, messages, tools=None, think=None, options=None,
-             keep_alive=None, model="", on_text=None):
+             keep_alive=None, model="", on_text=None, timeout=None):
+        timeout = timeout or self.timeout          # per call: agent turns wait longer (LUMI.md)
         payload: Dict[str, Any] = {
             "model": model,
             "messages": self._convert_messages(messages),
@@ -741,7 +742,7 @@ class OllamaClient(LLMClient):
         t0 = time.time()
         if on_text is None:
             r = requests.post(f"{self.base_url}/api/chat",
-                              json=payload, timeout=self.timeout)
+                              json=payload, timeout=timeout)
             r.raise_for_status()
             data = r.json()
         else:
@@ -752,7 +753,7 @@ class OllamaClient(LLMClient):
             # connection makes Ollama stop generating.
             parts, calls, data = [], [], {}
             with requests.post(f"{self.base_url}/api/chat", json=payload,
-                               timeout=self.timeout, stream=True) as r:
+                               timeout=timeout, stream=True) as r:
                 r.raise_for_status()
                 for line in r.iter_lines():
                     if not line:
@@ -1317,9 +1318,10 @@ def invalidate_client_cache():
 # Public entry point
 # ===============================================================
 def chat_sync(model_spec, messages, tools=None, think=None,
-              options=None, keep_alive=None, on_text=None) -> LLMResponse:
+              options=None, keep_alive=None, on_text=None, timeout=None) -> LLMResponse:
     """on_text, if given, receives the reply as it's written. Ollama
-    streams it; other providers deliver it in one piece at the end."""
+    streams it; other providers deliver it in one piece at the end.
+    timeout (seconds) overrides an Ollama client's default for this call."""
     provider_id, model = parse_model_spec(model_spec)
     if provider_id == "anthropic" and model.lower() == "auto":
         # "anthropic:auto" = the Claude smart router picks haiku / sonnet / opus per call.
@@ -1329,14 +1331,15 @@ def chat_sync(model_spec, messages, tools=None, think=None,
             on_text(resp.content)
         return resp
     client = get_client(provider_id)
+    extra = {"timeout": timeout} if timeout and isinstance(client, OllamaClient) else {}
     if on_text is not None and isinstance(client, OllamaClient):
         return client.chat(
             messages, tools=tools, think=think, options=options,
-            keep_alive=keep_alive, model=model, on_text=on_text,
+            keep_alive=keep_alive, model=model, on_text=on_text, **extra,
         )
     resp = client.chat(
         messages, tools=tools, think=think,
-        options=options, keep_alive=keep_alive, model=model,
+        options=options, keep_alive=keep_alive, model=model, **extra,
     )
     if on_text is not None and resp.content:
         on_text(resp.content)
