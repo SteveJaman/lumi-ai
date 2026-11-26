@@ -42,7 +42,7 @@ from urllib.parse import quote, quote_plus, urlparse
 from modules import web_search
 from modules.everyday_common import ToolContext, one_line
 
-AGENT = "system"
+AGENT = "research"
 TOOL_NAME = "find_local_deals"
 TASKS = {TOOL_NAME: "Looking for local deals"}
 

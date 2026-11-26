@@ -21,7 +21,7 @@
 (function () {
   'use strict';
 
-  const AGENTS = ['main', 'minecraft', 'office', 'system'];
+  const AGENTS = ['lead', 'research', 'build', 'operate'];
   const POSES = ['idle', 'walk', 'sit', 'type', 'read', 'stretch', 'drink', 'eat', 'sleep'];
   const COLS = 4, ROWS = 3;
   const ROW = { down: 0, up: 1, right: 2, left: 2 };
@@ -38,7 +38,7 @@
     silver: '#eef0f7', teal: '#5ec6b9', skin: '#fff0e8', white: '#f7f9fd', black: '#25252e',
     eye: '#3fb7a9', outline: '#2a2336', pink: '#f6b8c9',
   };
-  const ACCENT = { main: '#5cf2d2', minecraft: '#5bd16a', office: '#b48cff', system: '#ff5a7a' };
+  const ACCENT = { lead: '#5cf2d2', research: '#7fe3ff', build: '#b48cff', operate: '#ff5a7a' };
 
   const sheetFile = (agent) => `chars/${agent}-sheet.png`;
 

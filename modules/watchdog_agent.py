@@ -53,7 +53,7 @@ from modules import agent_tracker
 from modules.log_hub import emit as hub_emit
 from modules.everyday_common import ToolContext
 
-AGENT = "system"
+AGENT = "operate"
 
 RESOURCE_INTERVAL_S = 60.0
 GAME_INTERVAL_S = 10.0
@@ -311,7 +311,7 @@ class Watchdog(Module):
         self.events.append(event)
         hub_emit(self.signals, "watchdog", event, level="warn")
         print(f"\033[93m{event}\033[0m")
-        agent_tracker.update("system", "error", task=card)
+        agent_tracker.update(AGENT, "error", task=card)
         offer = kind in ("crash", "hung") and self.last_crashed is not None and bool(self.last_crashed.exe)
         self.signals.history.append({
             "role": "user", "content": event, "source": "watchdog_event",
@@ -372,7 +372,7 @@ class Watchdog(Module):
         except Exception as e:
             return f"Error: couldn't start {g.title}: {e}"
         self.last_crashed = None
-        agent_tracker.update("system", "idle")           # clears the alarm on the System card
+        agent_tracker.update(AGENT, "idle")           # clears the alarm on the Operate card
         hub_emit(self.signals, "watchdog", f"restarted {g.title}")
         return f"Restarted {g.title}."
 

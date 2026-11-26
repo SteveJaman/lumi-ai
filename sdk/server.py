@@ -651,15 +651,20 @@ class SDKServer(Module):
                       "taking a breather", "starting up", "autoplay is off")
 
     def _track_minecraft(self, client: SDKClient, text: str = "", gone: bool = False) -> None:
-        """Feed the Pipeline view's Minecraft card from the status line the
-        agent already sends every 30 s ("Currently: ..."). No bot changes."""
+        """Feed the Pipeline view's Operate card from the status line the
+        Minecraft agent already sends every 30 s ("Currently: ..."). No bot
+        changes. Its tasks start with "Minecraft: ", and it only clears the
+        card when the card is showing Minecraft, not other Operate work."""
         if client.game_name != "MinecraftAgent":
             return
         try:
             from modules import agent_tracker
             from constants import GAME_AGENT_MODEL
+            card = agent_tracker.get("operate")
+            ours = card["status"] == "idle" or str(card.get("task") or "").startswith("Minecraft")
             if gone:
-                agent_tracker.update("minecraft", "idle", task="Not running")
+                if ours:
+                    agent_tracker.update("operate", "idle", task="Minecraft: not running")
                 return
             doing = ""
             for line in str(text or "").splitlines():
@@ -667,9 +672,12 @@ class SDKServer(Module):
                     doing = line[len("Currently:"):].strip()
             low = doing.lower()
             if not doing or any(w in low for w in self._MC_IDLE_WORDS):
-                agent_tracker.update("minecraft", "idle", task=doing or "In the game", model_name=GAME_AGENT_MODEL)
+                if ours:
+                    agent_tracker.update("operate", "idle", task=f"Minecraft: {doing or 'in the game'}",
+                                         model_name=GAME_AGENT_MODEL)
             else:
-                agent_tracker.update("minecraft", "executing", task=doing, progress=50, model_name=GAME_AGENT_MODEL)
+                agent_tracker.update("operate", "executing", task=f"Minecraft: {doing}", progress=50,
+                                     model_name=GAME_AGENT_MODEL)
         except Exception:
             pass
 

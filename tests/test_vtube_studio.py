@@ -145,7 +145,7 @@ def test_a_dropped_socket_starts_a_reconnect(monkeypatch):
 
 
 def tracker(**agents):
-    snap = {a: {"status": "idle", "task": "", "updated": time.time()} for a in ("main", "minecraft", "office", "system")}
+    snap = {a: {"status": "idle", "task": "", "updated": time.time()} for a in ("lead", "research", "build", "operate")}
     for a, s in agents.items():
         snap[a].update(s)
     return snap
@@ -155,16 +155,16 @@ def test_agent_states_drive_the_face():
     v = make()
     run(v._establish())
     now = time.time()
-    v._agent_snapshot = tracker(main={"status": "thinking"})
+    v._agent_snapshot = tracker(lead={"status": "thinking"})
     for i in range(60):
         f = v.compute_frame(now + i / 60, speaking=False)
     assert v._frame_pose == "thinking" and v._gaze._mode == "thinking"
-    v._agent_snapshot = tracker(system={"status": "waiting_approval"})
+    v._agent_snapshot = tracker(operate={"status": "waiting_approval"})
     for i in range(60):
         f = v.compute_frame(now + 1 + i / 60, speaking=False)
     assert v._frame_pose == "approval" and v._gaze._mode == "camera"
     assert abs(f["EyeRightX"]) < 0.1                              # looking straight at you
-    v._agent_snapshot = tracker(main={"status": "executing", "task": "Running web_search"})
+    v._agent_snapshot = tracker(lead={"status": "executing", "task": "Running web_search"})
     v.compute_frame(now + 2, speaking=False)
     assert v._gaze._mode == "reading"
 

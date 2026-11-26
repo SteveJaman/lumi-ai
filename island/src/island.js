@@ -239,7 +239,7 @@
       case 'approval_request':
         if (msg.id && !queue.some((r) => r.id === msg.id)) {   // re-sent on reconnect
           queue.push({ id: String(msg.id), tool: String(msg.tool || ''), preview: String(msg.preview || ''),
-                       agent: ['main', 'minecraft', 'office', 'system'].includes(msg.agent) ? msg.agent : 'main' });
+                       agent: ['lead', 'research', 'build', 'operate'].includes(msg.agent) ? msg.agent : 'lead' });
           renderApproval();
         }
         break;
@@ -989,7 +989,7 @@
   // agent that needs approval walks to the front, waves, and gets
   // Approve / Decline buttons above its head (same respond() as the
   // full-screen approval view). The list below keeps each agent's task.
-  const AGENTS = [['main', 'Main'], ['minecraft', 'Minecraft'], ['office', 'Office'], ['system', 'System']];
+  const AGENTS = [['lead', 'Lead'], ['research', 'Research'], ['build', 'Build'], ['operate', 'Operate']];
   const STATUS_LABEL = { idle: 'Idle', thinking: 'Thinking', executing: 'Executing', waiting_approval: 'Needs you', error: 'Error' };
   let agents = {};
   let pixel = null;

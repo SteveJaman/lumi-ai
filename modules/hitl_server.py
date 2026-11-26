@@ -396,7 +396,7 @@ class HITLServer:
     # ── approval API ─────────────────────────────────────────────────
 
     async def request_approval(self, tool_name: str, preview_text: str,
-                               timeout: float = 120, agent: str = "main") -> bool:
+                               timeout: float = 120, agent: str = "lead") -> bool:
         """Ask the connected client(s) to approve a tool call.
 
         Returns True on approve, False on decline or timeout. Falls back
@@ -404,7 +404,8 @@ class HITLServer:
         (main / minecraft / office / system) shows as waiting_approval meanwhile and
         goes back to what it was doing afterwards.
         """
-        agent = agent if agent in agent_tracker.AGENTS else "main"
+        agent = agent_tracker.agent_id_for(agent)
+        agent = agent if agent in agent_tracker.AGENTS else "lead"
         before = agent_tracker.get(agent)
         agent_tracker.update(agent, "waiting_approval", task=f"Approve {tool_name}?")
         try:
@@ -501,7 +502,7 @@ async def stop() -> None:
 
 
 async def request_approval(tool_name: str, preview_text: str,
-                           timeout: float = 120, agent: str = "main") -> bool:
+                           timeout: float = 120, agent: str = "lead") -> bool:
     return await _server.request_approval(tool_name, preview_text, timeout, agent)
 
 

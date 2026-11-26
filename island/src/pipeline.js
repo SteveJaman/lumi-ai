@@ -13,7 +13,7 @@
  *     base: '/web/pixel-office/',                 // where the baked art is
  *     onDecision: (id, 'approve' | 'decline') => {},
  *   });
- *   pl.update(agents);      // agent_update payload: {main: {status, visual_state, task, progress, model, model_name}, ...}
+ *   pl.update(agents);      // agent_update payload: {lead: {status, visual_state, task, progress, model, model_name}, ...}
  *   pl.setApprovals(list);  // [{id, tool, agent, preview}]
  *   pl.setMood(mood);       // {valence, arousal, frustration, curiosity, boredom}; normally from
  *                           // the backend's mood_update (window.lumiMood + the 'lumi-mood' event)
@@ -53,8 +53,8 @@
 (function () {
   'use strict';
 
-  const ORDER = ['main', 'minecraft', 'office', 'system'];
-  const NAMES = { main: 'Main', minecraft: 'Minecraft', office: 'Office', system: 'System' };
+  const ORDER = ['lead', 'research', 'build', 'operate'];
+  const NAMES = { lead: 'Lead', research: 'Research', build: 'Build', operate: 'Operate' };
   const STATUS_LABEL = { idle: 'Idle', thinking: 'Thinking', executing: 'Executing', waiting_approval: 'Needs you', error: 'Error' };
   const READING_RE = /web_search|browse|research|search_files|read_file|read_window|reading|searching|triag|recall|library/i;
   const FAST_MS = 33, SLOW_MS = 120;
@@ -72,10 +72,10 @@
   // Relative odds of each idle behaviour, per agent (before mood). Sleep and lunch
   // aren't in here: they depend on the clock (see pickBehavior).
   const BEHAVIOR_WEIGHTS = {
-    main:      { deskwork: 5, look: 3, stretch: 2, drink: 2, wander: 1.5, window: 0.5, rack: 0 },
-    minecraft: { wander: 5, window: 4, look: 2, stretch: 1, drink: 1, deskwork: 0.5, rack: 0 },
-    office:    { deskwork: 5, drink: 2, stretch: 2, look: 1, wander: 1, window: 0.5, rack: 0 },
-    system:    { rack: 5, look: 2, stretch: 1.5, drink: 1, wander: 0.5, deskwork: 0, window: 0 },
+    lead:     { deskwork: 5, look: 3, stretch: 2, drink: 2, wander: 1.5, window: 0.5, rack: 0 },
+    research: { deskwork: 4, window: 3, look: 3, wander: 1.5, drink: 1, stretch: 1, rack: 0 },
+    build:    { deskwork: 5, drink: 2, stretch: 2, look: 1, wander: 1, window: 0.5, rack: 0 },
+    operate:  { rack: 5, look: 2, stretch: 1.5, drink: 1, wander: 0.5, deskwork: 0, window: 0 },
   };
   const LUNCH_WEIGHT = 6;                       // added once per lunch window per agent
   const AMBIENT_LABEL = {
@@ -710,7 +710,7 @@
       if (!A) return;
       const byAgent = new Map();
       for (const ap of approvals) {
-        const id = ORDER.includes(ap.agent) ? ap.agent : 'main';
+        const id = ORDER.includes(ap.agent) ? ap.agent : 'lead';
         if (!byAgent.has(id)) byAgent.set(id, []);
         byAgent.get(id).push(ap);
       }
@@ -903,7 +903,7 @@
       if (destroyed) return;
       A = assets;
       W = A.meta.W * RS; H = A.meta.H * RS;
-      CW = A.chars.main.cw; CH = A.chars.main.ch;
+      CW = A.chars.lead.cw; CH = A.chars.lead.ch;
       tint = document.createElement('canvas'); tint.width = CW; tint.height = CH;
       tctx = tint.getContext('2d');
       for (const id of ORDER) agents[id] = makeAgent(id);

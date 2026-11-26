@@ -1695,7 +1695,7 @@ class Prompter:
         model = FAST_MODEL_NAME if use_fast else MODEL_NAME
         loop = asyncio.get_running_loop()
         print(f"{GRAY}Reacting to a game event ({'fast' if use_fast else 'full'})...{RESET}")
-        agent_tracker.update("main", "thinking", task="Reacting to a game event", progress=0,
+        agent_tracker.update("lead", "thinking", task="Reacting to a game event", progress=0,
                              model="haiku" if use_fast else "sonnet", model_name=model)
         try:
             resp: LLMResponse = await loop.run_in_executor(
@@ -1831,9 +1831,9 @@ class Prompter:
             None, model_router.route_model, latest_user_text)
 
     def _note_route(self, req):
-        """This turn's tier and model, on the prompter and the Pipeline's Main card."""
+        """This turn's tier and model, on the prompter and the Pipeline's Lead card."""
         self._route_tier = req["tier"]
-        agent_tracker.update("main", "thinking", task="Generating response", progress=0,
+        agent_tracker.update("lead", "thinking", task="Generating response", progress=0,
                              model=req["tier"] or model_router.DEFAULT_TIER, model_name=req["model"])
 
     async def run_conversational(self, latest_user_text):
@@ -1905,7 +1905,7 @@ class Prompter:
                 self._note_route(local)
                 return await self._run_chat_request(local, latest_user_text, tier, recover=False)
             print(f"\n{GRAY}[System Error: Chat request failed - {e}]{RESET}")
-            agent_tracker.update("main", "error", task=f"Chat model failed: {e}")
+            agent_tracker.update("lead", "error", task=f"Chat model failed: {e}")
             if stream.entry is None:
                 return "Something went wrong talking to my own model — check the terminal for the error."
             stream.finish(truncated=True)
@@ -1956,7 +1956,7 @@ class Prompter:
                        "without editing anything. Decline and Lumi answers with her local model.")
             preview = dict(claude_code.preview(task, candidate, claude_handoff.MODEL), why=why)
             _show_handoff(tier, f"asking you ({'edits' if edit else 'read-only'}): {reason}")
-            if await self._confirm(claude_code.TOOL_NAME, preview, agent="office"):
+            if await self._confirm(claude_code.TOOL_NAME, preview, agent="build"):
                 mode = candidate
                 break
         if mode is None:
@@ -1964,19 +1964,19 @@ class Prompter:
             _show_handoff(tier, "declined: answering locally", where="local")
             return None
         print(f"{GRAY}[Claude Code ({mode}) is working… this can take a few minutes]{RESET}")
-        agent_tracker.update("office", "executing", task=f"Claude Code: {task}", progress=50,
+        agent_tracker.update("build", "executing", task=f"Claude Code: {task}", progress=50,
                              model=tier or "opus", model_name="Claude Code")
         try:
             out = await loop.run_in_executor(None, claude_code.run, task, mode, claude_handoff.MODEL)
         except claude_code.ClaudeCodeError as e:
-            agent_tracker.update("office", "error", task=str(e))
+            agent_tracker.update("build", "error", task=str(e))
             print(f"{GRAY}[Router] Claude Code couldn't take it ({e}); answering locally.{RESET}")
             _show_handoff(tier, f"Claude Code failed ({e}): answering locally", where="local")
             return None
         except BaseException as e:                       # never leave the card stuck on "executing"
-            agent_tracker.update("office", "error", task=f"{type(e).__name__}: {e}")
+            agent_tracker.update("build", "error", task=f"{type(e).__name__}: {e}")
             raise
-        agent_tracker.settle("office")
+        agent_tracker.settle("build")
         _show_handoff(tier, f"Claude Code answered ({mode})")
         self._spoken_override = claude_handoff.SPOKEN[mode]
         return claude_handoff.format_reply(out, mode)
@@ -2705,7 +2705,7 @@ class Prompter:
         except Exception as e:
             return f"System Info - Search error: {e}"
 
-    async def _confirm(self, tool_name, arguments, timeout=120, agent="main"):
+    async def _confirm(self, tool_name, arguments, timeout=120, agent="lead"):
         """Ask the human to approve a tool call.
 
         Routes through the HITL WebSocket server when a client is
@@ -2723,18 +2723,23 @@ class Prompter:
 
     async def _dispatch_tool_call(self, name, arguments):
         """Run one tool, showing it on the Pipeline view. Claude Code is
-        Office work; calendar, email, finance and desktop tools are System
-        work; meeting tools run on Main. Those branches update their own
-        card. Everything else is the main agent executing a tool."""
+        Build work; calendar, email, finance and desktop tools are Operate work;
+        those branches update their own card. Other built-in tools light up
+        whoever does that kind of work (agent_tracker.agent_for_tool: searching
+        and reading is Research, writing and commands are Build, games and the
+        avatar are Operate), then Lead reads the result."""
         own_card = (name == claude_code.TOOL_NAME or name in workspace_hub.TOOL_NAMES
                     or name in EVERYDAY_TOOL_NAMES)
         if own_card:
             return await self._run_tool(name, arguments)
-        agent_tracker.update("main", "executing", task=f"Running {name}", progress=50)
+        agent = agent_tracker.agent_for_tool(name)
+        agent_tracker.update(agent, "executing", task=f"Running {name}", progress=50)
         try:
             return await self._run_tool(name, arguments)
         finally:
-            agent_tracker.update("main", "thinking", task="Reading the result", progress=None)
+            if agent != "lead":
+                agent_tracker.settle(agent)
+            agent_tracker.update("lead", "thinking", task="Reading the result", progress=None)
 
     async def _run_tool(self, name, arguments):
         loop = asyncio.get_running_loop()
@@ -2997,20 +3002,20 @@ class Prompter:
             # Always asked, in both modes: it spends the user's Claude plan and can change files.
             tier = getattr(self, "_route_tier", None) or model_router.DEFAULT_TIER
             cc_model = model_router.claude_code_model(tier)
-            if not await self._confirm(name, claude_code.preview(task, mode, cc_model), agent="office"):
+            if not await self._confirm(name, claude_code.preview(task, mode, cc_model), agent="build"):
                 return "The user declined to allow this action."
             print(f"{GRAY}[Claude Code ({cc_model}) is working… this can take a few minutes]{RESET}")
-            agent_tracker.update("office", "executing", task=f"Claude Code: {task}", progress=50,
+            agent_tracker.update("build", "executing", task=f"Claude Code: {task}", progress=50,
                                  model=tier, model_name=f"Claude Code ({cc_model})")
             try:
                 out = await loop.run_in_executor(None, claude_code.run, task, mode, cc_model)
             except claude_code.ClaudeCodeError as e:
-                agent_tracker.update("office", "error", task=str(e))
+                agent_tracker.update("build", "error", task=str(e))
                 return f"Error: {e}"
             except BaseException as e:                   # never leave the card stuck on "executing"
-                agent_tracker.update("office", "error", task=f"{type(e).__name__}: {e}")
+                agent_tracker.update("build", "error", task=f"{type(e).__name__}: {e}")
                 raise
-            agent_tracker.settle("office")
+            agent_tracker.settle("build")
             return out
 
         if name in EVERYDAY_TOOL_NAMES:
@@ -3026,19 +3031,19 @@ class Prompter:
                 # Sending, inviting and deleting reach other people or can't be
                 # undone: the user approves each one (HITL bridge or terminal).
                 preview = await loop.run_in_executor(None, hub.preview_for, name, arguments)
-                if not await self._confirm(name, preview, agent="system"):
+                if not await self._confirm(name, preview, agent="operate"):
                     return "The user declined to allow this action."
-            agent_tracker.update("system", "executing", task=_OFFICE_TASKS.get(name, name), progress=50,
+            agent_tracker.update("operate", "executing", task=_OFFICE_TASKS.get(name, name), progress=50,
                                  model_name="Google")
             try:
                 out = await loop.run_in_executor(None, hub.call_tool, name, arguments)
             except BaseException as e:                   # never leave the card stuck on "executing"
-                agent_tracker.update("system", "error", task=f"{type(e).__name__}: {e}")
+                agent_tracker.update("operate", "error", task=f"{type(e).__name__}: {e}")
                 raise
             if str(out).startswith("Error"):
-                agent_tracker.update("system", "error", task=str(out)[7:])
+                agent_tracker.update("operate", "error", task=str(out)[7:])
             else:
-                agent_tracker.settle("system")
+                agent_tracker.settle("operate")
             return out
 
         print(f"\n{GRAY}[Lumi wants to use tool: {name}({arguments})]{RESET}")
@@ -3074,7 +3079,7 @@ class Prompter:
         server_id, tool, needs_approval = target
         tier = model_router.tool_tier(name)
         self._route_tier = model_router.max_tier(getattr(self, "_route_tier", None), tier)
-        agent_tracker.update("main", "executing", task=f"MCP {server_id}: {tool}", progress=50,
+        agent_tracker.update("lead", "executing", task=f"MCP {server_id}: {tool}", progress=50,
                              model=self._route_tier)
         if needs_approval:
             print(f"\n{GRAY}[MCP] '{name}' wants to run{RESET}")
@@ -3120,7 +3125,7 @@ class Prompter:
             self._watchdog_offer = None          # they moved on
         return False
 
-    def _everyday_ctx(self, agent="main"):
+    def _everyday_ctx(self, agent="lead"):
         """What an everyday tool may use: the workspace hub (via signals),
         the real browser for JS-heavy pages, and the HITL approval flow,
         with approvals shown on the card that owns the tool."""
@@ -3142,10 +3147,11 @@ class Prompter:
         )
 
     async def _run_everyday_tool(self, name, arguments):
-        """Email & calendar, finance, desktop (System card) and meetings
-        (Main card). Tools that act on the world ask for approval inside
-        execute_everyday_tool, once they know exactly what they'll do."""
-        agent = EVERYDAY_TOOL_AGENT.get(name, "main")
+        """Email & calendar, finance, desktop and Spotify (Operate card), meetings
+        and deals (Research card). Tools that act on the world ask for approval
+        inside execute_everyday_tool, once they know exactly what they'll do.
+        Afterwards that card settles and Lead reads the result."""
+        agent = EVERYDAY_TOOL_AGENT.get(name, "lead")
         print(f"\n{GRAY}[Lumi is using tool: {name}({arguments})]{RESET}")
         agent_tracker.update(agent, "executing", task=everyday_task(name), progress=50)
         try:
@@ -3153,12 +3159,11 @@ class Prompter:
         except BaseException as e:                       # never leave the card stuck on "executing"
             agent_tracker.update(agent, "error", task=f"{type(e).__name__}: {e}")
             raise
-        if agent == "main":
-            agent_tracker.update("main", "thinking", task="Reading the result", progress=None)
-        elif str(out).startswith("Error"):
+        if str(out).startswith("Error"):
             agent_tracker.update(agent, "error", task=str(out)[7:])
-        else:
+        elif agent != "lead":
             agent_tracker.settle(agent)
+        agent_tracker.update("lead", "thinking", task="Reading the result", progress=None)
         return out
 
     def _harness_yolo_active(self):
@@ -3189,7 +3194,7 @@ class Prompter:
         think = harness_config.think()
         options = {"temperature": 0.4, "top_p": 0.9, "repeat_penalty": 1.15,
                    "repeat_last_n": 64, "num_ctx": harness_config.num_ctx()}
-        agent_tracker.update("main", "thinking", task="Planning an autonomous task", progress=0,
+        agent_tracker.update("lead", "thinking", task="Planning an autonomous task", progress=0,
                              model=tier, model_name=model)
 
         def chat(messages, tools):
@@ -3212,12 +3217,12 @@ class Prompter:
             return wrap_tool_result(name, str(result))
 
         async def confirm(tool_name, preview):
-            return await self._confirm(tool_name, preview, timeout=300, agent="main")
+            return await self._confirm(tool_name, preview, timeout=300, agent="lead")
 
         def on_step(step, task):
             label = f"#{task['id']} {task['description'][:60]}" if task else "choosing a task"
             print(f"{GRAY}Thinking (auto step {step}: {label})...{RESET}")
-            agent_tracker.update("main", "thinking", task=f"Auto {step}: {label}", progress=None,
+            agent_tracker.update("lead", "thinking", task=f"Auto {step}: {label}", progress=None,
                                  model=tier, model_name=model)
 
         context_injections = self.gather_injections(goal, agent_context=True)
@@ -3237,9 +3242,9 @@ class Prompter:
         print(f"{GRAY}[auto] {res.session_id}: {res.status} after {res.rounds} round(s)"
               f"{'; skill ' + res.skill_path if res.skill_path else ''}{RESET}")
         if res.status == "error":
-            agent_tracker.update("main", "error", task=res.reply[:120])
+            agent_tracker.update("lead", "error", task=res.reply[:120])
         else:
-            agent_tracker.settle("main")
+            agent_tracker.settle("lead")
         return res.reply
 
     async def _run_harness_turn(self, latest_user_text, base_messages, all_tools, tier):
@@ -3292,7 +3297,7 @@ class Prompter:
         def on_step(step, task):
             label = f"#{task['id']} {task['description'][:60]}" if task else "choosing a task"
             print(f"{GRAY}Thinking (harness step {step}: {label})...{RESET}")
-            agent_tracker.update("main", "thinking", task=f"Step {step}: {label}", progress=None,
+            agent_tracker.update("lead", "thinking", task=f"Step {step}: {label}", progress=None,
                                  model=tier, model_name=model)
 
         # Explore / Plan / Verify subagents: same model and tool dispatch (so the
@@ -3316,9 +3321,9 @@ class Prompter:
         print(f"{GRAY}[harness] session {res.session_id} ended: {res.termination_reason} "
               f"after {res.steps} step(s), {res.duration_s:.1f}s{RESET}")
         if res.termination_reason == "error":
-            agent_tracker.update("main", "error", task=res.final_text)
+            agent_tracker.update("lead", "error", task=res.final_text)
         else:
-            agent_tracker.settle("main")
+            agent_tracker.settle("lead")
         if hasattr(self.signals, "emotional_state") and harness.tool_call_count:
             try:
                 self.signals.emotional_state.note_turn_complete(
@@ -3339,7 +3344,7 @@ class Prompter:
             None, model_router.route_model, latest_user_text)
         self._route_tier = tier
         agent_model = hybrid_mode.model_for(tier, AGENT_MODEL_NAME)    # cloud only for opus, with escalation on
-        agent_tracker.update("main", "thinking", task="Planning", progress=0, model=tier, model_name=agent_model)
+        agent_tracker.update("lead", "thinking", task="Planning", progress=0, model=tier, model_name=agent_model)
         context_injections = self.gather_injections(latest_user_text, agent_context=True)
         messages = [{"role": "system", "content": f"{get_chat_system_prompt(agent=True)}\n\n{context_injections}"}]
 
@@ -3421,7 +3426,7 @@ class Prompter:
             }
 
             print(f"{GRAY}Thinking (agent step {step + 1}/{MAX_AGENT_STEPS})...{RESET}")
-            agent_tracker.update("main", "thinking", task=f"Thinking (step {step + 1} of {MAX_AGENT_STEPS})",
+            agent_tracker.update("lead", "thinking", task=f"Thinking (step {step + 1} of {MAX_AGENT_STEPS})",
                                  progress=int(step * 100 / MAX_AGENT_STEPS))
 
             try:
@@ -3438,7 +3443,7 @@ class Prompter:
                 )
             except Exception as e:
                 print(f"\n{GRAY}[System Error: Agent request failed - {e}]{RESET}")
-                agent_tracker.update("main", "error", task=f"Agent model failed: {e}")
+                agent_tracker.update("lead", "error", task=f"Agent model failed: {e}")
                 return "Something went wrong talking to my own model — check the terminal for the error."
 
             tool_calls = [tc.as_ollama() for tc in resp.tool_calls]
@@ -4295,9 +4300,9 @@ class Prompter:
                         else:
                             raw_reply = await self.run_conversational(latest_user_text)
                     except Exception as e:
-                        agent_tracker.update("main", "error", task=f"{type(e).__name__}: {e}")
+                        agent_tracker.update("lead", "error", task=f"{type(e).__name__}: {e}")
                         raise
-                    agent_tracker.settle("main")      # idle again, unless the turn ended in an error
+                    agent_tracker.settle("lead")      # idle again, unless the turn ended in an error
 
                     display_reply = _clean_reply(raw_reply)
                     spoken_override = getattr(self, "_spoken_override", None)

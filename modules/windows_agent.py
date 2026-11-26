@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from modules.everyday_common import EverydayError, ToolContext, clip, one_line
 
-AGENT = "system"
+AGENT = "operate"
 
 TASKS = {
     "get_active_window_info": "Checking the active window",

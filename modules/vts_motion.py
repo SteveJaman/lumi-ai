@@ -546,22 +546,24 @@ POSE_GAZE = {"idle": "idle", "thinking": "thinking", "approval": "camera", "focu
 READING_RE = re.compile(r"web_search|browse_url|research|search_files|read_file|read_window|"
                         r"run_command|run_in_terminal|claude code|triag|reading|searching", re.I)
 ERROR_SHOW_S = 8.0           # errors stay on the tracker card; the face only flinches for a while
-POSE_AGENTS = ("main", "office", "system")   # minecraft is her other half: it doesn't drive this face
+POSE_AGENTS = ("lead", "research", "build", "operate")
+GAME_TASK = "Minecraft: "      # her game agent runs on Operate; it's her other half and doesn't drive this face
 
 
 def pose_from_snapshot(snap: Dict[str, Dict], now: Optional[float] = None) -> Tuple[str, bool]:
     """Agent-tracker snapshot -> (pose, reading). Any approval wins (she
-    looks at you), then a fresh error, then Main thinking, then any agent
+    looks at you), then a fresh error, then Lead thinking, then any agent
     executing. reading is True while a search, page read or command runs."""
     now = time.time() if now is None else now
     snap = snap or {}
-    agents = {a: snap.get(a) or {} for a in snap}
+    agents = {a: s for a, s in ((a, snap.get(a) or {}) for a in snap)
+              if not str(s.get("task") or "").startswith(GAME_TASK)}
     if any(s.get("status") == "waiting_approval" for s in agents.values()):
         pose = "approval"
     elif any(a in POSE_AGENTS and s.get("status") == "error" and now - float(s.get("updated") or 0) < ERROR_SHOW_S
              for a, s in agents.items()):
         pose = "error"
-    elif (agents.get("main") or {}).get("status") == "thinking":
+    elif (agents.get("lead") or {}).get("status") == "thinking":
         pose = "thinking"
     elif any(a in POSE_AGENTS and s.get("status") == "executing" for a, s in agents.items()):
         pose = "focused"

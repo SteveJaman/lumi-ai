@@ -34,7 +34,7 @@ from urllib.parse import urlparse
 from constants import DATA_ROOT
 from modules.everyday_common import EverydayError, ToolContext, ask_llm, clip, one_line, parse_json
 
-AGENT = "system"
+AGENT = "operate"
 
 TASKS = {
     "track_expenses": "Tallying your expenses",

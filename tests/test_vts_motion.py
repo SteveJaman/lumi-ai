@@ -210,7 +210,7 @@ def test_mouth_settles_to_neutral_in_200ms():
 # ─── agent embodiment ─────────────────────────────────────────────────
 
 def snap(**agents):
-    base = {a: {"status": "idle", "task": "", "updated": 0.0} for a in ("main", "minecraft", "office", "system")}
+    base = {a: {"status": "idle", "task": "", "updated": 0.0} for a in ("lead", "research", "build", "operate")}
     for a, v in agents.items():
         base[a].update(v)
     return base
@@ -218,14 +218,14 @@ def snap(**agents):
 
 @pytest.mark.parametrize("agents,pose,reading", [
     ({}, "idle", False),
-    ({"main": {"status": "thinking"}}, "thinking", False),
-    ({"main": {"status": "executing", "task": "Running web_search"}}, "focused", True),
-    ({"system": {"status": "executing", "task": "Triaging your inbox"}}, "focused", True),
-    ({"system": {"status": "executing", "task": "Rescheduling an event"}}, "focused", False),
-    ({"main": {"status": "thinking"}, "system": {"status": "waiting_approval"}}, "approval", False),
-    ({"office": {"status": "error", "updated": 99.0}}, "error", False),
-    ({"office": {"status": "error", "updated": 50.0}}, "idle", False),         # old error: don't stay shocked
-    ({"minecraft": {"status": "executing", "task": "Mining"}}, "idle", False),  # her other half
+    ({"lead": {"status": "thinking"}}, "thinking", False),
+    ({"research": {"status": "executing", "task": "Running web_search"}}, "focused", True),
+    ({"operate": {"status": "executing", "task": "Triaging your inbox"}}, "focused", True),
+    ({"operate": {"status": "executing", "task": "Rescheduling an event"}}, "focused", False),
+    ({"lead": {"status": "thinking"}, "operate": {"status": "waiting_approval"}}, "approval", False),
+    ({"build": {"status": "error", "updated": 99.0}}, "error", False),
+    ({"build": {"status": "error", "updated": 50.0}}, "idle", False),         # old error: don't stay shocked
+    ({"operate": {"status": "executing", "task": "Minecraft: mining"}}, "idle", False),  # her other half
 ])
 def test_pose_from_tracker_snapshot(agents, pose, reading):
     assert vm.pose_from_snapshot(snap(**agents), now=100.0) == (pose, reading)
