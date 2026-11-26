@@ -13,7 +13,9 @@ import time
 
 from modules.harness import config
 
-STATUSES = ("pending", "in_progress", "done", "failed", "blocked")
+# parked: open work from an earlier run, set aside when a new request came in.
+# It isn't picked by task_next and doesn't keep a run going; "continue" brings it back.
+STATUSES = ("pending", "in_progress", "done", "failed", "blocked", "parked")
 OPEN_STATUSES = ("pending", "in_progress")
 
 
@@ -155,6 +157,38 @@ class TaskStore:
             data["next_id"] += 1
             self._save(data)          # validates; raises before writing on a bad graph
             return task
+
+    def park_open(self, keep=()):
+        """Set every open task except `keep` (ids) aside as parked. Returns the ids parked."""
+        keep = {_as_id(k) for k in keep}
+        with self._lock:
+            data = self._load()
+            parked = []
+            for t in data["tasks"]:
+                if t["status"] in OPEN_STATUSES and t["id"] not in keep:
+                    t["status"] = "parked"
+                    t["parked_at"] = time.time()
+                    parked.append(t["id"])
+            if parked:
+                self._save(data)
+            return parked
+
+    def unpark_all(self):
+        """Bring parked tasks back as pending ("continue"). Returns the ids."""
+        with self._lock:
+            data = self._load()
+            back = []
+            for t in data["tasks"]:
+                if t["status"] == "parked":
+                    t["status"] = "pending"
+                    t.pop("parked_at", None)
+                    back.append(t["id"])
+            if back:
+                self._save(data)
+            return back
+
+    def has_parked(self):
+        return any(t["status"] == "parked" for t in self.list())
 
     def next(self):
         """Mark the next unblocked pending task in_progress and return it (None when none)."""

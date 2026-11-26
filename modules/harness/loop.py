@@ -47,6 +47,20 @@ CONTINUE_PROMPT = ("You replied with text, not a tool call. If the request is do
                    "or `task_fail` with the reason.")
 RESUME_WORDS = ("continue", "resume", "keep going", "go on", "carry on")
 
+# Stagnation counts cycles without progress. Progress is a mutating tool, or any
+# other tool that succeeded and isn't just looking (spotify_play, click_button,
+# send_email...). Reads, searches and "what's playing" don't count.
+_LOOKING_TOOL = re.compile(
+    r"(?:^|_)(?:read|list|get|search|find|look|now|playing|status|recall|browse|peek|show|tracks|info|"
+    r"query|check|triage|summarize|extract|research)(?:_|$)")
+
+
+def is_progress(name, failed, mutating):
+    if name in mutating:
+        return True
+    return not failed and name not in TASK_TOOL_NAMES and not _LOOKING_TOOL.search(name or "")
+
+
 # Sent (as a system note) when a text-only reply follows a tool call and isn't
 # taken as the finish: the tool ran; finishing is task_complete, not prose.
 TOOL_THEN_TEXT_PROMPT = ("Tool executed. If the task is done, you MUST call `task_complete` "
@@ -158,6 +172,8 @@ class AgentHarness:
         self.tool_call_count = 0
         self.finished_by_reply = 0          # tasks finished by a text reply after their work (b')
         self.task_switches = 0              # times the window was cleared for a new task
+        self.parked_ids = []                # earlier runs' open tasks set aside by this request
+        self.resumed_ids = []               # parked tasks "continue" brought back
         self._head_len = 0
         self.subagents = subagents
         if subagents is not None:
@@ -215,17 +231,24 @@ class AgentHarness:
             f.write(json.dumps(line, ensure_ascii=False) + "\n")
 
     def seed(self, goal):
-        """Make sure the goal is in the task store. Open tasks from an earlier run
-        are kept (resume); a plain 'continue' adds nothing."""
+        """Make sure the goal is in the task store, and that it's what this run works on.
+        A new request parks open tasks left by earlier runs (a stalled "play my music"
+        mustn't hijack "find a restaurant"); "continue" brings them back and adds nothing."""
         goal = (goal or "").strip()
         if not goal:
             return None
-        if goal.lower().rstrip(".!") in RESUME_WORDS and self.store.has_open():
-            return None
-        for t in self.store.list():
-            if t["status"] in ("pending", "in_progress") and t["description"] == goal:
-                return t
-        return self.store.add(goal, acceptance_criteria="The user's request is fulfilled.")
+        if goal.lower().rstrip(".!") in RESUME_WORDS:
+            back = self.store.unpark_all() if hasattr(self.store, "unpark_all") else []
+            if back or self.store.has_open():
+                self.parked_ids, self.resumed_ids = [], back
+                return None
+        task = next((t for t in self.store.list()
+                     if t["status"] in ("pending", "in_progress") and t["description"] == goal), None)
+        if task is None:
+            task = self.store.add(goal, acceptance_criteria="The user's request is fulfilled.")
+        if hasattr(self.store, "park_open"):
+            self.parked_ids = self.store.park_open(keep=[task["id"]])
+        return task
 
     def _prepare_messages(self, base_messages):
         msgs = [dict(m) for m in (base_messages or [])]
@@ -398,7 +421,7 @@ class AgentHarness:
                 else:
                     notices += self.hooks.post_tool_use(name, args, result, self.session_id)
                 self.messages.append(self._tool_message(name, result))
-                if name in self.mutating:
+                if is_progress(name, failed, self.mutating):
                     mutated = True
                 if not failed and name not in TASK_TOOL_NAMES:
                     work_on = self._open_task(goal_task)
