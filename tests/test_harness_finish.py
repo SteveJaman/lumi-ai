@@ -53,16 +53,76 @@ def test_a_media_request_finishes_with_task_complete_right_after_the_tool(tmp_pa
     assert res.final_text == "Done, your Liked Songs are playing."     # the result IS her reply
 
 
-def test_a_chatty_finish_is_steered_to_task_complete(tmp_path):
+def test_a_chatty_finish_after_the_work_finishes_the_task(tmp_path):
+    """The stall from the field: she plays the music, then says so in prose."""
     played = []
     s = Script([call("task_next"), call("spotify_play", query="Liked Songs"),
-                text("Alright, I'm playing your Liked Songs now!"),
-                call("task_complete", id=1, result="Alright, I'm playing your Liked Songs now!")])
-    res = go(harness(tmp_path, s, played))
-    assert res.termination_reason == "task_complete"
-    reprompt = s.seen[3][-2]["content"]                                 # before the task note
+                text("Alright, your Liked Songs are playing now!")])
+    h = harness(tmp_path, s, played)
+    res = go(h)
+    assert res.termination_reason == "task_complete" and res.steps == 3       # no re-prompt, no stall
+    assert res.final_text == "Alright, your Liked Songs are playing now!"
+    assert h.store.list()[0]["status"] == "done" and h.finished_by_reply == 1
+    assert not any(m.get("content") == CONTINUE_PROMPT for m in h.messages)
+
+
+def test_she_can_skip_task_next(tmp_path):
+    s = Script([call("spotify_play", query="Liked Songs"), text("Playing your Liked Songs on Spotify now.")])
+    h = harness(tmp_path, s, [])
+    assert go(h).termination_reason == "task_complete"
+    assert h.store.list()[0]["result"] == "Playing your Liked Songs on Spotify now."
+
+
+def test_prose_before_any_work_is_reprompted_not_finished(tmp_path):
+    s = Script([call("task_next"), text("Sure! Playing your Liked Songs now."),
+                call("spotify_play", query="Liked Songs"), call("task_complete", id=1, result="Playing them.")])
+    h = harness(tmp_path, s, [])
+    res = go(h)
+    assert res.termination_reason == "task_complete" and h.finished_by_reply == 0
+    reprompt = s.seen[2][-2]["content"]                                 # before the task note
     assert reprompt == CONTINUE_PROMPT
     assert "task_complete" in reprompt and "result" in reprompt and "shown" in reprompt
+
+
+def test_a_reply_that_promises_more_work_gets_one_reprompt_first(tmp_path):
+    s = Script([call("task_next"), call("spotify_play", query="Liked Songs"),
+                text("Let me check it actually started."), text("Yep, it's playing.")])
+    h = harness(tmp_path, s, [])
+    res = go(h)
+    assert any(m.get("content") == CONTINUE_PROMPT for m in h.messages)    # re-prompted once
+    assert res.termination_reason == "task_complete" and res.final_text == "Yep, it's playing."
+
+
+def test_two_unfinished_replies_after_the_work_finish_instead_of_stalling(tmp_path):
+    s = Script([call("task_next"), call("spotify_play", query="Liked Songs"),
+                text("Let me double-check."), text("I'll keep an eye on it.")])
+    res = go(harness(tmp_path, s, []))
+    assert res.termination_reason == "task_complete" and res.final_text == "I'll keep an eye on it."
+
+
+def test_a_failed_tool_doesnt_count_as_the_work(tmp_path):
+    async def broken(name, args):
+        return "Error: Spotify isn't connected."
+    s = Script([call("task_next"), call("spotify_play", query="x"),
+                text("Hmm, that didn't work."), text("Sorry, I can't play that.")])
+    h = AgentHarness(s, broken, tools=[], store=TaskStore(str(tmp_path / "t.json")), tasks_dir=str(tmp_path),
+                     failure_fn=lambda r: str(r).startswith("Error"))
+    res = go(h)
+    assert res.termination_reason == "model_stalled" and h.store.list()[0]["status"] == "in_progress"
+
+
+def test_a_question_back_to_the_user_isnt_a_finish(tmp_path):
+    s = Script([call("task_next"), call("spotify_play", query="Liked Songs"),
+                text("Which speaker should I use?"), call("task_complete", id=1, result="Playing.")])
+    h = harness(tmp_path, s, [])
+    go(h)
+    assert h.finished_by_reply == 0
+
+
+def test_task_tools_alone_dont_count_as_the_work(tmp_path):
+    s = Script([call("task_next"), call("task_list"), text("All set!"), text("Really, all set.")])
+    h = harness(tmp_path, s, [])
+    assert go(h).termination_reason == "model_stalled" and h.finished_by_reply == 0
 
 
 def test_every_step_reminds_her_how_to_finish(tmp_path):

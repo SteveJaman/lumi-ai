@@ -104,6 +104,11 @@ Open tasks persist across runs: a new request is added as a task, but an
      `task_complete` with the message to the user in `result` (that is the reply the
      user sees); otherwise take the next concrete action or `task_fail`. Two
      consecutive text-only turns → `model_stalled`.
+     Exception (b'): when a non-task tool already succeeded for the open task this
+     run, a text reply finishes that task with the text as the reply (counted in
+     `finished_by_reply`): at once if it reads as finished, else on the second text
+     reply instead of stalling. A reply that promises more work ("let me…", "I'll…")
+     or asks the user a question gets the re-prompt first.
      With no task in progress, a text turn ends the run → `turn_complete`.
   c. No mutating tool call in 5 consecutive cycles → `stagnant`.
   d. `max_safety_steps = 200` → `safety_cap`.
