@@ -302,6 +302,15 @@ def _devices() -> List[Dict[str, Any]]:
 
 # ─── library, queue, devices (the Media tab) ────────────────────────
 
+def _song_count(playlist: Dict[str, Any]) -> int:
+    """Song count; Spotify's Feb 2026 change moved it from "tracks" to "items"."""
+    for key in ("items", "tracks"):
+        box = playlist.get(key)
+        if isinstance(box, dict) and box.get("total"):
+            return int(box["total"])
+    return 0
+
+
 def _item(obj: Dict[str, Any], kind: str) -> Optional[Dict[str, Any]]:
     """Any Spotify object as a row: {uri, title, subtitle, art, kind}."""
     if not obj or not obj.get("uri"):
@@ -313,7 +322,7 @@ def _item(obj: Dict[str, Any], kind: str) -> Optional[Dict[str, Any]]:
         sub, art = (obj.get("show") or {}).get("name", ""), _images(obj.get("show") or obj)
     elif kind == "playlist":
         sub = ((obj.get("owner") or {}).get("display_name") or "") + (
-            f" · {(obj.get('tracks') or {}).get('total')} songs" if (obj.get("tracks") or {}).get("total") else "")
+            f" · {n} songs" if (n := _song_count(obj)) else "")
         art = _images(obj)
     elif kind == "album":
         sub, art = ", ".join(a.get("name", "") for a in obj.get("artists") or []), _images(obj)

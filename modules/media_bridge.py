@@ -368,6 +368,7 @@ class MediaBridge:
                 "shuffle": bool(np.get("shuffle")), "repeat": np.get("repeat") or "off",
                 "liked": self._liked[1] if self._liked[0] == tid else None, "id": tid, "uri": np.get("uri", ""),
                 "device": np.get("device", ""), "device_type": np.get("device_type", ""),
+                "context_uri": np.get("context_uri", ""),
                 "sp_volume": np.get("volume"), "key": np.get("uri") or np.get("title", ""),
                 "can_next": True, "can_prev": True, "can_shuffle": True, "can_repeat": True}
 

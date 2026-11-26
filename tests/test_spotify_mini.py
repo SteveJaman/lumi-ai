@@ -239,3 +239,40 @@ def test_island_media_tracks_and_paged_library(monkeypatch):
             r = await reply(ws, "media_library", 2)
             assert r["items"] == ["albums"] and r["shelf"] == "albums"
     run(t())
+
+
+# ─── phase 2: the web player bar and library view ──────────────
+
+import os
+import re
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def read(*parts):
+    return open(os.path.join(ROOT, *parts), encoding="utf-8").read()
+
+
+def test_web_has_the_player_bar_and_library_view():
+    html, js, card = read("web", "index.html"), read("web", "sp-player.js"), read("web", "spotify.js")
+    assert 'id="sp-dock"' in html and 'id="sp-full"' in html and 'id="sp-mini"' not in html
+    assert "import * as player from './sp-player.js'" in card and "player.refresh()" in card
+    for needle in ("/api/media/library?shelf=", "/api/media/tracks?", "'play_in_context'", "'like_uri'",
+                   "act('seek'", "act('volume'", "can.play_track", "can.seek", "can.volume"):
+        assert needle in js, needle
+    # Text from Spotify only ever goes in through textContent; innerHTML is only our own icons.
+    for rhs in re.findall(r"\.innerHTML\s*=\s*([^;]+);", js):
+        assert re.fullmatch(r"(icon|ICON\.\w+|playing \? ICON\.pause : ICON\.play|volOk && now\.volume === 0 \? ICON\.mute : ICON\.vol)",
+                            rhs.strip()), rhs
+    css = read("web", "style.css")
+    assert ".app.sp-on" in css and ".spx-row" in css and ".sp-mini" not in css
+
+
+def test_playlist_song_counts_and_the_playing_context():
+    assert sp._song_count({"items": {"total": 28}}) == 28            # the Feb 2026 name
+    assert sp._song_count({"tracks": {"total": 7}}) == 7
+    assert sp._song_count({}) == 0
+    row = sp._item({"uri": "spotify:playlist:p", "name": "P", "owner": {"display_name": "Me"}, "items": {"total": 3}}, "playlist")
+    assert row["subtitle"] == "Me · 3 songs"
+    b = bridge_with(LearningSpotify(premium=True))
+    assert "context_uri" in b.refresh()
