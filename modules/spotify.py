@@ -20,6 +20,9 @@ and Lumi says so.
 
 Lumi's tools (everyday-tool interface, modules/everyday_common.py):
     spotify_now_playing, spotify_control, spotify_play
+    media_seek, media_shuffle, media_repeat   through modules/media_bridge.py, so they
+                                              also work on Free via the Spotify app
+    media_playlist_tracks                     a playlist (by name), album or Liked Songs
 None asks for approval: they only change what's playing on your Spotify.
 """
 
@@ -29,6 +32,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -741,7 +745,11 @@ def describe(np: Optional[Dict[str, Any]]) -> str:
 AGENT = "main"
 CONFIRM_TOOLS: set = set()
 TASKS = {"spotify_now_playing": "Checking Spotify", "spotify_control": "Controlling Spotify",
-         "spotify_play": "Playing music on Spotify"}
+         "spotify_play": "Playing music on Spotify", "media_seek": "Seeking in the song",
+         "media_shuffle": "Setting shuffle", "media_repeat": "Setting repeat",
+         "media_playlist_tracks": "Reading a playlist"}
+REPEAT_MODES = {"off": "off", "all": "context", "song": "track"}      # what Lumi says -> what Spotify says
+TRACKS_SHOWN = 25
 TOOL_SCHEMAS = [
     {"type": "function", "function": {
         "name": "spotify_now_playing",
@@ -762,7 +770,122 @@ TOOL_SCHEMAS = [
             "query": {"type": "string", "description": "What to play, e.g. 'lofi beats' or 'Bohemian Rhapsody'."},
             "kind": {"type": "string", "enum": list(KINDS)}},
             "required": ["query"]}}},
+    {"type": "function", "function": {
+        "name": "media_seek",
+        "description": "Jump to a point in the song playing on Spotify.",
+        "parameters": {"type": "object", "properties": {
+            "position": {"type": "string",
+                         "description": "'1:30' or '90' (seconds from the start), or '+30' / '-15' to move from here."}},
+            "required": ["position"]}}},
+    {"type": "function", "function": {
+        "name": "media_shuffle",
+        "description": "Turn shuffle on or off on Spotify.",
+        "parameters": {"type": "object", "properties": {"on": {"type": "boolean"}}, "required": ["on"]}}},
+    {"type": "function", "function": {
+        "name": "media_repeat",
+        "description": "Set Spotify's repeat to off, all (the playlist or album), or song (this song).",
+        "parameters": {"type": "object", "properties": {
+            "mode": {"type": "string", "enum": list(REPEAT_MODES)}}, "required": ["mode"]}}},
+    {"type": "function", "function": {
+        "name": "media_playlist_tracks",
+        "description": "List the songs in one of the user's Spotify playlists, an album, or their Liked Songs.",
+        "parameters": {"type": "object", "properties": {
+            "playlist": {"type": "string",
+                         "description": "Playlist name, 'liked' for Liked Songs, or a Spotify playlist/album link or URI."},
+            "offset": {"type": "integer", "description": f"Skip this many songs, to page past the first {TRACKS_SHOWN}."}},
+            "required": ["playlist"]}}},
 ]
+
+
+# ─── media_* tools: through the media bridge (Premium first, the Spotify app's controls on Free) ──
+
+def parse_position(text: Any, now_ms: int) -> int:
+    """'1:30', '90', '+30', '-15' -> a position in ms (relative ones from `now_ms`)."""
+    s = str(text if text is not None else "").strip().lower().replace(" ", "")
+    s = s[:-1] if s.endswith("s") else s
+    m = re.fullmatch(r"([+-]?)(?:(\d+):)?(\d+(?:\.\d+)?)", s)
+    if not m or (m.group(2) is not None and float(m.group(3)) >= 60):
+        raise ValueError("Position looks like '1:30', '90', '+30' or '-15'.")
+    secs = int(m.group(2) or 0) * 60 + float(m.group(3))
+    if m.group(1) == "+":
+        return max(0, int(now_ms + secs * 1000))
+    if m.group(1) == "-":
+        return max(0, int(now_ms - secs * 1000))
+    return int(secs * 1000)
+
+
+def _clock(ms: int) -> str:
+    s = max(0, int(ms // 1000))
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def _media_command(action: str, value: Any) -> str:
+    from modules import media_bridge
+    b = media_bridge.bridge()
+    st = b.state(watch=False)
+    if st.get("source") != "spotify":
+        b.refresh()
+    if action == "seek":
+        st = b.state(watch=False)
+        if not st.get("duration_ms"):
+            raise ValueError("Nothing is playing on Spotify.")
+        elapsed = (st.get("progress_ms") or 0) + (
+            (time.time() - (st.get("at") or time.time())) * 1000 if st.get("playing") else 0)
+        target = min(parse_position(value, int(elapsed)), int(st["duration_ms"]) - 500)
+        b.command("seek", target)
+        return f"Jumped to {_clock(target)} of {_clock(st['duration_ms'])}."
+    b.command(action, value)
+    if action == "shuffle":
+        return "Shuffle is on." if value else "Shuffle is off."
+    return {"off": "Repeat is off.", "context": "Repeating the playlist or album.",
+            "track": "Repeating this song."}[value]
+
+
+def _find_list(name: str) -> Dict[str, Any]:
+    """A playlist by name, 'liked', or a playlist/album link or URI -> {kind, id, title, browsable}."""
+    raw = str(name or "").strip()
+    if not raw:
+        raise ValueError("Which playlist? Give its name, or 'liked' for Liked Songs.")
+    if raw.lower() in ("liked", "liked songs", "my liked songs", "favorites", "favourites"):
+        return {"kind": "liked", "id": "", "title": "Liked Songs", "browsable": True}
+    m = re.search(r"(playlist|album)[:/]([A-Za-z0-9]{10,})", raw)
+    if m:
+        return {"kind": m.group(1), "id": m.group(2), "title": "", "browsable": True}
+    want, offset, best = raw.lower(), 0, None
+    for _ in range(10):                                      # up to ~500 playlists
+        page = library_page("playlists", offset, PAGE_MAX)
+        for p in page["items"]:
+            title = (p.get("title") or "").lower()
+            if title == want:
+                return {"kind": "playlist", **p}
+            if best is None and want in title:
+                best = p
+        if page.get("next_offset") is None:
+            break
+        offset = page["next_offset"]
+    if best:
+        return {"kind": "playlist", **best}
+    raise ValueError(f"No playlist called {raw!r} in the user's library.")
+
+
+def describe_tracks(name: str, offset: int = 0) -> str:
+    found = _find_list(name)
+    if found["kind"] == "playlist" and not found.get("browsable", True):
+        return (f"Spotify doesn't let apps list the songs of {found.get('title') or 'that playlist'!r}, "
+                "because the user doesn't own it. It can still be played with spotify_play.")
+    page = tracks(found["kind"], found["id"], max(0, int(offset or 0)), TRACKS_SHOWN)
+    title = found.get("title") or found["kind"].title()
+    items = page["items"]
+    if not items:
+        return f"{title!r} has no songs at that point (it has {page['total']})."
+    first = items[0]["number"]
+    lines = [f"{title!r}: {page['total']} songs; showing {first}-{items[-1]['number']}."]
+    for r in items:
+        heart = " ♥" if r.get("is_liked") else ""
+        lines.append(f"{r['number']}. {r['title']} - {r['artist']} ({_clock(r['duration_ms'])}){heart}")
+    if page.get("next_offset") is not None:
+        lines.append(f"More: call again with offset {page['next_offset']}.")
+    return "\n".join(lines)
 
 
 def available(ctx: ToolContext) -> bool:
@@ -780,6 +903,23 @@ async def run_tool(name: str, args: Dict[str, Any], ctx: ToolContext) -> str:
             return await loop.run_in_executor(None, control, args.get("action"), args.get("value"))
         if name == "spotify_play":
             return await loop.run_in_executor(None, play_search, args.get("query"), args.get("kind") or "track")
+        if name == "media_seek":
+            return await loop.run_in_executor(None, _media_command, "seek", args.get("position"))
+        if name == "media_shuffle":
+            on = args.get("on")
+            on = on.strip().lower() in ("true", "on", "yes", "1") if isinstance(on, str) else bool(on)
+            return await loop.run_in_executor(None, _media_command, "shuffle", on)
+        if name == "media_repeat":
+            mode = str(args.get("mode") or "").lower()
+            if mode not in REPEAT_MODES:
+                return f"Error: repeat mode is one of {', '.join(REPEAT_MODES)}."
+            return await loop.run_in_executor(None, _media_command, "repeat", REPEAT_MODES[mode])
+        if name == "media_playlist_tracks":
+            try:
+                offset = int(args.get("offset") or 0)
+            except (TypeError, ValueError):
+                offset = 0
+            return await loop.run_in_executor(None, describe_tracks, args.get("playlist"), offset)
     except (SpotifyError, ValueError) as e:
         return f"Error: {e}"
     except requests.RequestException as e:

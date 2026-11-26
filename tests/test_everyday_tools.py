@@ -50,11 +50,13 @@ def test_registry_wires_every_tool_with_its_card_and_gate():
                      "summarize_meeting", "extract_action_items", "draft_follow_up_email",
                      "get_active_window_info", "read_window_text", "click_button", "restart_crashed_game",
                      "find_local_deals", "focus_window",
-                     "spotify_now_playing", "spotify_control", "spotify_play"}
+                     "spotify_now_playing", "spotify_control", "spotify_play",
+                     "media_seek", "media_shuffle", "media_repeat", "media_playlist_tracks"}
     agents = agent_tools.EVERYDAY_TOOL_AGENT
     assert {n for n, a in agents.items() if a == "main"} == {
         "summarize_meeting", "extract_action_items", "draft_follow_up_email",
-        "spotify_now_playing", "spotify_control", "spotify_play"}
+        "spotify_now_playing", "spotify_control", "spotify_play",
+        "media_seek", "media_shuffle", "media_repeat", "media_playlist_tracks"}
     assert all(a in agent_tracker.AGENTS for a in agents.values())
     gated = {"auto_draft_reply", "reschedule_event", "add_to_wishlist", "click_button", "restart_crashed_game",
              "find_local_deals"}
