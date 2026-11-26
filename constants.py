@@ -46,10 +46,11 @@ PRIMARY_AGENT_MODEL_CHAIN = (PRIMARY_AGENT_MODEL, "qwen2.5-coder:14b", "qwen3:8b
 FAST_AGENT_MODEL_CHAIN = (FAST_AGENT_MODEL, "qwen3:8b")
 VRAM_HEADROOM_GB = 2.5      # left free for the KV cache, vision and STT on a shared card
 # GAME_AGENT_MODEL picks goals for background game agents (plugin/
-# minecraft_bot.py) so they never queue behind or evict the chat models.
-# Keep it small: it has to fit in VRAM next to MODEL_NAME (an 8B model in
-# ~6 GB on an 11 GB card), and goal picking is a short JSON choice.
-GAME_AGENT_MODEL = "qwen2.5:3b"
+# minecraft_bot.py), sorts each prompt into a tier (modules/model_router.py,
+# ROUTER_MODEL) and picks songs for the voice DJ. It's the agent's daily model
+# (LUMI.md daily_models), so one model in VRAM serves all of them. The router
+# only asks it when it's already loaded, so chat (MODEL_NAME) never gets evicted.
+GAME_AGENT_MODEL = "qwen3.5:9b"
 
 # Which model the Minecraft agent picks goals with: "local" (the default) or a
 # cloud provider: "claude", "openai", "gemini". The Games page changes it at

@@ -140,7 +140,7 @@ through that bot's local control API (`127.0.0.1:5057`).
 
 It keeps Lumi's chat responsive in three ways:
 
-- **Its own model.** Goals are picked by `GAME_AGENT_MODEL` (`qwen2.5:3b`),
+- **Its own model.** Goals are picked by `GAME_AGENT_MODEL` (`qwen3.5:9b`),
   small enough to stay loaded next to Lumi's chat model instead of swapping
   it out of VRAM.
 - **Silent status.** Every 30 s it replaces a short status line in Lumi's

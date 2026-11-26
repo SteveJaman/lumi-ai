@@ -9,7 +9,7 @@ Two stages, both free:
      up", "like this song", "shuffle on". No model call.
   2. Anything that only *might* be about music ("queue some chill
      instrumental music", "put on something upbeat") goes to the local router
-     model (constants.ROUTER_MODEL, qwen2.5:3b on Ollama), which answers in
+     model (constants.ROUTER_MODEL, else GAME_AGENT_MODEL: qwen3.5:9b), which answers in
      JSON and says "none" unless the message clearly asks to play or queue
      music. "Let's play a game" stays a normal chat turn.
 Skipped in Gaming Mode for stage 2, so the router model isn't loaded mid-game.
@@ -27,6 +27,7 @@ import requests
 import constants
 
 MODEL_TIMEOUT_S = 6.0
+COLD_TIMEOUT_S = 30.0         # the model isn't loaded yet: a song request may wait for it
 KINDS = ("track", "playlist", "album", "artist", "show")
 
 
@@ -71,9 +72,15 @@ _SYSTEM = (
 
 
 def _ask_model(text: str) -> dict:
-    model = getattr(constants, "ROUTER_MODEL", None) or getattr(constants, "GAME_AGENT_MODEL", "qwen2.5:3b")
-    r = requests.post(f"{constants.LLM_ENDPOINT.rstrip('/')}/api/chat", timeout=MODEL_TIMEOUT_S, json={
+    model = getattr(constants, "ROUTER_MODEL", None) or getattr(constants, "GAME_AGENT_MODEL", "qwen3.5:9b")
+    try:
+        from modules.model_router import is_loaded
+        timeout = MODEL_TIMEOUT_S if is_loaded(model) else COLD_TIMEOUT_S
+    except Exception:
+        timeout = MODEL_TIMEOUT_S
+    r = requests.post(f"{constants.LLM_ENDPOINT.rstrip('/')}/api/chat", timeout=timeout, json={
         "model": model, "stream": False, "format": "json", "keep_alive": "10m",
+        "think": False,                            # qwen3.5 thinks by default: 60 tokens would go there
         "messages": [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": text[:300]}],
         "options": {"temperature": 0, "num_predict": 60}})
     r.raise_for_status()

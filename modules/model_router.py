@@ -7,12 +7,13 @@ Model router: sort a prompt into a tier before Lumi answers it.
     sonnet  writing code, editing files, ordinary requests      (the default)
     opus    hard problems: architecture, debugging, deep analysis
 
-A small local Ollama model (ROUTER_MODEL, qwen2.5:3b by default) does the
-sorting. It's the same model the Minecraft agent uses, so it is often already
-loaded. Obvious small talk is recognised without asking it, and anything that
-goes wrong (Ollama down, model missing, slow, nonsense answer) falls back to
-"sonnet". In Gaming Mode the model isn't asked at all, so nothing extra is
-loaded into VRAM while you play.
+A local Ollama model (ROUTER_MODEL: constants.GAME_AGENT_MODEL, qwen3.5:9b, the
+agent's daily model) does the sorting, but only when it's already loaded: on the
+11 GB card it can't sit next to the chat model, so loading it for every chat
+message would evict chat and back again. Then, and in Gaming Mode, the prompt
+gets the default tier at once. Obvious small talk is recognised without asking,
+and anything that goes wrong (Ollama down, model missing, slow, nonsense answer)
+falls back to "sonnet".
 
 Agent turns also get a TASK tier (task_tier, TurnRouter, bottom of this file):
 daily (chat, web, media, light tools: a model that fits in VRAM, 16K context) or
@@ -40,7 +41,8 @@ import constants
 
 TIERS = ("haiku", "sonnet", "opus")
 DEFAULT_TIER = "sonnet"
-ROUTER_MODEL = getattr(constants, "ROUTER_MODEL", None) or getattr(constants, "GAME_AGENT_MODEL", "qwen2.5:3b")
+ROUTER_MODEL = getattr(constants, "ROUTER_MODEL", None) or getattr(constants, "GAME_AGENT_MODEL", "qwen3.5:9b")
+LOADED_TTL_S = 10.0            # how long a /api/ps answer is trusted
 TIMEOUT_S = 4.0                # never hold up a reply longer than this
 COOLDOWN_S = 60.0              # after a failure, don't ask again for a minute (no 4 s wait per message)
 MAX_PROMPT_CHARS = 1500        # the router only needs the gist
@@ -106,11 +108,47 @@ def _ask_model(prompt: str) -> str:
         "stream": False,
         "think": False,
         "keep_alive": "30m",
-        "options": {"temperature": 0, "num_predict": 4, "num_ctx": 2048},
+        "options": {"temperature": 0, "num_predict": 4, "num_ctx": loaded_context(ROUTER_MODEL) or 2048},
     }
     r = requests.post(f"{constants.LLM_ENDPOINT.rstrip('/')}/api/chat", json=payload, timeout=TIMEOUT_S)
     r.raise_for_status()
     return ((r.json() or {}).get("message") or {}).get("content", "")
+
+
+_loaded_cache: Dict[str, object] = {"t": 0.0, "models": None}
+
+
+def _loaded() -> Dict[str, Optional[int]]:
+    """{name: context_length} of the models Ollama has in memory (/api/ps), cached
+    for LOADED_TTL_S. Empty when Ollama can't be reached."""
+    now = time.time()
+    with _lock:
+        if _loaded_cache["models"] is not None and now - float(_loaded_cache["t"]) < LOADED_TTL_S:
+            return dict(_loaded_cache["models"])
+    try:
+        r = requests.get(f"{constants.LLM_ENDPOINT.rstrip('/')}/api/ps", timeout=2)
+        r.raise_for_status()
+        models = {(m.get("name") or m.get("model")): m.get("context_length")
+                  for m in (r.json() or {}).get("models", []) if m.get("name") or m.get("model")}
+    except Exception:
+        models = {}
+    with _lock:
+        _loaded_cache.update(t=now, models=models)
+    return dict(models)
+
+
+def loaded_models() -> list:
+    return list(_loaded())
+
+
+def is_loaded(model: str) -> bool:
+    return any(_same_model(n, model) for n in _loaded())
+
+
+def loaded_context(model: str) -> Optional[int]:
+    """The context window a loaded model is running with. Asking for a different
+    num_ctx makes Ollama reload it, which takes far longer than the router waits."""
+    return next((ctx for n, ctx in _loaded().items() if _same_model(n, model)), None)
 
 
 def route_model(prompt: str) -> str:
@@ -127,6 +165,9 @@ def route_model(prompt: str) -> str:
         if time.time() < _down_until["t"]:
             _last_reason["text"] = "local router unavailable: default tier"
             return DEFAULT_TIER                       # it failed a moment ago: don't make every message wait
+        if not is_loaded(ROUTER_MODEL):
+            _last_reason["text"] = f"{ROUTER_MODEL} not loaded: default tier (keeps chat in VRAM)"
+            return DEFAULT_TIER                       # loading it would evict the chat model
         tier = parse_tier(_ask_model(str(prompt)))
         _last_reason["text"] = f"sorted by {ROUTER_MODEL}"
         return tier
@@ -217,7 +258,7 @@ def local_agent_model() -> str:
         configured = hcfg.game_model()
     except Exception:
         configured = None
-    return configured or getattr(constants, "GAME_AGENT_MODEL", "qwen2.5:3b")
+    return configured or getattr(constants, "GAME_AGENT_MODEL", "qwen3.5:9b")
 
 
 def provider_has_key(choice: str) -> bool:

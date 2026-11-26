@@ -236,7 +236,7 @@ crash's exit code and last lines), then the Dashboard's Event Stream with the
 | Games page: "can't start bot.js: run `npm install`…" | Packages missing | `npm install` in `sdk/examples/minecraft` |
 | Games page: "Game agent crashed" | The agent exited with an error | The card shows the last lines; the full output is in `data/logs/minecraft/agent.log` |
 | `bot.js` crashed with `JavaScript heap out of memory` | The live viewer's per-browser buffers (most likely) | Close extra viewer tabs; check `[mem]` lines in `bot.log`. See [the bot's README](../sdk/examples/minecraft/README.md#memory) |
-| Agent log: `game model qwen2.5:3b is not installed` | The game model isn't pulled | `ollama pull qwen2.5:3b`. Until then goals are picked at random |
+| Agent log: `game model qwen3.5:9b is not installed` | The game model isn't pulled | `ollama pull qwen3.5:9b`. Until then goals are picked at random |
 | `Took to long to decide path to goal!` | The pathfinder couldn't plan a path in time | Expected now and then. The step keeps what it got and the agent tries something else |
 | She keeps walking back to you | You're more than 25 blocks away, out of sight, or you said "come here" | Intended. See [minecraft.md](minecraft.md#playing-near-you) |
 | An in-game order is ignored | Not the owner, or no wake word | Start with `Lumi,`; set `MC_OWNER` to your name if others are on the LAN |

@@ -445,7 +445,7 @@ Remote access is opt-in: Lumi starts no Cloudflare tunnel unless you set
 ```powershell
 git submodule update --init plugin/voyager
 cd sdk/examples/minecraft; npm install; cd ../../..
-ollama pull qwen2.5:3b          # the game agent's model
+ollama pull qwen3.5:9b          # the game agent's model
 ```
 
 Open a world to LAN, then open **Games** in the web UI, turn on **Minecraft

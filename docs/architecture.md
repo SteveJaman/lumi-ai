@@ -754,7 +754,7 @@ Lumi Island (Tauri) ──ws://127.0.0.1:5090/hitl──► hitl_server  ── 
 user message ─► model_router.route_model() ─► "haiku" | "sonnet" | "opus"
                   small-talk regex → haiku (no model call)
                   Gaming Mode      → sonnet (no model call)
-                  else qwen2.5:3b via Ollama, 4 s timeout, 4 tokens
+                  else qwen3.5:9b via Ollama (only while loaded), 4 s timeout, 4 tokens
                   any failure      → sonnet
               ─► prompter: haiku → FAST_MODEL_NAME, sonnet/opus → MODEL_NAME
                            ask_claude_code → claude -p --model <tier>
