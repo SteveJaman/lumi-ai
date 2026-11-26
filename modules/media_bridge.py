@@ -17,10 +17,8 @@ sidebar. Spotify only: YouTube, browsers and other players are ignored.
     bridge().up_next()           queue + devices
     bridge().add_listener(fn)    fn(state) when something changes (the island push)
 
-Voice ducking (Ducker): while you're talking (Whisper) or Lumi is speaking
-(TTS), Spotify is lowered to ~20% of its volume and brought back smoothly
-afterwards. No other app is touched. Set MEDIA_DUCKING = False in
-constants.py to turn it off.
+Spotify's volume is never changed by Lumi. Whatever level you set stays put
+while you talk or while she speaks.
 """
 
 from __future__ import annotations
@@ -43,7 +41,7 @@ WATCH_S = 25.0                       # a state request keeps polling on this lon
 ART_MAX_BYTES = 400_000
 VOLUME_STEP = 5
 
-# The only app the Media tab and voice ducking touch: Spotify on this PC.
+# The only app the Media tab touches: Spotify on this PC.
 MEDIA_APPS = frozenset({"spotify.exe"})
 
 
@@ -152,103 +150,6 @@ class Audio:
                 s.SimpleAudioVolume.SetMasterVolume(max(0.0, min(1.0, level)), None)
                 hit = True
         return hit
-
-# ─── voice ducking ──────────────────────────────────────────────────
-
-class Ducker:
-    """Lowers Spotify while someone is talking, then fades it back. If you
-    change its volume while it's ducked, it's left where you put it."""
-
-    def __init__(self, signals, audio: Optional[Audio] = None, level: Optional[float] = None,
-                 own_pid: Optional[int] = None):
-        self.signals = signals
-        self.audio = audio or Audio()
-        self.level = float(level if level is not None else getattr(constants, "MEDIA_DUCK_LEVEL", 0.2))
-        self.own_pid = own_pid if own_pid is not None else os.getpid()
-        self.saved: Dict[int, Tuple[Any, float, float]] = {}      # pid -> (session, original, ducked-to)
-        self._quiet_since = 0.0
-        self._stop = threading.Event()
-
-    def talking(self) -> bool:
-        s = self.signals
-        return bool(getattr(s, "AI_speaking", False) or getattr(s, "human_speaking", False))
-
-    def _media_sessions(self):
-        out = []
-        for s in self.audio.sessions():
-            try:
-                if s.Process.pid == self.own_pid or s.Process.name().lower() not in MEDIA_APPS:
-                    continue
-                if s.State != 1:                                  # only apps making sound right now
-                    continue
-                out.append(s)
-            except Exception:
-                continue
-        return out
-
-    def duck(self, steps: int = 5, step_s: float = 0.05) -> None:
-        for s in self._media_sessions():
-            pid = s.Process.pid
-            if pid in self.saved:
-                continue
-            vol = s.SimpleAudioVolume.GetMasterVolume()
-            self.saved[pid] = (s, vol, vol * self.level)
-        self._ramp([(s, orig, low) for s, orig, low in self.saved.values()], steps, step_s)
-
-    def restore(self, steps: int = 12, step_s: float = 0.05) -> None:
-        moves = []
-        for pid, (s, orig, low) in list(self.saved.items()):
-            try:
-                cur = s.SimpleAudioVolume.GetMasterVolume()
-            except Exception:
-                continue
-            if abs(cur - low) <= 0.03:                            # you didn't move it meanwhile
-                moves.append((s, low, orig))
-        self.saved.clear()
-        self._ramp(moves, steps, step_s)
-
-    def _ramp(self, moves, steps, step_s):
-        for i in range(1, steps + 1):
-            for s, a, b in moves:
-                try:
-                    s.SimpleAudioVolume.SetMasterVolume(max(0.0, min(1.0, a + (b - a) * i / steps)), None)
-                except Exception:
-                    pass
-            if step_s:
-                time.sleep(step_s)
-
-    def tick(self, now: Optional[float] = None) -> None:
-        now = time.time() if now is None else now
-        if self.talking():
-            self._quiet_since = 0.0
-            self.duck()                                           # also catches an app that started later
-        elif self.saved:
-            if not self._quiet_since:
-                self._quiet_since = now
-            elif now - self._quiet_since >= 0.8:                  # a pause between sentences isn't the end
-                self.restore()
-                self._quiet_since = 0.0
-
-    def run(self) -> None:
-        try:
-            self.audio._com()
-        except Exception:
-            pass
-        while not self._stop.is_set():
-            try:
-                if getattr(constants, "MEDIA_DUCKING", True):
-                    self.tick()
-                elif self.saved:
-                    self.restore()
-            except Exception:
-                pass
-            self._stop.wait(0.12)
-        if self.saved:
-            self.restore(steps=1, step_s=0)
-
-    def stop(self) -> None:
-        self._stop.set()
-
 
 # ─── the bridge ─────────────────────────────────────────────────────
 
@@ -570,7 +471,6 @@ class MediaBridge:
 
 
 _bridge: Optional[MediaBridge] = None
-_ducker: Optional[Ducker] = None
 
 
 def bridge() -> MediaBridge:
@@ -578,14 +478,6 @@ def bridge() -> MediaBridge:
     if _bridge is None:
         _bridge = MediaBridge()
     return _bridge
-
-
-def start(signals) -> None:
-    """main.py: start voice ducking (the bridge itself starts on first use)."""
-    global _ducker
-    if _ducker is None and getattr(constants, "MEDIA_DUCKING", True):
-        _ducker = Ducker(signals)
-        threading.Thread(target=_ducker.run, name="lumi-ducking", daemon=True).start()
 
 
 # ─── HTTP (web sidebar player) ──────────────────────────────────────

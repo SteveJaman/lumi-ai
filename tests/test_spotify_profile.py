@@ -121,11 +121,14 @@ def test_premium_and_missing_device_errors(spot):
 
 def test_search_and_play_and_volume(spot):
     connect()
-    spot.script += [Resp(200, {"tracks": {"items": [{"uri": "spotify:track:1", "name": "Snow halation",
+    # Play looks in Liked Songs first (an empty page here), then Spotify's catalogue.
+    spot.script += [Resp(200, {"items": [], "total": 0}),
+                    Resp(200, {"tracks": {"items": [{"uri": "spotify:track:1", "name": "Snow halation",
                                                      "artists": [{"name": "μ's"}]}]}}), Resp(204)]
-    assert sp.play_search("snow halation") == "Playing track 'Snow halation' by μ's."
+    assert sp.play_search("snow halation") == "Playing track 'Snow halation' by μ's from Spotify search."
     assert spot.calls["api"][-1][3] == {"uris": ["spotify:track:1"]}
-    spot.script += [Resp(200, {"playlists": {"items": [None, {"uri": "spotify:playlist:9", "name": "Lofi"}]}}), Resp(204)]
+    # The user's own playlists come first (library shape), then the play call.
+    spot.script += [Resp(200, {"items": [None, {"uri": "spotify:playlist:9", "id": "9", "name": "Lofi"}]}), Resp(204)]
     sp.play_search("lofi", "playlist")
     assert spot.calls["api"][-1][3] == {"context_uri": "spotify:playlist:9"}
     assert sp.control("volume", 150) == "Volume set to 100%."

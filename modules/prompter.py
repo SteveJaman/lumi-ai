@@ -53,7 +53,7 @@ from modules import hitl_server
 from modules import gaming_mode
 from modules import workspace_hub
 from modules import island_bridge
-from modules import claude_code, claude_handoff, claude_router, voice_dj
+from modules import claude_code, claude_handoff, claude_router
 from modules import model_router, agent_tracker, hybrid_mode
 from modules.harness import config as harness_config
 
@@ -1858,8 +1858,6 @@ class Prompter:
             run = spec.claim(latest_user_text) if spec is not None else None
             if run is not None:
                 return await self._finish_speculative(run, latest_user_text)
-        if dj := await self._voice_dj(latest_user_text):      # "skip", "queue chill instrumental music"
-            return dj
         tier = await self._route_for(latest_user_text)
         req = self.conversational_request(latest_user_text, tier=tier)
         self._note_route(req)
@@ -1872,13 +1870,6 @@ class Prompter:
             if handed is not None:
                 return handed
         return await self._run_chat_request(req, latest_user_text, tier)
-
-    async def _voice_dj(self, text):
-        """A music request (modules/voice_dj.py) answered without the chat model, or None."""
-        try:
-            return await asyncio.get_running_loop().run_in_executor(None, voice_dj.handle, text)
-        except Exception:
-            return None
 
     async def _run_chat_request(self, req, latest_user_text, tier, recover=True):
         """Run one conversational request (streamed when local) and return the reply.

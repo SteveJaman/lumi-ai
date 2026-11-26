@@ -1,5 +1,5 @@
 """Media controller: modules/media_bridge.py (Spotify + Windows media + volume),
-voice ducking, modules/voice_dj.py, the island's Media messages and tab.
+the island's Media messages and tab.
 Every backend is faked: no audio, Spotify or Ollama is touched."""
 
 import os
@@ -8,7 +8,6 @@ import types
 import pytest
 
 from modules import media_bridge as mb
-from modules import voice_dj as dj
 from tests.test_island_bridge import Env, recv, run
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -209,84 +208,6 @@ def test_library_queue_and_spotify_only_actions(monkeypatch):
     assert off.library() == {"connected": False}
     with pytest.raises(ValueError, match="Connect Spotify"):
         off.command("play_uri", "spotify:track:1")
-
-
-# ─── ducking ────────────────────────────────────────────────────
-
-def ducker(sessions, talking):
-    sig = types.SimpleNamespace(AI_speaking=talking, human_speaking=False)
-    d = mb.Ducker(sig, audio=FakeAudio(sessions), level=0.2, own_pid=99)
-    d._ramp = lambda moves, steps, step_s: [m[0].SimpleAudioVolume.SetMasterVolume(m[2], None) for m in moves]
-    return d, sig
-
-
-def test_ducking_lowers_only_spotify_and_restores_it():
-    spot, ff, discord, lumi = (Sess("Spotify.exe", 1, 0.8), Sess("firefox.exe", 2, 0.5),
-                               Sess("Discord.exe", 3, 1.0), Sess("python.exe", 99, 1.0))
-    d, sig = ducker([spot, ff, discord, lumi], talking=True)
-    d.tick(now=100)
-    assert spot.vol == pytest.approx(0.16)
-    assert ff.vol == 0.5 and discord.vol == 1.0 and lumi.vol == 1.0       # Spotify only
-    sig.AI_speaking = False
-    d.tick(now=101)                                    # a pause between sentences: still ducked
-    assert spot.vol == pytest.approx(0.16)
-    d.tick(now=101.9)
-    assert spot.vol == pytest.approx(0.8) and not d.saved
-    paused = Sess("Spotify.exe", 5, 0.7, active=0)     # Spotify open but silent: left alone
-    d2, _ = ducker([paused], talking=True)
-    d2.tick(now=1)
-    assert paused.vol == 0.7
-
-
-def test_a_volume_you_changed_while_ducked_is_left_alone():
-    spot = Sess("Spotify.exe", 1, 0.8)
-    d, sig = ducker([spot], talking=True)
-    d.tick(now=1)
-    spot.vol = 0.4                                     # you turned it up mid-conversation
-    sig.AI_speaking = False
-    d.tick(now=2); d.tick(now=3)
-    assert spot.vol == 0.4
-
-
-# ─── voice DJ ───────────────────────────────────────────────────
-
-@pytest.mark.parametrize("text,action,value", [
-    ("skip", "next", None), ("Skip this song!", "next", None), ("pause the music", "pause", None),
-    ("resume", "play", None), ("volume 30", "volume", "30"), ("set the volume to 80%", "volume", "80"),
-    ("turn it up", "volume", "+10"), ("quieter", "volume", "-10"), ("like this song", "like", None),
-    ("shuffle off", "shuffle", False), ("go back", "previous", None),
-])
-def test_exact_phrases_need_no_model(text, action, value):
-    it = dj.parse(text, ask=lambda t: pytest.fail("no model call for exact phrases"))
-    assert (it.action, it.value) == (action, value)
-
-
-def test_fuzzy_requests_go_to_the_local_model_and_default_to_none(monkeypatch):
-    monkeypatch.setattr(dj.constants, "GAMING_MODE", False, raising=False)
-    ask = lambda t: {"action": "queue", "query": "chill instrumental", "kind": "playlist"}
-    it = dj.parse("queue some chill instrumental music", ask=ask)
-    assert (it.action, it.query) == ("queue_query", "chill instrumental")
-    assert dj.parse("let's play a game", ask=lambda t: {"action": "none"}) is None
-    assert dj.parse("how was your day", ask=lambda t: pytest.fail("no music words, no model")) is None
-    monkeypatch.setattr(dj.constants, "GAMING_MODE", True, raising=False)
-    assert dj.parse("put on some lofi", ask=lambda t: pytest.fail("no model in Gaming Mode")) is None
-
-
-def test_handle_runs_the_command_and_answers(monkeypatch):
-    monkeypatch.setattr(mb.time, "sleep", lambda s: None)
-    sp = FakeSpotify(np=SP_NP)
-    b = make(sp=sp)
-    b.refresh()
-    from modules import spotify
-    monkeypatch.setattr(spotify, "connected", lambda: True)
-    monkeypatch.setattr(spotify, "search", sp.search)
-    assert dj.handle("skip", bridge=b) == "Skipping."
-    reply = dj.handle("queue snow halation", bridge=b, ask=lambda t: {"action": "queue", "query": "snow halation"})
-    assert reply == "Queued “Snow halation” by μ's." and ("queue", "spotify:track:S1") in sp.calls
-    assert dj.handle("shuffle off", bridge=b) == "Shuffle is already off."
-    assert dj.handle("what a nice day", bridge=b, ask=lambda t: {"action": "none"}) is None
-    monkeypatch.setattr(spotify, "connected", lambda: False)
-    assert "connected" in dj.handle("play lofi", bridge=b, ask=lambda t: {"action": "play", "query": "lofi"})
 
 
 # ─── island ─────────────────────────────────────────────────────

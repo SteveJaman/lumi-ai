@@ -650,10 +650,16 @@ def play_in_context(context_uri: str = "", track_uri: str = "", uris: Optional[L
         if track_uri:
             body["offset"] = {"uri": track_uri}
     else:
-        lst = [u for u in (uris or []) if str(u).startswith("spotify:track:")][:PAGE_MAX]
-        if not lst:
+        allu = [u for u in (uris or []) if str(u).startswith("spotify:track:")]
+        if not allu:
             raise ValueError("Nothing to play.")
-        body = {"uris": lst, "offset": {"position": lst.index(track_uri) if track_uri in lst else 0}}
+        if track_uri in allu[:PAGE_MAX]:
+            lst = allu[:PAGE_MAX]
+            body = {"uris": lst, "offset": {"position": lst.index(track_uri)}}
+        else:                                        # past the cap: start at the song, then carry on in order
+            start = allu.index(track_uri) if track_uri in allu else 0
+            lst = (allu[start:] + allu[:start])[:PAGE_MAX]
+            body = {"uris": lst, "offset": {"position": 0}}
     _with_device(lambda dev: _api("PUT", "/me/player/play", params={"device_id": dev} if dev else None, body=body))
     return "Playing."
 
@@ -720,20 +726,133 @@ def _already(action: str) -> bool:
 KINDS = ("track", "artist", "album", "playlist")
 
 
+_FILLER = frozenset({"play", "put", "on", "me", "my", "the", "a", "an", "some", "song", "songs", "track",
+                     "tracks", "playlist", "please", "lumi", "can", "you", "by", "from", "of", "and", "to",
+                     "in", "it", "just", "start", "queue", "shuffle", "listen", "to", "liked", "favorite",
+                     "favourite"})
+
+
+def _tokens(text: str) -> List[str]:
+    return [t for t in re.findall(r"[a-z0-9']+", str(text or "").lower()) if t not in _FILLER]
+
+
+def _match(tokens: List[str], *fields: str) -> float:
+    """Share of the request's words found in the candidate's title or artist (0..1)."""
+    if not tokens:
+        return 0.0
+    hay = set(_tokens(" ".join(fields)))
+    return sum(1 for t in tokens if t in hay) / len(tokens)
+
+
+def _liked_pool(max_items: int = 300) -> List[Dict[str, Any]]:
+    """Your Liked Songs (newest first), as track rows, up to max_items."""
+    out, offset = [], 0
+    while len(out) < max_items:
+        page = liked_tracks(offset, PAGE_MAX)
+        out.extend(page.get("items") or [])
+        if page.get("next_offset") is None:
+            break
+        offset = page["next_offset"]
+    return out[:max_items]
+
+
+def _named_list(tokens: List[str], liked_only: bool = False):
+    """The playlist a request names, and the words left over (the song, if any).
+    The playlist whose title words all appear in the request wins, longest title first."""
+    if liked_only:
+        return {"kind": "liked", "id": "", "title": "Liked Songs", "browsable": True}, []
+    wanted = set(tokens)
+    best, best_len = None, 0
+    offset = 0
+    for _ in range(10):                                   # up to ~500 playlists
+        page = library_page("playlists", offset, PAGE_MAX)
+        for p in page["items"]:
+            title = _tokens(p.get("title") or "")
+            if title and set(title) <= wanted and len(title) > best_len:
+                best, best_len = (p, set(title)), len(title)
+        if page.get("next_offset") is None:
+            break
+        offset = page["next_offset"]
+    if best:
+        p, title_words = best
+        return {"kind": "playlist", **p}, [t for t in tokens if t not in title_words]
+    return _find_list(" ".join(tokens)), []
+
+
+def _play_playlist_row(found: Dict[str, Any], want_tokens: List[str]) -> str:
+    """Start one of the user's playlists; if the request names a song in it, start at that song."""
+    if found["kind"] == "liked":
+        pool = _liked_pool(PAGE_MAX * 2)
+        if not pool:
+            raise SpotifyError("Your Liked Songs are empty.")
+        uris = [r["uri"] for r in pool if r.get("uri", "").startswith("spotify:track:")]
+        track = ""
+        if want_tokens:
+            best = max(pool, key=lambda r: _match(want_tokens, r["title"], r["artist"]))
+            if _match(want_tokens, best["title"], best["artist"]) >= 1:
+                track = best["uri"]
+        play_in_context(uris=uris, track_uri=track)
+        return "Playing your Liked Songs."
+    ctx = f"spotify:playlist:{found['id']}"
+    track = ""
+    if want_tokens:
+        try:
+            rows = playlist_tracks(found["id"], 0, PAGE_MAX).get("items") or []
+        except SpotifyError:
+            rows = []
+        scored = [(r, _match(want_tokens, r["title"], r["artist"])) for r in rows if r.get("playable")]
+        hit = max(scored, key=lambda x: x[1], default=None)
+        if hit and hit[1] >= 1:
+            track = hit[0]["uri"]
+    play_in_context(context_uri=ctx, track_uri=track)
+    title = found.get("title") or "your playlist"
+    return f"Playing {title!r}" + (" from that song." if track else ".")
+
+
 def play_search(query: str, kind: str = "track") -> str:
+    """Play what the user asked for, from their own library first:
+    a playlist they own (by name), then a song in their Liked Songs, and only then Spotify's catalogue."""
     query = " ".join(str(query or "").split())[:200]
     if not query:
         raise ValueError("Say what to play.")
     kind = kind if kind in KINDS else "track"
-    res = _api("GET", "/search", params={"q": query, "type": kind, "limit": 1}) or {}
+    tokens = _tokens(query)
+    lowered = query.lower()
+
+    # 1. A playlist the user has: named outright, or asked for by name ("my chill playlist").
+    liked_only = "liked" in lowered and not tokens
+    if kind == "playlist" or "playlist" in lowered or liked_only:
+        try:
+            found, rest = _named_list(tokens, liked_only)
+            if found["kind"] in ("liked", "playlist"):          # playing a followed playlist needs no listing rights
+                return _play_playlist_row(found, rest)
+        except ValueError:
+            pass                                          # not in the library: Spotify's public playlists below
+
+    # 2. A song the user has liked: play it from Liked Songs, so the queue stays in their library.
+    if kind == "track" and tokens:
+        pool = _liked_pool()
+        scored = [(r, _match(tokens, r["title"], r["artist"])) for r in pool if r.get("uri")]
+        best = max(scored, key=lambda x: x[1], default=None)
+        if best and best[1] >= 1:
+            uris = [r["uri"] for r, _ in scored if r["uri"].startswith("spotify:track:")]
+            play_in_context(uris=uris, track_uri=best[0]["uri"])
+            return f"Playing {best[0]['title']!r} by {best[0]['artist']} from your Liked Songs."
+
+    # 3. Spotify's catalogue: take the best of several hits, not just the first.
+    res = _api("GET", "/search", params={"q": query, "type": kind, "limit": 5}) or {}
     items = [i for i in ((res.get(kind + "s") or {}).get("items") or []) if i]
     if not items:
         raise SpotifyError(f"Spotify found no {kind} for {query!r}.")
-    top = items[0]
+    if kind == "track":
+        top = max(items, key=lambda i: _match(tokens, i.get("name", ""),
+                                             " ".join(a.get("name", "") for a in i.get("artists") or [])))
+    else:
+        top = max(items, key=lambda i: _match(tokens, i.get("name", "")))
     body = {"uris": [top["uri"]]} if kind == "track" else {"context_uri": top["uri"]}
     _with_device(lambda dev: _api("PUT", "/me/player/play", params={"device_id": dev} if dev else None, body=body))
     who = ", ".join(a.get("name", "") for a in top.get("artists") or []) if kind in ("track", "album") else ""
-    return f"Playing {kind} {top.get('name', '')!r}" + (f" by {who}" if who else "") + "."
+    return f"Playing {kind} {top.get('name', '')!r}" + (f" by {who}" if who else "") + " from Spotify search."
 
 
 def top_artists(limit: int = 5) -> List[str]:
@@ -778,7 +897,7 @@ TOOL_SCHEMAS = [
             "required": ["action"]}}},
     {"type": "function", "function": {
         "name": "spotify_play",
-        "description": "Search Spotify and play the best match for a song, artist, album or playlist.",
+        "description": "Play a song, playlist, album or artist. The user's own playlists and Liked Songs are checked first; say the playlist's name or the song's title and artist.",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "What to play, e.g. 'lofi beats' or 'Bohemian Rhapsody'."},
             "kind": {"type": "string", "enum": list(KINDS)}},
