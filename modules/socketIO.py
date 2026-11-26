@@ -696,7 +696,7 @@ class SocketIOServer:
         from modules import spotify, user_profile, media_bridge
         media_bridge.register(r, self)          # /api/media/* (web sidebar player: Spotify or Windows media)
         user_profile.register(r, self)          # /api/profile* (the sidebar's profile dialog)
-        spotify.register(r, self)               # /api/spotify/* (Settings -> Connections, sidebar player)
+        spotify.register(r, self)               # /api/spotify/* (Integrations -> Accounts, sidebar player)
         from modules import home_info
         home_info.register(r, self)             # /api/settings/display (host-only)
         from modules import island_remote

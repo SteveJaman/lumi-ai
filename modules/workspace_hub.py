@@ -247,7 +247,7 @@ class GoogleAccount:
         from google_auth_oauthlib.flow import Flow
         cfg = _read_json(self.client_path)
         if not cfg or not self._client_block(cfg):
-            raise NotConnected("Add your Google OAuth client first (see Settings → Connections).")
+            raise NotConnected("Add your Google OAuth client first (see Integrations).")
         flow = Flow.from_client_config(cfg, scopes=GOOGLE_SCOPES, redirect_uri=redirect_uri,
                                        autogenerate_code_verifier=True)
         url, state = flow.authorization_url(access_type="offline", prompt="consent",
@@ -303,13 +303,13 @@ class GoogleAccount:
         with self._lock:
             info = self._info()
             if not info or not info.get("refresh_token"):
-                raise NotConnected("Google isn't connected. Connect it in Settings → Connections.")
+                raise NotConnected("Google isn't connected. Connect it in Integrations.")
             creds = self._creds or Credentials.from_authorized_user_info(info)
             if not creds.valid:
                 try:
                     creds.refresh(Request())
                 except RefreshError as e:
-                    self.last_error = "Google sign-in expired. Reconnect it in Settings → Connections."
+                    self.last_error = "Google sign-in expired. Reconnect it in Integrations."
                     raise NotConnected(self.last_error) from e
                 except requests.RequestException as e:
                     raise ProviderError("Couldn't reach Google to refresh the sign-in.") from e
@@ -335,7 +335,7 @@ class GoogleAccount:
         except HttpError as e:
             raise self._map_http_error(e)
         except RefreshError as e:
-            self.last_error = "Google sign-in expired. Reconnect it in Settings → Connections."
+            self.last_error = "Google sign-in expired. Reconnect it in Integrations."
             raise NotConnected(self.last_error) from e
         except (httplib2.HttpLib2Error, OSError) as e:
             raise ProviderError(f"Couldn't reach Google ({type(e).__name__}).") from e
@@ -349,7 +349,7 @@ class GoogleAccount:
         except Exception:
             pass
         if status == 401:
-            return NotConnected("Google sign-in expired. Reconnect it in Settings → Connections.")
+            return NotConnected("Google sign-in expired. Reconnect it in Integrations.")
         if reason in ("accessNotConfigured", "SERVICE_DISABLED") or "has not been used" in str(e):
             return ProviderError("Enable the Gmail API and the Google Calendar API in your Google "
                                  "Cloud project (APIs & Services → Library), then try again.")
@@ -540,7 +540,7 @@ class MicrosoftAccount:
         with self._lock:
             t = self._tokens()
             if not t or not t.get("refresh_token"):
-                raise NotConnected("KSU mail isn't connected. Connect it in Settings → Connections.")
+                raise NotConnected("KSU mail isn't connected. Connect it in Integrations.")
             if t.get("access_token") and time.time() < t.get("expires_at", 0):
                 return t["access_token"]
             cfg = self.config()
@@ -552,7 +552,7 @@ class MicrosoftAccount:
             except (requests.RequestException, ValueError) as e:
                 raise ProviderError("Couldn't reach Microsoft to refresh the sign-in.") from e
             if not r.ok or "access_token" not in data:
-                self.last_error = "KSU sign-in expired. Reconnect it in Settings → Connections."
+                self.last_error = "KSU sign-in expired. Reconnect it in Integrations."
                 raise NotConnected(self.last_error)
             self._save_tokens(data)
             return data["access_token"]
@@ -826,7 +826,7 @@ class GraphMailProvider(MailProvider):
             self.account._tokens() and self._expire()
             return self._call(method, path, retry=False, **kw)
         if r.status_code == 401:
-            raise NotConnected("KSU sign-in expired. Reconnect it in Settings → Connections.")
+            raise NotConnected("KSU sign-in expired. Reconnect it in Integrations.")
         if r.status_code == 403:
             raise ProviderError("Microsoft refused access. The tenant may have blocked the "
                                 "mail permissions; use the Gmail-label fallback.")
@@ -1178,7 +1178,7 @@ class WorkspaceHub:
         p = self._provider(pid)
         if p is None:
             raise NotConnected(f"{'KSU mail' if pid == 'ksu' else 'Gmail'} isn't connected. "
-                               "Connect it in Settings → Connections.")
+                               "Connect it in Integrations.")
         return p
 
     def any_connected(self) -> bool:
@@ -1272,7 +1272,7 @@ class WorkspaceHub:
     # -- calendar -------------------------------------------------------
     def get_events(self, days: int = 14, refresh: bool = False) -> Dict[str, Any]:
         if not self.calendar.connected():
-            raise NotConnected("Google Calendar isn't connected. Connect it in Settings → Connections.")
+            raise NotConnected("Google Calendar isn't connected. Connect it in Integrations.")
         days = max(1, min(int(days), EVENT_WINDOW_DAYS))
         res = self._cached("events", EVENTS_TTL, lambda: self.calendar.list_events(EVENT_WINDOW_DAYS), refresh)
         horizon = datetime.now().astimezone() + timedelta(days=days)
@@ -1292,7 +1292,7 @@ class WorkspaceHub:
         if e <= s or (e - s).days > MAX_RANGE_DAYS:
             raise InvalidInput(f"Ask for between 1 and {MAX_RANGE_DAYS} days.")
         if not self.calendar.connected():
-            raise NotConnected("Google Calendar isn't connected. Connect it in Settings → Connections.")
+            raise NotConnected("Google Calendar isn't connected. Connect it in Integrations.")
         now = time.time()
         today = date.today()
         entry = self._cache.get("events")
@@ -1317,7 +1317,7 @@ class WorkspaceHub:
                      location: str = "", description: str = "", attendees: Any = None,
                      timezone: Optional[str] = None) -> dict:
         if not self.calendar.connected():
-            raise NotConnected("Google Calendar isn't connected. Connect it in Settings → Connections.")
+            raise NotConnected("Google Calendar isn't connected. Connect it in Integrations.")
         people = _addr_list(attendees)
         if len(people) > MAX_RECIPIENTS:
             raise ValueError(f"At most {MAX_RECIPIENTS} attendees.")
@@ -1330,7 +1330,7 @@ class WorkspaceHub:
 
     def delete_event(self, event_id: str) -> None:
         if not self.calendar.connected():
-            raise NotConnected("Google Calendar isn't connected. Connect it in Settings → Connections.")
+            raise NotConnected("Google Calendar isn't connected. Connect it in Integrations.")
         if not re.fullmatch(r"[A-Za-z0-9_\-]{5,1024}", event_id or ""):
             raise ValueError("That doesn't look like an event id. Use list_events to get one.")
         self.calendar.delete_event(event_id)
@@ -1344,7 +1344,7 @@ class WorkspaceHub:
         is given); all-day events take a date. Attendees are notified.
         Returns (before, after)."""
         if not self.calendar.connected():
-            raise NotConnected("Google Calendar isn't connected. Connect it in Settings → Connections.")
+            raise NotConnected("Google Calendar isn't connected. Connect it in Integrations.")
         if not re.fullmatch(r"[A-Za-z0-9_\-]{5,1024}", event_id or ""):
             raise ValueError("That doesn't look like an event id. Use list_events to get one.")
         new_start = str(new_start or "").strip()
@@ -1410,7 +1410,7 @@ class WorkspaceHub:
             stale |= res["stale"]
             refreshing |= res["refreshing"]
         if not connected:
-            raise NotConnected("No mail account is connected. Connect Gmail or KSU in Settings → Connections.")
+            raise NotConnected("No mail account is connected. Connect Gmail or KSU in Integrations.")
         if errors and not items and len(errors) == connected:
             raise ProviderError(next(iter(errors.values())))
         items.sort(key=lambda m: m["ts"], reverse=True)

@@ -143,7 +143,6 @@ display.init({ api });
 islandRemote.init({ api });
 workspace.init({
   $, state, api, navigate,
-  openSettingsTab: (id) => { _settingsState.activeTab = id; navigate('settings'); },
 });
 
 /* --------------------------------------------------------------
@@ -5122,33 +5121,53 @@ async function renderIntegrations(main) {
       <div class="page-header">
         <div>
           <div class="page-title">Integrations</div>
-          <div class="page-sub">Connect Lumi to external services.</div>
+          <div class="page-sub">Everything Lumi connects to: your accounts, the apps she works with, and tool servers.</div>
         </div>
         <button class="btn btn-sm" id="integrations-refresh">Refresh</button>
       </div>
       <div class="page-scroll">
-        <div class="page-header" style="padding-left:0;padding-right:0">
-          <div>
-            <div class="page-title" style="font-size:1.05em">MCP Servers</div>
-            <div class="page-sub">Tools from Model Context Protocol servers. Lumi asks before each one runs,
-              except read-only tools on servers marked read-only.</div>
+        <section class="int-section" aria-labelledby="int-accounts">
+          <div class="int-section-head">
+            <div>
+              <h2 class="int-section-title" id="int-accounts">Accounts</h2>
+              <p class="int-section-sub">Calendar, mail and music. Sign-ins stay on this PC, in data/credentials.</p>
+            </div>
           </div>
-          <button class="btn btn-sm" id="mcp-add">Add MCP server</button>
-        </div>
-        <div class="integration-grid" id="mcp-grid">
-          <div class="integration-empty">Loading…</div>
-        </div>
-        <div class="integration-grid" id="integrations-grid">
-          <div class="integration-empty">Loading…</div>
-        </div>
+          <div id="accounts-holder"><div class="integration-empty">Loading…</div></div>
+        </section>
+        <section class="int-section" aria-labelledby="int-apps">
+          <div class="int-section-head">
+            <div>
+              <h2 class="int-section-title" id="int-apps">Apps &amp; services</h2>
+              <p class="int-section-sub">Local models, her avatar, voice, Discord, the browser and OBS.</p>
+            </div>
+          </div>
+          <div class="integration-grid" id="integrations-grid">
+            <div class="integration-empty">Loading…</div>
+          </div>
+        </section>
+        <section class="int-section" aria-labelledby="int-mcp">
+          <div class="int-section-head">
+            <div>
+              <h2 class="int-section-title" id="int-mcp">MCP servers</h2>
+              <p class="int-section-sub">Extra tools from Model Context Protocol servers. Lumi asks before each one runs,
+                except read-only tools on servers marked read-only.</p>
+            </div>
+            <button class="btn btn-sm" id="mcp-add">Add MCP server</button>
+          </div>
+          <div class="integration-grid" id="mcp-grid">
+            <div class="integration-empty">Loading…</div>
+          </div>
+        </section>
       </div>
     </div>
   `;
 
-  $('#integrations-refresh').addEventListener('click', () => { loadIntegrations(); loadMcpServers(); });
+  const loadAccounts = () => workspace.renderAccounts($('#accounts-holder'));
+  $('#integrations-refresh').addEventListener('click', () => { loadAccounts(); loadIntegrations(); loadMcpServers(); });
   $('#mcp-add').addEventListener('click', () => openMcpServerModal());
   startMcpPolling();
-  await Promise.all([loadIntegrations(), loadMcpServers()]);
+  await Promise.all([loadAccounts(), loadIntegrations(), loadMcpServers()]);
 }
 
 /* --------------------------------------------------------------
@@ -6083,8 +6102,6 @@ const SETTINGS_TABS = [
     desc: 'Where Lumi thinks: local models, Cloud Escalation and Gaming Mode.' },
   { id: 'devices', label: 'Devices', icon: _SI('<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'),
     desc: 'Lumi Island on this PC and on your other devices.' },
-  { id: 'connections', group: 'Integrations', label: 'Connections', icon: _SI('<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>'),
-    desc: 'Google, Spotify and school mail. Sign-ins are stored on this PC.' },
   { id: 'security', group: 'System', label: 'Security', icon: _SI('<path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/>'),
     desc: 'Signed-in sessions and your password.' },
   { id: 'advanced', label: 'Advanced', icon: _SI('<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>'),
@@ -6095,6 +6112,10 @@ const SETTINGS_TABS = [
 const _SETTINGS_ALIASES = { general: 'appearance' };    // old links (Settings, then General, then Display)
 
 async function renderSettings(main) {
+  if (_settingsState.activeTab === 'connections') {        // old link: accounts live on Integrations now
+    _settingsState.activeTab = 'profile';
+    return navigate('integrations');
+  }
   _settingsState.activeTab = _SETTINGS_ALIASES[_settingsState.activeTab] || _settingsState.activeTab;
   if (!SETTINGS_TABS.some((t) => t.id === _settingsState.activeTab)) _settingsState.activeTab = 'profile';
   main.innerHTML = `
@@ -6181,8 +6202,6 @@ async function loadSettingsTab() {
       panel.replaceChildren(
         settingsGroup('On this PC', null, [buildIslandField()]),
         settingsGroup('Other devices', 'Use Lumi Island on a laptop or tablet over Tailscale.', [islandRemote.buildRemoteCard()]));
-    } else if (tab === 'connections') {
-      await workspace.renderConnectionsTab(panel);
     } else if (tab === 'security') {
       const sessions = await api('/api/settings/security/sessions');
       _settingsState.sessions = sessions.sessions || [];

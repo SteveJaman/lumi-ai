@@ -131,7 +131,7 @@ def test_not_connected_is_a_409_with_a_message(env, tmp_path):
     async def go():
         async with TestClient(TestServer(app)) as c:
             r = await c.get("/api/workspace/calendar")
-            assert r.status == 409 and "Connections" in (await r.json())["error"]
+            assert r.status == 409 and "Integrations" in (await r.json())["error"]
             assert (await c.get("/api/workspace/mail")).status == 409
     asyncio.run(go())
 

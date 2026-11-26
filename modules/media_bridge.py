@@ -498,7 +498,7 @@ class MediaBridge:
 
     def _spotify_only(self, action, value):
         if not self._sp_status()["connected"]:
-            raise ValueError("Connect Spotify in Settings, then Connections.")
+            raise ValueError("Connect Spotify in Integrations.")
         if action == "play_in_context":
             v = value if isinstance(value, dict) else {}
             return self.sp.play_in_context(str(v.get("context_uri") or ""), str(v.get("track_uri") or ""),

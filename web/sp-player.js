@@ -138,8 +138,9 @@ function build() {
   const text = el('div', 'spd-text');
   text.append(D.title, D.artist);
   D.heart = btn('spd-icon spd-heart', 'Save to Liked Songs', ICON.heart, () => act('like'));
+  D.lib = btn('spd-icon spd-libbtn', 'Open your library', ICON.library, () => setOpen(!L.open));
   const left = el('div', 'spd-now');
-  left.append(D.art, text, D.heart);
+  left.append(D.art, text, D.heart, D.lib);
 
   D.shuffle = btn('spd-icon spd-toggle', 'Shuffle', ICON.shuffle, () => act('shuffle', !(now && now.shuffle)));
   D.prev = btn('spd-icon', 'Previous', ICON.prev, () => act('previous'));
@@ -178,9 +179,8 @@ function build() {
   Object.assign(D.vol, { type: 'range', min: 0, max: 100, step: 1, value: 50 });
   D.vol.setAttribute('aria-label', 'Spotify volume');
   D.vol.addEventListener('input', () => { fill(D.vol); clearTimeout(volTimer); volTimer = setTimeout(() => setVolume(+D.vol.value), 200); });
-  D.lib = btn('spd-icon spd-libbtn', 'Open your library', ICON.library, () => setOpen(!L.open));
   const right = el('div', 'spd-right');
-  right.append(D.volIcon, D.vol, D.lib);
+  right.append(D.volIcon, D.vol);
 
   D.err = el('div', 'spd-err');
   D.err.setAttribute('role', 'status');

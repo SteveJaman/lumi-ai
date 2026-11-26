@@ -2,7 +2,7 @@
    Spotify in the web app (backend: modules/spotify.py, /api/spotify/*).
 
      init({ api, state })   starts the player bar and library (web/sp-player.js)
-     buildCard(onChange)    the Settings -> Connections card
+     buildCard(onChange)    the Integrations → Accounts card
    ============================================================ */
 
 import * as player from './sp-player.js';
@@ -31,7 +31,7 @@ export function init(ctx) {
 /* The player shows while Spotify is connected; the card tells it when that changes. */
 function refreshStatus() { player.refresh(); }
 
-/* ---------- Settings -> Connections card ---------- */
+/* ---------- Integrations → Accounts card ---------- */
 
 export function buildCard(onChange) {
   const card = el('div', 'integration-card ws-card sp-card');
@@ -41,7 +41,7 @@ export function buildCard(onChange) {
   tw.append(el('div', 'integration-name', 'Spotify'), badge);
   head.append(el('div', 'integration-emoji', '🎵'), tw);
   card.append(head, el('div', 'integration-desc',
-    'A player bar with your playlists, albums and Liked Songs, and Lumi can play, pause and skip for you. Picking songs to play needs Spotify Premium.'));
+    'A player in the sidebar with your playlists, albums and Liked Songs, and Lumi can play, pause and skip for you. Picking songs to play needs Spotify Premium.'));
   const body = el('div', 'sp-card-body');
   card.append(body);
   draw(card, body, badge, onChange);

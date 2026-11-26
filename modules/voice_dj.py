@@ -123,7 +123,7 @@ def handle(text: str, bridge=None, ask=None) -> Optional[str]:
         if intent.action in ("play_query", "queue_query"):
             from modules import spotify
             if not spotify.connected():
-                return "I need Spotify connected for that. You can connect it in Settings, then Connections."
+                return "I need Spotify connected for that. You can connect it on the Integrations page."
             kinds = ("track",) if intent.action == "queue_query" and intent.kind == "track" else (intent.kind,)
             if intent.action == "queue_query" and intent.kind != "track":
                 kinds = ("track",)                             # only songs can go in a queue

@@ -1,5 +1,5 @@
 """
-/api/workspace/* routes for the web client (Settings → Connections and the
+/api/workspace/* routes for the web client (Integrations → Accounts and the
 Workspace view). All of them are host-only: none is in socketIO's
 _REMOTE_API_ALLOW, so a tunnel visitor gets 403 before reaching a handler.
 

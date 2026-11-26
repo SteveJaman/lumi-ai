@@ -3020,7 +3020,7 @@ class Prompter:
             hub = getattr(self.signals, "workspace_hub", None)
             if hub is None or not hub.any_connected():
                 return ("Calendar and email aren't connected. Tell the user to connect "
-                        "them in Settings, then Connections.")
+                        "them in Integrations.")
             print(f"\n{GRAY}[Lumi wants to use tool: {name}]{RESET}")
             if name in workspace_hub.CONFIRM_TOOLS:
                 # Sending, inviting and deleting reach other people or can't be

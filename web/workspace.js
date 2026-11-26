@@ -2,7 +2,7 @@
    Workspace — Google Calendar, Gmail and KSU mail.
    Two entry points for app.js:
      renderWorkspace(main)        the Workspace view (Agenda / Inbox)
-     renderConnectionsTab(panel)  Settings → Connections
+     renderAccounts(panel)        Integrations → Accounts (Google, Spotify, school mail)
    app.js is the only importer; it calls init() with the helpers
    this file shares with the rest of the client.
    Everything the server sends is written with textContent, never
@@ -12,7 +12,7 @@
 import * as display from './display.js';
 import * as spotify from './spotify.js';
 
-let C = null;       // { $, state, api, navigate, openSettingsTab }
+let C = null;       // { $, state, api, navigate }
 export function init(ctx) { C = ctx; }
 
 /** KSU mail is switched off in the UI (KSU blocks students from registering the
@@ -102,7 +102,7 @@ function notice(root, message, { retry, connections } = {}) {
   const box = el('div', 'ws-notice');
   box.append(el('div', 'ws-notice-text', message));
   const row = el('div', 'ws-notice-actions');
-  if (connections) row.append(button('Open Connections', 'btn btn-sm btn-primary', () => C.openSettingsTab('connections')));
+  if (connections) row.append(button('Open Integrations', 'btn btn-sm btn-primary', () => C.navigate('integrations')));
   if (retry) row.append(button('Try again', 'btn btn-sm', retry));
   if (row.childElementCount) box.append(row);
   root.append(box);
@@ -467,20 +467,15 @@ function drawReader(reader, m, full) {
 }
 
 /* ============================================================
-   Settings → Connections
+   Integrations → Accounts
    ============================================================ */
 
-export async function renderConnectionsTab(panel) {
+export async function renderAccounts(panel) {
   stop();
-  panel.replaceChildren();
-  panel.append(el('h2', 'settings-section-title', 'Connections'));
-  panel.append(el('div', 'settings-help',
-    'Connect your accounts so Lumi can show your calendar, mail and music and help with them. ' +
-    'Sign-ins are stored on this PC, in data/credentials, and never leave it except to talk to Google, Microsoft or Spotify. ' +
-    'Note: "Ask Lumi" and Lumi’s email tools send message text to your chat model. ' +
-    'If that model is a cloud provider, the text leaves this PC.'));
-  const holder = el('div', 'ws-conn');
-  panel.append(holder);
+  const holder = el('div', 'integration-grid ws-conn');
+  panel.replaceChildren(holder, el('p', 'int-note',
+    '“Ask Lumi” and Lumi’s email tools send message text to your chat model; '
+    + 'if that model is a cloud provider, the text leaves this PC.'));
   await refreshConnections(holder);
 }
 

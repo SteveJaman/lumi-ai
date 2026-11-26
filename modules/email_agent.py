@@ -89,7 +89,7 @@ async def run_tool(name: str, args: Dict[str, Any], ctx: ToolContext) -> str:
     hub = ctx.hub
     if hub is None or not hub.any_connected():
         return ("Calendar and email aren't connected. Tell the user to connect them in "
-                "Settings, then Connections.")
+                "Integrations.")
     from modules.workspace_hub import ProviderError
     try:
         if name == "triage_inbox":

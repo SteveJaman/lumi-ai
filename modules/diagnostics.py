@@ -89,7 +89,7 @@ FIX_RULES = [
      "Install FFmpeg and put it on PATH (`ffmpeg -version` should work). Discord voice needs it."),
     (r"invalid_grant|token has been expired or revoked|Reconnect (it|Google)|sign-in expired",
      "An account sign-in expired",
-     "Open Settings → Connections in the web app and reconnect the account."),
+     "Open Integrations in the web app and reconnect the account."),
     (r"pywinauto isn't installed|No module named 'pywinauto'",
      "Desktop tools need pywinauto",
      "Run `pip install pywinauto` in the lumi environment."),
@@ -378,7 +378,7 @@ def run_checks(signals=None) -> List[Dict[str, str]]:
         if hub is not None:
             checks.append(_check("workspace", "Email & calendar", "ok" if hub.any_connected() else "warn",
                                  "Connected." if hub.any_connected() else "No account connected: email tools are hidden.",
-                                 "" if hub.any_connected() else "Connect Google or KSU in Settings → Connections."))
+                                 "" if hub.any_connected() else "Connect Google or KSU in Integrations."))
     except Exception:
         pass
 

@@ -4,7 +4,7 @@ Spotify: see what's playing and control playback with your own account.
 Sign-in is OAuth 2.0 with PKCE, so only a Client ID is needed (no secret). You
 create a free app at https://developer.spotify.com/dashboard, add the redirect
 URI http://127.0.0.1:5000/api/spotify/callback, and paste its Client ID in
-Settings -> Connections. The sign-in stays on this PC in data/credentials/spotify.json.
+Integrations. The sign-in stays on this PC in data/credentials/spotify.json.
 
 Reading what's playing works on any account. Play, pause, skip, volume and
 shuffle are Spotify Premium features: on a free account Spotify answers 403
@@ -155,7 +155,7 @@ def finish(state: str, code: str) -> Dict[str, Any]:
     with _lock:
         p = _pending.pop(state, None)
     if p is None or time.time() - p["at"] > PENDING_TTL_S:
-        raise SpotifyError("That sign-in link expired. Start again from Settings -> Connections.")
+        raise SpotifyError("That sign-in link expired. Start again from Integrations.")
     data = _load()
     r = requests.post(TOKEN_URL, data={
         "grant_type": "authorization_code", "code": code, "redirect_uri": p["redirect"],
@@ -181,7 +181,7 @@ def _access_token() -> str:
         data = _load()
         tok = data.get("token") or {}
         if not tok.get("refresh_token"):
-            raise NotConnected("Spotify isn't connected. Connect it in Settings -> Connections.")
+            raise NotConnected("Spotify isn't connected. Connect it in Integrations.")
         if tok.get("access_token") and time.time() < float(tok.get("expires_at", 0)):
             return tok["access_token"]
         r = requests.post(TOKEN_URL, data={"grant_type": "refresh_token", "refresh_token": tok["refresh_token"],
@@ -190,7 +190,7 @@ def _access_token() -> str:
             if r.status_code in (400, 401):
                 data.pop("token", None)
                 _save(data)
-                raise NotConnected("Spotify signed you out. Connect it again in Settings -> Connections.")
+                raise NotConnected("Spotify signed you out. Connect it again in Integrations.")
             raise SpotifyError(f"Couldn't refresh the Spotify sign-in ({_err_text(r)}).")
         new = r.json()
         tok.update(access_token=new["access_token"], expires_at=time.time() + int(new.get("expires_in", 3600)) - 60)
