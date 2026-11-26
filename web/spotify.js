@@ -1,20 +1,13 @@
 /* ============================================================
    Spotify in the web app (backend: modules/spotify.py, /api/spotify/*).
 
-     init({ api, state })   starts the sidebar mini player (host only)
+     init({ api, state })   starts the player bar and library (web/sp-player.js)
      buildCard(onChange)    the Settings -> Connections card
-
-   The mini player polls /api/spotify/player every 5 s while the tab is
-   visible and something is playing (20 s when idle), and stops when the
-   tab is hidden. Album art comes from Spotify's https CDN; everything
-   else is written with textContent.
    ============================================================ */
 
+import * as player from './sp-player.js';
+
 let C = null;
-let timer = 0;
-let now = null;            // last /player answer
-let busy = false;
-let tick = 0;
 
 const REDIRECT_PATH = '/api/spotify/callback';
 const el = (tag, cls, text) => {
@@ -29,105 +22,14 @@ const btn = (label, cls, onClick) => {
   if (onClick) b.addEventListener('click', onClick);
   return b;
 };
-const ICON = {
-  prev: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z" fill="currentColor"/></svg>',
-  next: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z" fill="currentColor"/></svg>',
-  play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16l13-8z" fill="currentColor"/></svg>',
-  pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>',
-};
 
 export function init(ctx) {
   C = ctx;
-  if (!C.state.isLocal) return;                       // the routes are host-only
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); else stop(); });
-  refresh();
+  player.init(ctx);
 }
 
-/* The card shows while Spotify is connected (the player is Spotify only). */
-let show = false;
-async function refreshStatus() { refresh(); }
-
-function stop() { clearTimeout(timer); timer = 0; clearInterval(tick); tick = 0; }
-
-async function refresh() {
-  stop();
-  if (document.hidden) return;
-  try {
-    now = await C.api('/api/media/state');          // modules/media_bridge.py
-    show = !!(now.spotify && now.spotify.connected);
-    paint();
-  } catch (e) {
-    if (e.status === 401 || e.status === 403) { show = false; paint(); return; }
-  }
-  timer = setTimeout(refresh, now && now.playing ? 5000 : 15000);
-  if (now && now.playing) tick = setInterval(paintProgress, 1000);
-}
-
-/* ---------- sidebar mini player ---------- */
-
-function paint() {
-  const box = document.getElementById('sp-mini');
-  if (!box) return;
-  box.hidden = !show;
-  if (!show) { box.replaceChildren(); return; }
-  box.replaceChildren();
-  const has = !!(now && now.source);
-  const art = el('div', 'sp-art');
-  if (has && /^(data:image\/(png|jpeg);base64,|https:\/\/)/.test(now.art || '')) {
-    const img = el('img');
-    img.src = now.art; img.alt = ''; img.referrerPolicy = 'no-referrer';
-    art.append(img);
-  }
-  const text = el('div', 'sp-text');
-  if (has) {
-    const title = el('span', 'sp-title', now.title || 'Unknown');
-    title.title = now.title || '';
-    text.append(title, el('div', 'sp-artist', now.artists || now.album || ''));
-  } else {
-    text.append(el('span', 'sp-title sp-idle', 'Nothing playing'), el('div', 'sp-artist', 'Spotify'));
-  }
-  const can = (now && now.can) || {};
-  const ctl = el('div', 'sp-ctl');
-  const mk = (name, label, action, ok) => {
-    const b = btn('', 'sp-btn', () => act(action));
-    b.innerHTML = ICON[name];
-    b.setAttribute('aria-label', label); b.title = label;
-    b.disabled = !ok;
-    return b;
-  };
-  const playing = !!(now && now.playing);
-  ctl.append(mk('prev', 'Previous track', 'previous', can.prev && can.control),
-    mk(playing ? 'pause' : 'play', playing ? 'Pause' : 'Play', 'toggle', can.control),
-    mk('next', 'Next track', 'next', can.next && can.control));
-  const bar = el('div', 'sp-bar');
-  bar.append(el('i'));
-  const err = el('div', 'sp-err');
-  err.setAttribute('role', 'status');
-  box.append(art, text, ctl, bar, err);
-  paintProgress();
-}
-
-function paintProgress() {
-  const i = document.querySelector('#sp-mini .sp-bar i');
-  if (!i) return;
-  if (!now || !now.duration_ms) { i.style.width = '0'; return; }
-  const elapsed = now.progress_ms + (now.playing ? (Date.now() / 1000 - now.at) * 1000 : 0);
-  i.style.width = `${Math.min(100, (elapsed / now.duration_ms) * 100)}%`;
-}
-
-async function act(action) {
-  if (busy) return;
-  busy = true;
-  const err = document.querySelector('#sp-mini .sp-err');
-  if (err) err.textContent = '';
-  try {
-    const r = await C.api('/api/media/command', { method: 'POST', csrf: true, body: { action } });
-    if (r && r.state) { now = r.state; paint(); }
-    setTimeout(refresh, 800);
-  } catch (e) {
-    if (err) err.textContent = e.message;
-  } finally { busy = false; }
-}
+/* The player shows while Spotify is connected; the card tells it when that changes. */
+function refreshStatus() { player.refresh(); }
 
 /* ---------- Settings -> Connections card ---------- */
 
@@ -139,7 +41,7 @@ export function buildCard(onChange) {
   tw.append(el('div', 'integration-name', 'Spotify'), badge);
   head.append(el('div', 'integration-emoji', '🎵'), tw);
   card.append(head, el('div', 'integration-desc',
-    'See what’s playing in the sidebar and let Lumi play, pause and skip for you. Playback control needs Spotify Premium.'));
+    'A player bar with your playlists, albums and Liked Songs, and Lumi can play, pause and skip for you. Picking songs to play needs Spotify Premium.'));
   const body = el('div', 'sp-card-body');
   card.append(body);
   draw(card, body, badge, onChange);

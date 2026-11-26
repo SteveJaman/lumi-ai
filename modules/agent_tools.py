@@ -192,6 +192,7 @@ PROVENANCE_MARKERS = {
     # Song, artist and playlist names are written by other people: data, not orders.
     "spotify_now_playing": "FROM SPOTIFY",
     "spotify_play":        "FROM SPOTIFY",
+    "media_playlist_tracks": "FROM SPOTIFY",
     # Everyday Life tools (see EVERYDAY TOOLS below).
     "triage_inbox":           "FROM EMAIL",
     "auto_draft_reply":       "FROM EMAIL",

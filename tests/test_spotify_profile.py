@@ -160,7 +160,7 @@ def test_tools_offered_only_when_connected(spot):
     assert {"spotify_now_playing", "spotify_control", "spotify_play"} <= names()
     assert agent_tools.wrap_tool_result("spotify_now_playing", "Playing: x").startswith("[FROM SPOTIFY]")
     sp.disconnect()
-    assert sp.status() == {"configured": True, "connected": False, "user": None, "product": None, "premium": False,
+    assert sp.status() == {"configured": True, "connected": False, "user": None, "product": None, "premium": None,
                            "needs_reconnect": False}
 
 
@@ -325,7 +325,7 @@ def test_media_tab_calls(spot):
     assert sp.is_liked("T1") is True
     spot.script.append(Resp(200, None, text=""))
     assert sp.set_liked("T1", False) == "Removed from your Liked Songs."
-    assert spot.calls["api"][-1][:3] == ("DELETE", "/me/tracks", {"ids": "T1"})
+    assert spot.calls["api"][-1][:3] == ("DELETE", "/me/library", {"uris": "spotify:track:T1"})
 
 
 def test_old_sign_ins_are_asked_to_reconnect(spot):

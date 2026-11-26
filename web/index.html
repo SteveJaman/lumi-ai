@@ -43,9 +43,6 @@
         </div>
       </div>
 
-      <!-- Spotify mini player (web/spotify.js): shown only while Spotify is connected -->
-      <div class="sp-mini" id="sp-mini" hidden></div>
-
       <div class="user-chip">
         <button class="user-me" id="user-me" type="button" title="Edit your profile" aria-label="Edit your profile">
           <span class="avatar" id="user-avatar">?</span>
@@ -76,6 +73,11 @@
   </aside>
 
   <main class="main" id="main-content"></main>
+
+  <!-- Spotify (web/sp-player.js): the player bar along the bottom and the library view
+       it opens. Host only; shown while Spotify is connected. -->
+  <section class="spx" id="sp-full" aria-label="Your Spotify library" hidden></section>
+  <footer class="spd" id="sp-dock" aria-label="Spotify player" hidden></footer>
 
   <!-- Split-view workspace (web/split-view.js). Host-only; hidden until
        toggled. Browser frames are JPEG screenshots streamed over socket.io,
