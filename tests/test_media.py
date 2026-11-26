@@ -46,8 +46,8 @@ class FakeWin:
     def __init__(self, st=None, ok=True):
         self.st, self.ok, self.calls = st, ok, []
     def state(self): return dict(self.st) if self.st else None
-    def command(self, action, prefer=""):
-        self.calls.append((action, prefer))
+    def command(self, action, prefer="", value=None):
+        self.calls.append((action, prefer) if value is None else (action, prefer, value))
         return self.ok
 
 

@@ -102,9 +102,12 @@ def status() -> Dict[str, Any]:
     tok = data.get("token") or {}
     granted = set(str(tok.get("scope") or "").split())
     connected_ = bool(tok.get("refresh_token"))
+    product = user.get("product")
+    # True / False when known; None when Spotify hasn't said yet (the first player call tells).
+    premium = (product == "premium") if product else data.get("plan_premium")
     return {"configured": bool(data.get("client_id")), "connected": connected_,
-            "user": user.get("display_name") or user.get("id"), "product": user.get("product"),
-            "premium": user.get("product") == "premium",
+            "user": user.get("display_name") or user.get("id"), "product": product,
+            "premium": premium,
             # Signed in before a feature needed a new permission (e.g. Liked Songs): sign in again.
             "needs_reconnect": connected_ and bool(granted) and not set(SCOPES.split()) <= granted}
 
@@ -117,6 +120,7 @@ def disconnect() -> None:
     with _lock:
         data = _load()
         _save({"client_id": data["client_id"]} if data.get("client_id") else {})
+    _plan.update(premium=None, loaded=False)
 
 
 # ─── sign-in (PKCE) ──────────────────────────────────────────────────
@@ -205,6 +209,34 @@ def _err_text(r) -> str:
         return str(r.status_code)
 
 
+class PremiumRequired(SpotifyError):
+    """Spotify refused a player call because the account isn't Premium."""
+
+
+class ApiError(SpotifyError):
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
+
+
+# Your plan, learned from what Spotify allows: Development Mode apps no longer
+# get the "product" field from /me (Feb 2026), so a Premium-only call that works
+# means Premium, and a PREMIUM_REQUIRED refusal means Free. Saved with the sign-in.
+_plan = {"premium": None, "loaded": False}
+
+
+def _remember_plan(premium: bool) -> None:
+    if _plan["loaded"] and _plan["premium"] is premium:
+        return
+    with _lock:
+        data = _load()
+        if data.get("plan_premium") is not premium:
+            data["plan_premium"] = premium
+            if data.get("client_id"):
+                _save(data)
+    _plan.update(premium=premium, loaded=True)
+
+
 def _api(method: str, path: str, params=None, body=None, _retry=True) -> Any:
     r = requests.request(method, API + path, params=params, json=body, timeout=TIMEOUT_S,
                          headers={"Authorization": f"Bearer {_access_token()}"})
@@ -215,16 +247,20 @@ def _api(method: str, path: str, params=None, body=None, _retry=True) -> Any:
                 data["token"]["expires_at"] = 0
                 _save(data)
         return _api(method, path, params, body, _retry=False)
-    if r.status_code == 204 or (r.status_code in (200, 202) and not r.content):
-        return None
+    player_write = method in ("PUT", "POST") and path.startswith("/me/player")
     if r.status_code == 403 and "PREMIUM" in (r.text or "").upper():
-        raise SpotifyError("Playback control needs Spotify Premium. Lumi can still see what's playing.")
+        _remember_plan(False)
+        raise PremiumRequired("That needs Spotify Premium.")
     if r.status_code == 404 and "NO_ACTIVE_DEVICE" in (r.text or "").upper():
         raise SpotifyError("NO_ACTIVE_DEVICE")
     if r.status_code == 429:
-        raise SpotifyError(f"Spotify is rate-limiting requests; try again in {r.headers.get('Retry-After', 'a few')} s.")
+        raise ApiError(f"Spotify is rate-limiting requests; try again in {r.headers.get('Retry-After', 'a few')} s.", 429)
     if r.status_code >= 400:
-        raise SpotifyError(f"Spotify said {_err_text(r)}.")
+        raise ApiError(f"Spotify said {_err_text(r)}.", r.status_code)
+    if player_write:
+        _remember_plan(True)                              # a Premium-only call just worked
+    if r.status_code == 204 or (r.status_code in (200, 202) and not r.content):
+        return None
     try:
         return r.json()
     except ValueError:
@@ -311,11 +347,13 @@ def library(limit: int = 20) -> Dict[str, List[Dict[str, Any]]]:
         "liked": _rows([i.get("track") for i in get("/me/tracks", {"limit": limit}).get("items") or []], "track"),
         "recent": _rows(recent[:limit], "track"),
         "shows": _rows([i.get("show") for i in get("/me/shows", {"limit": limit}).get("items") or []], "show"),
+        "albums": _rows([i.get("album") for i in get("/me/albums", {"limit": limit}).get("items") or []], "album"),
     }
 
 
 def search(query: str, kinds=("track", "playlist", "album", "show"), limit: int = 6) -> List[Dict[str, Any]]:
     query = " ".join(str(query or "").split())[:200]
+    limit = max(1, min(int(limit), 10))                   # Spotify's maximum since Feb 2026
     if not query:
         return []
     res = _api("GET", "/search", params={"q": query, "type": ",".join(kinds), "limit": limit}) or {}
@@ -383,18 +421,228 @@ def set_repeat(state: str) -> str:
     return {"off": "Repeat off.", "context": "Repeating this playlist.", "track": "Repeating this song."}[state]
 
 
-def is_liked(track_id: str) -> bool:
-    if not track_id:
+# Liking goes through /me/library with URIs (Feb 2026: /me/tracks save/remove/contains were replaced).
+LIBRARY_BATCH = 40
+
+
+def as_uri(x: str, kind: str = "track") -> str:
+    x = str(x or "")
+    return x if x.startswith("spotify:") else (f"spotify:{kind}:{x}" if x else "")
+
+
+def liked_many(uris: List[str]) -> List[bool]:
+    """Whether each URI is in your library (Liked Songs for tracks), in order."""
+    uris = [as_uri(u) for u in uris]
+    out: List[bool] = []
+    for i in range(0, len(uris), LIBRARY_BATCH):
+        chunk = [u for u in uris[i:i + LIBRARY_BATCH]]
+        res = _api("GET", "/me/library/contains", params={"uris": ",".join(chunk)}) or []
+        out += [bool(v) for v in res] + [False] * (len(chunk) - len(res))
+    return out
+
+
+def is_liked(track: str) -> bool:
+    if not track:
         return False
-    res = _api("GET", "/me/tracks/contains", params={"ids": track_id})
-    return bool(res and res[0])
+    return liked_many([track])[0]
 
 
-def set_liked(track_id: str, on: bool) -> str:
-    if not track_id:
+def set_liked(track: str, on: bool) -> str:
+    """Save or remove any track (a URI or an id), from any row, not just what's playing."""
+    uri = as_uri(track)
+    if not uri.startswith("spotify:track:") and not uri.startswith("spotify:episode:"):
         raise ValueError("Nothing to like.")
-    _api("PUT" if on else "DELETE", "/me/tracks", params={"ids": track_id})
+    _api("PUT" if on else "DELETE", "/me/library", params={"uris": uri})
     return "Saved to your Liked Songs." if on else "Removed from your Liked Songs."
+
+
+# ─── pages: library shelves and track lists (the mini Spotify view) ─
+
+PAGE_MAX = 50
+SHELVES = ("playlists", "liked", "albums", "shows", "recent")
+
+
+def _me_id() -> str:
+    return str((_load().get("user") or {}).get("id") or "")
+
+
+def _page(res: Dict[str, Any], rows: List[Dict[str, Any]], offset: int, raw_count: int) -> Dict[str, Any]:
+    return {"items": rows, "total": int(res.get("total") or len(rows)), "offset": offset,
+            "next_offset": offset + raw_count if res.get("next") else None}
+
+
+def _limit(limit: int) -> int:
+    try:
+        return max(1, min(int(limit), PAGE_MAX))
+    except (TypeError, ValueError):
+        return 20
+
+
+def library_page(shelf: str, offset: int = 0, limit: int = 20) -> Dict[str, Any]:
+    """One page of a library shelf: playlists, liked (songs), albums, shows or recent."""
+    if shelf not in SHELVES:
+        raise ValueError(f"Shelf is one of: {', '.join(SHELVES)}.")
+    offset, limit = max(0, int(offset or 0)), _limit(limit)
+    if shelf == "recent":
+        res = _api("GET", "/me/player/recently-played", params={"limit": limit}) or {}
+        tracks = [i.get("track") for i in res.get("items") or []]
+        return {"items": _rows(tracks, "track"), "total": len(tracks), "offset": 0, "next_offset": None}
+    path = {"playlists": "/me/playlists", "liked": "/me/tracks", "albums": "/me/albums", "shows": "/me/shows"}[shelf]
+    # Spotify sometimes answers with fewer items than asked (e.g. 2 playlists for limit=10)
+    # while saying there are more: keep asking until the page is full, at most 5 calls.
+    res: Dict[str, Any] = {}
+    raw: List[Dict[str, Any]] = []
+    at = offset
+    for _ in range(5):
+        res = _api("GET", path, params={"limit": limit - len(raw), "offset": at}) or {}
+        got = [i for i in res.get("items") or []]
+        raw += got
+        at += len(got)
+        if not got or not res.get("next") or len(raw) >= limit:
+            break
+    if shelf == "playlists":
+        me = _me_id()
+        rows = []
+        for p in raw:
+            row = _item(p, "playlist")
+            if row:
+                owner = str((p.get("owner") or {}).get("id") or "")
+                # Spotify only lets apps list the songs of playlists you own or collaborate on.
+                row["browsable"] = bool(p.get("collaborative")) or (bool(me) and owner == me)
+                rows.append(row)
+    elif shelf == "liked":
+        rows = [dict(r, is_liked=True) for r in _rows([i.get("track") for i in raw], "track")]
+    elif shelf == "albums":
+        rows = _rows([i.get("album") for i in raw], "album")
+    else:
+        rows = _rows([i.get("show") for i in raw], "show")
+    return _page(res, rows, offset, len(raw))
+
+
+def _track_row(t: Dict[str, Any], number: int, local: bool = False, album: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    alb = album or t.get("album") or t.get("show") or {}
+    artists = ", ".join(a.get("name", "") for a in t.get("artists") or []) or (t.get("show") or {}).get("name", "")
+    return {"uri": t.get("uri", ""), "id": t.get("id") or "", "title": t.get("name", ""), "artist": artists,
+            "album": alb.get("name", ""), "art_url": _images(alb), "duration_ms": t.get("duration_ms") or 0,
+            "is_liked": None, "number": number, "kind": t.get("type", "track"),
+            "playable": not local and bool(t.get("uri")) and t.get("is_playable", True) is not False}
+
+
+def _fill_liked(rows: List[Dict[str, Any]]) -> None:
+    uris = [r["uri"] for r in rows if r["playable"] and r["uri"].startswith(("spotify:track:", "spotify:episode:"))]
+    if not uris:
+        return
+    try:
+        flags = dict(zip(uris, liked_many(uris)))
+    except SpotifyError:
+        return                                            # the hearts stay unknown; the list still shows
+    for r in rows:
+        if r["uri"] in flags:
+            r["is_liked"] = flags[r["uri"]]
+
+
+def playlist_tracks(playlist_id: str, offset: int = 0, limit: int = 50) -> Dict[str, Any]:
+    """Songs of one of your playlists, via GET /playlists/{id}/items (the old /tracks is deprecated)."""
+    pid = str(playlist_id or "").split(":")[-1]
+    if not pid.isalnum():
+        raise ValueError("That isn't a Spotify playlist.")
+    offset, limit = max(0, int(offset or 0)), _limit(limit)
+    try:
+        res = _api("GET", f"/playlists/{pid}/items",
+                   params={"offset": offset, "limit": limit, "additional_types": "track,episode"}) or {}
+    except ApiError as e:
+        if e.status in (403, 404):
+            raise SpotifyError("Spotify only lets apps list the songs of playlists you own or collaborate on.")
+        raise
+    rows = []
+    for n, entry in enumerate(res.get("items") or [], start=offset + 1):
+        t = (entry or {}).get("item") or (entry or {}).get("track")
+        if not t:
+            continue                                      # a removed song leaves an empty slot
+        rows.append(_track_row(t, n, local=bool(entry.get("is_local"))))
+    _fill_liked(rows)
+    return _page(res, rows, offset, len(res.get("items") or []))
+
+
+def liked_tracks(offset: int = 0, limit: int = 50) -> Dict[str, Any]:
+    offset, limit = max(0, int(offset or 0)), _limit(limit)
+    res = _api("GET", "/me/tracks", params={"offset": offset, "limit": limit}) or {}
+    raw = res.get("items") or []
+    rows = [dict(_track_row(i.get("track") or {}, n), is_liked=True)
+            for n, i in enumerate(raw, start=offset + 1) if (i or {}).get("track")]
+    return _page(res, rows, offset, len(raw))
+
+
+_album_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def album_tracks(album_id: str, offset: int = 0, limit: int = 50) -> Dict[str, Any]:
+    aid = str(album_id or "").split(":")[-1]
+    if not aid.isalnum():
+        raise ValueError("That isn't a Spotify album.")
+    offset, limit = max(0, int(offset or 0)), _limit(limit)
+    if aid not in _album_cache:
+        a = _api("GET", f"/albums/{aid}") or {}
+        _album_cache[aid] = {"name": a.get("name", ""), "images": a.get("images") or []}
+        if len(_album_cache) > 64:
+            _album_cache.pop(next(iter(_album_cache)))
+    res = _api("GET", f"/albums/{aid}/tracks", params={"offset": offset, "limit": limit}) or {}
+    raw = res.get("items") or []
+    rows = [_track_row(t, n, album=_album_cache[aid]) for n, t in enumerate(raw, start=offset + 1) if t]
+    _fill_liked(rows)
+    return _page(res, rows, offset, len(raw))
+
+
+def tracks(kind: str, item_id: str = "", offset: int = 0, limit: int = 50) -> Dict[str, Any]:
+    """The main view's track list: a playlist, an album, or your Liked Songs."""
+    if kind == "playlist":
+        return playlist_tracks(item_id, offset, limit)
+    if kind == "album":
+        return album_tracks(item_id, offset, limit)
+    if kind == "liked":
+        return liked_tracks(offset, limit)
+    raise ValueError("Pick a playlist, an album or Liked Songs.")
+
+
+# ─── player controls (Premium) ───────────────────────────────────────
+
+def seek(position_ms: int) -> str:
+    try:
+        ms = max(0, int(position_ms))
+    except (TypeError, ValueError):
+        raise ValueError("Seek needs a position in milliseconds.")
+    _with_device(lambda dev: _api("PUT", "/me/player/seek", params={"position_ms": ms, **({"device_id": dev} if dev else {})}))
+    return f"Jumped to {ms // 60000}:{ms // 1000 % 60:02d}."
+
+
+def set_shuffle(on: bool) -> str:
+    return control("shuffle", bool(on))
+
+
+def set_volume(percent: int) -> str:
+    return control("volume", percent)
+
+
+def queue_track(uri: str) -> str:
+    return add_to_queue(uri)
+
+
+def play_in_context(context_uri: str = "", track_uri: str = "", uris: Optional[List[str]] = None) -> str:
+    """Start a playlist or album at a given song (or a list of songs, e.g. Liked Songs, at one of them)."""
+    body: Dict[str, Any]
+    if context_uri:
+        if not str(context_uri).startswith("spotify:"):
+            raise ValueError("That isn't a Spotify playlist or album.")
+        body = {"context_uri": context_uri}
+        if track_uri:
+            body["offset"] = {"uri": track_uri}
+    else:
+        lst = [u for u in (uris or []) if str(u).startswith("spotify:track:")][:PAGE_MAX]
+        if not lst:
+            raise ValueError("Nothing to play.")
+        body = {"uris": lst, "offset": {"position": lst.index(track_uri) if track_uri in lst else 0}}
+    _with_device(lambda dev: _api("PUT", "/me/player/play", params={"device_id": dev} if dev else None, body=body))
+    return "Playing."
 
 
 def _with_device(fn):

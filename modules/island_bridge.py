@@ -33,7 +33,10 @@ that is echoed back:
     media_cmd {action, value?}     -> media_state {state, message} | {ok: false, error}
                                       toggle/play/pause/next/previous/shuffle/repeat/like,
                                       volume (0-100 or +5/-5), play_uri, queue_uri, transfer, play_liked
-    media_library {q?}             -> media_library {playlists, liked, recent, shows} | {results}
+    media_library {q?}             -> media_library {playlists, liked, recent, shows, albums} | {results}
+    media_library {shelf, offset}  -> media_library {shelf, items, total, offset, next_offset}   (one page)
+    media_tracks {kind, id, offset}-> media_tracks {items, total, offset, next_offset}
+                                      kind: playlist (yours only, Spotify's rule) | album | liked
     media_next                     -> media_next {current, queue, devices}
                                       Media tab (modules/media_bridge.py: Spotify only)
     quick_note {text, kind?}       -> quick_note {ok, kind} | {ok: false, error}
@@ -345,7 +348,8 @@ def install(signals, server=None, info=None) -> None:
 
     def media(fn):
         async def handler(ws, data):
-            kind = {"media_library": "media_library", "media_next": "media_next"}.get(data.get("type"), "media_state")
+            kind = {"media_library": "media_library", "media_next": "media_next",
+                    "media_tracks": "media_tracks"}.get(data.get("type"), "media_state")
             base = {"type": kind, "id": data.get("id")}
             try:
                 out = await asyncio.get_running_loop().run_in_executor(None, fn, data)
@@ -362,7 +366,16 @@ def install(signals, server=None, info=None) -> None:
 
     reg("media_get", media(lambda d: {"state": media_bridge.bridge().state()}))
     reg("media_cmd", media(_cmd))
-    reg("media_library", media(lambda d: media_bridge.bridge().library(str(d.get("q") or ""))))
+    def _library(d):
+        if d.get("shelf"):
+            return media_bridge.bridge().library_page(str(d["shelf"]), int(d.get("offset") or 0),
+                                                      int(d.get("limit") or 20))
+        return media_bridge.bridge().library(str(d.get("q") or ""))
+
+    reg("media_library", media(_library))
+    reg("media_tracks", media(lambda d: media_bridge.bridge().tracks(
+        str(d.get("kind") or ""), str(d.get("item_id") or d.get("pid") or ""), int(d.get("offset") or 0),
+        int(d.get("limit") or 50))))
     reg("media_next", media(lambda d: media_bridge.bridge().up_next()))
 
     last_art = {"key": None}

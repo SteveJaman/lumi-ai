@@ -89,7 +89,7 @@ class WinMedia:
         except Exception:
             return False
 
-    def command(self, action: str, prefer: str = "") -> bool:
+    def command(self, action: str, prefer: str = "", value: Any = None) -> bool:
         async def go():
             s = await self._session(prefer)
             if s is None:
@@ -106,11 +106,15 @@ class WinMedia:
             if action == "previous":
                 return await s.try_skip_previous_async()
             if action == "shuffle":
-                return await s.try_change_shuffle_active_async(not bool(info.is_shuffle_active))
+                on = (not bool(info.is_shuffle_active)) if value is None else bool(value)
+                return await s.try_change_shuffle_active_async(on)
             if action == "repeat":
                 from winrt.windows.media import MediaPlaybackAutoRepeatMode as R
+                want = {"off": 0, "track": 1, "context": 2}.get(value)
                 cur = int(info.auto_repeat_mode or 0)
-                return await s.try_change_auto_repeat_mode_async(R((cur + 1) % 3))
+                return await s.try_change_auto_repeat_mode_async(R(want if want is not None else (cur + 1) % 3))
+            if action == "seek":
+                return await s.try_change_playback_position_async(int(value) * 10_000)   # ms -> 100 ns ticks
             return False
         try:
             return bool(self._run(go))
@@ -312,7 +316,7 @@ class MediaBridge:
             st = self.sp.status()
         except Exception:
             st = {}
-        return {"connected": bool(st.get("connected")), "premium": bool(st.get("premium")),
+        return {"connected": bool(st.get("connected")), "premium": st.get("premium"),   # True / False / None (not known yet)
                 "needs_reconnect": bool(st.get("needs_reconnect"))}
 
     # ---- building the state ----
@@ -409,10 +413,14 @@ class MediaBridge:
     def _caps(self, st) -> Dict[str, bool]:
         sp = st.get("source") == "spotify"
         conn = bool((st.get("spotify") or {}).get("connected"))
+        premium = (st.get("spotify") or {}).get("premium")       # True, False, or None (not known yet)
+        api_ok = conn and premium is not False
         return {"control": bool(st.get("source")), "like": sp and st.get("liked") is not None,
-                "library": conn, "queue": conn, "devices": conn,
-                "shuffle": sp, "repeat": sp, "next": sp, "prev": sp,
-                "volume": st.get("volume") is not None}
+                "library": conn, "devices": conn,
+                # Premium-only Web API calls; on Free the Spotify app's own controls stand in where they can.
+                "queue": api_ok, "play_track": api_ok,
+                "seek": sp, "shuffle": sp, "repeat": sp, "next": sp, "prev": sp,
+                "volume": st.get("volume") is not None, "premium": premium}
 
     # ---- commands ----
     def command(self, action: str, value: Any = None) -> Tuple[str, Dict[str, Any]]:
@@ -422,34 +430,30 @@ class MediaBridge:
         msg = ""
         if action == "volume":
             msg = self._set_volume(st, value)
-        elif action in ("play_uri", "queue_uri", "transfer", "play_liked"):
+        elif action in ("play_uri", "queue_uri", "transfer", "play_liked", "play_in_context", "like_uri"):
             msg = self._spotify_only(action, value)
         elif src == "spotify":
-            msg = self._spotify_cmd(st, action)
+            msg = self._spotify_cmd(st, action, value)
         else:
             raise ValueError("Nothing is playing on Spotify.")
         time.sleep(0.35)                                          # let the app report the change
         return msg, self.refresh()
 
-    def _spotify_cmd(self, st, action):
-        transport = {"toggle", "play", "pause", "next", "previous", "shuffle", "repeat"}
-        if action in transport and not (st.get("spotify") or {}).get("premium"):
-            # Free accounts can't be controlled over the Web API, but the Spotify app on
-            # this PC publishes Windows media controls, which work on any account.
-            if self.win.command(action, prefer="spotify"):
+    TRANSPORT = ("toggle", "play", "pause", "next", "previous", "shuffle", "repeat", "seek")
+
+    def _spotify_cmd(self, st, action, value=None):
+        """Premium first (the Web API). If Spotify says the account isn't Premium, the
+        Spotify app's own Windows media controls on this PC stand in."""
+        if action in self.TRANSPORT:
+            if (st.get("spotify") or {}).get("premium") is not False:
+                try:
+                    return self._api_transport(st, action, value)
+                except self._premium_required():
+                    pass                                      # learned: Free. Fall through to the app.
+            if self.win.command(action, prefer="spotify", value=self._win_value(st, action, value)):
                 return ""
-            if action in ("toggle", "play", "pause", "next", "previous"):
-                raise ValueError("Spotify only allows remote control on Premium. Open the Spotify app "
-                                 "on this PC and Lumi can use its media controls instead.")
-        if action == "toggle":
-            return self.sp.control("pause" if st.get("playing") else "play")
-        if action in ("play", "pause", "next", "previous"):
-            return self.sp.control(action)
-        if action == "shuffle":
-            return self.sp.control("shuffle", not st.get("shuffle"))
-        if action == "repeat":
-            order = self.sp.REPEAT
-            return self.sp.set_repeat(order[(order.index(st.get("repeat") or "off") + 1) % len(order)])
+            raise ValueError("That needs Spotify Premium, and the Spotify app on this PC didn't take it "
+                             "either. Open the Spotify app and try again.")
         if action == "like":
             on = not st.get("liked")
             msg = self.sp.set_liked(st.get("id"), on)
@@ -457,9 +461,54 @@ class MediaBridge:
             return msg
         raise ValueError(f"Unknown action {action!r}.")
 
+    def _premium_required(self):
+        return getattr(self.sp, "PremiumRequired", None) or type("NeverRaised", (Exception,), {})
+
+    def _api_transport(self, st, action, value):
+        if action == "toggle":
+            return self.sp.control("pause" if st.get("playing") else "play")
+        if action in ("play", "pause", "next", "previous"):
+            return self.sp.control(action)
+        if action == "shuffle":
+            return self.sp.control("shuffle", (not st.get("shuffle")) if value is None else bool(value))
+        if action == "repeat":
+            order = self.sp.REPEAT
+            if value is None:
+                value = order[(order.index(st.get("repeat") or "off") + 1) % len(order)]
+            return self.sp.set_repeat(str(value))
+        return self.sp.seek(self._seek_ms(st, value))
+
+    def _seek_ms(self, st, value) -> int:
+        try:
+            ms = int(float(value))
+        except (TypeError, ValueError):
+            raise ValueError("Seek needs a position in milliseconds.")
+        dur = st.get("duration_ms") or 0
+        return max(0, min(ms, dur - 500)) if dur else max(0, ms)
+
+    def _win_value(self, st, action, value):
+        if action == "seek":
+            return self._seek_ms(st, value)
+        if action == "shuffle" and value is not None:
+            return bool(value)
+        if action == "repeat" and value is not None:
+            return str(value)
+        return None
+
     def _spotify_only(self, action, value):
         if not self._sp_status()["connected"]:
             raise ValueError("Connect Spotify in Settings, then Connections.")
+        if action == "play_in_context":
+            v = value if isinstance(value, dict) else {}
+            return self.sp.play_in_context(str(v.get("context_uri") or ""), str(v.get("track_uri") or ""),
+                                           v.get("uris") if isinstance(v.get("uris"), list) else None)
+        if action == "like_uri":
+            v = value if isinstance(value, dict) else {}
+            msg = self.sp.set_liked(str(v.get("uri") or ""), bool(v.get("on")))
+            cur = self._state or {}
+            if cur.get("uri") and cur.get("uri") == v.get("uri"):
+                self._liked = (cur.get("id"), bool(v.get("on")))      # the player's heart follows a row's heart
+            return msg
         if action == "play_uri":
             return self.sp.play_uri(str(value or ""))
         if action == "queue_uri":
@@ -493,6 +542,16 @@ class MediaBridge:
         if (query or "").strip():
             return {"connected": True, "results": self.sp.search(query)}
         return {"connected": True, **self.sp.library()}
+
+    def library_page(self, shelf: str, offset: int = 0, limit: int = 20) -> Dict[str, Any]:
+        if not self._sp_status()["connected"]:
+            return {"connected": False, "items": [], "total": 0, "offset": 0, "next_offset": None}
+        return {"connected": True, "shelf": shelf, **self.sp.library_page(shelf, offset, limit)}
+
+    def tracks(self, kind: str, item_id: str = "", offset: int = 0, limit: int = 50) -> Dict[str, Any]:
+        if not self._sp_status()["connected"]:
+            return {"connected": False, "items": [], "total": 0, "offset": 0, "next_offset": None}
+        return {"connected": True, "kind": kind, "item_id": item_id, **self.sp.tracks(kind, item_id, offset, limit)}
 
     def up_next(self) -> Dict[str, Any]:
         if not self._sp_status()["connected"]:
@@ -571,5 +630,29 @@ def register(router, server) -> None:
         return await run(lambda: dict(zip(("message", "state"), bridge().command(
             str(body.get("action") or ""), body.get("value")))))
 
+    def _int(request, name, default):
+        try:
+            return int(request.query.get(name, default))
+        except ValueError:
+            return default
+
+    async def get_library(request):
+        err, _ = await gate(request)
+        if err:
+            return err
+        shelf = request.query.get("shelf", "")
+        if shelf:
+            return await run(lambda: bridge().library_page(shelf, _int(request, "offset", 0), _int(request, "limit", 20)))
+        return await run(lambda: bridge().library(request.query.get("q", "")))
+
+    async def get_tracks(request):
+        err, _ = await gate(request)
+        if err:
+            return err
+        return await run(lambda: bridge().tracks(request.query.get("kind", ""), request.query.get("id", ""),
+                                                 _int(request, "offset", 0), _int(request, "limit", 50)))
+
     router.add_get("/api/media/state", get_state)
     router.add_post("/api/media/command", post_cmd)
+    router.add_get("/api/media/library", get_library)          # ?shelf=playlists&offset=0, or ?q=search
+    router.add_get("/api/media/tracks", get_tracks)            # ?kind=playlist|album|liked&id=…&offset=0
