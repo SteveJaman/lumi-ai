@@ -43,6 +43,8 @@ VOLUME_STEP = 5
 
 # The only app the Media tab touches: Spotify on this PC.
 MEDIA_APPS = frozenset({"spotify.exe"})
+# Basic transport that the Windows media session fallback handles when Spotify is closed.
+SMTC_ACTIONS = ("toggle", "play", "pause", "next", "previous")
 
 
 def _gaming() -> bool:
@@ -336,12 +338,22 @@ class MediaBridge:
             msg = self._spotify_only(action, value)
         elif src == "spotify":
             msg = self._spotify_cmd(st, action, value)
+        elif action in SMTC_ACTIONS and self._windows_session_command(action):
+            msg = "Done."                                         # Spotify is closed: the current media app
         else:
             raise ValueError("Nothing is playing on Spotify.")
         time.sleep(0.35)                                          # let the app report the change
         return msg, self.refresh()
 
     TRANSPORT = ("toggle", "play", "pause", "next", "previous", "shuffle", "repeat", "seek")
+
+    def _windows_session_command(self, action: str) -> bool:
+        """Spotify is closed: basic transport goes to whichever app Windows says is playing media
+        (its media session), so play/pause/next/previous still work. No metadata from it."""
+        try:
+            return bool(self.win.command(action))
+        except Exception:
+            return False
 
     def _spotify_cmd(self, st, action, value=None):
         """Premium first (the Web API). If Spotify says the account isn't Premium, the

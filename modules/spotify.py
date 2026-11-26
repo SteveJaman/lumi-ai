@@ -882,7 +882,9 @@ TASKS = {"spotify_now_playing": "Checking Spotify", "spotify_control": "Controll
          "media_playlist_tracks": "Reading a playlist"}
 REPEAT_MODES = {"off": "off", "all": "context", "song": "track"}      # what Lumi says -> what Spotify says
 TRACKS_SHOWN = 25
-TOOL_SCHEMAS = [
+# The long-form tools. Still dispatched by run_tool, but no longer advertised to the model
+# (the compact TOOL_SCHEMAS below cover them, to save context).
+LEGACY_TOOL_SCHEMAS = [
     {"type": "function", "function": {
         "name": "spotify_now_playing",
         "description": "Get the song playing on the user's Spotify right now.",
@@ -926,6 +928,45 @@ TOOL_SCHEMAS = [
                          "description": "Playlist name, 'liked' for Liked Songs, or a Spotify playlist/album link or URI."},
             "offset": {"type": "integer", "description": f"Skip this many songs, to page past the first {TRACKS_SHOWN}."}},
             "required": ["playlist"]}}},
+]
+
+# Compact set advertised to the model: five tools, short descriptions.
+TOOL_SCHEMAS = [
+    {"type": "function", "function": {
+        "name": "media_play_liked",
+        "description": "Play the user's Liked Songs, or one liked song matching query_filter.",
+        "parameters": {"type": "object", "properties": {
+            "shuffle": {"type": "boolean", "description": "Default true."},
+            "query_filter": {"type": "string", "description": "Song title or artist to pick from Liked Songs."}}}}},
+    {"type": "function", "function": {
+        "name": "media_play_playlist",
+        "description": "Play one of the user's playlists by name, optionally from a song in it.",
+        "parameters": {"type": "object", "properties": {
+            "playlist_name": {"type": "string", "description": "Name of the playlist, plus a song if any."},
+            "shuffle": {"type": "boolean", "description": "Default false."}},
+            "required": ["playlist_name"]}}},
+    {"type": "function", "function": {
+        "name": "media_search_and_play",
+        "description": "Find a song, album, artist or playlist on Spotify and play it.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"},
+            "item_type": {"type": "string", "enum": list(KINDS)}},
+            "required": ["query"]}}},
+    {"type": "function", "function": {
+        "name": "media_control",
+        "description": "Control Spotify: pause, resume, next, previous, seek_ms, volume, shuffle_on/off, repeat, like_current, unlike_current.",
+        "parameters": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["pause", "resume", "next", "previous", "seek_ms", "volume",
+                                                  "shuffle_on", "shuffle_off", "repeat", "like_current",
+                                                  "unlike_current"]},
+            "value": {"type": "string", "description": "Ms, 0-100, or off/context/track for repeat."}},
+            "required": ["action"]}}},
+    {"type": "function", "function": {
+        "name": "media_library",
+        "description": "Show now playing, the user's playlists, Liked Songs, recent songs, or the songs of a playlist.",
+        "parameters": {"type": "object", "properties": {
+            "view": {"type": "string", "enum": ["now", "playlists", "liked", "recent", "playlist"]},
+            "playlist_id": {"type": "string", "description": "For view=playlist: its name, id or link."}}}}},
 ]
 
 
@@ -1020,6 +1061,68 @@ def describe_tracks(name: str, offset: int = 0) -> str:
     return "\n".join(lines)
 
 
+def media_play_liked(shuffle: bool = True, query_filter: str = "") -> str:
+    """Liked Songs, all of them (shuffled by default), or one liked song matching query_filter."""
+    tokens = _tokens(query_filter)
+    if tokens:
+        pool = _liked_pool()
+        best = max(((r, _match(tokens, r["title"], r["artist"])) for r in pool), key=lambda x: x[1], default=None)
+        if not best or best[1] < 1:
+            raise SpotifyError(f"None of your liked songs match {query_filter!r}.")
+        set_shuffle(bool(shuffle))
+        uris = [r["uri"] for r in pool if r["uri"].startswith("spotify:track:")]
+        play_in_context(uris=uris, track_uri=best[0]["uri"])
+        return f"Playing {best[0]['title']!r} from your Liked Songs."
+    set_shuffle(bool(shuffle))
+    return _play_playlist_row({"kind": "liked", "id": "", "title": "Liked Songs"}, [])
+
+
+def media_play_playlist(playlist_name: str, shuffle: bool = False) -> str:
+    tokens = _tokens(playlist_name)
+    found, rest = _named_list(tokens or _tokens(str(playlist_name or "")) or [str(playlist_name or "")])
+    set_shuffle(bool(shuffle))
+    return _play_playlist_row(found, rest)
+
+
+def media_control(action: str, value: Any = "") -> str:
+    a = str(action or "").lower()
+    v = "" if value is None else str(value).strip()
+    if a in ("pause", "resume", "next", "previous"):
+        return control({"resume": "play"}.get(a, a))
+    if a == "volume":
+        return control("volume", int(v))
+    if a == "seek_ms":
+        return seek(int(v))
+    if a in ("shuffle_on", "shuffle_off"):
+        return control("shuffle", a == "shuffle_on")
+    if a == "repeat":
+        if v not in REPEAT_MODES:
+            raise ValueError(f"Repeat is one of: {', '.join(REPEAT_MODES)}.")
+        return set_repeat(REPEAT_MODES[v])
+    if a in ("like_current", "unlike_current"):
+        np = now_playing()
+        if not np or not np.get("uri"):
+            raise SpotifyError("Nothing is playing right now.")
+        return set_liked(np["uri"], a == "like_current")
+    raise ValueError(f"Unknown action {action!r}.")
+
+
+def media_library(view: str = "now", playlist_id: str = "") -> str:
+    v = str(view or "now").lower()
+    if v == "now":
+        return describe(now_playing())
+    if v in ("playlists", "recent"):
+        shelf = "playlists" if v == "playlists" else "recent"
+        rows = library_page(shelf, 0, 20)["items"]
+        return "\n".join(f"- {r['title']} ({r['subtitle']})" for r in rows) or "Nothing here yet."
+    if v == "liked":
+        rows = liked_tracks(0, 20)["items"]
+        return "\n".join(f"- {r['title']} - {r['artist']}" for r in rows) or "No liked songs yet."
+    if v == "playlist":
+        return describe_tracks(playlist_id)
+    raise ValueError("View is one of: now, playlists, liked, recent, playlist.")
+
+
 def available(ctx: ToolContext) -> bool:
     return connected()
 
@@ -1029,6 +1132,19 @@ async def run_tool(name: str, args: Dict[str, Any], ctx: ToolContext) -> str:
     loop = asyncio.get_running_loop()
     args = args if isinstance(args, dict) else {}
     try:
+        if name == "media_play_liked":
+            shuffle = args.get("shuffle", True)
+            shuffle = shuffle.strip().lower() not in ("false", "off", "no", "0") if isinstance(shuffle, str) else bool(shuffle)
+            return await loop.run_in_executor(None, media_play_liked, shuffle, args.get("query_filter") or "")
+        if name == "media_play_playlist":
+            return await loop.run_in_executor(None, media_play_playlist, args.get("playlist_name"),
+                                              bool(args.get("shuffle", False)))
+        if name == "media_search_and_play":
+            return await loop.run_in_executor(None, play_search, args.get("query"), args.get("item_type") or "track")
+        if name == "media_control":
+            return await loop.run_in_executor(None, media_control, args.get("action"), args.get("value") or "")
+        if name == "media_library":
+            return await loop.run_in_executor(None, media_library, args.get("view") or "now", args.get("playlist_id") or "")
         if name == "spotify_now_playing":
             return describe(await loop.run_in_executor(None, now_playing))
         if name == "spotify_control":

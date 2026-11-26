@@ -50,8 +50,8 @@ def test_registry_wires_every_tool_with_its_card_and_gate():
                      "summarize_meeting", "extract_action_items", "draft_follow_up_email",
                      "get_active_window_info", "read_window_text", "click_button", "restart_crashed_game",
                      "find_local_deals", "focus_window",
-                     "spotify_now_playing", "spotify_control", "spotify_play",
-                     "media_seek", "media_shuffle", "media_repeat", "media_playlist_tracks"}
+                     "media_play_liked", "media_play_playlist", "media_search_and_play",
+                     "media_control", "media_library"}
     agents = agent_tools.EVERYDAY_TOOL_AGENT
     assert {n for n, a in agents.items() if a == "research"} == {
         "summarize_meeting", "extract_action_items", "draft_follow_up_email", "find_local_deals"}

@@ -160,7 +160,7 @@ def test_tools_offered_only_when_connected(spot):
     names = lambda: {s["function"]["name"] for s in agent_tools.everyday_tool_schemas(None)}
     assert not {"spotify_play"} & names()
     connect()
-    assert {"spotify_now_playing", "spotify_control", "spotify_play"} <= names()
+    assert {"media_play_liked", "media_control", "media_library"} <= names()     # the compact set
     assert agent_tools.wrap_tool_result("spotify_now_playing", "Playing: x").startswith("[FROM SPOTIFY]")
     sp.disconnect()
     assert sp.status() == {"configured": True, "connected": False, "user": None, "product": None, "premium": None,

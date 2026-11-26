@@ -193,6 +193,11 @@ PROVENANCE_MARKERS = {
     "spotify_now_playing": "FROM SPOTIFY",
     "spotify_play":        "FROM SPOTIFY",
     "media_playlist_tracks": "FROM SPOTIFY",
+    "media_play_liked":      "FROM SPOTIFY",
+    "media_play_playlist":   "FROM SPOTIFY",
+    "media_search_and_play": "FROM SPOTIFY",
+    "media_control":         "FROM SPOTIFY",
+    "media_library":         "FROM SPOTIFY",
     # Everyday Life tools (see EVERYDAY TOOLS below).
     "triage_inbox":           "FROM EMAIL",
     "auto_draft_reply":       "FROM EMAIL",

@@ -171,10 +171,13 @@ def test_without_spotify_nothing_is_controlled(monkeypatch):
     win, audio = FakeWin(SYS_NP), FakeAudio(master=0.5)
     b = make(sp=FakeSpotify(connected=False), win=win, audio=audio)
     b.refresh()
-    for action, value in (("toggle", None), ("next", None), ("like", None), ("volume", "+10")):
+    # Spotify closed: basic transport falls back to the Windows media session (any app playing).
+    assert b.command("next", None)[0] == "Done."
+    assert win.calls == [("next", "")]
+    for action, value in (("like", None), ("volume", "+10")):
         with pytest.raises(ValueError, match="Spotify"):
             b.command(action, value)
-    assert win.calls == [] and audio.m == 0.5                       # the browser and system volume untouched
+    assert audio.m == 0.5                                           # the system volume untouched
     with pytest.raises(ValueError):
         make().command("volume", "loud")
 
