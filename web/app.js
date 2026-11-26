@@ -2039,7 +2039,7 @@ async function renderDashboard(main) {
     .then(async ([live2d, vrm]) => {
       const host = document.getElementById('dash-stage');
       if (!host) return;
-      const cleanup = await live2d.mount(host);
+      const cleanup = await live2d.mount(host, { socket: lumiUi.socket() });
       if (cleanup === null) await vrm.mount(host);
     })
     .catch(() => { const s = document.getElementById('dash-stage'); if (s) s.textContent = 'The avatar stage couldn’t load.'; });

@@ -597,6 +597,10 @@ class SocketIOServer:
         self._register_http_routes()
         from modules import claude_bridge as _claude_bridge
         _claude_bridge.install(self)            # Claude Desktop / Claude Code bridge (loopback + token)
+        # Web Stage (Phase 3): face frames for subscribed Stages, and touch reactions.
+        from modules.stage_motion import StageMotion
+        self._stage_motion = StageMotion(signals)
+        self._stage_subscribers = set()
         self._register_socket_events()
         from modules import workspace as _workspace_pane
         _workspace_pane.install(self)           # split view: terminal_output / browser_frame
@@ -3026,9 +3030,50 @@ class SocketIOServer:
     # ==================================================================
     # Socket.io events
     # ==================================================================
+    async def _stage_loop(self):
+        """Face frames for the Stages that asked for them, 20 a second. Idle (no subscribers) it
+        does no motion work at all."""
+        while not self.signals.terminate:
+            if self._stage_subscribers:
+                try:
+                    frame = self._stage_motion.frame()
+                    payload = {"t": time.time(), "p": {k: round(float(v), 4) for k, v in frame.items()}}
+                except Exception:
+                    payload = None
+                if payload:
+                    for sid in list(self._stage_subscribers):
+                        try:
+                            await self.sio.emit("avatar_frame", payload, to=sid)
+                        except Exception:
+                            self._stage_subscribers.discard(sid)
+            await self.sio.sleep(0.05)
+
+    async def _host_session(self, sid):
+        sess = await self.sio.get_session(sid)
+        return bool(sess and sess.get("user") and sess.get("is_local"))
+
     def _register_socket_events(self):
         sio = self.sio
         signals = self.signals
+
+        @sio.event
+        async def avatar_stage_on(sid, data=None):
+            if await self._host_session(sid):
+                self._stage_subscribers.add(sid)
+
+        @sio.event
+        async def avatar_stage_off(sid, data=None):
+            self._stage_subscribers.discard(sid)
+
+        @sio.event
+        async def avatar_touch(sid, data=None):
+            if not await self._host_session(sid) or not isinstance(data, dict):
+                return
+            reaction = self._stage_motion.touch(str(data.get("zone", "")), str(data.get("action", "")))
+            if reaction is not None:
+                await sio.emit("avatar_reaction", {
+                    "emotion": reaction.emotion, "flinch": reaction.flinch, "say": reaction.say,
+                }, to=sid)
 
         @sio.event
         async def get_blacklist(sid):
@@ -3476,6 +3521,7 @@ class SocketIOServer:
         async def _on_startup(app):
             self._loop = asyncio.get_running_loop()
             self.sio.start_background_task(self._broadcast_history)
+            self.sio.start_background_task(self._stage_loop)
 
         self.app.on_startup.append(_on_startup)
 
