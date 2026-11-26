@@ -100,8 +100,10 @@ Open tasks persist across runs: a new request is added as a task, but an
   a. `task_next` is empty after a `task_complete`/`task_fail` → `task_complete`
      (`task_failed` if the last resolution was a failure).
   b. Text-only turn (zero tool calls, after text-form tool-call recovery): with a task
-     `in_progress`, re-prompt once — "Continue with the next concrete action, or call
-     `task_complete`/`task_fail`." Two consecutive text-only turns → `model_stalled`.
+     `in_progress`, re-prompt once (`CONTINUE_PROMPT`): if the request is done, call
+     `task_complete` with the message to the user in `result` (that is the reply the
+     user sees); otherwise take the next concrete action or `task_fail`. Two
+     consecutive text-only turns → `model_stalled`.
      With no task in progress, a text turn ends the run → `turn_complete`.
   c. No mutating tool call in 5 consecutive cycles → `stagnant`.
   d. `max_safety_steps = 200` → `safety_cap`.

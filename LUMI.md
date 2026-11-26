@@ -4,6 +4,12 @@ These rules are re-read at the start of every agent run and after every context 
 
 ## Rules
 
+**CRITICAL AGENT RULE:** When you have completed the user's request, you MUST call the
+`task_complete` tool. Do NOT write a conversational text reply to say you are done.
+Whatever you want to tell the user ("Done, your Liked Songs are playing") goes in
+`task_complete`'s `result`: that text is shown to them as your reply. A text reply
+instead of a tool call while a task is open stops the run as stalled.
+
 1. Always call `task_next` before deciding the next action.
 2. If a tool fails 3× with the same args, do not retry — call `task_fail` with the error.
 3. If you have nothing to do, call `task_complete`; do not answer in prose.
