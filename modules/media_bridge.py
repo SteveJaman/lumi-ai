@@ -541,6 +541,12 @@ def register(router, server) -> None:
         except ValueError:
             return default
 
+    async def get_devices(request):
+        err, _ = await gate(request)
+        if err:
+            return err
+        return await run(lambda: {"devices": bridge().up_next().get("devices", [])})
+
     async def get_library(request):
         err, _ = await gate(request)
         if err:
@@ -560,4 +566,5 @@ def register(router, server) -> None:
     router.add_get("/api/media/state", get_state)
     router.add_post("/api/media/command", post_cmd)
     router.add_get("/api/media/library", get_library)          # ?shelf=playlists&offset=0, or ?q=search
+    router.add_get("/api/media/devices", get_devices)          # Spotify Connect devices, for the device picker
     router.add_get("/api/media/tracks", get_tracks)            # ?kind=playlist|album|liked&id=…&offset=0

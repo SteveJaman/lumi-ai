@@ -7,8 +7,10 @@
 
    Player (sidebar, above you): art, title, heart; shuffle, previous, play,
    next, repeat; a seek bar; volume and a button that opens the library.
-   Library view: Liked Songs, your playlists and albums on the left,
-   the chosen list's songs on the right; a row plays from that song.
+   Library view (three zones): Liked Songs, your playlists and albums on
+   the left; the chosen list's songs in the middle; a bottom bar with
+   now playing, transport, seek, the device picker and volume. A row
+   plays from that song.
 
    Free accounts: Spotify only allows remote control on Premium. The
    bridge then uses the Spotify app's own Windows media controls, which
@@ -24,7 +26,8 @@ let now = null;                 // last /api/media/state answer
 let show = false;
 let timer = 0, tick = 0, volTimer = 0;
 let busy = false, seeking = false, volBusyUntil = 0;
-const D = {};                   // the bar's elements
+const D = {};                   // the sidebar bar's elements
+const B = {};                   // the library view's bottom transport bar
 const L = {                     // the library view
   open: false, shelf: 'playlists', items: [], next: 0, loading: false, seq: 0,
   sel: null, rows: [], tnext: null, ttotal: 0, tloading: false, tseq: 0,
@@ -186,6 +189,114 @@ function build() {
   D.err.setAttribute('role', 'status');
   dock.replaceChildren(left, mid, right, D.err);
   buildLibrary();
+  buildBar();
+}
+
+/* ---------- the library view's bottom bar: now playing, transport, device, volume ---------- */
+
+function buildBar() {
+  const bar = el('div', 'spx-bar');
+  bar.setAttribute('aria-label', 'Playback');
+  B.art = artBox('spx-bar-art', '');
+  const text = el('div', 'spx-bar-text');
+  B.title = el('div', 'spx-bar-title');
+  B.artist = el('div', 'spx-bar-artist');
+  text.append(B.title, B.artist);
+  const np = el('div', 'spx-bar-now');
+  np.append(B.art, text);
+
+  B.shuffle = btn('spd-icon spd-toggle', 'Shuffle', ICON.shuffle, () => act('shuffle', !(now && now.shuffle)));
+  B.prev = btn('spd-icon', 'Previous', ICON.prev, () => act('previous'));
+  B.play = btn('spd-play', 'Play', ICON.play, () => act('toggle'));
+  B.next = btn('spd-icon', 'Next', ICON.next, () => act('next'));
+  B.repeat = btn('spd-icon spd-toggle', 'Repeat', ICON.repeat, () => {
+    const order = ['off', 'context', 'track'];
+    act('repeat', order[(order.indexOf((now && now.repeat) || 'off') + 1) % 3]);
+  });
+  const ctl = el('div', 'spd-ctl');
+  ctl.append(B.shuffle, B.prev, B.play, B.next, B.repeat);
+  B.cur = el('span', 'spd-time', '0:00');
+  B.dur = el('span', 'spd-time', '0:00');
+  B.seek = el('input', 'spd-range spd-seek');
+  Object.assign(B.seek, { type: 'range', min: 0, max: 1000, step: 1000, value: 0 });
+  B.seek.setAttribute('aria-label', 'Song position');
+  B.seek.addEventListener('input', () => { seeking = true; B.cur.textContent = fmt(+B.seek.value); fill(B.seek); });
+  B.seek.addEventListener('change', async () => {
+    const ms = +B.seek.value;
+    if (now) { now.progress_ms = ms; now.at = Date.now() / 1000; }
+    await act('seek', ms);
+    seeking = false;
+  });
+  const prog = el('div', 'spd-prog');
+  prog.append(B.cur, B.seek, B.dur);
+  const mid = el('div', 'spx-bar-mid');
+  mid.append(ctl, prog);
+
+  B.device = el('select', 'spx-device');
+  B.device.setAttribute('aria-label', 'Playback device');
+  B.device.addEventListener('change', () => { if (B.device.value) act('transfer', B.device.value); });
+  B.vol = el('input', 'spd-range spx-bar-vol');
+  Object.assign(B.vol, { type: 'range', min: 0, max: 100, step: 1, value: 50 });
+  B.vol.setAttribute('aria-label', 'Spotify volume');
+  B.vol.addEventListener('input', () => {
+    fill(B.vol); clearTimeout(volTimer);
+    volTimer = setTimeout(() => { volBusyUntil = Date.now() + 1500; act('volume', Math.round(+B.vol.value)); }, 200);
+  });
+  const right = el('div', 'spx-bar-right');
+  right.append(B.device, B.vol);
+
+  bar.append(np, mid, right);
+  B.bar = bar;
+  D.full.append(bar);
+}
+
+function paintBar() {
+  if (!B.bar) return;
+  const has = !!(now && now.source);
+  const can = (now && now.can) || {};
+  const art = artBox('spx-bar-art', has ? now.art : '');
+  B.art.replaceWith(art); B.art = art;
+  B.title.textContent = has ? (now.title || 'Unknown') : 'Nothing playing';
+  B.artist.textContent = has ? (now.artists || now.album || '') : 'Pick something from your library';
+  const playing = !!(now && now.playing);
+  B.play.innerHTML = playing ? ICON.pause : ICON.play;
+  B.play.setAttribute('aria-label', playing ? 'Pause' : 'Play'); B.play.title = playing ? 'Pause' : 'Play';
+  B.play.disabled = !can.control;
+  B.prev.disabled = !(can.prev && can.control);
+  B.next.disabled = !(can.next && can.control);
+  B.shuffle.hidden = !can.shuffle;
+  B.shuffle.setAttribute('aria-pressed', String(!!(now && now.shuffle)));
+  B.repeat.hidden = !can.repeat;
+  const rep = (now && now.repeat) || 'off';
+  B.repeat.dataset.mode = rep;
+  B.repeat.setAttribute('aria-pressed', String(rep !== 'off'));
+  B.repeat.title = { off: 'Repeat: off', context: 'Repeat: all', track: 'Repeat: this song' }[rep] || 'Repeat';
+  B.repeat.setAttribute('aria-label', B.repeat.title);
+  B.seek.disabled = !(can.seek && has && now.duration_ms);
+  B.seek.max = Math.max(1000, (now && now.duration_ms) || 0);
+  B.dur.textContent = fmt(now && now.duration_ms);
+  const volOk = !!can.volume && !!now && now.volume != null;
+  B.vol.hidden = !volOk;
+  if (volOk && Date.now() > volBusyUntil) { B.vol.value = now.volume; fill(B.vol); }
+  B.device.disabled = !(can.control || can.volume);
+}
+
+async function loadDevices() {
+  if (!B.device) return;
+  try {
+    const r = await C.api('/api/media/devices');
+    const devs = r.devices || [];
+    B.device.replaceChildren();
+    if (!devs.length) B.device.append(el('option', '', 'No device open'));
+    for (const d of devs) {
+      const o = el('option', '', `${d.name || 'Device'}${d.active ? ' (playing)' : ''}`);
+      o.value = d.id || '';
+      o.selected = !!d.active;
+      B.device.append(o);
+    }
+  } catch (e) {
+    B.device.replaceChildren(el('option', '', 'Devices unavailable'));
+  }
 }
 
 async function setVolume(v) {
@@ -241,17 +352,19 @@ function paint() {
   if (volOk && Date.now() > volBusyUntil) { D.vol.value = now.volume; fill(D.vol); }
   D.volIcon.innerHTML = volOk && now.volume === 0 ? ICON.mute : ICON.vol;
   paintProgress();
+  paintBar();
   if (L.open) markPlaying();
 }
 
 function paintProgress() {
   if (!D.seek || seeking) return;
-  if (!now || !now.duration_ms) { D.seek.value = 0; D.cur.textContent = '0:00'; fill(D.seek); return; }
+  if (!now || !now.duration_ms) {
+    for (const s of [D, B]) if (s.seek) { s.seek.value = 0; s.cur.textContent = '0:00'; fill(s.seek); }
+    return;
+  }
   const elapsed = Math.min(now.duration_ms,
     now.progress_ms + (now.playing ? (Date.now() / 1000 - now.at) * 1000 : 0));
-  D.seek.value = elapsed;
-  D.cur.textContent = fmt(elapsed);
-  fill(D.seek);
+  for (const s of [D, B]) if (s.seek) { s.seek.value = elapsed; s.cur.textContent = fmt(elapsed); fill(s.seek); }
 }
 
 /* ---------- the library view ---------- */
@@ -306,6 +419,7 @@ function setOpen(open) {
   if (!open) { D.lib.focus(); return; }
   if (!L.items.length) loadShelf(L.shelf);
   if (!L.sel) select(LIKED);
+  loadDevices();
   D.full.querySelector('.spx-close').focus();
 }
 
