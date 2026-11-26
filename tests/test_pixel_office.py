@@ -70,29 +70,51 @@ def _cell(im, c, r):
     return im.crop((c * CW, r * CH, c * CW + CW, r * CH + CH))
 
 
-def test_sheets_are_4x3_walk_cycles_with_feet_on_the_bottom_row():
+def _house_cells_ok(a, im):
+    """A sheet in the house format: 40x56 cells, transparent, feet on the bottom row."""
+    assert im.mode == "RGBA" and im.size == (CW * 4, CH * 3), a
+    for r in range(3):
+        cells = [_cell(im, c, r) for c in range(4)]
+        for c, cell in enumerate(cells):
+            box = cell.getbbox()
+            assert box and box[3] == CH, (a, r, c, box)          # feet on the last row: no floating
+            assert 20 <= box[2] - box[0] <= CW, (a, r, c, box)   # about one 32px tile wide
+        assert cells[0].tobytes() != cells[1].tobytes() != cells[2].tobytes(), (a, r)   # she walks
+
+
+def test_shipped_sheets_are_4x3_with_her_in_every_cell():
+    """Any art in the 4x3 layout works: any size, transparent or on a plain background
+    (lumi-sprites.js normalizeSheet clears the background and fits it to 40x56)."""
     for a in AGENTS:
-        im = Image.open(os.path.join(WEB, "chars", f"{a}-sheet.png"))
-        assert im.mode == "RGBA" and im.size == (CW * 4, CH * 3), a
+        im = Image.open(os.path.join(WEB, "chars", f"{a}-sheet.png")).convert("RGBA")
+        cw, ch = im.width // 4, im.height // 3
+        assert cw >= 16 and ch >= 16, a
+        corner = im.getpixel((0, 0))
         for r in range(3):
-            cells = [_cell(im, c, r) for c in range(4)]
-            for c, cell in enumerate(cells):
-                box = cell.getbbox()
-                assert box and box[3] == CH, (a, r, c, box)          # feet on the last row: no floating
-                assert 20 <= box[2] - box[0] <= CW, (a, r, c, box)   # about one 32px tile wide
-            assert cells[0].tobytes() != cells[1].tobytes() != cells[2].tobytes(), (a, r)   # she walks
+            for c in range(4):
+                cell = im.crop((c * cw, r * ch, (c + 1) * cw, (r + 1) * ch))
+                differs = sum(1 for p in cell.getdata()
+                              if p[3] > 24 and max(abs(p[i] - corner[i]) for i in range(3)) > 28)                     if corner[3] > 200 else sum(1 for p in cell.getdata() if p[3] > 24)
+                assert differs > cw * ch // 50, (a, r, c)          # she's there, not an empty cell
 
 
-def test_the_pixel_art_script_reproduces_the_shipped_sheets():
+def test_the_loader_fits_any_sheet_to_the_house_cell():
+    src = open(os.path.join(WEB, "lumi-sprites.js"), encoding="utf-8").read()
+    assert "const CELL_W = 40, CELL_H = 56;" in src
+    assert "function normalizeSheet(img)" in src and "clearEdgeBackground(px, W, H)" in src
+    assert "art = normalizeSheet(img)" in src                         # every sheet goes through it
+
+
+def test_the_pixel_art_script_makes_house_format_sheets():
     import lumi_pixel_art as art
     art._check()
     for a in AGENTS:
-        shipped = Image.open(os.path.join(WEB, "chars", f"{a}-sheet.png")).convert("RGBA")
-        assert art.sheet(a).tobytes() == shipped.tobytes(), a
+        _house_cells_ok(a, art.sheet(a).convert("RGBA"))
 
 
-def test_each_agent_wears_a_different_outfit():
-    sheets = [Image.open(os.path.join(WEB, "chars", f"{a}-sheet.png")).tobytes() for a in AGENTS]
+def test_the_pixel_art_script_gives_each_agent_a_different_outfit():
+    import lumi_pixel_art as art
+    sheets = [art.sheet(a).tobytes() for a in AGENTS]
     assert len(set(sheets)) == len(AGENTS)
 
 
