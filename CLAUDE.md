@@ -11,7 +11,7 @@ what a Claude Code session needs to work on the repo cold. Read it fully before 
   interpreter (3.12, system). Always call it explicitly:
   `C:/Users/anguy/anaconda3/envs/lumi/python.exe`
 - Models are served by local Ollama at `http://127.0.0.1:11434` (not `localhost`).
-- Run the suite (≈4 min):
+- Run the full suite (≈4 min):
   `C:/Users/anguy/anaconda3/envs/lumi/python.exe -m pytest tests -q -p no:cacheprovider -rfE`
 - Pre-harness baseline (recorded in `data/tasks/baseline_tests.txt`): **829 passed,
   1 failed**. The harness added `tests/test_harness_*.py` and `tests/test_mode_shapes.py`.
@@ -41,9 +41,10 @@ what a Claude Code session needs to work on the repo cold. Read it fully before 
    go on a branch and are merged once the suite is green. Everything else (docs, fixes,
    other modules) may be committed straight to `main`. Either way, run the full suite
    before committing.
-2. **Test discipline.** After every commit, re-run the full suite. If any test that
-   passes in `data/tasks/baseline_tests.txt` now fails, stop and report before doing
-   anything else.
+2. **Test discipline (tiered).** While iterating, run *only* the specific test file you
+   touched (e.g., `pytest tests/test_harness_tasks.py`). Run the full 4-minute suite
+   **only once** right before a final commit. If any test that passes in
+   `data/tasks/baseline_tests.txt` fails, stop and report before doing anything else.
 3. **Scope discipline.** Do not touch `sdk/examples/minecraft/` or
    `plugin/minecraft_bot.py`. Ask first if a change seems to need them.
 4. **Model discipline.** Model names and context sizes for the agent harness come
@@ -53,6 +54,12 @@ what a Claude Code session needs to work on the repo cold. Read it fully before 
    sentences and a JSON schema — the local model reads these to decide when to call it.
 6. New persistence lives under `data/tasks/` and `data/hooks/` (and declarative
    workflows under `data/workflows/`) only.
+
+## Claude Token-Saving & Routing Rules (For Claude Developer Only)
+
+1. **Use `haiku` sub-agents for noisy work.** Whenever you need to search the codebase, read large test logs, or inspect `data/tasks/sessions.log`, spawn a sub-agent using the `haiku` model and have it return only a 3-bullet summary. Never dump raw log files into the main chat.
+2. **Stay on `sonnet` for coding.** Do all file edits, bug fixes, and isolated `pytest` runs on `sonnet`. Only ask to escalate to `opus` if designing a brand-new module in `modules/harness/` or debugging a multi-file race condition.
+3. **Never run the full test suite until the very end.** While iterating, run only the specific test file you touched. Run the full suite once right before committing.
 
 ## Harness specification
 
