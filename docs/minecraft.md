@@ -28,7 +28,7 @@ running on the same PC.
    ```powershell
    git submodule update --init plugin/voyager
    cd sdk/examples/minecraft; npm install; cd ../../..
-   ollama pull qwen2.5:3b
+   ollama pull qwen3.5:9b
    ```
 
 2. In Minecraft, open a world and choose **Open to LAN**.
@@ -486,7 +486,7 @@ server, are in [the bot's README](../sdk/examples/minecraft/README.md#lumis-skin
 
 ## Performance
 
-- **Models.** Goal picking uses `GAME_AGENT_MODEL` (`qwen2.5:3b`, about 2 GB),
+- **Models.** Goal picking uses `GAME_AGENT_MODEL` (`qwen3.5:9b`, about 6.6 GB, shared with the agent's daily model),
   small enough to stay loaded next to Lumi's chat model on an 11 GB GPU. A
   bigger game model would push the chat model out of VRAM and slow her replies.
   If chat replies take 10+ seconds, Ollama is probably swapping models: setting

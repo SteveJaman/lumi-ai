@@ -189,7 +189,7 @@ runs from any clone location without editing.
 MODEL_NAME        = "qwen3:8b"   # main path — think=true
 FAST_MODEL_NAME   = "qwen3:8b"   # fast path — same weights, think=false
 VISION_MODEL_NAME = "qwen2.5vl:latest"
-GAME_AGENT_MODEL  = "qwen2.5:3b" # background game agents (Minecraft goal picking)
+GAME_AGENT_MODEL  = "qwen3.5:9b" # background game agents (Minecraft goal picking)
 
 FAST_MODEL_ENABLED    = True
 FAST_MODEL_NUM_CTX    = 8192
@@ -206,7 +206,7 @@ Both paths point at the same weights, so Ollama keeps one copy in VRAM.
 The fast path is differentiated by the `think` flag, not by the context
 window. `GAME_AGENT_MODEL` is kept small on purpose: it must fit in VRAM
 next to `MODEL_NAME`, or every goal pick would evict the chat model and slow
-Lumi's replies. Pull it with `ollama pull qwen2.5:3b`; without it the game
+Lumi's replies. Pull it with `ollama pull qwen3.5:9b`; without it the game
 agent picks goals at random. Changing `FAST_MODEL_NAME` to a cloud spec (e.g.
 `groq:llama-3.3-70b-versatile`) moves all background work off-machine.
 

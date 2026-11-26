@@ -37,7 +37,7 @@ chain and context window. The first installed model in a chain wins.
 - daily_num_ctx: 16384
 - coding_models: qwen2.5-coder:14b, qwen3:8b
 - coding_num_ctx: 4096
-- game_model: qwen2.5:3b
+- game_model: qwen3.5:9b
 - think: false
 - vram_headroom_gb: 2.5
 - agent_timeout_s: 300
@@ -66,7 +66,8 @@ Older keys, used only when a tier key above is missing:
   web or media tool, the rest of the turn runs on the daily model with 16K, so no
   web page is ever fed to the 4K coder.
 - **game**: the Minecraft agent (a separate process) picks goals with `game_model`.
-  It sets its own small context (2048) in plugin/minecraft_bot.py.
+  It sets its own small context (2048) in plugin/minecraft_bot.py. It's the daily
+  model, so the game agent and Lumi's agent share one copy in VRAM.
 
 Each agent model call may take `agent_timeout_s` (a big context on the 11 GB card can
 take minutes). A call that times out is retried once on the same model; a second

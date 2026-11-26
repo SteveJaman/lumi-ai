@@ -11,6 +11,7 @@ from modules import model_router as mr
 @pytest.fixture(autouse=True)
 def no_gaming(monkeypatch):
     monkeypatch.setattr(constants, "GAMING_MODE", False, raising=False)
+    monkeypatch.setattr(mr, "_loaded", lambda: {mr.ROUTER_MODEL: 16384})   # the router model is loaded
     mr._down_until["t"] = 0.0
     yield
     mr._down_until["t"] = 0.0
@@ -123,7 +124,7 @@ TIER_LUMI_MD = """# LUMI.md
 - daily_num_ctx: 16384
 - coding_models: qwen2.5-coder:14b, qwen3:8b
 - coding_num_ctx: 4096
-- game_model: qwen2.5:3b
+- game_model: qwen3.5:9b
 - agent_model: qwen3:8b
 - num_ctx: 8192
 - vram_headroom_gb: 2.5
@@ -202,7 +203,7 @@ def test_tiers_come_from_lumi_md_and_old_keys_still_work(tiers, tmp_path, monkey
     assert hcfg.daily_models() == ["qwen3.5:9b", "qwen3:8b"] and hcfg.coding_models()[0] == "qwen2.5-coder:14b"
     assert (hcfg.tier_num_ctx("daily"), hcfg.tier_num_ctx("coding")) == (16384, 4096)
     monkeypatch.setattr(constants, "MINECRAFT_AGENT_LOCAL_MODEL", None, raising=False)
-    assert mr.local_agent_model() == "qwen2.5:3b"
+    assert mr.local_agent_model() == "qwen3.5:9b"
     old = tmp_path / "OLD.md"
     old.write_text("## Model\n- num_ctx: 8192\n- fast_agent_models: qwen3:8b\n- primary_agent_models: qwen2.5-coder:14b\n",
                    encoding="utf-8")
@@ -376,3 +377,39 @@ def test_the_routers_quick_sort_never_picks_the_agents_model():
     """route_model only labels the turn (haiku/sonnet/opus) with the small sorter and
     falls back to 'sonnet' on a timeout; the agent's model comes from TurnRouter."""
     assert mr.TIMEOUT_S <= 10 and mr.DEFAULT_TIER == "sonnet"
+
+
+
+# ─── the router uses the daily model, only while it's loaded ─────────────
+
+def test_the_router_and_game_agent_use_the_daily_model():
+    assert mr.ROUTER_MODEL == constants.GAME_AGENT_MODEL == "qwen3.5:9b"
+
+
+def test_the_router_never_loads_its_model(monkeypatch):
+    """On the 11 GB card the 9B can't sit next to the chat model: loading it for
+    every chat message would evict chat and back again."""
+    monkeypatch.setattr(mr, "_loaded", lambda: {"dolphin3:8b": 8192})
+    calls = asked(monkeypatch, "opus")
+    assert mr.route_model("design the service boundaries for my app") == "sonnet"
+    assert calls == [] and "not loaded" in mr.last_reason()
+
+
+def test_the_router_asks_with_the_loaded_context(monkeypatch):
+    """A different num_ctx makes Ollama reload the model (12 s here), far past the 4 s wait."""
+    monkeypatch.setattr(mr, "_loaded", lambda: {"qwen3.5:9b": 16384})
+    sent = {}
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"message": {"content": "opus"}}
+
+    def post(url, json=None, timeout=None):
+        sent.update(json)
+        return Resp()
+    monkeypatch.setattr(mr.requests, "post", post)
+    assert mr.route_model("my reconnect loop leaks memory, find out why") == "opus"
+    assert sent["options"]["num_ctx"] == 16384 and sent["think"] is False and sent["model"] == "qwen3.5:9b"
