@@ -304,10 +304,15 @@ html:not([data-lumi-theme="cyberpunk"]) .memory-table th { font-weight: 600; fon
 /* ── Chat ───────────────────────────────────────────────────── */
 
 /* One centred reading column on wide screens. */
+/* Messages, status bar and composer all use the same 920px inset. The scrollbar is hidden
+   here: a visible one takes a different amount of width per browser (Chromium reserves 10px,
+   Firefox none), which pushed the messages past the composer. Wheel and touch scrolling still work. */
 html:not([data-lumi-theme="cyberpunk"]) .chat-scroll {
   padding: 28px max(24px, calc((100% - 920px) / 2)) 20px;
   gap: 18px;
+  scrollbar-width: none;
 }
+html:not([data-lumi-theme="cyberpunk"]) .chat-scroll::-webkit-scrollbar { display: none; }
 html:not([data-lumi-theme="cyberpunk"]) .msg { max-width: min(760px, 88%); }
 
 html:not([data-lumi-theme="cyberpunk"]) .msg-bubble {
@@ -380,7 +385,7 @@ html:not([data-lumi-theme="cyberpunk"]) .chat-input .btn-primary { border-radius
 @media (max-width: 760px) {
   html:not([data-lumi-theme="cyberpunk"]) .chat-input { margin: 0 10px 10px; border-radius: 18px; }
   html:not([data-lumi-theme="cyberpunk"]) .chat-status { padding: 6px 12px; }
-  html:not([data-lumi-theme="cyberpunk"]) .chat-scroll { padding: 18px 12px; }
+  html:not([data-lumi-theme="cyberpunk"]) .chat-scroll { padding: 18px 10px; }   /* same 10px edge as the composer */
   html:not([data-lumi-theme="cyberpunk"]) .msg { max-width: 94%; }
 }
 
