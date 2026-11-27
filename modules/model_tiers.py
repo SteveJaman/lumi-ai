@@ -1,26 +1,24 @@
 """
-Local model tiers for Phase 6: a fast model for voice and chat, and a deeper one for
-reasoning, vision and background work. The deep tier is preferred when Ollama has it,
-and falls back to the fast model when it doesn't, so nothing breaks on a machine
-without it.
+The deep model tier: a bigger model for the reasoning-heavy step of an agent run (the
+harness Plan subagent, which builds the task DAG).
 
-    pick_deep(installed, preferred=DEEP_PREFERRED, fallback=FAST) -> model name
-    deep_options(num_predict=DEEP_MAX_TOKENS) -> the options a deep call uses
-    FAST_KEEP_ALIVE / DEEP_KEEP_ALIVE          how long Ollama keeps each model loaded
+The model chain comes from LUMI.md (`deep_models`, read by modules/harness/config.py),
+never from this file. The first installed model in the chain wins; with none installed
+the caller keeps the turn's own model, so nothing breaks on a machine without one.
 
-The 11 GB card can't hold a large deep model beside Whisper and Fish Audio, so the
-deep model is only asked for while it's installed, and it's unloaded soon after
-(short keep_alive, capped output). Installed names are matched without the tag
-(":latest" is ignored).
+    first_installed(chain, installed) -> the model to use, or None
+    installed_names()                 -> what Ollama has installed ([] when unreachable)
+    deep_options(num_ctx=...)         -> the options a deep call uses
+
+The 11 GB card can't hold a large model beside Whisper and Fish Audio for long, so a
+deep call is unloaded soon after (short keep_alive) and its output is capped.
+Installed names are matched without the ":latest" tag.
 """
 
 from __future__ import annotations
 
 from typing import Iterable, Optional
 
-FAST = "qwen3:8b"
-DEEP_PREFERRED = "inkling-2-mini"
-FAST_KEEP_ALIVE = "10m"
 DEEP_KEEP_ALIVE = "30s"
 DEEP_MAX_TOKENS = 1024          # a cap, so a looping deep model can't run on forever
 
@@ -30,13 +28,13 @@ def _base(name: str) -> str:
     return n[:-len(":latest")] if n.endswith(":latest") else n
 
 
-def pick_deep(installed: Iterable[str], preferred: str = DEEP_PREFERRED, fallback: str = FAST) -> str:
+def first_installed(chain: Iterable[str], installed: Iterable[str]) -> Optional[str]:
+    """The first model in `chain` that Ollama has installed, else None."""
     have = {_base(n) for n in installed or []}
-    return preferred if _base(preferred) in have else fallback
-
-
-def has_deep(installed: Iterable[str], preferred: str = DEEP_PREFERRED) -> bool:
-    return _base(preferred) in {_base(n) for n in installed or []}
+    for name in chain or []:
+        if _base(name) in have:
+            return name
+    return None
 
 
 def installed_names(timeout: float = 3.0) -> list:
@@ -53,5 +51,8 @@ def installed_names(timeout: float = 3.0) -> list:
         return []
 
 
-def deep_options(num_predict: Optional[int] = None) -> dict:
-    return {"num_predict": int(num_predict or DEEP_MAX_TOKENS)}
+def deep_options(num_predict: Optional[int] = None, num_ctx: Optional[int] = None) -> dict:
+    opts = {"num_predict": int(num_predict or DEEP_MAX_TOKENS)}
+    if num_ctx:
+        opts["num_ctx"] = int(num_ctx)
+    return opts

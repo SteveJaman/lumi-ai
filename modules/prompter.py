@@ -3267,15 +3267,14 @@ class Prompter:
 
         return chat
 
-    def _deep_plan_chat(self, fallback_model, options, think, num_ctx):
-        """chat(messages, tools) for the Plan subagent on the deep tier (model_tiers), or None
-        when Ollama doesn't have the deep model or it can't call tools. None keeps Plan on
-        the turn's own model. A deep call that times out is answered by the turn's model."""
+    def _deep_plan_chat(self, fallback_model, options, think, num_ctx, installed):
+        """chat(messages, tools) for the Plan subagent on the deep tier, or None. The model is
+        the first installed one in LUMI.md `deep_models`; None (no deep model, or it can't
+        call tools) keeps Plan on the turn's own model. A deep call that times out is
+        answered by the turn's model."""
         from modules import model_tiers
-        if not model_tiers.has_deep(model_tiers.installed_names()):
-            return None
-        deep = model_tiers.DEEP_PREFERRED
-        if not model_router.model_supports_tools(deep):
+        deep = model_tiers.first_installed(harness_config.deep_models(), installed)
+        if not deep or deep == fallback_model or not model_router.model_supports_tools(deep):
             return None
         loop = asyncio.get_running_loop()
 
@@ -3284,7 +3283,8 @@ class Prompter:
                 try:
                     return chat_sync(deep, list(messages), tools=tools, think=think,
                                      keep_alive=gaming_mode.keep_alive(model_tiers.DEEP_KEEP_ALIVE),
-                                     options=model_tiers.deep_options(),
+                                     options=model_tiers.deep_options(
+                                         num_ctx=harness_config.tier_num_ctx("coding")),
                                      timeout=harness_config.agent_timeout_s())
                 except requests.exceptions.Timeout:
                     print(f"{GRAY}[agent] Plan: {deep} didn't answer in time; using {fallback_model}{RESET}")
@@ -3408,8 +3408,11 @@ class Prompter:
         # Explore / Plan / Verify subagents: same model and tool dispatch (so the
         # approval gate and hooks still apply), but each runs in a fresh history.
         # Plan (task DAG) is the reasoning-heavy step: it takes the deep tier when installed.
-        plan_chat = await asyncio.get_running_loop().run_in_executor(
-            None, self._deep_plan_chat, model, options, think, router.num_ctx)
+        # Ollama's model list is a network call, so it runs off the event loop; the chat
+        # function itself is built here, on the loop, because it needs the running loop.
+        from modules import model_tiers
+        installed = await asyncio.get_running_loop().run_in_executor(None, model_tiers.installed_names)
+        plan_chat = self._deep_plan_chat(model, options, think, router.num_ctx, installed)
         subagents = SubagentRunner(chat, dispatch, all_tools + TASK_TOOL_SCHEMAS, store=None,
                                    failure_fn=_result_looks_like_failure,
                                    recover_fn=_recover_text_tool_calls,
