@@ -164,3 +164,33 @@ def test_subagent_recovers_text_form_tool_calls(tmp_path, store):
     out = asyncio.run(runner.spawn("Explore", "where are termination reasons?"))
     assert ran == [("search_files", {"query": "stagnant"})]
     assert out == "modules/harness/loop.py: termination reasons"
+
+
+def test_plan_uses_its_own_chat_when_given():
+    import asyncio
+    from modules.harness.subagents import SubagentRunner
+
+    class Resp:
+        content = '{"tasks": []}'
+        tool_calls = None
+
+    seen = []
+
+    def main_chat(messages, tools):
+        seen.append("main")
+        return Resp()
+
+    def deep_chat(messages, tools):
+        seen.append("deep")
+        async def done():
+            return Resp()
+        return done()
+
+    r = SubagentRunner(main_chat, lambda n, a: "", [], store=None, plan_chat_fn=deep_chat)
+    asyncio.run(r._loop("Plan", "make a plan", []))
+    assert seen == ["deep"]
+
+    seen.clear()
+    r2 = SubagentRunner(main_chat, lambda n, a: "", [], store=None, plan_chat_fn=deep_chat)
+    asyncio.run(r2._loop("Explore", "look", []))
+    assert seen == ["main"]

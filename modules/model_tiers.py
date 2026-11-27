@@ -35,5 +35,23 @@ def pick_deep(installed: Iterable[str], preferred: str = DEEP_PREFERRED, fallbac
     return preferred if _base(preferred) in have else fallback
 
 
+def has_deep(installed: Iterable[str], preferred: str = DEEP_PREFERRED) -> bool:
+    return _base(preferred) in {_base(n) for n in installed or []}
+
+
+def installed_names(timeout: float = 3.0) -> list:
+    """Model names Ollama has installed. Empty when Ollama can't be reached: the caller then
+    keeps the normal model (no deep tier) rather than failing."""
+    try:
+        import requests
+        from constants import LLM_ENDPOINT
+        r = requests.get(f"{LLM_ENDPOINT}/api/tags", timeout=timeout)
+        if r.status_code != 200:
+            return []
+        return [m.get("name") or "" for m in r.json().get("models", []) or []]
+    except Exception:
+        return []
+
+
 def deep_options(num_predict: Optional[int] = None) -> dict:
     return {"num_predict": int(num_predict or DEEP_MAX_TOKENS)}

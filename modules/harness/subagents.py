@@ -113,8 +113,9 @@ def _extract_json(text):
 class SubagentRunner:
     def __init__(self, chat_fn, dispatch_fn, tool_schemas, store, hooks=None, output_store=None,
                  tasks_dir=None, session_id="", max_steps=MAX_SUBAGENT_STEPS, failure_fn=None,
-                 recover_fn=None):
+                 recover_fn=None, plan_chat_fn=None):
         self.chat_fn = chat_fn
+        self.plan_chat_fn = plan_chat_fn      # Plan only: the deep tier when Ollama has it (model_tiers)
         self.dispatch_fn = dispatch_fn
         self.schemas = {s["function"]["name"]: s for s in tool_schemas}
         self.store = store
@@ -163,9 +164,10 @@ class SubagentRunner:
         schemas = [self.schemas[n] for n in tools if n in self.schemas]
         tokens = 0
         text_turns = 0
+        chat = self.plan_chat_fn if (role == "Plan" and self.plan_chat_fn) else self.chat_fn
         for _ in range(self.max_steps):
             tokens += estimate_tokens(messages)
-            resp = await _maybe_await(self.chat_fn(messages, schemas))
+            resp = await _maybe_await(chat(messages, schemas))
             calls = []
             for tc in getattr(resp, "tool_calls", None) or []:
                 calls.append(tc.as_ollama() if hasattr(tc, "as_ollama") else tc)
