@@ -51,15 +51,12 @@ def test_registry_wires_every_tool_with_its_card_and_gate():
                      "get_active_window_info", "read_window_text", "click_button", "restart_crashed_game",
                      "find_local_deals", "focus_window",
                      "media_play_liked", "media_play_playlist", "media_search_and_play",
-                     "media_control", "media_library", "capture_screen_context",
-                     "search_nearby_places", "get_place_details"}
+                     "media_control", "media_library", "capture_screen_context"}
     agents = agent_tools.EVERYDAY_TOOL_AGENT
     assert {n for n, a in agents.items() if a == "research"} == {
-        "summarize_meeting", "extract_action_items", "draft_follow_up_email", "find_local_deals",
-        "search_nearby_places", "get_place_details"}
+        "summarize_meeting", "extract_action_items", "draft_follow_up_email", "find_local_deals"}
     assert {n for n, a in agents.items() if a == "operate"} == names - {
-        "summarize_meeting", "extract_action_items", "draft_follow_up_email", "find_local_deals",
-        "search_nearby_places", "get_place_details"}
+        "summarize_meeting", "extract_action_items", "draft_follow_up_email", "find_local_deals"}
     assert all(a in agent_tracker.AGENTS for a in agents.values())
     gated = {"auto_draft_reply", "reschedule_event", "add_to_wishlist", "click_button", "restart_crashed_game",
              "find_local_deals", "capture_screen_context"}
