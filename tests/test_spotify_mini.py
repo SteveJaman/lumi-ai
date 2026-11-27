@@ -302,7 +302,7 @@ def tool(name, **args):
 
 
 def test_media_tools_are_short_described_and_have_schemas():
-    schemas = {s["function"]["name"]: s["function"] for s in sp.TOOL_SCHEMAS}
+    schemas = {s["function"]["name"]: s["function"] for s in sp.LEGACY_TOOL_SCHEMAS + sp.TOOL_SCHEMAS}
     for name in MEDIA_TOOLS:
         f = schemas[name]
         assert len(re.findall(r"[.!?](\s|$)", f["description"])) < 2, name      # CLAUDE.md: under two sentences

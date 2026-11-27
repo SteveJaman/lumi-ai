@@ -610,31 +610,7 @@ class VtubeStudio(Module):
         self._hotkey_types = {}
         self._toggle_state = {}
 
-        # Motion engine (modules/vts_motion.py).
-        rng = random.Random()
-        self._sway = vm.HeadSway(seed=rng.randrange(1 << 30))
-        self._blink = vm.BlinkScheduler(rng)
-        self._gaze = vm.GazeController(rng)
-        self._breath = vm.Breath()
-        self._emotion = vm.EmotionState()
-        self._mouth = vm.MouthDriver()
-        self._pose = vm.PoseBlender()
-        self._yawn = vm.YawnScheduler(rng)
-        self._limiter = vm.FrameLimiter(MAX_PARAM_FPS)
-        self._arms = _ArmChoreographer()
-
-        self._session_start = time.time()
-        self._last_motion_tick = 0.0
-        self._last_frame_t = time.time()
-        self._body = [0.0, 0.0, 0.0]
-        self._brow_current = [0.0, 0.0, 0.0, 0.0]
-        self._overrides = {}                 # param id -> (value, expires_at)
-
-        self._head_names = None
-        self._extra_names = None
-        self._mouth_name = None
-        self._smile_name = None
-        self._breath_name = None
+        self._init_motion()
 
         # Per-param mode lookup, populated by verification at startup.
         self._param_modes = {}
@@ -665,12 +641,41 @@ class VtubeStudio(Module):
         }
         self.vts = pyvts.vts(plugin_info=plugin_info)
 
-        self._last_interaction_time = time.time()
-        self._is_idle = False
-        self._idle_start_time = 0.0
 
         if not enabled:
             self.signals.vts_state = "skipped"
+
+    def _init_motion(self):
+        """Motion state for compute_frame. Shared with modules/stage_motion.py, which drives the
+        web Stage without a VTS connection."""
+        # Motion engine (modules/vts_motion.py).
+        rng = random.Random()
+        self._sway = vm.HeadSway(seed=rng.randrange(1 << 30))
+        self._blink = vm.BlinkScheduler(rng)
+        self._gaze = vm.GazeController(rng)
+        self._breath = vm.Breath()
+        self._emotion = vm.EmotionState()
+        self._mouth = vm.MouthDriver()
+        self._pose = vm.PoseBlender()
+        self._yawn = vm.YawnScheduler(rng)
+        self._limiter = vm.FrameLimiter(MAX_PARAM_FPS)
+        self._arms = _ArmChoreographer()
+
+        self._session_start = time.time()
+        self._last_motion_tick = 0.0
+        self._last_frame_t = time.time()
+        self._body = [0.0, 0.0, 0.0]
+        self._brow_current = [0.0, 0.0, 0.0, 0.0]
+        self._overrides = {}                 # param id -> (value, expires_at)
+
+        self._head_names = None
+        self._extra_names = None
+        self._mouth_name = None
+        self._smile_name = None
+        self._breath_name = None
+        self._last_interaction_time = time.time()
+        self._is_idle = False
+        self._idle_start_time = 0.0
 
     # ---------------------------------------------------------------
     # Connection / session

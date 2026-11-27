@@ -286,7 +286,6 @@ def main():
     _global_games.resume_if_enabled()
     IslandManager(signals).start_at_boot()   # rebuilds a stale island in the background, then starts it
     shortcuts_manager.list_shortcuts()       # Island Hub: seeds data/shortcuts.json on first run
-    media_bridge.start(signals)              # voice ducking: music dips while you or Lumi talk
     WorkspaceHub(signals)       # Google Calendar / Gmail / KSU mail; idle until you connect
 
     try:

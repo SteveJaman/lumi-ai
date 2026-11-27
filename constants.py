@@ -47,7 +47,7 @@ FAST_AGENT_MODEL_CHAIN = (FAST_AGENT_MODEL, "qwen3:8b")
 VRAM_HEADROOM_GB = 2.5      # left free for the KV cache, vision and STT on a shared card
 # GAME_AGENT_MODEL picks goals for background game agents (plugin/
 # minecraft_bot.py), sorts each prompt into a tier (modules/model_router.py,
-# ROUTER_MODEL) and picks songs for the voice DJ. It's the agent's daily model
+# ROUTER_MODEL) and does small sorting jobs. It's the agent's daily model
 # (LUMI.md daily_models), so one model in VRAM serves all of them. The router
 # only asks it when it's already loaded, so chat (MODEL_NAME) never gets evicted.
 GAME_AGENT_MODEL = "qwen3.5:9b"
@@ -129,11 +129,6 @@ CLOUD_ESCALATION_MODEL = "anthropic:auto"     # Claude smart router; "anthropic:
 # Use it anywhere a model spec is taken by naming "anthropic:auto" (for example as
 # CLOUD_ESCALATION_MODEL). Prices are USD per million tokens (input, output), used only
 # for the cost estimate in the Model Pipeline view.
-# Media (modules/media_bridge.py): lower music apps to MEDIA_DUCK_LEVEL of their
-# volume while you talk or Lumi speaks, then fade them back.
-MEDIA_DUCKING = True
-MEDIA_DUCK_LEVEL = 0.2
-
 CLAUDE_ROUTER_MODELS = {
     "haiku":  "claude-haiku-5-5",
     "sonnet": "claude-sonnet-5-5",
@@ -870,7 +865,26 @@ def build_chat_system_prompt(host_name=None, profile_dict=None, examples=True):
             text = str(profile_dict.get(key) or "").strip()
             if text:
                 sections.append(f"[Example Dialogue — {title}]\n{text}")
+    if examples:
+        sections.append(SPOKEN_CADENCE)
     return "\n\n".join(s for s in sections if s.strip() and not s.endswith("]\n"))
+
+
+# Background features that are off until you turn them on (Phase 5).
+# CONTEXT_WATCHER: read the foreground window's title every 5 s (CPU only, no screenshots).
+# IDLE_CURIOSITY: while you're away, read-only web search on an interest; notes are kept, not spoken.
+CONTEXT_WATCHER = False
+IDLE_CURIOSITY = False
+IDLE_CURIOSITY_MINUTES = 10
+
+# How she talks (Phase 4): short, a little bratty, never a customer-service voice.
+SPOKEN_CADENCE = (
+    "[How you talk]\n"
+    "One to three punchy sentences unless someone asks for more. Contractions, quick pushback, a dry "
+    "sigh now and then, a little smug pride when you were right. Never open with 'Certainly!', "
+    "'How can I assist', 'Great question' or any other filler. No bullet lists or markdown in what you say aloud. "
+    "Show your private thoughts only inside <thought>...</thought>; they are never spoken."
+)
 
 
 # =======================================================

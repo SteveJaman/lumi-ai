@@ -69,6 +69,9 @@ import secrets
 import asyncio
 import functools
 import mimetypes
+
+# ES modules (.mjs) must be served as JavaScript or the browser refuses them; Windows' table says text/plain.
+mimetypes.add_type("application/javascript", ".mjs")
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
@@ -594,6 +597,10 @@ class SocketIOServer:
         self._register_http_routes()
         from modules import claude_bridge as _claude_bridge
         _claude_bridge.install(self)            # Claude Desktop / Claude Code bridge (loopback + token)
+        # Web Stage (Phase 3): face frames for subscribed Stages, and touch reactions.
+        from modules.stage_motion import StageMotion
+        self._stage_motion = StageMotion(signals)
+        self._stage_subscribers = set()
         self._register_socket_events()
         from modules import workspace as _workspace_pane
         _workspace_pane.install(self)           # split view: terminal_output / browser_frame
@@ -697,6 +704,8 @@ class SocketIOServer:
         shortcuts_manager.register(r, self)     # /api/shortcuts (Lumi Island Hub)
         from modules import spotify, user_profile, media_bridge
         media_bridge.register(r, self)          # /api/media/* (web sidebar player: Spotify or Windows media)
+        from modules import avatar_stage
+        avatar_stage.register(r, self)          # /api/avatar/* (web Stage: the VRM model, host only)
         user_profile.register(r, self)          # /api/profile* (the sidebar's profile dialog)
         spotify.register(r, self)               # /api/spotify/* (Integrations -> Accounts, sidebar player)
         from modules import home_info
@@ -3021,9 +3030,114 @@ class SocketIOServer:
     # ==================================================================
     # Socket.io events
     # ==================================================================
+    async def _stage_loop(self):
+        """Face frames for the Stages that asked for them, 20 a second. Idle (no subscribers) it
+        does no motion work at all."""
+        while not self.signals.terminate:
+            if self._stage_subscribers:
+                try:
+                    frame = self._stage_motion.frame()
+                    payload = {"t": time.time(), "p": {k: round(float(v), 4) for k, v in frame.items()}}
+                except Exception:
+                    payload = None
+                if payload:
+                    for sid in list(self._stage_subscribers):
+                        try:
+                            await self.sio.emit("avatar_frame", payload, to=sid)
+                        except Exception:
+                            self._stage_subscribers.discard(sid)
+            await self.sio.sleep(0.05)
+
+    async def _curiosity_loop(self):
+        """While you're away and the switch is on: a read-only web look at one of your interests,
+        kept for later. Nothing is spoken and no page is posted to; only the count is pushed to the UI."""
+        from modules import curiosity, gaming_mode
+        from modules import web_search
+        from constants import HOST, load_profile
+        store = None
+        while not self.signals.terminate:
+            await self.sio.sleep(60)
+            try:
+                import constants as _c
+                if not getattr(_c, "IDLE_CURIOSITY", False):
+                    continue
+                idle = time.time() - float(getattr(self.signals, "last_message_time", 0) or 0)
+                if not curiosity.should_run(idle, gaming=gaming_mode.is_enabled(),
+                                            idle_minutes=getattr(_c, "IDLE_CURIOSITY_MINUTES", 10)):
+                    continue
+                pool = list((load_profile(HOST.name) or {}).get("interests") or [])
+                if store is None:
+                    store = curiosity.CuriosityStore()
+                kept = await asyncio.get_running_loop().run_in_executor(
+                    None, curiosity.run_once, store, pool, web_search.search, time.time())
+                if kept:
+                    self._broadcast_event("curiosity_note", {"count": kept})
+            except Exception:
+                pass
+
+    async def _context_loop(self):
+        """With CONTEXT_WATCHER on: the foreground window's title every 5 s, turned into a scene
+        preset when it changes. Only the preset name is sent; the title is not kept."""
+        from modules import context_watcher as cw
+        from modules import gaming_mode
+        last_title, last_preset = None, None
+        while not self.signals.terminate:
+            await self.sio.sleep(5)
+            try:
+                import constants as _c
+                if not getattr(_c, "CONTEXT_WATCHER", False):
+                    continue
+                title = cw.foreground_title()
+                if title == last_title:
+                    continue
+                last_title = title
+                preset = cw.scene_for(title, time.localtime().tm_hour, gaming=gaming_mode.is_enabled())
+                if preset and preset != last_preset:
+                    last_preset = preset
+                    await self.sio.emit("scene_preset", {"preset": preset})
+            except Exception:
+                pass
+
+    async def _host_session(self, sid):
+        sess = await self.sio.get_session(sid)
+        return bool(sess and sess.get("user") and sess.get("is_local"))
+
     def _register_socket_events(self):
         sio = self.sio
         signals = self.signals
+
+        @sio.event
+        async def avatar_stage_on(sid, data=None):
+            if await self._host_session(sid):
+                self._stage_subscribers.add(sid)
+
+        @sio.event
+        async def set_do_not_disturb(sid, data=None):
+            # Host only: no unprompted speech while this is on (heartbeat checks signals.do_not_disturb).
+            if await self._host_session(sid):
+                on = bool(isinstance(data, dict) and data.get("on"))
+                signals.do_not_disturb = on
+                await sio.emit("do_not_disturb", {"on": on})
+
+        @sio.event
+        async def avatar_stage_off(sid, data=None):
+            self._stage_subscribers.discard(sid)
+
+        @sio.event
+        async def avatar_touch(sid, data=None):
+            if not await self._host_session(sid) or not isinstance(data, dict):
+                return
+            reaction = self._stage_motion.touch(str(data.get("zone", "")), str(data.get("action", "")))
+            if reaction is not None:
+                from modules import mood_engine
+                action = str(data.get("action", ""))
+                if action == "poke":
+                    mood_engine.record("touch_poke")
+                elif action == "pat":
+                    mood_engine.record("touch_pat")
+                await sio.emit("avatar_reaction", {
+                    "emotion": reaction.emotion, "flinch": reaction.flinch, "say": reaction.say,
+                }, to=sid)
 
         @sio.event
         async def get_blacklist(sid):
@@ -3471,6 +3585,9 @@ class SocketIOServer:
         async def _on_startup(app):
             self._loop = asyncio.get_running_loop()
             self.sio.start_background_task(self._broadcast_history)
+            self.sio.start_background_task(self._stage_loop)
+            self.sio.start_background_task(self._curiosity_loop)
+            self.sio.start_background_task(self._context_loop)
 
         self.app.on_startup.append(_on_startup)
 

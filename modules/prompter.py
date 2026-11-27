@@ -49,11 +49,12 @@ YELLOW = "\033[93m"
 
 from modules.speech_filter import strip_slurs
 from modules import speculative
+from modules import stage_directions as _stage_directions
 from modules import hitl_server
 from modules import gaming_mode
 from modules import workspace_hub
 from modules import island_bridge
-from modules import claude_code, claude_handoff, claude_router, voice_dj
+from modules import claude_code, claude_handoff, claude_router
 from modules import model_router, agent_tracker, hybrid_mode
 from modules.harness import config as harness_config
 
@@ -484,7 +485,8 @@ def _clean_reply(text):
     """Approved tags only, no emoji, tidy spaces. What gets shown, spoken
     and stored: an invented tag ([glancing], [patience]) left in history
     gets copied on the next turns."""
-    text = strip_slurs(_strip_emoji(_strip_non_canonical_tags(text or "")))
+    text = re.sub(r"<thought>.*?</thought>", "", text or "", flags=re.S | re.I)   # inner thoughts: never shown or spoken
+    text = strip_slurs(_strip_emoji(_strip_non_canonical_tags(text)))
     # A tag only affects what follows it, so one at the very end is noise.
     text = re.sub(r"(?:\s*\[[^\]]{1,40}\])+\s*$", "", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
@@ -572,6 +574,9 @@ class _SpokenStream:
         # A barge-in (TTS.interrupt bumps speech_epoch) stops the reply too.
         self.epoch = getattr(prompter.signals, "speech_epoch", 0)
         self.interrupted = False
+        # <thought>...</thought> blocks are taken out before anything is spoken (stage_directions.py).
+        # Emotion tags are left to _extract_and_apply_emotions, which reads the whole reply.
+        self._sd = _stage_directions.StageSplitter()
 
     @property
     def spoken(self):
@@ -583,7 +588,9 @@ class _SpokenStream:
         if getattr(self.prompter.signals, "speech_epoch", 0) != self.epoch:
             self.stopped = self.interrupted = True
             return False
-        self.text += piece
+        out = self._sd.feed(piece)
+        self._thoughts(out.thoughts)
+        self.text += out.spoken
         pending = self.text[self.done:]
         parts = SENTENCE_SPLIT_PATTERN.split(pending)
         if len(parts) < 2:
@@ -612,10 +619,25 @@ class _SpokenStream:
         limit cut it off."""
         if self.stopped:
             return
+        end = self._sd.flush()
+        self._thoughts(end.thoughts)
+        self.text += end.spoken
         rest = self.text[self.done:]
         self.done = len(self.text)
         if rest.strip() and not truncated:
             self._say(rest)
+        from modules import mood_engine
+        mood_engine.record("turn_finished")
+
+    def _thoughts(self, thoughts):
+        """Inner thoughts go to the UI (the Inner Thoughts bubble), never to TTS."""
+        emit = getattr(self.prompter.signals, "broadcast_event", None)
+        for t in thoughts or []:
+            if emit and t:
+                try:
+                    emit("inner_thought", {"text": t})
+                except Exception:
+                    pass
 
     def _say(self, chunk):
         for sentence in SENTENCE_SPLIT_PATTERN.split(chunk):
@@ -1681,6 +1703,16 @@ class Prompter:
         lines.append("")
         return "\n".join(lines)
 
+    def _game_event_allowed(self, now=None):
+        """One game-event reaction per proactive.EVENT_INTERVAL_S; none while Do-Not-Disturb is on.
+        Gaming Mode does not silence these: game commentary is what Gaming Mode is for."""
+        from modules import proactive
+        throttle = getattr(self, "_event_throttle", None)
+        if throttle is None:
+            throttle = self._event_throttle = proactive.EventThrottle()
+        return throttle.allowed("game_event", time.time() if now is None else now,
+                                dnd=bool(getattr(self.signals, "do_not_disturb", False)))
+
     async def run_event_reaction(self, latest_user_text):
         """A one-line spoken reaction to a game event, from a small
         dedicated prompt (the fast model when it's available)."""
@@ -1793,6 +1825,13 @@ class Prompter:
     
         context_injections = self.gather_injections(latest_user_text, agent_context=False,
                                                     consume=pending_user is None)
+        try:
+            from modules import mood_engine, curiosity
+            extra = "\n\n".join(x for x in (mood_engine.cue(), curiosity.pending_cue()) if x)
+        except Exception:
+            extra = ""
+        if extra:
+            context_injections = f"{context_injections}\n\n{extra}" if context_injections else extra
         messages = [{"role": "system", "content": f"{get_chat_system_prompt()}\n\n{context_injections}"}]
 
         for msg in self.signals.history[-10:]:
@@ -1858,8 +1897,6 @@ class Prompter:
             run = spec.claim(latest_user_text) if spec is not None else None
             if run is not None:
                 return await self._finish_speculative(run, latest_user_text)
-        if dj := await self._voice_dj(latest_user_text):      # "skip", "queue chill instrumental music"
-            return dj
         tier = await self._route_for(latest_user_text)
         req = self.conversational_request(latest_user_text, tier=tier)
         self._note_route(req)
@@ -1872,13 +1909,6 @@ class Prompter:
             if handed is not None:
                 return handed
         return await self._run_chat_request(req, latest_user_text, tier)
-
-    async def _voice_dj(self, text):
-        """A music request (modules/voice_dj.py) answered without the chat model, or None."""
-        try:
-            return await asyncio.get_running_loop().run_in_executor(None, voice_dj.handle, text)
-        except Exception:
-            return None
 
     async def _run_chat_request(self, req, latest_user_text, tier, recover=True):
         """Run one conversational request (streamed when local) and return the reply.
@@ -3841,6 +3871,12 @@ class Prompter:
                     # Watchdog (modules/watchdog_agent.py): speak its line now,
                     # no model call, and remember a restart offer.
                     if await self._handle_watchdog_turn(self.signals.history[-1], stripped):
+                        self.signals.AI_thinking = False
+                        continue
+
+                    # Game-event commentary is throttled (proactive.EventThrottle): an event over the
+                    # limit stays in the history but gets no reply and no speech.
+                    if is_sdk_event and not self._game_event_allowed():
                         self.signals.AI_thinking = False
                         continue
 

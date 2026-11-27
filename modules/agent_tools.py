@@ -24,8 +24,8 @@ from constants import WORKSPACE_ROOT, DATA_ROOT
 # because they hold runtime state (ChromaDB, browser profile, screenshots)
 # and binary assets — searching them is slow and unhelpful.
 SKIP_DIRS = {
-    "venv", ".venv", ".git", "__pycache__", "node_modules",
-    "data", "assets",
+    "venv", ".venv", "env", ".git", "__pycache__", "node_modules",
+    "dist", "build", ".next", "data", "assets",
 }
 
 # Files that write_file refuses to overwrite, matched by exact
@@ -193,6 +193,12 @@ PROVENANCE_MARKERS = {
     "spotify_now_playing": "FROM SPOTIFY",
     "spotify_play":        "FROM SPOTIFY",
     "media_playlist_tracks": "FROM SPOTIFY",
+    "media_play_liked":      "FROM SPOTIFY",
+    "capture_screen_context": "FROM SCREEN",
+    "media_play_playlist":   "FROM SPOTIFY",
+    "media_search_and_play": "FROM SPOTIFY",
+    "media_control":         "FROM SPOTIFY",
+    "media_library":         "FROM SPOTIFY",
     # Everyday Life tools (see EVERYDAY TOOLS below).
     "triage_inbox":           "FROM EMAIL",
     "auto_draft_reply":       "FROM EMAIL",
@@ -370,9 +376,11 @@ from modules import email_agent, finance_agent, meeting_agent, windows_agent  # 
 from modules import watchdog_agent  # noqa: E402
 from modules import deal_finder  # noqa: E402
 from modules import spotify  # noqa: E402
+from modules import screen_tool  # noqa: E402
+from modules import places_tool  # noqa: E402
 
 EVERYDAY_MODULES = (email_agent, finance_agent, meeting_agent, windows_agent, watchdog_agent,
-                    deal_finder, spotify)
+                    deal_finder, spotify, screen_tool, places_tool)
 EVERYDAY_TOOL_MODULE = {
     s["function"]["name"]: m for m in EVERYDAY_MODULES for s in m.TOOL_SCHEMAS
 }

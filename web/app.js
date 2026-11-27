@@ -10,6 +10,7 @@ import * as workspace from './workspace.js';
 import * as display from './display.js';
 import * as islandRemote from './island_remote.js';
 import * as lumiUi from './lumi-ui.js';
+import * as notices from './notices.js';
 import * as splitView from './split-view.js';
 import * as profile from './profile.js';
 import * as spotify from './spotify.js';
@@ -197,6 +198,7 @@ async function checkAuth() {
     showShell();
     lumiUi.initUi({ api, state });       // theme, Cloud Escalation badge, sync, drag and drop
     splitView.init({ api, state, socket: lumiUi.socket });  // right-hand Browser / Terminal / Files pane (host only)
+    notices.init({ socket: lumiUi.socket() });   // Lumi's notices: inner thoughts, curiosity notes, scene changes
     spotify.init({ api, state });        // sidebar mini player while Spotify is connected (host only)
 
     // Refresh theme button icon now that the sidebar exists
@@ -2021,6 +2023,7 @@ async function renderDashboard(main) {
         <button class="btn btn-sm" id="dash-refresh">Refresh</button>
       </div>
       <div class="page-scroll">
+        <section class="card stage-card" id="dash-stage" aria-label="Lumi's avatar"></section>
         <section class="diag" id="dash-diag"></section>
         <div class="stat-grid" id="dash-stats"></div>
         <div class="event-stream">
@@ -2032,6 +2035,16 @@ async function renderDashboard(main) {
   `;
 
   mountDiagnostics();
+  // Lumi's avatar on the Stage: a Live2D model if one is configured (web/live2d-stage.js),
+  // else a VRM file (web/vrm-stage.js), else a note saying where to put one. Loaded on demand.
+  Promise.all([import('/web/live2d-stage.js'), import('/web/vrm-stage.js')])
+    .then(async ([live2d, vrm]) => {
+      const host = document.getElementById('dash-stage');
+      if (!host) return;
+      const cleanup = await live2d.mount(host, { socket: lumiUi.socket() });
+      if (cleanup === null) await vrm.mount(host);
+    })
+    .catch(() => { const s = document.getElementById('dash-stage'); if (s) s.textContent = 'The avatar stage couldn’t load.'; });
 
   // Events come through the web server so this works from any device.
   // Remote sessions can't read them (they can include window titles
