@@ -1703,6 +1703,16 @@ class Prompter:
         lines.append("")
         return "\n".join(lines)
 
+    def _game_event_allowed(self, now=None):
+        """One game-event reaction per proactive.EVENT_INTERVAL_S; none in Gaming Mode or Do-Not-Disturb."""
+        from modules import proactive, gaming_mode
+        throttle = getattr(self, "_event_throttle", None)
+        if throttle is None:
+            throttle = self._event_throttle = proactive.EventThrottle()
+        return throttle.allowed("game_event", time.time() if now is None else now,
+                                gaming=gaming_mode.is_enabled(),
+                                dnd=bool(getattr(self.signals, "do_not_disturb", False)))
+
     async def run_event_reaction(self, latest_user_text):
         """A one-line spoken reaction to a game event, from a small
         dedicated prompt (the fast model when it's available)."""
@@ -3861,6 +3871,12 @@ class Prompter:
                     # Watchdog (modules/watchdog_agent.py): speak its line now,
                     # no model call, and remember a restart offer.
                     if await self._handle_watchdog_turn(self.signals.history[-1], stripped):
+                        self.signals.AI_thinking = False
+                        continue
+
+                    # Game-event commentary is throttled (proactive.EventThrottle): an event over the
+                    # limit stays in the history but gets no reply and no speech.
+                    if is_sdk_event and not self._game_event_allowed():
                         self.signals.AI_thinking = False
                         continue
 
