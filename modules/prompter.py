@@ -1704,13 +1704,13 @@ class Prompter:
         return "\n".join(lines)
 
     def _game_event_allowed(self, now=None):
-        """One game-event reaction per proactive.EVENT_INTERVAL_S; none in Gaming Mode or Do-Not-Disturb."""
-        from modules import proactive, gaming_mode
+        """One game-event reaction per proactive.EVENT_INTERVAL_S; none while Do-Not-Disturb is on.
+        Gaming Mode does not silence these: game commentary is what Gaming Mode is for."""
+        from modules import proactive
         throttle = getattr(self, "_event_throttle", None)
         if throttle is None:
             throttle = self._event_throttle = proactive.EventThrottle()
         return throttle.allowed("game_event", time.time() if now is None else now,
-                                gaming=gaming_mode.is_enabled(),
                                 dnd=bool(getattr(self.signals, "do_not_disturb", False)))
 
     async def run_event_reaction(self, latest_user_text):
