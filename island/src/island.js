@@ -188,6 +188,7 @@
         ready = true; retry = 500; lastClose = 0; conn = 'online';
         gaming = !!msg.gaming;
         render(); loadHome(); loadChat(); loadUiState();
+        if (window.IslandStage && app === 'home') IslandStage.show();
         if (app === 'calendar') loadCalendar();
         onFocusOnline();
         flushCaptures();
@@ -270,6 +271,7 @@
     document.querySelectorAll('.app').forEach((s) => s.classList.toggle('on', s.id === `app-${name}`));
     syncClock();
     if (name === 'home') loadHome();
+    if (window.IslandStage) (name === 'home' && ready ? IslandStage.show() : IslandStage.hide());
     if (name === 'chat') { scrollMsgs(true); if (state === 'open') focusComposer(); }
     if (name === 'calendar') loadCalendar();
     if (name === 'pipeline') renderPipeline();
@@ -1900,6 +1902,7 @@
   drawMedia();
 
   // ── Go ─────────────────────────────────────────────────────────
+  if (window.IslandStage) IslandStage.init({ request: req, container: $('home-stage'), card: $('home-stage-card') });
   setApp('home');
   drawCal();
   renderHome();
