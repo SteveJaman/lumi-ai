@@ -429,23 +429,6 @@ def install(signals, server=None, info=None) -> None:
     reg("get_shortcuts", shortcuts)
     reg("shortcut_add", shortcut_add)
     reg("shortcut_delete", shortcut_delete)
-    async def stage_manifest(ws, data):
-        # The Island's Stage: what to fetch (modules/island_stage.py). Nothing is read here but names and sizes.
-        from modules import island_stage
-        out = await asyncio.get_running_loop().run_in_executor(None, island_stage.manifest)
-        await send(ws, {"type": "stage_manifest", "id": data.get("id"), "ok": True, **out})
-
-    async def stage_chunk(ws, data):
-        from modules import island_stage
-        base = {"type": "stage_chunk", "id": data.get("id")}
-        chunk = await asyncio.get_running_loop().run_in_executor(
-            None, island_stage.read_chunk, data.get("key"), data.get("offset", 0))
-        if chunk is None:
-            return await send(ws, {**base, "ok": False, "error": "That file isn't part of the Stage."})
-        await send(ws, {**base, "ok": True, **chunk})
-
-    reg("stage_manifest", stage_manifest)
-    reg("stage_chunk", stage_chunk)
     reg("quick_note", quick_note)
 
     def on_history(kind, start, msgs):
