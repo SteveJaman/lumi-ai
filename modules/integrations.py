@@ -230,6 +230,26 @@ def _test_discord(modules, signals) -> Tuple[bool, str]:
 # ===============================================================
 # Fish Audio
 # ===============================================================
+def _probe_places(modules, signals) -> Tuple[str, str]:
+    env = _read_env()
+    if not env.get("GOOGLE_MAPS_API_KEY"):
+        return "off", "API key not set"
+    loc = env.get("DEFAULT_LOCATION_LATLNG", "")
+    if not loc:
+        return "warn", "Key set, but no home location (lat,lng)"
+    try:
+        float(loc.split(",")[0]); float(loc.split(",")[1])
+    except (ValueError, IndexError):
+        return "warn", "Home location should look like 34.03,-84.58"
+    return "ok", f"Key {_mask(env['GOOGLE_MAPS_API_KEY'])} · home {loc}"
+
+
+def _test_places(modules, signals) -> Tuple[bool, str]:
+    # Checks the settings only: a live Places call costs money, so it's left to the first real use.
+    status, msg = _probe_places(modules, signals)
+    return status == "ok", msg
+
+
 def _probe_fish(modules, signals) -> Tuple[str, str]:
     env = _read_env()
     key = env.get("FISH_API_KEY")
@@ -444,6 +464,33 @@ INTEGRATIONS: List[Dict[str, Any]] = [
         "toggle": None,
     },
     {
+        "id": "google_places",
+        "label": "Nearby places (Google Maps)",
+        "emoji": "📍",
+        "description": (
+            "Lets Lumi look up places near your home location. Uses the Google Places API, "
+            "which bills per request, so only searches Lumi makes when you ask for one."
+        ),
+        "docs": "https://developers.google.com/maps/documentation/places/web-service/overview",
+        "probe": _probe_places,
+        "test": _test_places,
+        "fields": [
+            {
+                "key": "GOOGLE_MAPS_API_KEY",
+                "label": "Google Maps API key",
+                "secret": True,
+                "placeholder": "AIza…",
+            },
+            {
+                "key": "DEFAULT_LOCATION_LATLNG",
+                "label": "Home location (lat,lng)",
+                "secret": False,
+                "placeholder": "34.03,-84.58",
+            },
+        ],
+        "toggle": None,
+    },
+    {
         "id": "browser",
         "label": "Browser",
         "emoji": "🌐",
@@ -592,8 +639,10 @@ def save_integration_config(integration_id: str,
             text = str(raw).strip()
             if text == "":
                 _write_env_var(key, None)
+                os.environ.pop(key, None)           # takes effect now, no restart needed
             else:
                 _write_env_var(key, text)
+                os.environ[key] = text
         return True, None
     except Exception as e:
         return False, str(e)

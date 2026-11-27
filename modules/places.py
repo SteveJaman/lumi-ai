@@ -24,8 +24,8 @@ DETAIL_FIELDS = ("id,displayName,rating,priceLevel,currentOpeningHours,formatted
                  "internationalPhoneNumber,websiteUri")
 PRICE = {"PRICE_LEVEL_FREE": "free", "PRICE_LEVEL_INEXPENSIVE": "$", "PRICE_LEVEL_MODERATE": "$$",
          "PRICE_LEVEL_EXPENSIVE": "$$$", "PRICE_LEVEL_VERY_EXPENSIVE": "$$$$"}
-SETUP = ("Nearby places aren't set up yet. Add GOOGLE_MAPS_API_KEY and DEFAULT_LOCATION_LATLNG "
-         "(like 34.03,-84.58) to .env, then restart Lumi.")
+SETUP = ("Nearby places aren't set up yet. Add the Google Maps API key and your home location "
+         "(like 34.03,-84.58) under Integrations → Nearby places.")
 
 
 def _config() -> Optional[tuple]:
