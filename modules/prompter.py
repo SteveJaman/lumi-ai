@@ -1815,6 +1815,13 @@ class Prompter:
     
         context_injections = self.gather_injections(latest_user_text, agent_context=False,
                                                     consume=pending_user is None)
+        try:
+            from modules import mood_engine, curiosity
+            extra = "\n\n".join(x for x in (mood_engine.cue(), curiosity.pending_cue()) if x)
+        except Exception:
+            extra = ""
+        if extra:
+            context_injections = f"{context_injections}\n\n{extra}" if context_injections else extra
         messages = [{"role": "system", "content": f"{get_chat_system_prompt()}\n\n{context_injections}"}]
 
         for msg in self.signals.history[-10:]:

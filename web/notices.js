@@ -67,9 +67,18 @@ export function init({ socket } = {}) {
   close.textContent = 'Close';
   close.addEventListener('click', () => setOpen(false));
   head.append(title, close);
+  const dnd = document.createElement('button');
+  dnd.type = 'button';
+  dnd.className = 'btn btn-sm notices-dnd';
+  dnd.textContent = 'Do not disturb: off';
+  dnd.setAttribute('aria-pressed', 'false');
+  dnd.addEventListener('click', () => {
+    const on = dnd.getAttribute('aria-pressed') !== 'true';
+    if (socket) socket.emit('set_do_not_disturb', { on });
+  });
   const list = document.createElement('div');
   list.className = 'notices-list';
-  panel.append(head, list);
+  panel.append(head, dnd, list);
   document.body.append(panel);
 
   button = document.createElement('button');
@@ -90,5 +99,10 @@ export function init({ socket } = {}) {
       if (n) push('curiosity', `Read up on something while you were away: ${n} note${n === 1 ? '' : 's'} kept.`);
     });
     socket.on('scene_preset', (p) => { if (p && p.preset) push('scene', `Scene: ${p.preset}`); });
+    socket.on('do_not_disturb', (p) => {
+      const on = !!(p && p.on);
+      dnd.textContent = `Do not disturb: ${on ? 'on' : 'off'}`;
+      dnd.setAttribute('aria-pressed', String(on));
+    });
   }
 }

@@ -136,3 +136,19 @@ def record(name: str) -> None:
         eng.save()
     except Exception:
         pass
+
+
+def cue() -> str:
+    """A short line for the chat prompt about how she's feeling, or "" when nothing stands out.
+    Only the strongest feeling is named, so the prompt doesn't grow every turn."""
+    s = shared().snapshot()
+    lines = []
+    if s["annoyance"] >= 60 or s["interruption_streak"] >= 3:
+        lines.append("You're a bit annoyed: short, sharper, less patient than usual.")
+    elif s["smugness"] >= 75:
+        lines.append("You're feeling smug: a little more pride in what you say.")
+    if s["energy"] <= 25:
+        lines.append("You're low on energy: shorter answers, a yawn if it fits.")
+    if s["curiosity"] >= 80:
+        lines.append("You're curious today: ask one follow-up question when it fits.")
+    return ("[Your mood right now]\n" + "\n".join(lines)) if lines else ""

@@ -4566,3 +4566,5 @@ html[data-surface] .settings-wrap .settings-group__card .settings-toggle { gap: 
 .notice-kind { font-size: 11px; color: var(--text-mute); text-transform: uppercase; letter-spacing: 0.06em; }
 .notice-text { margin-top: 3px; font-size: 13px; line-height: 1.45; color: var(--text); white-space: pre-wrap; }
 .notice-thought .notice-text { font-style: italic; color: var(--text-dim); }
+.notices-dnd { margin: 8px 10px 0; align-self: flex-start; }
+.notices-dnd[aria-pressed="true"] { border-color: var(--warn); color: var(--warn-text); }

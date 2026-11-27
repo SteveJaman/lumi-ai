@@ -3112,6 +3112,14 @@ class SocketIOServer:
                 self._stage_subscribers.add(sid)
 
         @sio.event
+        async def set_do_not_disturb(sid, data=None):
+            # Host only: no unprompted speech while this is on (heartbeat checks signals.do_not_disturb).
+            if await self._host_session(sid):
+                on = bool(isinstance(data, dict) and data.get("on"))
+                signals.do_not_disturb = on
+                await sio.emit("do_not_disturb", {"on": on})
+
+        @sio.event
         async def avatar_stage_off(sid, data=None):
             self._stage_subscribers.discard(sid)
 

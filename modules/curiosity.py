@@ -111,3 +111,31 @@ def run_once(store: CuriosityStore, pool: Iterable[str], search: Callable[[str],
         if kept >= MAX_NOTES_PER_RUN:
             break
     return kept
+
+
+_shared_store: Optional["CuriosityStore"] = None
+_shared_lock = threading.Lock()
+
+
+def shared_store() -> "CuriosityStore":
+    global _shared_store
+    with _shared_lock:
+        if _shared_store is None:
+            _shared_store = CuriosityStore()
+        return _shared_store
+
+
+def pending_cue(limit: int = 2) -> str:
+    """Notes she kept while you were away, for the next chat prompt. Each note is handed over
+    once: it's marked surfaced when it goes into a prompt, so she mentions it once, not every turn."""
+    try:
+        store = shared_store()
+        rows = store.unsurfaced(limit)
+        if not rows:
+            return ""
+        store.mark_surfaced([r["id"] for r in rows])
+    except Exception:
+        return ""
+    lines = [f"- about {r['topic']}: {r['note'][:200]}" for r in rows]
+    return ("[Something you read up on while the user was away; mention it only if it fits, in your own words]\n"
+            + "\n".join(lines))
