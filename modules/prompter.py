@@ -49,6 +49,7 @@ YELLOW = "\033[93m"
 
 from modules.speech_filter import strip_slurs
 from modules import speculative
+from modules import stage_directions as _stage_directions
 from modules import hitl_server
 from modules import gaming_mode
 from modules import workspace_hub
@@ -484,7 +485,8 @@ def _clean_reply(text):
     """Approved tags only, no emoji, tidy spaces. What gets shown, spoken
     and stored: an invented tag ([glancing], [patience]) left in history
     gets copied on the next turns."""
-    text = strip_slurs(_strip_emoji(_strip_non_canonical_tags(text or "")))
+    text = re.sub(r"<thought>.*?</thought>", "", text or "", flags=re.S | re.I)   # inner thoughts: never shown or spoken
+    text = strip_slurs(_strip_emoji(_strip_non_canonical_tags(text)))
     # A tag only affects what follows it, so one at the very end is noise.
     text = re.sub(r"(?:\s*\[[^\]]{1,40}\])+\s*$", "", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
@@ -572,6 +574,9 @@ class _SpokenStream:
         # A barge-in (TTS.interrupt bumps speech_epoch) stops the reply too.
         self.epoch = getattr(prompter.signals, "speech_epoch", 0)
         self.interrupted = False
+        # <thought>...</thought> blocks are taken out before anything is spoken (stage_directions.py).
+        # Emotion tags are left to _extract_and_apply_emotions, which reads the whole reply.
+        self._sd = _stage_directions.StageSplitter()
 
     @property
     def spoken(self):
@@ -583,7 +588,9 @@ class _SpokenStream:
         if getattr(self.prompter.signals, "speech_epoch", 0) != self.epoch:
             self.stopped = self.interrupted = True
             return False
-        self.text += piece
+        out = self._sd.feed(piece)
+        self._thoughts(out.thoughts)
+        self.text += out.spoken
         pending = self.text[self.done:]
         parts = SENTENCE_SPLIT_PATTERN.split(pending)
         if len(parts) < 2:
@@ -612,10 +619,23 @@ class _SpokenStream:
         limit cut it off."""
         if self.stopped:
             return
+        end = self._sd.flush()
+        self._thoughts(end.thoughts)
+        self.text += end.spoken
         rest = self.text[self.done:]
         self.done = len(self.text)
         if rest.strip() and not truncated:
             self._say(rest)
+
+    def _thoughts(self, thoughts):
+        """Inner thoughts go to the UI (the Inner Thoughts bubble), never to TTS."""
+        emit = getattr(self.prompter.signals, "broadcast_event", None)
+        for t in thoughts or []:
+            if emit and t:
+                try:
+                    emit("inner_thought", {"text": t})
+                except Exception:
+                    pass
 
     def _say(self, chunk):
         for sentence in SENTENCE_SPLIT_PATTERN.split(chunk):

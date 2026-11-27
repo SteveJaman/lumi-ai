@@ -865,7 +865,19 @@ def build_chat_system_prompt(host_name=None, profile_dict=None, examples=True):
             text = str(profile_dict.get(key) or "").strip()
             if text:
                 sections.append(f"[Example Dialogue — {title}]\n{text}")
+    if examples:
+        sections.append(SPOKEN_CADENCE)
     return "\n\n".join(s for s in sections if s.strip() and not s.endswith("]\n"))
+
+
+# How she talks (Phase 4): short, a little bratty, never a customer-service voice.
+SPOKEN_CADENCE = (
+    "[How you talk]\n"
+    "One to three punchy sentences unless someone asks for more. Contractions, quick pushback, a dry "
+    "sigh now and then, a little smug pride when you were right. Never open with 'Certainly!', "
+    "'How can I assist', 'Great question' or any other filler. No bullet lists or markdown in what you say aloud. "
+    "Show your private thoughts only inside <thought>...</thought>; they are never spoken."
+)
 
 
 # =======================================================
