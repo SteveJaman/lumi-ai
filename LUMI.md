@@ -37,7 +37,7 @@ chain and context window. The first installed model in a chain wins.
 - daily_num_ctx: 16384
 - coding_models: qwen2.5-coder:14b, qwen3:8b
 - coding_num_ctx: 4096
-- deep_models: inkling-2-mini, qwen2.5-coder:14b
+- deep_models: qwen2.5-coder:14b
 - game_model: qwen3.5:9b
 - think: false
 - vram_headroom_gb: 2.5
@@ -70,8 +70,7 @@ Older keys, used only when a tier key above is missing:
   benefits most from a bigger model and runs only once per task. It takes the first
   installed model in `deep_models`, with `coding_num_ctx`, output capped at 1024 tokens,
   and unloaded 30 s after use. With none installed, or if a call times out, Plan uses the
-  turn's own model. `inkling-2-mini` (26B, 18.3 GB) is far past the 11 GB card and runs
-  mostly on CPU, so a Plan call is slow; it's worth it once per task, not per turn.
+  turn's own model.
 - **game**: the Minecraft agent (a separate process) picks goals with `game_model`.
   It sets its own small context (2048) in plugin/minecraft_bot.py. It's the daily
   model, so the game agent and Lumi's agent share one copy in VRAM.
