@@ -111,6 +111,12 @@ def coding_models(path=None):
     return names or primary_agent_models(path)
 
 
+def deep_models(path=None):
+    """Deep-tier chain for the Plan subagent (LUMI.md `deep_models`). Empty means no deep
+    tier: Plan runs on the turn's own model."""
+    return _chain("deep_models", (), path)
+
+
 def tier_num_ctx(task, path=None):
     """Context window for a task tier (LUMI.md `daily_num_ctx` / `coding_num_ctx`,
     else `num_ctx`)."""
