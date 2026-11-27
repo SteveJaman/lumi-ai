@@ -23,6 +23,7 @@ import requests
 
 from modules.module import Module
 from modules import gaming_mode
+from modules import proactive
 from constants import (LLM_ENDPOINT, MODEL_NAME, AI_NAME, HOST, FAST_MODEL_NAME,
                        FAST_MODEL_ENABLED, FAST_MODEL_NUM_CTX, FAST_MODEL_KEEP_ALIVE,
                        get_chat_system_prompt)
@@ -36,7 +37,7 @@ from modules.llm_providers import chat_sync, LLMResponse
 # ===============================================================
 TICK_SECONDS = 20                  # How often the heartbeat checks in
 MIN_IDLE_SECONDS = 90              # User must be quiet this long before we consider breaking silence
-MIN_GAP_BETWEEN_UTTERANCES = 180   # At least 3 min between unprompted messages
+MIN_GAP_BETWEEN_UTTERANCES = proactive.IDLE_INTERVAL_S   # 15 min between unprompted messages
 LATE_NIGHT_START = 23              # 11 PM — the "it's late" window begins
 LATE_NIGHT_END = 5                 # 5 AM — the window ends
 LATE_NIGHT_IDLE_SECONDS = 1800     # During late night, require longer idle (30 min)
@@ -295,6 +296,9 @@ class Heartbeat(Module):
             return False, "paused (focus)"
         if self._is_busy():
             return False, "prompter busy"
+        # Gaming Mode and Do-Not-Disturb: no unprompted speech at all (proactive.py).
+        if gaming_mode.is_enabled() or getattr(self.signals, "do_not_disturb", False):
+            return False, "gaming mode or do not disturb"
 
         user_age = self._seconds_since_user_message()
         if self._is_user_active():

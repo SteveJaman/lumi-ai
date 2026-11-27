@@ -10,6 +10,7 @@ import * as workspace from './workspace.js';
 import * as display from './display.js';
 import * as islandRemote from './island_remote.js';
 import * as lumiUi from './lumi-ui.js';
+import * as notices from './notices.js';
 import * as splitView from './split-view.js';
 import * as profile from './profile.js';
 import * as spotify from './spotify.js';
@@ -197,6 +198,7 @@ async function checkAuth() {
     showShell();
     lumiUi.initUi({ api, state });       // theme, Cloud Escalation badge, sync, drag and drop
     splitView.init({ api, state, socket: lumiUi.socket });  // right-hand Browser / Terminal / Files pane (host only)
+    notices.init({ socket: lumiUi.socket() });   // Lumi's notices: inner thoughts, curiosity notes, scene changes
     spotify.init({ api, state });        // sidebar mini player while Spotify is connected (host only)
 
     // Refresh theme button icon now that the sidebar exists

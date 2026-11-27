@@ -626,6 +626,8 @@ class _SpokenStream:
         self.done = len(self.text)
         if rest.strip() and not truncated:
             self._say(rest)
+        from modules import mood_engine
+        mood_engine.record("turn_finished")
 
     def _thoughts(self, thoughts):
         """Inner thoughts go to the UI (the Inner Thoughts bubble), never to TTS."""

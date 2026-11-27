@@ -102,8 +102,8 @@ def run_once(store: CuriosityStore, pool: Iterable[str], search: Callable[[str],
     now = time.time() if now is None else now
     kept = 0
     for hit in search(topic) or []:
-        url = str(hit.get("url") or "")
-        note = str(hit.get("snippet") or hit.get("title") or "").strip()
+        url = str(hit.get("href") or hit.get("url") or "")          # web_search gives href/body
+        note = str(hit.get("body") or hit.get("snippet") or hit.get("title") or "").strip()
         if not note or not safe_url(url):
             continue
         store.add(topic, note, url, now)

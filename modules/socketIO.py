@@ -3048,6 +3048,56 @@ class SocketIOServer:
                             self._stage_subscribers.discard(sid)
             await self.sio.sleep(0.05)
 
+    async def _curiosity_loop(self):
+        """While you're away and the switch is on: a read-only web look at one of your interests,
+        kept for later. Nothing is spoken and no page is posted to; only the count is pushed to the UI."""
+        from modules import curiosity, gaming_mode
+        from modules import web_search
+        from constants import HOST, load_profile
+        store = None
+        while not self.signals.terminate:
+            await self.sio.sleep(60)
+            try:
+                import constants as _c
+                if not getattr(_c, "IDLE_CURIOSITY", False):
+                    continue
+                idle = time.time() - float(getattr(self.signals, "last_message_time", 0) or 0)
+                if not curiosity.should_run(idle, gaming=gaming_mode.is_enabled(),
+                                            idle_minutes=getattr(_c, "IDLE_CURIOSITY_MINUTES", 10)):
+                    continue
+                pool = list((load_profile(HOST.name) or {}).get("interests") or [])
+                if store is None:
+                    store = curiosity.CuriosityStore()
+                kept = await asyncio.get_running_loop().run_in_executor(
+                    None, curiosity.run_once, store, pool, web_search.search, time.time())
+                if kept:
+                    self._broadcast_event("curiosity_note", {"count": kept})
+            except Exception:
+                pass
+
+    async def _context_loop(self):
+        """With CONTEXT_WATCHER on: the foreground window's title every 5 s, turned into a scene
+        preset when it changes. Only the preset name is sent; the title is not kept."""
+        from modules import context_watcher as cw
+        from modules import gaming_mode
+        last_title, last_preset = None, None
+        while not self.signals.terminate:
+            await self.sio.sleep(5)
+            try:
+                import constants as _c
+                if not getattr(_c, "CONTEXT_WATCHER", False):
+                    continue
+                title = cw.foreground_title()
+                if title == last_title:
+                    continue
+                last_title = title
+                preset = cw.scene_for(title, time.localtime().tm_hour, gaming=gaming_mode.is_enabled())
+                if preset and preset != last_preset:
+                    last_preset = preset
+                    await self.sio.emit("scene_preset", {"preset": preset})
+            except Exception:
+                pass
+
     async def _host_session(self, sid):
         sess = await self.sio.get_session(sid)
         return bool(sess and sess.get("user") and sess.get("is_local"))
@@ -3071,6 +3121,12 @@ class SocketIOServer:
                 return
             reaction = self._stage_motion.touch(str(data.get("zone", "")), str(data.get("action", "")))
             if reaction is not None:
+                from modules import mood_engine
+                action = str(data.get("action", ""))
+                if action == "poke":
+                    mood_engine.record("touch_poke")
+                elif action == "pat":
+                    mood_engine.record("touch_pat")
                 await sio.emit("avatar_reaction", {
                     "emotion": reaction.emotion, "flinch": reaction.flinch, "say": reaction.say,
                 }, to=sid)
@@ -3522,6 +3578,8 @@ class SocketIOServer:
             self._loop = asyncio.get_running_loop()
             self.sio.start_background_task(self._broadcast_history)
             self.sio.start_background_task(self._stage_loop)
+            self.sio.start_background_task(self._curiosity_loop)
+            self.sio.start_background_task(self._context_loop)
 
         self.app.on_startup.append(_on_startup)
 

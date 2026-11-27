@@ -870,6 +870,13 @@ def build_chat_system_prompt(host_name=None, profile_dict=None, examples=True):
     return "\n\n".join(s for s in sections if s.strip() and not s.endswith("]\n"))
 
 
+# Background features that are off until you turn them on (Phase 5).
+# CONTEXT_WATCHER: read the foreground window's title every 5 s (CPU only, no screenshots).
+# IDLE_CURIOSITY: while you're away, read-only web search on an interest; notes are kept, not spoken.
+CONTEXT_WATCHER = False
+IDLE_CURIOSITY = False
+IDLE_CURIOSITY_MINUTES = 10
+
 # How she talks (Phase 4): short, a little bratty, never a customer-service voice.
 SPOKEN_CADENCE = (
     "[How you talk]\n"

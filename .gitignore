@@ -185,3 +185,7 @@ data/avatars/
 
 # Live2D Cubism Core: Live2D's own file, under its licence. Never commit it.
 web/vendor/live2dcubismcore.min.js
+
+# Mood, curiosity notes (Phase 4-5).
+data/mood_state.json
+data/curiosity.db

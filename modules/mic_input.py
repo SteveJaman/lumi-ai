@@ -188,6 +188,8 @@ class MicInput(Module):
 
     def _fire_barge_in(self, why=""):
         """Stop her: playback, queued speech and the reply being written."""
+        from modules import mood_engine
+        mood_engine.record("barge_in")
         now = time.time()
         if now - self._last_interrupt_time < self._interrupt_cooldown:
             return

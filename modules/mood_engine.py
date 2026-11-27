@@ -113,3 +113,26 @@ class MoodEngine:
 
     def snapshot(self) -> Dict[str, float]:
         return {k: (round(v, 1) if isinstance(v, float) else v) for k, v in self.state.items()}
+
+
+_shared: Optional[MoodEngine] = None
+_shared_lock = threading.Lock()
+
+
+def shared() -> MoodEngine:
+    """The one mood the whole app uses, loaded from data/mood_state.json on first use."""
+    global _shared
+    with _shared_lock:
+        if _shared is None:
+            _shared = MoodEngine()
+        return _shared
+
+
+def record(name: str) -> None:
+    """Apply a mood event and save. Never raises: a mood write must not break a reply."""
+    try:
+        eng = shared()
+        eng.event(name)
+        eng.save()
+    except Exception:
+        pass
