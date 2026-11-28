@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 import threading
 import multiprocessing
 import time
@@ -126,7 +127,28 @@ def handle_exit(sig, frame):
 signal.signal(signal.SIGINT, handle_exit)
 
 
+AUDIO_MODES = {"1": "local", "2": "discord", "3": "both", "local": "local", "discord": "discord", "both": "both"}
+
+
+def preset_audio_mode(argv=None, env=None):
+    """--audio local|discord|both (or LUMI_AUDIO_MODE) skips the prompt, e.g. when Lumi is
+    started from a script or a terminal tab nobody types into. None means ask as usual."""
+    argv = sys.argv[1:] if argv is None else argv
+    env = os.environ if env is None else env
+    value = env.get("LUMI_AUDIO_MODE", "")
+    for i, arg in enumerate(argv):
+        if arg.startswith("--audio="):
+            value = arg.split("=", 1)[1]
+        elif arg == "--audio" and i + 1 < len(argv):
+            value = argv[i + 1]
+    return AUDIO_MODES.get(str(value).strip().lower())
+
+
 def choose_audio_mode():
+    preset = preset_audio_mode()
+    if preset:
+        print(f"\nAudio routing: {preset} (from --audio / LUMI_AUDIO_MODE)")
+        return preset
     print("\n=======================================================")
     print("  Lumi Audio Routing Setup")
     print("=======================================================")
