@@ -187,29 +187,58 @@ def _num(args, key, default: Optional[float] = None) -> Optional[float]:
         raise MusicError(f"{key} must be a number.")
 
 
+def midi_port() -> str:
+    """The loopMIDI port FL Studio listens on (constants.FL_STUDIO_MIDI_PORT, else FLStudioMCP)."""
+    import constants
+    return str(getattr(constants, "FL_STUDIO_MIDI_PORT", "") or "FLStudioMCP")
+
+
+async def _pin_port(mcp) -> Optional[str]:
+    """Point the server at FL Studio's port before its first command, once per server process.
+    Left alone it scores every MIDI port and can fall back to a hardware keyboard; with a port
+    name it uses only that port, or fails. Returns an error for the model, or None."""
+    server = getattr(mcp, "servers", {}).get(SERVER_ID)
+    port = midi_port()
+    if server is None or getattr(server, "fl_midi_port", None) == port:
+        return None
+    out = str(await mcp.call_async(SERVER_ID, "fl_connect", {"port_name": port}))
+    if not out.startswith("Successfully"):
+        return (f"Error: FL Studio's MIDI port {port!r} isn't open. Start loopMIDI with that port and "
+                f"pick it in FL Studio's MIDI settings. ({out[:160]})")
+    server.fl_midi_port = port       # a reconnect makes a new server object, which pins again
+    return None
+
+
+def _request(name: str, args: dict) -> tuple:
+    """Check the input and turn it into (fl tool, arguments). Raises MusicError."""
+    if name == "music_set_tempo":
+        bpm = _num(args, "bpm")
+        if bpm is None or not 20 <= bpm <= 999:
+            raise MusicError("bpm must be between 20 and 999.")
+        # fl_set_tempo (transport.setTempo) and fl_tempo_set (tempo.set) both end in the
+        # controller's mixer.setCurrentTempo(BPM * 1000); this one also checks 20-999 itself.
+        return "fl_set_tempo", {"bpm": float(bpm)}
+    if name == "music_create_pattern":
+        return "fl_create_pattern", {"name": str(args.get("name") or "").strip()}
+    if name == "music_add_chord":
+        octave = int(_num(args, "octave", 4))
+        notes = chord_to_midi(str(args.get("chord_name") or ""), str(args.get("scale") or ""), octave)
+        return "fl_send_chord", {"midi_notes": notes, "time": _num(args, "at", 0.0), "duration": 1.0}
+    if name == "music_add_melody":
+        notes = melody_to_notes(str(args.get("notes") or ""), _num(args, "duration", 1.0), _num(args, "at", 0.0))
+        return "fl_send_notes", {"notes": notes, "mode": "add"}
+    raise MusicError(f"unknown music tool {name}.")
+
+
 async def run_tool(name: str, args, ctx) -> str:
     mcp = _mcp(ctx)
     if mcp is None:
         return "Error: FL Studio isn't connected (MCP isn't running)."
-    args = args if isinstance(args, dict) else {}
     try:
-        if name == "music_set_tempo":
-            bpm = _num(args, "bpm")
-            if bpm is None or not 20 <= bpm <= 999:
-                raise MusicError("bpm must be between 20 and 999.")
-            # fl_set_tempo (transport.setTempo) and fl_tempo_set (tempo.set) both end in the
-            # controller's mixer.setCurrentTempo(BPM * 1000); this one also checks 20-999 itself.
-            return await mcp.call_async(SERVER_ID, "fl_set_tempo", {"bpm": float(bpm)})
-        if name == "music_create_pattern":
-            return await mcp.call_async(SERVER_ID, "fl_create_pattern", {"name": str(args.get("name") or "").strip()})
-        if name == "music_add_chord":
-            octave = int(_num(args, "octave", 4))
-            notes = chord_to_midi(str(args.get("chord_name") or ""), str(args.get("scale") or ""), octave)
-            return await mcp.call_async(SERVER_ID, "fl_send_chord",
-                                        {"midi_notes": notes, "time": _num(args, "at", 0.0), "duration": 1.0})
-        if name == "music_add_melody":
-            notes = melody_to_notes(str(args.get("notes") or ""), _num(args, "duration", 1.0), _num(args, "at", 0.0))
-            return await mcp.call_async(SERVER_ID, "fl_send_notes", {"notes": notes, "mode": "add"})
+        tool, arguments = _request(name, args if isinstance(args, dict) else {})
     except MusicError as e:
         return f"Error: {e}"
-    return f"Error: unknown music tool {name}."
+    err = await _pin_port(mcp)                  # only after the input is known to be good
+    if err:
+        return err
+    return await mcp.call_async(SERVER_ID, tool, arguments)
