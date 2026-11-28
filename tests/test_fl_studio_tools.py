@@ -133,3 +133,42 @@ def test_the_fl_studio_server_entry_validates_as_hidden():
                               "args": ["run", "--directory", "C:/x", "fl-studio-mcp"]})
     assert cfg["expose_tools"] is False and cfg["id"] == "fl-studio"
     assert "expose_tools" not in mc.validate_server({"id": "x", "command": "uv"})
+
+
+# ── chord length and progressions ────────────────────────────────────────
+
+def test_a_single_chord_takes_its_length():
+    mcp = FakeMCP()
+    _run("music_add_chord", {"chord_name": "IV", "scale": "C major", "beats": 4, "at": 8}, mcp)
+    assert mcp.actions() == [("fl-studio", "fl_send_chord", {"midi_notes": [65, 69, 72], "time": 8.0, "duration": 4.0})]
+
+
+def test_a_progression_is_one_request_with_every_chord_in_place():
+    mcp = FakeMCP()
+    _run("music_add_chord", {"chord_name": "vi IV I V", "scale": "C major", "beats": 4, "repeat": 2}, mcp)
+    [(sid, tool, args)] = mcp.actions()                       # one call: one piano roll script run
+    assert tool == "fl_send_notes" and args["mode"] == "add"
+    starts = sorted({n["time"] for n in args["notes"]})
+    assert starts == [0.0, 4.0, 8.0, 12.0, 16.0, 20.0, 24.0, 28.0]
+    first = [n["midi"] for n in args["notes"] if n["time"] == 0.0]
+    assert first == [69, 72, 76] and all(n["duration"] == 4.0 for n in args["notes"])
+    assert [n["midi"] for n in args["notes"] if n["time"] == 28.0] == [67, 71, 74]   # V, second time round
+
+
+@pytest.mark.parametrize("args", [
+    {"chord_name": "vi IV Xyz", "scale": "C major"},            # one bad chord: nothing is sent
+    {"chord_name": "C", "beats": 0},
+    {"chord_name": "C", "repeat": 0},
+    {"chord_name": "C G Am F", "repeat": 64},                  # 256 chords, over the limit
+])
+def test_bad_progressions_are_refused_before_anything_is_sent(args):
+    mcp = FakeMCP()
+    assert _run("music_add_chord", args, mcp).startswith("Error")
+    assert mcp.calls == []
+
+
+def test_piano_roll_replies_say_how_to_apply_the_notes_by_hand():
+    mcp = FakeMCP()
+    assert "ComposeWithLLM" in _run("music_add_melody", {"notes": "C4 E4"}, mcp)
+    assert "ComposeWithLLM" in _run("music_add_chord", {"chord_name": "C"}, mcp)
+    assert "ComposeWithLLM" not in _run("music_set_tempo", {"bpm": 100}, mcp)

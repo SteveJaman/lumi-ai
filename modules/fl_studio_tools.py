@@ -52,12 +52,14 @@ TOOL_SCHEMAS = [
             "name": {"type": "string"}}, "required": ["name"]}}},
     {"type": "function", "function": {
         "name": "music_add_chord",
-        "description": "Add a chord to the piano roll, by numeral in a key (vi, V7) or by name (Am7).",
+        "description": "Add a chord or a progression to the piano roll, by numeral in a key (vi, V7) or name (Am7).",
         "parameters": {"type": "object", "properties": {
             "scale": {"type": "string", "description": "key, e.g. C major"},
-            "chord_name": {"type": "string", "description": "e.g. vi, V7, Am7"},
+            "chord_name": {"type": "string", "description": "one or more, e.g. vi IV I V"},
             "octave": {"type": "integer", "description": "root octave, 4 = middle"},
-            "at": {"type": "number", "description": "start beat"}},
+            "at": {"type": "number", "description": "start beat"},
+            "beats": {"type": "number", "description": "length of each chord, 4 = a bar"},
+            "repeat": {"type": "integer", "description": "times to play the progression"}},
             "required": ["chord_name"]}}},
     {"type": "function", "function": {
         "name": "music_add_melody",
@@ -79,6 +81,10 @@ _QUALITIES = {
     "7": [0, 4, 7, 10], "maj7": [0, 4, 7, 11], "m7": [0, 3, 7, 10], "dim7": [0, 3, 6, 9],
     "m7b5": [0, 3, 6, 10], "9": [0, 4, 7, 10, 14], "add9": [0, 4, 7, 14],
 }
+MAX_CHORDS = 128                # chords in one music_add_chord call (chords x repeat)
+PIANO_ROLL_TOOLS = {"fl_send_chord", "fl_send_notes"}
+APPLY_HINT = ("If the notes don't appear, run Tools > Scripting > ComposeWithLLM in the open piano roll "
+              "to apply them.")
 _NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII"]
 _ROMAN = re.compile(r"^(VII|VI|V|IV|III|II|I)(7)?$", re.I)
 _NOTE = re.compile(r"^([A-G])([#b]?)(-?\d)$")
@@ -222,8 +228,25 @@ def _request(name: str, args: dict) -> tuple:
         return "fl_create_pattern", {"name": str(args.get("name") or "").strip()}
     if name == "music_add_chord":
         octave = int(_num(args, "octave", 4))
-        notes = chord_to_midi(str(args.get("chord_name") or ""), str(args.get("scale") or ""), octave)
-        return "fl_send_chord", {"midi_notes": notes, "time": _num(args, "at", 0.0), "duration": 1.0}
+        scale = str(args.get("scale") or "")
+        chords = str(args.get("chord_name") or "").replace(",", " ").replace("-", " ").split() or [""]
+        beats = _num(args, "beats", 1.0)
+        repeat = int(_num(args, "repeat", 1))
+        if not 0 < beats <= 64:
+            raise MusicError("beats must be more than 0 and at most 64.")
+        if not 1 <= repeat <= 64 or len(chords) * repeat > MAX_CHORDS:
+            raise MusicError(f"Keep it to at most {MAX_CHORDS} chords in one call (chords x repeat).")
+        voiced = [chord_to_midi(c, scale, octave) for c in chords]     # check every chord before sending
+        at = _num(args, "at", 0.0)
+        if len(voiced) == 1 and repeat == 1:
+            return "fl_send_chord", {"midi_notes": voiced[0], "time": at, "duration": beats}
+        # A progression goes as one piano roll request (one script run), every chord in place.
+        notes, t = [], at
+        for _ in range(repeat):
+            for midi in voiced:
+                notes += [{"midi": m, "duration": beats, "time": t} for m in midi]
+                t += beats
+        return "fl_send_notes", {"notes": notes, "mode": "add"}
     if name == "music_add_melody":
         notes = melody_to_notes(str(args.get("notes") or ""), _num(args, "duration", 1.0), _num(args, "at", 0.0))
         return "fl_send_notes", {"notes": notes, "mode": "add"}
@@ -241,4 +264,9 @@ async def run_tool(name: str, args, ctx) -> str:
     err = await _pin_port(mcp)                  # only after the input is known to be good
     if err:
         return err
-    return await mcp.call_async(SERVER_ID, tool, arguments)
+    out = await mcp.call_async(SERVER_ID, tool, arguments)
+    if tool in PIANO_ROLL_TOOLS and not str(out).startswith("Error"):
+        # The server queues the notes and presses Ctrl+Alt+Y; whether that runs the script depends on
+        # FL's shortcut setup, so say how to apply them by hand.
+        out = f"{out} {APPLY_HINT}"
+    return out
