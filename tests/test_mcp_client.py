@@ -646,3 +646,15 @@ def test_prompter_unknown_mcp_tool_and_provenance():
 def test_mcp_module_never_mentions_vtube_studio():
     src = open(mc.__file__, encoding="utf-8").read().lower()
     assert "vts" not in src and "vtube" not in src
+
+
+@pytest.mark.parametrize("hidden,kept", [(False, mc.MAX_TOOLS_PER_SERVER), (True, 165)])
+def test_a_hidden_server_keeps_all_its_tools_reachable(hidden, kept):
+    # fl-studio-mcp lists 165 tools; the 128 cap is for what the model sees, not for Lumi's wrappers.
+    cfg = mc.validate_server(dict({"id": "big", "command": "x"}, **({"expose_tools": False} if hidden else {})))
+    server = mc.MCPServer(cfg)
+
+    async def request(method, params=None, timeout=30.0, **kw):
+        return {"tools": [{"name": f"t{i}"} for i in range(165)]}
+    server.request = request
+    assert len(run(server.list_tools())) == kept

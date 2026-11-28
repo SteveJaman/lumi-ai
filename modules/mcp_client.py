@@ -73,6 +73,7 @@ ID_RE = re.compile(r"^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$")    # no "__", so mcp_
 MAX_ID_LEN = 32
 MAX_TOOL_NAME_LEN = 64            # what Ollama / OpenAI-style tool calling accepts
 MAX_TOOLS_PER_SERVER = 128
+MAX_TOOLS_HIDDEN_SERVER = 1024    # "expose_tools": false: never offered to the model, so only a sanity bound
 MAX_DESCRIPTION_CHARS = 1024
 MAX_RESULT_CHARS = 12000
 MAX_MESSAGE_BYTES = 32 * 1024 * 1024
@@ -442,17 +443,20 @@ class MCPServer:
     async def list_tools(self, timeout: float = 30.0) -> List[Dict[str, Any]]:
         tools: List[Dict[str, Any]] = []
         cursor = None
+        # A hidden server's tools are only called by Lumi's own wrappers, so the model-facing
+        # cap would just make some of them unreachable.
+        cap = MAX_TOOLS_HIDDEN_SERVER if self.cfg.get("expose_tools") is False else MAX_TOOLS_PER_SERVER
         for _ in range(20):                                  # pages
             res = await self.request("tools/list", {"cursor": cursor} if cursor else {}, timeout=timeout)
             for t in res.get("tools") or []:
                 if isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"]:
                     tools.append(t)
             cursor = res.get("nextCursor")
-            if not cursor or len(tools) >= MAX_TOOLS_PER_SERVER:
+            if not cursor or len(tools) >= cap:
                 break
-        if len(tools) > MAX_TOOLS_PER_SERVER:
-            _log(f"{self.id}: {len(tools)} tools; only the first {MAX_TOOLS_PER_SERVER} are offered", warn=True)
-            tools = tools[:MAX_TOOLS_PER_SERVER]
+        if len(tools) > cap:
+            _log(f"{self.id}: {len(tools)} tools; only the first {cap} are kept", warn=True)
+            tools = tools[:cap]
         self.tools = self._filter_tools(tools)
         return self.tools
 
