@@ -14,7 +14,8 @@ to the model as mcp__<server>__<tool>, next to the SDK's tools.
 
 Optional per server: "env" {NAME: value} for a stdio server (it otherwise gets
 only a minimal environment: PATH, temp and profile folders, never Lumi's API
-keys).
+keys). "expose_tools": false keeps a server connected but out of the model's
+tool list, for a server Lumi calls only through its own wrapper tools (FL Studio).
 
 Protocol. Dual-era client (spec 2026-07-28 "Versioning: Backward
 Compatibility"): it first probes with `server/discover`, sending the current
@@ -141,6 +142,10 @@ def validate_server(raw: Any) -> Dict[str, Any]:
     out: Dict[str, Any] = {"id": sid, "transport": transport,
                            "enabled": bool(raw.get("enabled", True)),
                            "read_only": bool(raw.get("read_only", False))}
+    if raw.get("expose_tools") is False:
+        # Connected, but its tools aren't offered to the model: Lumi's own wrappers call it
+        # (e.g. modules/fl_studio_tools.py), so a big server doesn't fill the context window.
+        out["expose_tools"] = False
     if transport == "stdio":
         command = str(raw.get("command") or "").strip()
         if not command:
@@ -1012,6 +1017,8 @@ class MCPRegistry(Module):
             s = self.servers.get(cfg["id"])
             if s is None or s.state != "connected":
                 continue
+            if cfg.get("expose_tools") is False:
+                continue                        # wrapped by Lumi's own tools; never offered raw
             for t in s.tools:
                 name = exposed_name(s.id, t["name"], taken)
                 taken.add(name)
@@ -1122,6 +1129,8 @@ class MCPRegistry(Module):
         if before and before.get("env") and isinstance(raw, dict) and "env" not in raw \
                 and cfg["transport"] == "stdio":
             cfg["env"] = before["env"]          # the web form doesn't edit env; keep hand-written values
+        if before and before.get("expose_tools") is False and isinstance(raw, dict) and "expose_tools" not in raw:
+            cfg["expose_tools"] = False         # nor this: keep a hidden server hidden
         old = self.servers.get(sid)
         if old is not None:
             await old.close()

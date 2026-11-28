@@ -370,6 +370,28 @@ def test_upsert_and_remove_persist(registry, fake_script):
         reg.lt.call(reg.upsert({"id": "x"}))
 
 
+def test_expose_tools_false_round_trips_through_web_form_edits(registry, fake_script):
+    hidden = dict(stdio_cfg(fake_script, "modern", sid="fl-studio"), expose_tools=False)
+    reg = registry([hidden])
+    wait_state(reg, "fl-studio", {"connected"})
+    assert reg.list_tools_for_registry() == []                  # connected, but nothing offered raw
+    assert reg.resolve("mcp__fl-studio__echo") is None
+
+    form = stdio_cfg(fake_script, "modern", sid="fl-studio")     # the web form never sends the key
+    assert "expose_tools" not in form
+    row = reg.lt.call(reg.upsert(form))
+    assert row["state"] == "connected"
+    saved = json.load(open(reg.path_))["servers"]
+    assert saved[0]["expose_tools"] is False                    # kept on disk
+    assert reg.list_tools_for_registry() == []                  # and still hidden
+    servers, _ = mc.load_config(reg.path_)
+    assert servers[0]["expose_tools"] is False                  # and survives a reload
+
+    reg.lt.call(reg.upsert(dict(form, expose_tools=True)))      # saying so explicitly un-hides it
+    assert "expose_tools" not in json.load(open(reg.path_))["servers"][0]
+    assert any(s["function"]["name"].startswith("mcp__fl-studio__") for s in reg.list_tools_for_registry())
+
+
 def test_a_slow_server_times_out_without_blocking(registry, fake_script, monkeypatch):
     monkeypatch.setattr(mc.constants, "MCP_CONNECT_TIMEOUT_SEC", 1.5, raising=False)
     slow = {"id": "slow", "transport": "stdio", "command": sys.executable,
