@@ -1,7 +1,9 @@
 """
-Lumi sings, through the VOCALOID6 Editor: one tool, sing_song, writes the melody and lyrics as a
-VOCALOID6 project (.vpr) with an installed voice and opens it in the editor, where you press play
-or export.
+Lumi sings, through the VOCALOID6 Editor or Synthesizer V: one tool, sing_song, writes the melody
+and lyrics as a project with an installed voice and opens it in the editor, where you press play
+or export. app "vocaloid" (default) writes a VOCALOID6 .vpr; app "synthv" writes a Synthesizer V
+.svp (modules/synthv_project.py), opened in SYNTHV_EDITOR from .env (e.g. SharpV) or Synthesizer V
+Studio.
 
 VOCALOID6 has no scripting, command line or network interface to drive, so Lumi writes the
 project file instead. The format is the one VOCALOID6 6.1 saves: a zip holding
@@ -42,7 +44,8 @@ TOOL_SCHEMAS = [
             "notes": {"type": "string", "description": "note:lyric[:beats], r = rest, e.g. C4:twin C4:kle G4:star:2"},
             "bpm": {"type": "integer"},
             "lang": {"type": "string", "description": "en or ja"},
-            "voice": {"type": "string", "description": "voice name, blank = default"}},
+            "voice": {"type": "string", "description": "voice name, blank = default"},
+            "app": {"type": "string", "description": "vocaloid or synthv"}},
             "required": ["notes"]}}},
 ]
 
@@ -234,25 +237,46 @@ def _safe_title(title: str) -> str:
 # ── the tool ──────────────────────────────────────────────────────────────
 
 def available(ctx) -> bool:
-    return bool(editor_path() and voices())
+    from modules import synthv_project as sv
+    return bool(editor_path() and voices()) or bool(sv.editor_path() and sv.voices())
+
+
+def pick_synthv_voice(name: str, installed: List[str]) -> str:
+    """By name ('teto' finds 'Kasane Teto'), else SYNTHV_VOICE from .env, else the first AI voice
+    (AI voices sing English, Japanese and Mandarin)."""
+    if not installed:
+        raise SongError("No Synthesizer V voice is installed.")
+    squash = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())
+    want = squash(name or os.environ.get("SYNTHV_VOICE", ""))
+    if want:
+        for v in installed:
+            if want in squash(v):
+                return v
+        if name:
+            raise SongError(f"No Synthesizer V voice called {name!r}. Some installed: {', '.join(installed[:12])}.")
+    return next((v for v in installed if " AI" in v and "(Lite)" not in v), installed[0])
+
+
+def _new_path(folder: str, title: str, ext: str) -> str:
+    os.makedirs(folder, exist_ok=True)
+    path, n = os.path.join(folder, f"{title}{ext}"), 2
+    while os.path.exists(path):                           # never overwrite an earlier song
+        path = os.path.join(folder, f"{title} ({n}){ext}")
+        n += 1
+    return path
 
 
 async def run_tool(name: str, args, ctx) -> str:
     if name != "sing_song":
         return f"Error: unknown singing tool {name}."
     args = args if isinstance(args, dict) else {}
+    app = str(args.get("app") or "vocaloid").strip().lower().replace(" ", "")
+    if app in ("synthv", "synthesizerv", "sv", "sharpv"):
+        return _sing_synthv(args)
+    if app != "vocaloid":
+        return "Error: app must be vocaloid or synthv."
     try:
-        lang_key = str(args.get("lang") or "en").strip().lower()
-        if lang_key not in LANGS:
-            raise SongError("lang must be en or ja.")
-        lang = LANGS[lang_key]
-        try:
-            bpm = float(args.get("bpm") or 120)
-        except (TypeError, ValueError):
-            raise SongError("bpm must be a number.")
-        if not 20 <= bpm <= 300:
-            raise SongError("bpm must be between 20 and 300.")
-        notes = parse_notes(str(args.get("notes") or ""))
+        lang, bpm, notes = _song_input(args)
         voice = pick_voice(str(args.get("voice") or ""), lang, voices())
     except SongError as e:
         return f"Error: {e}"
@@ -260,14 +284,41 @@ async def run_tool(name: str, args, ctx) -> str:
     if not exe:
         return "Error: the VOCALOID6 Editor isn't installed."
     title = _safe_title(str(args.get("title") or ""))
-    folder = song_dir()
-    os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, f"{title}.vpr")
-    n = 2
-    while os.path.exists(path):                           # never overwrite an earlier song
-        path = os.path.join(folder, f"{title} ({n}).vpr")
-        n += 1
+    path = _new_path(song_dir(), title, ".vpr")
     write_vpr(path, build_sequence(title, notes, bpm, voice, lang))
     subprocess.Popen([exe, path], close_fds=True)
     return (f"Wrote {len(notes)} notes for {voice['name']} at {bpm:g} BPM to {path} and opened it in "
             f"VOCALOID6. Press play there to hear it, or export it as audio.")
+
+
+def _song_input(args) -> tuple:
+    """(language id, bpm, notes) from the tool arguments. Raises SongError."""
+    lang_key = str(args.get("lang") or "en").strip().lower()
+    if lang_key not in LANGS:
+        raise SongError("lang must be en or ja.")
+    try:
+        bpm = float(args.get("bpm") or 120)
+    except (TypeError, ValueError):
+        raise SongError("bpm must be a number.")
+    if not 20 <= bpm <= 300:
+        raise SongError("bpm must be between 20 and 300.")
+    return LANGS[lang_key], bpm, parse_notes(str(args.get("notes") or ""))
+
+
+def _sing_synthv(args) -> str:
+    """The same song as a Synthesizer V project (modules/synthv_project.py), opened in its editor."""
+    from modules import synthv_project as sv
+    try:
+        lang, bpm, notes = _song_input(args)
+        voice = pick_synthv_voice(str(args.get("voice") or ""), sv.voices())
+    except SongError as e:
+        return f"Error: {e}"
+    exe = sv.editor_path()
+    if not exe:
+        return "Error: no Synthesizer V editor found (set SYNTHV_EDITOR in .env)."
+    title = _safe_title(str(args.get("title") or ""))
+    path = _new_path(song_dir(), title, ".svp")
+    sv.write_svp(path, sv.build_project(title, notes, bpm, voice, lang, TPQ))
+    subprocess.Popen([exe, path], close_fds=True)
+    return (f"Wrote {len(notes)} notes for {voice} at {bpm:g} BPM to {path} and opened it in "
+            f"Synthesizer V. Press play there to hear it, or export it as audio.")

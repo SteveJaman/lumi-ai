@@ -98,7 +98,9 @@ def test_titles_cannot_escape_the_song_folder(pc):
     assert [p.name for p in pc[1].iterdir()] == ["....evilname.vpr"]
 
 
-def test_offered_only_with_the_editor_and_a_voice(monkeypatch):
+def test_offered_only_with_an_editor_and_a_voice(monkeypatch):
+    from modules import synthv_project as sv
+    monkeypatch.setattr(sv, "editor_path", lambda: None)          # no Synthesizer V either
     monkeypatch.setattr(vt, "editor_path", lambda: None)
     assert not vt.available(ToolContext())
     monkeypatch.setattr(vt, "editor_path", lambda: "x.exe")
@@ -106,8 +108,88 @@ def test_offered_only_with_the_editor_and_a_voice(monkeypatch):
     assert not vt.available(ToolContext())
     monkeypatch.setattr(vt, "voices", lambda: [MEGPOID])
     assert vt.available(ToolContext())
+    monkeypatch.setattr(vt, "editor_path", lambda: None)          # Synthesizer V alone is enough
+    monkeypatch.setattr(sv, "editor_path", lambda: "sv.exe")
+    monkeypatch.setattr(sv, "voices", lambda root=None: ["Kasane Teto"])
+    assert vt.available(ToolContext())
 
 
 def test_schema_stays_compact():
     assert len(json.dumps(vt.TOOL_SCHEMAS)) < 700
     assert len(vt.TOOL_SCHEMAS[0]["function"]["description"]) < 100
+
+
+# ── Synthesizer V (app "synthv": SharpV or Synthesizer V Studio) ─────────
+
+from modules import synthv_project as sv
+
+
+@pytest.fixture
+def synthv(monkeypatch, tmp_path):
+    launched = []
+    db = tmp_path / "databases"
+    for d in ("Kasane_Teto", "Koharu_Rikka_(Lite)", "Natsuki_Karin_AI", "tmp"):
+        (db / d).mkdir(parents=True)
+    exe = tmp_path / "synthv-sharp.exe"
+    exe.write_bytes(b"")
+    songs = tmp_path / "songs"
+    monkeypatch.setattr(sv, "voices", lambda root=None: _real_voices(str(db)))
+    monkeypatch.setenv("SYNTHV_EDITOR", str(exe))
+    monkeypatch.delenv("SYNTHV_VOICE", raising=False)
+    monkeypatch.setattr(vt, "song_dir", lambda: str(songs))
+    monkeypatch.setattr(vt.subprocess, "Popen", lambda args, **kw: launched.append(args))
+    return launched, songs, exe
+
+
+_real_voices = sv.voices
+
+
+def test_voices_are_the_database_folders_named_as_projects_name_them(tmp_path):
+    for d in ("Kasane_Teto", "Koharu_Rikka_(Lite)", "tmp"):
+        (tmp_path / d).mkdir()
+    assert sv.voices(str(tmp_path)) == ["Kasane Teto", "Koharu Rikka (Lite)"]
+
+
+def test_the_svp_matches_what_synthesizer_v_saves():
+    p = sv.build_project("Twinkle", vt.parse_notes("C4:twin G4:star:2"), 100, "Kasane Teto", 1)
+    assert set(p) == {"version", "time", "library", "tracks", "renderConfig", "instantModeEnabled"}
+    assert p["time"]["tempo"] == [{"position": 0, "bpm": 100.0}]
+    track = p["tracks"][0]
+    assert set(track) == {"name", "dispColor", "dispOrder", "renderEnabled", "mixer", "mainGroup", "mainRef", "groups"}
+    assert track["mainRef"]["groupID"] == track["mainGroup"]["uuid"]
+    assert track["mainRef"]["database"]["name"] == "Kasane Teto"
+    assert (track["mainRef"]["database"]["language"], track["mainRef"]["database"]["phoneset"]) == ("english", "arpabet")
+    assert track["mainGroup"]["notes"] == [
+        {"onset": 0, "duration": 705_600_000, "pitch": 60, "lyrics": "twin", "phonemes": "", "attributes": {}},
+        {"onset": 705_600_000, "duration": 1_411_200_000, "pitch": 67, "lyrics": "star", "phonemes": "", "attributes": {}}]
+
+
+def test_sing_song_synthv_writes_an_svp_and_opens_it_in_the_configured_editor(synthv):
+    launched, songs, exe = synthv
+    out = _run({"app": "synthv", "title": "Teto", "notes": "C4:la D4:la", "voice": "teto", "lang": "ja"})
+    path = songs / "Teto.svp"
+    assert "Wrote 2 notes for Kasane Teto" in out and path.exists()
+    assert launched == [[str(exe), str(path)]]
+    db = json.loads(path.read_text(encoding="utf-8"))["tracks"][0]["mainRef"]["database"]
+    assert (db["name"], db["language"], db["phoneset"]) == ("Kasane Teto", "japanese", "romaji")
+
+
+def test_synthv_default_voice_is_from_env_else_the_first_full_ai_voice(synthv, monkeypatch):
+    installed = ["Kasane Teto", "Koharu Rikka (Lite)", "Natsuki Karin AI"]
+    assert vt.pick_synthv_voice("", installed) == "Natsuki Karin AI"
+    monkeypatch.setenv("SYNTHV_VOICE", "rikka")
+    assert vt.pick_synthv_voice("", installed) == "Koharu Rikka (Lite)"
+    with pytest.raises(vt.SongError, match="No Synthesizer V voice called"):
+        vt.pick_synthv_voice("Nobody", installed)
+
+
+def test_a_missing_synthv_editor_is_reported_and_nothing_is_written(synthv, monkeypatch, tmp_path):
+    launched, songs, _ = synthv
+    monkeypatch.setenv("SYNTHV_EDITOR", str(tmp_path / "gone.exe"))
+    out = _run({"app": "synthv", "notes": "C4:la"})
+    assert out.startswith("Error") and "SYNTHV_EDITOR" in out
+    assert launched == [] and not songs.exists()
+
+
+def test_an_unknown_app_is_refused(pc):
+    assert _run({"app": "utau", "notes": "C4:la"}) == "Error: app must be vocaloid or synthv."
