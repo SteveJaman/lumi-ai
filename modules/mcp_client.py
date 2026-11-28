@@ -14,7 +14,8 @@ to the model as mcp__<server>__<tool>, next to the SDK's tools.
 
 Optional per server: "env" {NAME: value} for a stdio server (it otherwise gets
 only a minimal environment: PATH, temp and profile folders, never Lumi's API
-keys).
+keys). "expose_tools": false keeps a server connected but out of the model's
+tool list, for a server Lumi calls only through its own wrapper tools (FL Studio).
 
 Protocol. Dual-era client (spec 2026-07-28 "Versioning: Backward
 Compatibility"): it first probes with `server/discover`, sending the current
@@ -72,6 +73,7 @@ ID_RE = re.compile(r"^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$")    # no "__", so mcp_
 MAX_ID_LEN = 32
 MAX_TOOL_NAME_LEN = 64            # what Ollama / OpenAI-style tool calling accepts
 MAX_TOOLS_PER_SERVER = 128
+MAX_TOOLS_HIDDEN_SERVER = 1024    # "expose_tools": false: never offered to the model, so only a sanity bound
 MAX_DESCRIPTION_CHARS = 1024
 MAX_RESULT_CHARS = 12000
 MAX_MESSAGE_BYTES = 32 * 1024 * 1024
@@ -141,6 +143,10 @@ def validate_server(raw: Any) -> Dict[str, Any]:
     out: Dict[str, Any] = {"id": sid, "transport": transport,
                            "enabled": bool(raw.get("enabled", True)),
                            "read_only": bool(raw.get("read_only", False))}
+    if raw.get("expose_tools") is False:
+        # Connected, but its tools aren't offered to the model: Lumi's own wrappers call it
+        # (e.g. modules/fl_studio_tools.py), so a big server doesn't fill the context window.
+        out["expose_tools"] = False
     if transport == "stdio":
         command = str(raw.get("command") or "").strip()
         if not command:
@@ -437,17 +443,20 @@ class MCPServer:
     async def list_tools(self, timeout: float = 30.0) -> List[Dict[str, Any]]:
         tools: List[Dict[str, Any]] = []
         cursor = None
+        # A hidden server's tools are only called by Lumi's own wrappers, so the model-facing
+        # cap would just make some of them unreachable.
+        cap = MAX_TOOLS_HIDDEN_SERVER if self.cfg.get("expose_tools") is False else MAX_TOOLS_PER_SERVER
         for _ in range(20):                                  # pages
             res = await self.request("tools/list", {"cursor": cursor} if cursor else {}, timeout=timeout)
             for t in res.get("tools") or []:
                 if isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"]:
                     tools.append(t)
             cursor = res.get("nextCursor")
-            if not cursor or len(tools) >= MAX_TOOLS_PER_SERVER:
+            if not cursor or len(tools) >= cap:
                 break
-        if len(tools) > MAX_TOOLS_PER_SERVER:
-            _log(f"{self.id}: {len(tools)} tools; only the first {MAX_TOOLS_PER_SERVER} are offered", warn=True)
-            tools = tools[:MAX_TOOLS_PER_SERVER]
+        if len(tools) > cap:
+            _log(f"{self.id}: {len(tools)} tools; only the first {cap} are kept", warn=True)
+            tools = tools[:cap]
         self.tools = self._filter_tools(tools)
         return self.tools
 
@@ -1012,6 +1021,8 @@ class MCPRegistry(Module):
             s = self.servers.get(cfg["id"])
             if s is None or s.state != "connected":
                 continue
+            if cfg.get("expose_tools") is False:
+                continue                        # wrapped by Lumi's own tools; never offered raw
             for t in s.tools:
                 name = exposed_name(s.id, t["name"], taken)
                 taken.add(name)
@@ -1122,6 +1133,8 @@ class MCPRegistry(Module):
         if before and before.get("env") and isinstance(raw, dict) and "env" not in raw \
                 and cfg["transport"] == "stdio":
             cfg["env"] = before["env"]          # the web form doesn't edit env; keep hand-written values
+        if before and before.get("expose_tools") is False and isinstance(raw, dict) and "expose_tools" not in raw:
+            cfg["expose_tools"] = False         # nor this: keep a hidden server hidden
         old = self.servers.get(sid)
         if old is not None:
             await old.close()

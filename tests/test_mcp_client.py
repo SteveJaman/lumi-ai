@@ -370,6 +370,28 @@ def test_upsert_and_remove_persist(registry, fake_script):
         reg.lt.call(reg.upsert({"id": "x"}))
 
 
+def test_expose_tools_false_round_trips_through_web_form_edits(registry, fake_script):
+    hidden = dict(stdio_cfg(fake_script, "modern", sid="fl-studio"), expose_tools=False)
+    reg = registry([hidden])
+    wait_state(reg, "fl-studio", {"connected"})
+    assert reg.list_tools_for_registry() == []                  # connected, but nothing offered raw
+    assert reg.resolve("mcp__fl-studio__echo") is None
+
+    form = stdio_cfg(fake_script, "modern", sid="fl-studio")     # the web form never sends the key
+    assert "expose_tools" not in form
+    row = reg.lt.call(reg.upsert(form))
+    assert row["state"] == "connected"
+    saved = json.load(open(reg.path_))["servers"]
+    assert saved[0]["expose_tools"] is False                    # kept on disk
+    assert reg.list_tools_for_registry() == []                  # and still hidden
+    servers, _ = mc.load_config(reg.path_)
+    assert servers[0]["expose_tools"] is False                  # and survives a reload
+
+    reg.lt.call(reg.upsert(dict(form, expose_tools=True)))      # saying so explicitly un-hides it
+    assert "expose_tools" not in json.load(open(reg.path_))["servers"][0]
+    assert any(s["function"]["name"].startswith("mcp__fl-studio__") for s in reg.list_tools_for_registry())
+
+
 def test_a_slow_server_times_out_without_blocking(registry, fake_script, monkeypatch):
     monkeypatch.setattr(mc.constants, "MCP_CONNECT_TIMEOUT_SEC", 1.5, raising=False)
     slow = {"id": "slow", "transport": "stdio", "command": sys.executable,
@@ -624,3 +646,15 @@ def test_prompter_unknown_mcp_tool_and_provenance():
 def test_mcp_module_never_mentions_vtube_studio():
     src = open(mc.__file__, encoding="utf-8").read().lower()
     assert "vts" not in src and "vtube" not in src
+
+
+@pytest.mark.parametrize("hidden,kept", [(False, mc.MAX_TOOLS_PER_SERVER), (True, 165)])
+def test_a_hidden_server_keeps_all_its_tools_reachable(hidden, kept):
+    # fl-studio-mcp lists 165 tools; the 128 cap is for what the model sees, not for Lumi's wrappers.
+    cfg = mc.validate_server(dict({"id": "big", "command": "x"}, **({"expose_tools": False} if hidden else {})))
+    server = mc.MCPServer(cfg)
+
+    async def request(method, params=None, timeout=30.0, **kw):
+        return {"tools": [{"name": f"t{i}"} for i in range(165)]}
+    server.request = request
+    assert len(run(server.list_tools())) == kept
