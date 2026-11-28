@@ -379,9 +379,11 @@ from modules import spotify  # noqa: E402
 from modules import screen_tool  # noqa: E402
 from modules import fl_studio_tools  # noqa: E402
 from modules import vocaloid_tools  # noqa: E402
+from modules import song_composer  # noqa: E402
 
 EVERYDAY_MODULES = (email_agent, finance_agent, meeting_agent, windows_agent, watchdog_agent,
-                    deal_finder, spotify, screen_tool, fl_studio_tools, vocaloid_tools)
+                    deal_finder, spotify, screen_tool, fl_studio_tools, vocaloid_tools,
+                    song_composer)
 EVERYDAY_TOOL_MODULE = {
     s["function"]["name"]: m for m in EVERYDAY_MODULES for s in m.TOOL_SCHEMAS
 }
