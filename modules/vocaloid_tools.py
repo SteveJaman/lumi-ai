@@ -41,7 +41,7 @@ TOOL_SCHEMAS = [
         "description": "Write a melody with lyrics as a VOCALOID6 song and open it in the editor to sing.",
         "parameters": {"type": "object", "properties": {
             "title": {"type": "string"},
-            "notes": {"type": "string", "description": "note:lyric[:beats], r = rest, e.g. C4:twin C4:kle G4:star:2"},
+            "notes": {"type": "string", "description": "one syllable per note: note:syllable[:beats], r = rest, e.g. C4:twin C4:kle G4:star:2"},
             "bpm": {"type": "integer"},
             "lang": {"type": "string", "description": "en or ja"},
             "voice": {"type": "string", "description": "voice name, blank = default"},
@@ -69,23 +69,42 @@ def _midi(name: str) -> int:
     return midi
 
 
+_RESTS = ("r", "rest", "-")
+FORMAT_HINT = "write note:syllable, one syllable per note, e.g. C4:hel D4:lo E4:world:2 r G4:bye"
+
+
 def parse_notes(notes: str, beats: float = 1.0) -> List[dict]:
-    """'C4:twin C4:kle G4:star:2 r:1' -> [{number, lyric, pos, duration}] in ticks."""
-    out, t = [], 0
+    """'C4:twin C4:kle G4:star:2 r:1' -> [{number, lyric, pos, duration}] in ticks.
+
+    Small local models often put a whole phrase on one note ('E4:The code', 'G3:Till 3 AM ...').
+    A word that isn't a note or a rest is sung as one more note at the previous note's pitch,
+    so the phrase is sung instead of the song failing."""
+    out, t, last = [], 0, None
     for token in (notes or "").replace(",", " ").split():
         parts = token.split(":")
+        head = parts[0]
+        if not (_NOTE.match(head) or head.lower() in _RESTS):
+            if last is None:                                  # a word with no note before it
+                raise SongError(f"{token!r} isn't a note; {FORMAT_HINT}.")
+            ticks = max(1, round(beats * TPQ))
+            out.append({"number": last, "lyric": token.replace(":", "")[:32], "pos": t, "duration": ticks})
+            t += ticks
+            continue
         length = beats
         if len(parts) > 1 and re.fullmatch(r"\d+(\.\d+)?", parts[-1]):
             length = float(parts.pop())
         if length <= 0:
             raise SongError(f"{token}: a note needs a length above 0.")
         ticks = max(1, round(length * TPQ))
-        if parts[0].lower() not in ("r", "rest", "-"):
+        if head.lower() in _RESTS:
+            last = None                                       # words after a rest need a new note
+        else:
             lyric = (parts[1] if len(parts) > 1 and parts[1] else "la")[:32]
-            out.append({"number": _midi(parts[0]), "lyric": lyric, "pos": t, "duration": ticks})
+            last = _midi(head)
+            out.append({"number": last, "lyric": lyric, "pos": t, "duration": ticks})
         t += ticks
     if not out:
-        raise SongError("No notes given (for example: C4:la E4:la G4:la:2).")
+        raise SongError(f"No notes given; {FORMAT_HINT}.")
     if len(out) > MAX_NOTES:
         raise SongError(f"Too many notes ({len(out)}); keep a song under {MAX_NOTES}.")
     return out

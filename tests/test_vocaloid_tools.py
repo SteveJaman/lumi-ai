@@ -193,3 +193,28 @@ def test_a_missing_synthv_editor_is_reported_and_nothing_is_written(synthv, monk
 
 def test_an_unknown_app_is_refused(pc):
     assert _run({"app": "utau", "notes": "C4:la"}) == "Error: app must be vocaloid or synthv."
+
+
+# ── phrases on one note (what the local model actually sends) ────────────
+
+LOG_INPUT = ("C4:Late C5:nights G4:Coding D4:on F3:Dreams E4:The code A3:Commits B3:Look cool "
+             "C4:Bullshit D4:Nobody cares G3:Till 3 AM when I'm typing")
+
+
+def test_extra_words_are_sung_on_the_previous_pitch():
+    notes = vt.parse_notes("E4:The code G3:Till 3 AM r C4:hi")
+    assert [(n["lyric"], n["number"], n["pos"]) for n in notes] == [
+        ("The", 64, 0), ("code", 64, 480), ("Till", 55, 960), ("3", 55, 1440), ("AM", 55, 1920),
+        ("hi", 60, 2880)]                                      # the rest kept its beat
+
+
+def test_the_input_from_the_failed_run_now_sings(synthv):
+    launched, songs, _ = synthv
+    out = _run({"app": "synthv", "notes": LOG_INPUT, "bpm": 95, "lang": "en", "voice": ""})
+    assert out.startswith("Wrote 19 notes") and len(launched) == 1    # one per word
+
+
+@pytest.mark.parametrize("notes", ["hello C4:la", "C4:la r world"])
+def test_words_without_a_note_say_how_to_write_it(notes):
+    with pytest.raises(vt.SongError, match="one syllable per note"):
+        vt.parse_notes(notes)
