@@ -52,7 +52,8 @@ def test_registry_wires_every_tool_with_its_card_and_gate():
                      "find_local_deals", "focus_window",
                      "media_play_liked", "media_play_playlist", "media_search_and_play",
                      "media_control", "media_library", "capture_screen_context",
-                     "music_set_tempo", "music_create_pattern", "music_add_chord", "music_add_melody"}
+                     "music_set_tempo", "music_create_pattern", "music_add_chord", "music_add_melody",
+                     "sing_song"}
     agents = agent_tools.EVERYDAY_TOOL_AGENT
     assert {n for n, a in agents.items() if a == "research"} == {
         "summarize_meeting", "extract_action_items", "draft_follow_up_email", "find_local_deals"}
